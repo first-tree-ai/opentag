@@ -1,5 +1,4 @@
 import {
-  Banner,
   Breadcrumbs,
   buttonVariants,
   ChartPalette,
@@ -10,6 +9,7 @@ import {
   Empty,
   Flow,
   Badge as KumoBadge,
+  Banner as KumoBanner,
   Button as KumoButton,
   type ButtonProps as KumoButtonProps,
   Checkbox as KumoCheckbox,
@@ -118,7 +118,6 @@ import * as m from "../paraglide/messages.js";
 import { designTokens } from "./design.tokens.js";
 
 export {
-  Banner,
   Breadcrumbs,
   ChartPalette,
   ClipboardText,
@@ -161,6 +160,20 @@ export const Text = (({ headingSize, ...props }: Parameters<typeof KumoText>[0] 
 )) as <Variant extends TextVariant = "body">(
   props: Parameters<typeof KumoText<Variant>>[0] & { headingSize?: HeadingSize },
 ) => ReturnType<typeof KumoText>;
+
+export const Banner: typeof KumoBanner = Object.assign(
+  forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof KumoBanner>>(function Banner(props, ref) {
+    return <KumoBanner {...props} ref={ref} />;
+  }),
+  {
+    Action: forwardRef<HTMLButtonElement, ComponentPropsWithoutRef<typeof KumoBanner.Action>>(function BannerAction(
+      { className, ...props },
+      ref,
+    ) {
+      return <KumoBanner.Action {...props} ref={ref} className={classes("max-md:min-h-11", className)} />;
+    }),
+  },
+);
 
 export const Toolbar: typeof KumoToolbar = Object.assign(
   forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof KumoToolbar>>(function Toolbar(props, ref) {

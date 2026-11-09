@@ -11,10 +11,12 @@ import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js"
 import { agents, imBindings } from "../../../db/schema/index.js";
 import { isUniqueViolation } from "../../../db/unique-violation.js";
 import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
+import { closeServerResources } from "../../../shutdown.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import type { TERMINAL_SETUP_STATES } from "../current-binding.js";
 import { releaseNeverActivatedSlots } from "../disable-im-binding.js";
 import {
+  type AgentSetupBindingState,
   type ImBindingService,
   ImBindingServiceError,
   ImBindingUnbindRequiredError,
@@ -43,8 +45,34 @@ import {
   type FeishuSetupContextRead,
   readFeishuSetupContext,
 } from "./setup-context.js";
+import {
+  FEISHU_QR_LINK_PATH_PREFIX,
+  isPhoneReachableUrl,
+  mintFeishuQrLinkToken,
+  readFeishuQrLinkToken,
+} from "./setup-qr-link.js";
 
 type SetupRow = typeof imBindings.$inferSelect;
+
+export interface AgentSetupMessagingObservation {
+  binding: AgentSetupBindingState;
+  attempt: FeishuSetupAttempt | undefined;
+}
+
+function sameSetupObservation(left: SetupRow, right: SetupRow): boolean {
+  return (
+    left.id === right.id &&
+    left.status === right.status &&
+    left.credentialGeneration === right.credentialGeneration &&
+    left.setupAttemptId === right.setupAttemptId &&
+    left.setupIntent === right.setupIntent &&
+    left.setupState === right.setupState &&
+    left.setupOwnerInstanceId === right.setupOwnerInstanceId &&
+    left.setupOwnerHeartbeatAt?.getTime() === right.setupOwnerHeartbeatAt?.getTime() &&
+    left.setupExpiresAt?.getTime() === right.setupExpiresAt?.getTime() &&
+    left.encryptedSetupContext === right.encryptedSetupContext
+  );
+}
 
 export interface FeishuBindingActivation {
   /**
@@ -177,10 +205,13 @@ export class FeishuSetupService {
   readonly #timing: { -readonly [K in keyof typeof DEFAULT_TIMING]: number };
   readonly #now: () => Date;
   readonly #random: () => number;
+  readonly #qrLinkBaseUrl: string | undefined;
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   /** Keyset cursor retained across bounded passes so saturated slots cannot starve the tail. */
   #sweepCursor: string | undefined;
   #stopped = false;
+  #stopping: Promise<void> | undefined;
+  readonly #work = new Set<Promise<unknown>>();
   #sweeping = false;
 
   constructor(input: {
@@ -195,7 +226,10 @@ export class FeishuSetupService {
     timing?: FeishuSetupTiming;
     now?: () => Date;
     random?: () => number;
+    /** The deployment's public URL; setup QR codes use its short link when a phone can reach it. */
+    publicUrl?: string;
   }) {
+    this.#qrLinkBaseUrl = input.publicUrl && isPhoneReachableUrl(input.publicUrl) ? input.publicUrl : undefined;
     this.#database = input.database;
     this.#cipher = input.cipher;
     this.#instanceId = input.instanceId;
@@ -210,13 +244,21 @@ export class FeishuSetupService {
   }
 
   start(): void {
-    if (this.#heartbeatTimer) return;
+    if (this.#heartbeatTimer || this.#stopping) return;
     this.#stopped = false;
     this.#heartbeatTimer = setInterval(() => {
-      this.#trackDetached("FEISHU_SETUP_HEARTBEAT_FAILED", this.#heartbeat(), "scheduler");
-      this.#trackDetached("FEISHU_SETUP_SWEEP_FAILED", this.#sweep(), "scheduler");
+      this.#trackDetached("FEISHU_SETUP_HEARTBEAT_FAILED", this.maintainHeartbeat(), "scheduler");
+      this.#trackDetached("FEISHU_SETUP_SWEEP_FAILED", this.maintainSweep(), "scheduler");
     }, this.#timing.ownerHeartbeatMs);
     this.#heartbeatTimer.unref();
+  }
+
+  async maintainHeartbeat(): Promise<void> {
+    await this.#heartbeat();
+  }
+
+  async maintainSweep(): Promise<void> {
+    await this.#sweep();
   }
 
   /**
@@ -232,7 +274,16 @@ export class FeishuSetupService {
    * that late write matches nothing and the attempt keeps FEISHU_SETUP_OWNER_RESTARTED instead of
    * racing to FEISHU_SETUP_CANCELED.
    */
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.#stopping) return this.#stopping;
+    const operation = this.#stop().finally(() => {
+      this.#stopping = undefined;
+    });
+    this.#stopping = operation;
+    return operation;
+  }
+
+  async #stop(): Promise<void> {
     this.#stopped = true;
     if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
     this.#heartbeatTimer = undefined;
@@ -241,32 +292,76 @@ export class FeishuSetupService {
     this.#checks.clear();
     this.#reservations.clear();
     const now = this.#now();
-    try {
-      await this.#settleTerminalInTransaction(
-        { state: "failed", code: "FEISHU_SETUP_OWNER_RESTARTED" },
-        and(eq(imBindings.setupOwnerInstanceId, this.#instanceId), eq(imBindings.setupState, "awaiting_user")),
-        now,
-      );
-    } finally {
-      // Database failure must not leave the registration SDK polling during shutdown.
-      for (const registration of this.#registrations.values()) registration.abort();
-      this.#registrations.clear();
-    }
     const claims = checks.map(([claimUuid]) => claimUuid);
-    if (claims.length > 0) {
-      await this.#database
-        .update(imBindings)
-        .set({
-          setupState: "pending_activation",
-          setupOwnerInstanceId: null,
-          setupOwnerHeartbeatAt: null,
-          updatedAt: now,
-        })
-        .where(and(inArray(imBindings.setupOwnerInstanceId, claims), eq(imBindings.setupState, "validating")));
-    }
+    await closeServerResources([
+      ["Feishu QR attempts", () => this.#restartOwnedQrAttempts(now)],
+      [
+        "Feishu registration and check work",
+        async () => {
+          const registrations = [...this.#registrations.values()];
+          this.#registrations.clear();
+          await closeServerResources([
+            ...registrations.map((registration) => ["Feishu registration", () => registration.abort()] as const),
+            [
+              "Feishu actual work",
+              async () => {
+                while (this.#work.size) await Promise.allSettled([...this.#work]);
+              },
+            ],
+          ]);
+        },
+      ],
+      ["Feishu late QR attempts", () => this.#restartOwnedQrAttempts(this.#now())],
+      [
+        "Feishu check claims",
+        async () => {
+          if (!claims.length) return;
+          await this.#database
+            .update(imBindings)
+            .set({
+              setupState: "pending_activation",
+              setupOwnerInstanceId: null,
+              setupOwnerHeartbeatAt: null,
+              updatedAt: now,
+            })
+            .where(and(inArray(imBindings.setupOwnerInstanceId, claims), eq(imBindings.setupState, "validating")));
+        },
+      ],
+    ]);
   }
 
-  async createOrReuse(
+  #restartOwnedQrAttempts(now: Date): Promise<SetupRow[]> {
+    return this.#settleTerminalInTransaction(
+      { state: "failed", code: "FEISHU_SETUP_OWNER_RESTARTED" },
+      and(eq(imBindings.setupOwnerInstanceId, this.#instanceId), eq(imBindings.setupState, "awaiting_user")),
+      now,
+    );
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  #assertRunning(): void {
+    if (this.#stopped) throw new FeishuOperationError("FEISHU_SETUP_FAILED");
+  }
+
+  createOrReuse(
+    callerUserId: string,
+    agentId: string,
+    intent: FeishuSetupIntent,
+    expectedMessaging?: ImBindingMessagingExpectation,
+  ): Promise<FeishuSetupAttempt> {
+    if (this.#stopped) return Promise.reject(new FeishuOperationError("FEISHU_SETUP_FAILED"));
+    return this.#track(this.#createOrReuse(callerUserId, agentId, intent, expectedMessaging));
+  }
+
+  async #createOrReuse(
     callerUserId: string,
     agentId: string,
     intent: FeishuSetupIntent,
@@ -275,6 +370,7 @@ export class FeishuSetupService {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const current = await this.#currentForAgent(agentId);
     this.#assertMessagingStartAllowed(current, intent, expectedMessaging);
+    await this.#assertNoDisconnectedIdentity(agentId, current);
     const reusedEarly = this.#openAttemptReuse(current);
     if (reusedEarly) return reusedEarly;
 
@@ -295,6 +391,8 @@ export class FeishuSetupService {
         "The Agent must be bound to a Computer before messaging can be connected",
       );
     }
+    this.#assertRunning();
+    const attemptId = randomUUID();
     const existing = current;
     const profile: FeishuAppProfile = {
       name: agent.displayName,
@@ -311,16 +409,52 @@ export class FeishuSetupService {
     } catch (cause) {
       throw new FeishuOperationError(feishuSetupFailureCode(cause));
     }
+    this.#registrations.set(attemptId, registration);
+    this.#track(registration.result);
+    if (registration.settled) this.#track(registration.settled);
+    let transferred = false;
+    try {
+      const result = await this.#registerAttempt(
+        callerUserId,
+        agentId,
+        intent,
+        expectedMessaging,
+        attemptId,
+        registration,
+      );
+      transferred = result.inProgress;
+      if (transferred)
+        this.#trackDetached(
+          "FEISHU_SETUP_COMPLETION_FAILED",
+          this.#complete(attemptId, agentId, registration),
+          "provider",
+          attemptId,
+        );
+      return result.attempt;
+    } finally {
+      if (!transferred && this.#registrations.get(attemptId) === registration) {
+        this.#registrations.delete(attemptId);
+        registration.abort();
+      }
+    }
+  }
+
+  async #registerAttempt(
+    callerUserId: string,
+    agentId: string,
+    intent: FeishuSetupIntent,
+    expectedMessaging: ImBindingMessagingExpectation | undefined,
+    attemptId: string,
+    registration: FeishuRegistration,
+  ): Promise<{ attempt: FeishuSetupAttempt; inProgress: boolean }> {
     let qr: Awaited<FeishuRegistration["qrReady"]>;
     try {
       qr = await registration.qrReady;
     } catch (cause) {
-      void registration.result.catch(() => undefined);
-      registration.abort();
       throw new FeishuOperationError(feishuSetupFailureCode(cause));
     }
 
-    const attemptId = randomUUID();
+    this.#assertRunning();
     const now = this.#now();
     let admission: SlotAdmission | undefined;
     try {
@@ -330,35 +464,29 @@ export class FeishuSetupService {
         // authoritative, so a durable candidate is reused instead of being overwritten by this QR.
         const fenced = await this.#currentForAgent(agentId, transaction, true);
         this.#assertMessagingStartAllowed(fenced, intent, expectedMessaging);
+        await this.#assertNoDisconnectedIdentity(agentId, fenced, transaction);
         const reused = await this.#reuseOpenAttemptUnderLock(transaction, fenced, now);
         if (reused) return { kind: "reused", row: reused } satisfies SlotAdmission;
         // Either nothing was reusable, or the reuse check just terminated the attempt and released its
         // slot; only a fresh read tells those apart and gives the insert a cleared unique-index entry.
         const slot = await this.#currentForAgent(agentId, transaction, true);
+        this.#assertRunning();
         return this.#admitAttempt(transaction, agentId, slot, attemptId, intent, qr, now);
       });
     } catch (error) {
-      return this.#convergeInsertRace(agentId, registration, error);
+      return { attempt: await this.#convergeInsertRace(agentId, error), inProgress: false };
     }
 
     if (!admission || admission.kind === "reused" || this.#attemptIdOrUndefined(admission.row) !== attemptId) {
-      void registration.result.catch(() => undefined);
-      registration.abort();
-      if (admission?.row) return this.#projectAttempt(admission.row);
+      if (admission?.row) return { attempt: this.#projectAttempt(admission.row), inProgress: false };
       const concurrent = await this.#currentForAgent(agentId);
       if (concurrent?.setupAttemptId && isOpenSetupState(concurrent.setupState)) {
-        return this.#projectAttempt(concurrent);
+        return { attempt: this.#projectAttempt(concurrent), inProgress: false };
       }
       throw new Error("Feishu setup slot admission did not converge");
     }
-    this.#registrations.set(attemptId, registration);
-    this.#trackDetached(
-      "FEISHU_SETUP_COMPLETION_FAILED",
-      this.#complete(attemptId, agentId, registration),
-      "provider",
-      attemptId,
-    );
-    return this.#projectAttempt(admission.row);
+    this.#assertRunning();
+    return { attempt: this.#projectAttempt(admission.row), inProgress: true };
   }
 
   /**
@@ -528,13 +656,7 @@ export class FeishuSetupService {
     return created ? { kind: "admitted", row: created } : undefined;
   }
 
-  async #convergeInsertRace(
-    agentId: string,
-    registration: FeishuRegistration,
-    error: unknown,
-  ): Promise<FeishuSetupAttempt> {
-    void registration.result.catch(() => undefined);
-    registration.abort();
+  async #convergeInsertRace(agentId: string, error: unknown): Promise<FeishuSetupAttempt> {
     // Only the current-binding uniqueness race is convergence. Authority, lifecycle, and stale
     // expectation errors are deliberate fences and must reach the caller unchanged.
     if (!isUniqueViolation(error, "im_bindings_agent_current_unique")) throw error;
@@ -546,16 +668,51 @@ export class FeishuSetupService {
   }
 
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
+    const read = () =>
+      this.#database.transaction(
+        async (transaction) => {
+          const row = await this.#load(attemptId, transaction);
+          if (!row) return undefined;
+          await this.#imBindings.assertCanRead(callerUserId, row.agentId, transaction);
+          return { row };
+        },
+        { isolationLevel: "repeatable read", accessMode: "read only" },
+      );
+    const current = await this.#observeRead(await read(), read);
+    if (!current?.attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    await this.#imBindings.assertCanRead(callerUserId, current.row.agentId);
+    return current.attempt;
+  }
+
+  /**
+   * The launcher URL behind a QR link, while its attempt is still waiting to be scanned. The caller is
+   * an anonymous phone: the token is the whole authority, this only reads, and a forged token never
+   * reaches the database. Repeat scans keep working, because link previews and an impatient second
+   * scan must not use the code up. Undefined means the link is known to be unusable; a context this
+   * instance cannot read rejects instead, because another instance may still be able to.
+   */
+  async resolveQrLink(token: string): Promise<string | undefined> {
+    const attemptId = readFeishuQrLinkToken(this.#cipher, token);
+    if (!attemptId) return undefined;
     const row = await this.#load(attemptId);
-    if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
-    await this.#imBindings.assertCanManage(callerUserId, row.agentId);
-    return this.#projectAttempt(row);
+    if (row?.provider !== "feishu" || row.setupState !== "awaiting_user") return undefined;
+    const now = this.#now();
+    if ((row.setupExpiresAt && row.setupExpiresAt <= now) || this.#qrOwnerLost(row, now)) return undefined;
+    const read = this.#readContext(row);
+    // Key-ring skew between instances looks like this and passes, so it must not read as a dead link.
+    if (read.status === "undecryptable") throw unreadableContextError();
+    return read.status === "decoded" && read.context.kind === "qr" ? read.context.qrUrl : undefined;
   }
 
   /** Settings observes the open attempt independently of the currently active connection. */
   async getForAgent(callerUserId: string, agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const attempt = await this.observeForAgent(agentId);
+    const read = () =>
+      this.#imBindings.readForAgent(callerUserId, agentId, async (transaction) => {
+        const row = await this.#currentForAgent(agentId, transaction);
+        return row ? { row } : undefined;
+      });
+    const attempt = (await this.#observeRead(await read(), read))?.attempt;
+    await this.#imBindings.assertCanRead(callerUserId, agentId);
     return attempt && isOpenSetupState(attempt.state) ? attempt : undefined;
   }
 
@@ -565,9 +722,59 @@ export class FeishuSetupService {
    * the Agent (the setup snapshot) use this so the attempt's liveness rules stay in one place.
    */
   async observeForAgent(agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    const row = await this.#currentForAgent(agentId);
-    if (!row?.setupAttemptId || !row.setupIntent || !row.setupState) return undefined;
-    return this.#projectAttempt(row);
+    const read = async () => {
+      const row = await this.#currentForAgent(agentId);
+      return row ? { row } : undefined;
+    };
+    return (await this.#observeRead(await read(), read))?.attempt;
+  }
+
+  async observeMessagingForAgent(
+    callerUserId: string,
+    agentId: string,
+  ): Promise<AgentSetupMessagingObservation | undefined> {
+    const read = () => this.#imBindings.readSetupForAgent(callerUserId, agentId);
+    const observed = await this.#observeRead(await read(), read);
+    return observed
+      ? {
+          binding: observed.binding,
+          attempt: observed.binding.handoff.bindingState === "disabled" ? undefined : observed.attempt,
+        }
+      : undefined;
+  }
+
+  async #observeRead<T extends { row: SetupRow; binding?: AgentSetupBindingState }>(
+    initial: T | undefined,
+    read: () => Promise<T | undefined>,
+  ): Promise<(T & { attempt: FeishuSetupAttempt | undefined }) | undefined> {
+    if (!initial) return undefined;
+    const attempt = this.#readAttempt(initial);
+    if (!this.#inferredTerminal(initial.row, attempt)) return { ...initial, attempt };
+    const current = await read();
+    if (!current) return undefined;
+    const confirmed = this.#readAttempt(current);
+    if (this.#inferredTerminal(current.row, confirmed) && !sameSetupObservation(initial.row, current.row)) {
+      throw new ImBindingServiceError(
+        "FEISHU_SETUP_OBSERVATION_UNAVAILABLE",
+        503,
+        "Lark setup changed while its status was read; check again",
+        "transient",
+      );
+    }
+    return { ...current, attempt: confirmed };
+  }
+
+  #readAttempt(observed: { row: SetupRow; binding?: AgentSetupBindingState }): FeishuSetupAttempt | undefined {
+    const handoff = observed.binding?.handoff;
+    if (handoff?.bindingState === "active" && handoff.handoffReady) return undefined;
+    const { row } = observed;
+    return row.provider === "feishu" && row.setupAttemptId && row.setupIntent && row.setupState
+      ? this.#projectAttempt(row)
+      : undefined;
+  }
+
+  #inferredTerminal(row: SetupRow, attempt: FeishuSetupAttempt | undefined): boolean {
+    return isOpenSetupState(row.setupState) && attempt !== undefined && !isOpenSetupState(attempt.state);
   }
 
   /**
@@ -576,7 +783,12 @@ export class FeishuSetupService {
    * the same synchronous slot reservation and exact-ciphertext claim as the background sweep, so a
    * button press can never multiply provider requests or exceed the concurrency bound.
    */
-  async check(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
+  check(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
+    if (this.#stopped) return Promise.reject(new FeishuOperationError("FEISHU_SETUP_FAILED"));
+    return this.#track(this.#check(callerUserId, attemptId));
+  }
+
+  async #check(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
@@ -605,7 +817,12 @@ export class FeishuSetupService {
     return this.#reloadProjection(row);
   }
 
-  async cancel(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
+  cancel(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
+    if (this.#stopped) return Promise.reject(new FeishuOperationError("FEISHU_SETUP_FAILED"));
+    return this.#track(this.#cancel(callerUserId, attemptId));
+  }
+
+  async #cancel(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
@@ -892,19 +1109,21 @@ export class FeishuSetupService {
     if (checkAbortKind(controller) !== "none") return undefined;
     try {
       if (this.#candidateExpired(claim.row, this.#now())) return { status: "expired" };
-      if (!(await withCheckBound(this.#claimStillCurrent(claim), controller.signal))) return undefined;
+      if (!(await withCheckBound(this.#track(this.#claimStillCurrent(claim)), controller.signal))) return undefined;
       controller.signal.throwIfAborted();
       await withCheckBound(
-        this.#activation.activateAtomicAttempt({
-          attemptId: this.#attemptId(claim.row),
-          ownerInstanceId: claim.claimUuid,
-          agentId: claim.row.agentId,
-          appId: candidate.appId,
-          appSecret: candidate.appSecret,
-          ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
-          ...(claim.row.setupExpiresAt ? { candidateExpiresAt: claim.row.setupExpiresAt } : {}),
-          signal: controller.signal,
-        }),
+        this.#track(
+          this.#activation.activateAtomicAttempt({
+            attemptId: this.#attemptId(claim.row),
+            ownerInstanceId: claim.claimUuid,
+            agentId: claim.row.agentId,
+            appId: candidate.appId,
+            appSecret: candidate.appSecret,
+            ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
+            ...(claim.row.setupExpiresAt ? { candidateExpiresAt: claim.row.setupExpiresAt } : {}),
+            signal: controller.signal,
+          }),
+        ),
         controller.signal,
       );
       return undefined;
@@ -945,13 +1164,15 @@ export class FeishuSetupService {
       // `call` keeps the activation implementation's own `this`; passing the method around
       // unbound would break class-field private access.
       return await withCheckBound(
-        probe.call(this.#activation, {
-          agentId: claim.row.agentId,
-          appId: candidate.appId,
-          appSecret: candidate.appSecret,
-          ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
-          signal: controller.signal,
-        }),
+        this.#track(
+          probe.call(this.#activation, {
+            agentId: claim.row.agentId,
+            appId: candidate.appId,
+            appSecret: candidate.appSecret,
+            ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
+            signal: controller.signal,
+          }),
+        ),
         controller.signal,
       );
     } catch (error) {
@@ -1209,7 +1430,7 @@ export class FeishuSetupService {
   }
 
   #trackDetached(code: string, operation: Promise<unknown>, phase: "provider" | "scheduler", requestId?: string): void {
-    const observed = operation.catch((error: unknown) => {
+    const observed = this.#track(operation).catch((error: unknown) => {
       this.#onDiagnostic(code);
       throw error;
     });
@@ -1254,8 +1475,27 @@ export class FeishuSetupService {
    * One guard for every Feishu setup command. A current binding owned by another Provider fails closed
    * with the structured unbind-required identity; there is no direct Provider switch. A declared
    * expectation must match the exact current binding and credential generation. Same-Provider
-   * reauthorization and replacement stay legal; create never replaces a configured binding.
+   * reauthorization stays legal; neither create nor replace can replace a configured binding.
    */
+  async #assertNoDisconnectedIdentity(
+    agentId: string,
+    current: SetupRow | undefined,
+    database: Pick<DatabaseClient, "select"> = this.#database,
+  ): Promise<void> {
+    if (current && current.credentialGeneration > 0) return;
+    const [previous] = await database
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), gt(imBindings.credentialGeneration, 0)))
+      .limit(1);
+    if (previous)
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "The Agent already has a messaging identity. Create a new Agent instead.",
+      );
+  }
+
   #assertMessagingStartAllowed(
     current: SetupRow | undefined,
     intent: FeishuSetupIntent,
@@ -1298,11 +1538,18 @@ export class FeishuSetupService {
   }
 
   #assertIntentAllowed(configured: SetupRow | undefined, intent: FeishuSetupIntent): void {
+    if (intent === "replace") {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "An Agent's messaging App cannot be replaced. Create a new Agent instead.",
+      );
+    }
     if (intent === "create" && configured) {
       throw new ImBindingServiceError(
         "IM_BINDING_CONFIGURATION_CONFLICT",
         409,
-        "The Agent already has a configured Feishu connection; reauthorize, replace, or unbind it first",
+        "The Agent already has a configured Feishu connection; reauthorize the same App",
       );
     }
     if (intent === "reauthorize" && !configured?.externalAppId) {
@@ -1312,21 +1559,13 @@ export class FeishuSetupService {
         "Feishu reauthorization requires a current configured binding",
       );
     }
-    if (intent === "replace" && !configured) {
-      throw new ImBindingServiceError(
-        "IM_BINDING_CONFIGURATION_CONFLICT",
-        409,
-        "Feishu replacement requires a current configured binding",
-      );
-    }
   }
 
-  async #load(attemptId: string): Promise<SetupRow | undefined> {
-    const [row] = await this.#database
-      .select()
-      .from(imBindings)
-      .where(eq(imBindings.setupAttemptId, attemptId))
-      .limit(1);
+  async #load(
+    attemptId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<SetupRow | undefined> {
+    const [row] = await executor.select().from(imBindings).where(eq(imBindings.setupAttemptId, attemptId)).limit(1);
     return row;
   }
 
@@ -1546,6 +1785,16 @@ export class FeishuSetupService {
     }
   }
 
+  /**
+   * What a QR code should encode. The public `qrUrl` itself carries the short link rather than a new
+   * field, because the attempt DTO is strict and CLIs already installed would reject an unknown one.
+   */
+  #scanUrl(attemptId: string, launcherUrl: string): string {
+    if (!this.#qrLinkBaseUrl) return launcherUrl;
+    const token = mintFeishuQrLinkToken(this.#cipher, attemptId);
+    return new URL(`${FEISHU_QR_LINK_PATH_PREFIX}${token}`, this.#qrLinkBaseUrl).href;
+  }
+
   #projectAwaitingUser(
     attempt: FeishuSetupAttempt,
     row: SetupRow,
@@ -1558,7 +1807,7 @@ export class FeishuSetupService {
     if (this.#qrOwnerLost(row, now)) {
       return this.#terminal(attempt, "failed", "FEISHU_SETUP_OWNER_RESTARTED", now);
     }
-    return { ...attempt, qrUrl: context?.kind === "qr" ? context.qrUrl : null };
+    return { ...attempt, qrUrl: context?.kind === "qr" ? this.#scanUrl(attempt.id, context.qrUrl) : null };
   }
 
   #projectPendingCandidate(

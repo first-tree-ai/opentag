@@ -25,6 +25,17 @@ function renderReplies(contents: Content[]) {
 }
 
 describe("actual outgoing reply content", () => {
+  it("renders text and rich-text receipts as chat Markdown with their line breaks", () => {
+    const { container } = renderReplies([
+      { msgType: "text", text: "**Done**\nline two" },
+      { msgType: "post", text: "1. one\n2. two", raw: "{}" },
+    ]);
+    const replies = container.querySelectorAll('[data-ui="task-sent-reply"]');
+    expect(replies[0]?.querySelector("strong")?.textContent).toBe("Done");
+    expect(replies[0]?.querySelector("br")).toBeTruthy();
+    expect(replies[1]?.querySelectorAll("ol > li")).toHaveLength(2);
+  });
+
   it("preserves reply order, literal text and inspectable native post/card payloads", () => {
     const post = { title: "Native title", content: [[{ tag: "a", text: "Read", href: "javascript:bad()" }], []] };
     const card = '{"header":{"title":{"content":"Actual card"}},"url":"javascript:bad()"}';
@@ -35,7 +46,11 @@ describe("actual outgoing reply content", () => {
     ]);
     const replies = container.querySelectorAll('[data-ui="task-sent-reply"]');
     expect(replies).toHaveLength(3);
-    expect(replies[0]?.textContent).toContain("First\n\n<b>literal HTML</b>");
+    // Text renders as chat Markdown: two paragraphs, with typed HTML kept literal, never markup.
+    expect([...(replies[0]?.querySelectorAll("p") ?? [])].map((p) => p.textContent)).toEqual([
+      "First",
+      "<b>literal HTML</b>",
+    ]);
     expect(replies[0]?.querySelector("b")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     const controls = screen.getAllByRole("button", { name: "Message details" });
@@ -192,12 +207,22 @@ describe("actual outgoing reply content", () => {
     ];
     render(withTimes.map((reply) => <TaskOutgoingReplyMeta key={reply.messageId} reply={reply} />));
 
-    // Both real times are formatted; an unparseable one is dropped rather than shown as Invalid Date.
+    // Both real times are formatted; an unparseable one is dropped rather than shown as Invalid Date,
+    // and a plain-text reply has no kind label to show in its place.
     const meta = [...document.querySelectorAll("small")].map((node) => node.textContent);
-    expect(meta[0]).toContain("·");
-    expect(meta[1]).toContain("·");
-    expect(meta[2]).toBe("Text");
-    expect(meta[2]).not.toContain("Invalid");
+    expect(meta).toHaveLength(2);
+    expect(meta[0]).toMatch(/\d/);
+    expect(meta[1]).toMatch(/\d/);
+    expect(meta.join(" ")).not.toMatch(/Text|Invalid/);
+  });
+
+  it("labels neither plain nor rich text in the header", () => {
+    renderReplies([
+      { msgType: "text", text: "plain" },
+      { msgType: "post", text: "rich", raw: "{}" },
+    ]);
+    expect(document.querySelectorAll("small")).toHaveLength(0);
+    expect(screen.queryByText("Post")).toBeNull();
   });
 
   it("always shows the reply kind, even when there is no time to show beside it", () => {

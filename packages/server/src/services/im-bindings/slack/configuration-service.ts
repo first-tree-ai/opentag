@@ -10,10 +10,11 @@ import {
   type SlackConfigurationView,
   type SlackProvisionCredentials,
 } from "@opentag/shared";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
-import { agents, imBindings } from "../../../db/schema/index.js";
+import { agents, computers, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
+import { DomainServiceError } from "../../domain-service-error.js";
 import { currentBindingOf } from "../current-binding.js";
 import { releaseTerminalNeverActivatedSlotForAgent } from "../disable-im-binding.js";
 import {
@@ -39,14 +40,10 @@ export interface SlackOAuthActivationInput {
   signingSecret: string;
 }
 
-export class SlackConfigurationServiceError extends Error {
-  constructor(
-    readonly code: string,
-    readonly statusCode: number,
-    message: string,
-    readonly category: ErrorCategory = "deterministic",
-  ) {
-    super(message);
+export class SlackConfigurationServiceError extends DomainServiceError<string, ErrorCategory, number> {
+  constructor(code: string, statusCode: number, message: string, category: ErrorCategory = "deterministic") {
+    super({ code, category, message, statusCode });
+    this.name = "SlackConfigurationServiceError";
   }
 }
 
@@ -78,6 +75,39 @@ export class SlackConfigurationService {
     this.#database = input.database;
     this.#imBindings = input.imBindings;
     this.#now = input.now ?? (() => new Date());
+  }
+
+  async assertAutoSetupTarget(
+    callerUserId: string,
+    agentId: string,
+    expected: { computerId: string; bindingId: string; credentialGeneration: number },
+  ): Promise<void> {
+    const [current] = await this.#database
+      .select({ id: imBindings.id })
+      .from(agents)
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(imBindings, eq(imBindings.agentId, agents.id))
+      .where(
+        and(
+          eq(agents.id, agentId),
+          eq(agents.createdByUserId, callerUserId),
+          eq(agents.status, "active"),
+          eq(computers.id, expected.computerId),
+          eq(computers.ownerAccountId, callerUserId),
+          isNull(computers.deletedAt),
+          eq(imBindings.id, expected.bindingId),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+          eq(imBindings.credentialGeneration, expected.credentialGeneration),
+        ),
+      )
+      .limit(1);
+    if (!current)
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        "The Slack setup target changed; reload the current configuration",
+      );
   }
 
   async currentBinding(callerUserId: string, agentId: string): Promise<SlackOAuthExpectedBinding | null> {
@@ -112,10 +142,16 @@ export class SlackConfigurationService {
     publicOrigin: string,
     officialSigningSecret?: string,
   ): Promise<SlackConfigurationView> {
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const agent = await this.#agent(agentId, this.#database, false);
-    const current = await this.#current(agentId, this.#database, false);
-    const binding = (await this.#imBindings.getConfigForAgent(callerUserId, agentId)) ?? null;
+    const { agent, current, binding, material } = await this.#imBindings.readForAgent(
+      callerUserId,
+      agentId,
+      async (transaction) => ({
+        agent: await this.#agent(agentId, transaction, false),
+        current: await this.#current(agentId, transaction, false),
+        binding: (await this.#imBindings.getConfigForAgent(callerUserId, agentId, transaction)) ?? null,
+        material: await readSlackConfigurationMaterial(transaction, this.#cipher, agentId),
+      }),
+    );
     const result: SlackConfigurationView = {
       agentDisplayName: agent.displayName,
       eventsUrl: new URL(agentSlackEventsPath(agentId), publicOrigin).toString(),
@@ -130,7 +166,6 @@ export class SlackConfigurationService {
     if (agent.computerId === null) return { ...result, blockedReason: "AGENT_COMPUTER_NOT_BOUND" };
     if (!current) return { ...result, allowedIntent: "create", expectedMessaging: { kind: "unbound" } };
     if (current.provider !== "slack") return { ...result, blockedReason: "IM_BINDING_UNBIND_REQUIRED" };
-    const material = await readSlackConfigurationMaterial(this.#database, this.#cipher, agentId);
     if (!material) return { ...result, blockedReason: "SLACK_CREDENTIALS_UNAVAILABLE" };
     if (
       material.generation !== current.credentialGeneration ||
@@ -163,6 +198,7 @@ export class SlackConfigurationService {
     agentId: string,
     input: SaveSlackConfigurationRequest,
     expectedIdentity?: Pick<SlackProvisionCredentials, "appId" | "teamId" | "botUserId">,
+    expectedComputerId?: string,
   ): Promise<SlackConfigurationResult> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     await this.#agent(agentId, this.#database);
@@ -226,6 +262,7 @@ export class SlackConfigurationService {
         signingSecret,
       },
       installation,
+      expectedComputerId,
     );
   }
 
@@ -252,6 +289,7 @@ export class SlackConfigurationService {
     agentId: string,
     input: SlackOAuthActivationInput,
     installation: SlackInstallationInspection,
+    expectedComputerId?: string,
   ): Promise<SlackConfigurationResult> {
     // Profile enrichment must never prevent a valid installation from connecting.
     let profile: SlackBindingActivation["profile"];
@@ -267,7 +305,13 @@ export class SlackConfigurationService {
       // Token inspection is external. Reacquire live Account authority and serialize the Agent's
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
-      await this.#agent(agentId, transaction);
+      const agent = await this.#agent(agentId, transaction);
+      if (expectedComputerId !== undefined && agent.computerId !== expectedComputerId)
+        throw new SlackConfigurationServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "The Agent moved to another Computer",
+        );
       // A terminal first-time Feishu attempt is not a connection, but its row still holds the Agent's
       // slot and the Provider/App uniqueness entries. Release it under this transaction's lock so the
       // insert below can take the slot; the fence leaves a working binding alone.

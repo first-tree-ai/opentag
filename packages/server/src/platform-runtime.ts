@@ -1,6 +1,8 @@
 import type { RuntimeCredentialServerFrame } from "@opentag/shared";
 import type { ServerConfig } from "./config.js";
 import type { DatabaseClient } from "./db/client.js";
+import { createInstrumentedFetch } from "./observability/external-call-logger.js";
+import type { PerformanceLogger } from "./observability/performance-logger.js";
 import type { ServiceLogger } from "./observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "./runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
@@ -18,7 +20,7 @@ import {
 import { AuthServiceError } from "./services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier } from "./services/computers/index.js";
 import type { ApplicationCipher } from "./services/crypto.js";
-import type { GitHubIntegrationComposition } from "./services/github/composition.js";
+import type { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
 import { GitHubProviderAdapter } from "./services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "./services/github-proxy/runtime-policy.js";
 
@@ -33,12 +35,53 @@ import { GitHubRuntimePolicy } from "./services/github-proxy/runtime-policy.js";
  * fence. It is composed with the Local registry for credential opens/sweeps/revocation routing,
  * while the optional injected `cloudControl` verifier keeps its own Computer-level authority.
  */
+function buildPlatformCredentialTransportOptions(options: {
+  config: ServerConfig;
+  database: DatabaseClient;
+  github?: { management: AgentGitHubCredentialService };
+  logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
+}) {
+  const policy = options.github
+    ? new GitHubRuntimePolicy({
+        database: options.database,
+        management: options.github.management,
+      })
+    : undefined;
+  const github = options.github
+    ? new GitHubProviderAdapter({
+        management: options.github.management,
+        ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
+      })
+    : undefined;
+  const webRouterFetch = options.performanceLogger
+    ? createInstrumentedFetch(options.performanceLogger, { provider: "web-router" })
+    : undefined;
+  const web = options.config.web.enabled
+    ? {
+        policy: new ConfigRuntimeWebPolicy({ routerKey: options.config.web.routerKey }),
+        router: new RouterWebClient({
+          baseUrl: options.config.web.routerBaseUrl,
+          ...(webRouterFetch ? { fetchImpl: webRouterFetch } : {}),
+          ...(options.logger ? { logger: options.logger } : {}),
+        }),
+      }
+    : undefined;
+  return {
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
+    ...(policy ? { taskPolicy: policy, gitHubAdmission: policy } : {}),
+    ...(github ? { adapters: new Map([["github" as const, github]]) } : {}),
+    ...(web ? { web } : {}),
+  };
+}
+
 /** The MCP gateway wiring, if this deployment supplied a mount reader. */
 function mcpCredentialOptions(mounts: McpUsableMountReader | undefined): { mcp?: { mounts: McpUsableMountReader } } {
   return mounts ? { mcp: { mounts } } : {};
 }
 
 export async function createPlatformRuntime(options: {
+  onCredentialFailure?: import("./runtime-credentials/index.js").RuntimeCredentialServicesOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
   config: ServerConfig;
   database: DatabaseClient;
@@ -51,7 +94,7 @@ export async function createPlatformRuntime(options: {
    * keeps it fully off, with no grant, no token, and no route.
    */
   mcpMounts?: McpUsableMountReader;
-  github?: GitHubIntegrationComposition;
+  github?: { management: AgentGitHubCredentialService };
   /**
    * Explicit trusted Cloud control verifier/activity port, owned by Computer/Cloud
    * orchestration. The default startup injects no verifier/activity checker: Cloud control
@@ -60,6 +103,7 @@ export async function createPlatformRuntime(options: {
    */
   cloudControl?: TrustedCloudControlAuthority;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
   /**
    * E4 Cloud Runner connection fence: composed with the Local registry fence so credential
    * executions opened over the per-Sandbox Runner channel pass the broker/data-transport exact
@@ -75,16 +119,11 @@ export async function createPlatformRuntime(options: {
   const cloudControl = options.cloudControl;
   const cloudControlActive = createCloudControlActive(options);
   const executions = new RuntimeExecutionRegistry();
-  const policy = options.github
-    ? new GitHubRuntimePolicy({
-        database: options.database,
-        management: options.github.management,
-      })
-    : undefined;
-  const github = options.github ? new GitHubProviderAdapter({ management: options.github.management }) : undefined;
   const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
     slackWorkingStatus: options.slackWorkingStatus,
+    onCredentialFailure: options.onCredentialFailure,
+    publicOrigin: options.config.publicUrl,
     database: options.database,
     cipher: options.cipher,
     registry: options.registry,
@@ -93,21 +132,10 @@ export async function createPlatformRuntime(options: {
     ...(cloudControlActive ? { cloudControlActive } : {}),
     ...(controlAuthority ? { controlAuthority } : {}),
     ...(options.cloudRuntimeFence ? { additionalConnectionFence: options.cloudRuntimeFence } : {}),
-    ...(policy ? { taskPolicy: policy, gitHubAdmission: policy } : {}),
-    ...(github ? { adapters: new Map([["github", github]]) } : {}),
-    ...(options.config.web.enabled
-      ? {
-          web: {
-            policy: new ConfigRuntimeWebPolicy({ routerKey: options.config.web.routerKey }),
-            router: new RouterWebClient({
-              baseUrl: options.config.web.routerBaseUrl,
-              ...(options.logger ? { logger: options.logger } : {}),
-            }),
-          },
-        }
-      : {}),
+    ...buildPlatformCredentialTransportOptions(options),
     ...mcpCredentialOptions(options.mcpMounts),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
   });
   return {
     credentials,
@@ -126,7 +154,7 @@ export async function createPlatformRuntime(options: {
         throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The Cloud control credential is invalid", 401);
     },
     close: async () => {
-      credentials.close();
+      await credentials.close();
     },
   };
 }

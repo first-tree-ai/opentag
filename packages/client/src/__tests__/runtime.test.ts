@@ -74,6 +74,50 @@ describe("RuntimeConnection", () => {
     },
   );
 
+  it("keeps negotiated heartbeats on cadence across delayed and out-of-order ACKs and bounds silence", async () => {
+    let now = 0;
+    const scheduler = new ManualScheduler(() => now);
+    const socket = new ControlledWebSocket();
+    const connection = new RuntimeConnection({ ...controlledOptions(socket), now: () => now, scheduler });
+    connection.setSelfCheckEnabled(true);
+    const running = connection.run();
+    const connectionId = await registerControlled(connection, socket, welcome(30_000, 90_000));
+    const heartbeatIds: string[] = [];
+    const originalSend = socket.send.bind(socket);
+    socket.send = (data, callback) => {
+      const frame = JSON.parse(data);
+      if (frame.type === "heartbeat") heartbeatIds.push(frame.requestId);
+      originalSend(data, callback);
+    };
+    for (const time of [30_000, 60_000]) {
+      now = time;
+      scheduler.runDue();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(heartbeatIds).toHaveLength(2);
+    const ack = (requestId: string) =>
+      socket.receive({
+        type: "heartbeat:result",
+        requestId,
+        ok: true,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        connectionId,
+        serverTime: new Date(now).toISOString(),
+      });
+    ack(heartbeatIds[1] as string);
+    ack(heartbeatIds[0] as string);
+    ack(heartbeatIds[0] as string);
+    now = 90_000;
+    scheduler.runDue();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heartbeatIds).toHaveLength(3);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    connection.stop();
+    await running;
+  });
+
   it("validates queue limits, readiness leases, capability expiry, and registration waiters", async () => {
     const baseOptions = {
       arch: "x64",
@@ -135,7 +179,7 @@ describe("RuntimeConnection", () => {
     await registeredWaiter;
     expect(socket.frame("computer:register")).toMatchObject({ capabilities: { imCredentialGrant: 0 } });
     expect(connection.supportsCapability("runtime.imDelivery")).toBe(true);
-    expect(connection.capabilityVersion("runtime.imDelivery")).toBe(2);
+    expect(connection.capabilityVersion("runtime.imDelivery")).toBe(3);
     expect(await connection.whenRegistered()).toBeUndefined();
     expect(stateListener).toHaveBeenCalledWith("registered");
     expect(unsubscribe()).toBe(true);
@@ -588,9 +632,12 @@ describe("RuntimeConnection", () => {
       await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
       const register = socket.frame("computer:register");
       const connectionId = randomUUID();
-      const negotiatedCapabilities = negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, {
-        ...supportedCapabilities,
-      });
+      const negotiatedCapabilities = negotiateRuntimeCapabilities(
+        register?.supportedCapabilities as RuntimeCapabilityOffers,
+        {
+          ...supportedCapabilities,
+        },
+      );
       socket.receive({
         type: "computer:register:result",
         requestId: register?.requestId,
@@ -1586,7 +1633,10 @@ function registrationResult(
     ok: true,
     protocolVersion: RUNTIME_PROTOCOL_V2,
     connectionId: randomUUID(),
-    negotiatedCapabilities: negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, offers),
+    negotiatedCapabilities: negotiateRuntimeCapabilities(
+      (frame.supportedCapabilities as RuntimeCapabilityOffers | undefined) ?? RUNTIME_CLIENT_CAPABILITY_OFFERS,
+      offers,
+    ),
   };
 }
 
@@ -1649,7 +1699,7 @@ function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace:
 class ManualScheduler {
   readonly #now: () => number;
   readonly #timers = new Map<ReturnType<typeof setTimeout>, { at: number; callback: () => void }>();
-  #nextId = 0;
+  #nextId = 1;
 
   constructor(now: () => number) {
     this.#now = now;

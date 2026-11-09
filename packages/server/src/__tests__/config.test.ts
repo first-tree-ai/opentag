@@ -14,6 +14,7 @@ import {
 } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import {
+  DatabaseStartupTimeoutError,
   MIGRATION_ADVISORY_LOCK_ID,
   MigrationVerificationError,
   migrateDatabase,
@@ -412,6 +413,25 @@ describe("parseServerConfig", () => {
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
+    expect(parseServerConfig(required).observability.performance).toEqual({
+      enabled: true,
+      level: "debug",
+      slowThresholdMs: 1_000,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_PERF_LOG_ENABLED: "false",
+        OPENTAG_PERF_LOG_LEVEL: "warn",
+        OPENTAG_PERF_SLOW_THRESHOLD_MS: "2500",
+      }).observability.performance,
+    ).toEqual({
+      enabled: false,
+      level: "warn",
+      slowThresholdMs: 2_500,
+    });
+    expect(() => parseServerConfig({ ...required, OPENTAG_PERF_LOG_LEVEL: "trace" })).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_PERF_SLOW_THRESHOLD_MS: "0" })).toThrow();
   });
 
   it("parses OPENTAG_WEBSITE_ORIGINS into a canonical, de-duplicated allowlist", () => {
@@ -652,39 +672,19 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it("requires an OAuth client pair and the exact local callback origin", () => {
-    const github = {
-      OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient",
-      OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
-    };
-    expect(parseServerConfig({ ...required, ...github }).githubOAuth).toEqual({
-      clientId: "Ov23testclient",
-      clientSecret: "client-secret",
-      oauthCallbackUrl: "http://localhost:8000/api/v2/integrations/github/oauth/callback",
-    });
-    expect(parseServerConfig(required).githubOAuth).toBeUndefined();
-    expect(
-      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_ID: "871235", OPENTAG_GITHUB_APP_CLIENT_ID: "old" })
-        .githubOAuth,
-    ).toBeUndefined();
-    for (const invalid of [
-      { OPENTAG_GITHUB_OAUTH_CLIENT_ID: "Ov23testclient" },
-      { OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" },
+  it("ignores retired Account GitHub OAuth settings without enabling MCP", () => {
+    for (const legacy of [
+      { OPENTAG_GITHUB_OAUTH_CLIENT_ID: "retired-client" },
+      { OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "retired-secret" },
+      { OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "not-a-live-callback" },
       {
-        ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v2/integrations/github/oauth/callback",
+        OPENTAG_GITHUB_OAUTH_CLIENT_ID: "retired-client",
+        OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "retired-secret",
       },
-      {
-        ...github,
-        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
-      },
-    ])
-      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
-    try {
-      parseServerConfig({ ...required, OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "client-secret" });
-      expect.unreachable("partial OAuth configuration must fail");
-    } catch (error) {
-      expect(String(error)).not.toContain("client-secret");
+    ]) {
+      const config = parseServerConfig({ ...required, ...legacy });
+      expect(config).not.toHaveProperty("githubOAuth");
+      expect(config.mcpStaticOAuth).toBeUndefined();
     }
   });
 
@@ -769,22 +769,41 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it.each(["HUBSPOT", "ASANA", "ZOOM"])("requires the MCP %s client pair to be configured together", (brand) => {
-    const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;
-    const secret = `OPENTAG_MCP_${brand}_CLIENT_SECRET`;
-    const key = brand.toLowerCase();
-    expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
-    expect(parseServerConfig({ ...required, [id]: "", [secret]: "   " }).mcpStaticOAuth).toBeUndefined();
-    expect(parseServerConfig({ ...required, [id]: "client", [secret]: "shh" }).mcpStaticOAuth).toEqual({
-      [key]: { clientId: "client", clientSecret: "shh" },
+  it.each(["HUBSPOT", "ASANA", "ZOOM", "GITHUB", "FEISHU"])(
+    "requires the MCP %s client pair to be configured together",
+    (brand) => {
+      const id = `OPENTAG_MCP_${brand}_CLIENT_ID`;
+      const secret = `OPENTAG_MCP_${brand}_CLIENT_SECRET`;
+      const key = brand.toLowerCase();
+      expect(parseServerConfig(required).mcpStaticOAuth).toBeUndefined();
+      expect(parseServerConfig({ ...required, [id]: "", [secret]: "   " }).mcpStaticOAuth).toBeUndefined();
+      expect(parseServerConfig({ ...required, [id]: "client", [secret]: "shh" }).mcpStaticOAuth).toEqual({
+        [key]: { clientId: "client", clientSecret: "shh" },
+      });
+      expect(() => parseServerConfig({ ...required, [id]: "client" })).toThrow(new RegExp(`${id} and ${secret}`));
+      try {
+        parseServerConfig({ ...required, [secret]: "shh" });
+        expect.unreachable("partial MCP client configuration must fail");
+      } catch (error) {
+        expect(error instanceof Error ? error.message : String(error)).not.toContain("shh");
+      }
+    },
+  );
+
+  it("only enables GitHub MCP with its current client settings", () => {
+    const config = parseServerConfig({
+      ...required,
+      OPENTAG_GITHUB_OAUTH_CLIENT_ID: "account-client",
+      OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: "account-secret",
     });
-    expect(() => parseServerConfig({ ...required, [id]: "client" })).toThrow(new RegExp(`${id} and ${secret}`));
-    try {
-      parseServerConfig({ ...required, [secret]: "shh" });
-      expect.unreachable("partial MCP client configuration must fail");
-    } catch (error) {
-      expect(error instanceof Error ? error.message : String(error)).not.toContain("shh");
-    }
+    expect(config.mcpStaticOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GITHUB_CLIENT_ID: "mcp-client",
+        OPENTAG_MCP_GITHUB_CLIENT_SECRET: "mcp-secret",
+      }).mcpStaticOAuth,
+    ).toEqual({ github: { clientId: "mcp-client", clientSecret: "mcp-secret" } });
   });
 
   it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {
@@ -937,10 +956,16 @@ describe("parseServerConfig", () => {
   });
 });
 
-function mockSql(handler: (query: string, values: readonly unknown[]) => unknown | Promise<unknown>) {
+function mockSql(
+  handler: (query: string, values: readonly unknown[]) => unknown | Promise<unknown>,
+  version = "170000",
+) {
   const sql = Object.assign(
-    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => handler(strings.join(""), values)),
-    { end: vi.fn(async () => undefined) },
+    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join("") === "show server_version_num") return [{ server_version_num: version }];
+      return handler(strings.join(""), values);
+    }),
+    { end: vi.fn(async () => undefined), setQueryDeadline: vi.fn() },
   );
   vi.mocked(postgres).mockReturnValue(sql as never);
   return sql;
@@ -991,14 +1016,16 @@ describe("database migration helpers", () => {
       }),
     );
     expect(client.timeouts.queryTimeoutMs).toBe(6_000);
-    expect((sql as unknown as { unsafe: unknown }).unsafe).not.toBe(unsafe);
+    expect((sql as unknown as { unsafe: unknown }).unsafe).toBe(unsafe);
+    expect(sql.setQueryDeadline).toHaveBeenCalledWith(6_000, expect.any(Function));
     await client.sql.end();
   });
 
   it("refuses a postgres.js build whose Query lacks the deadline internals", () => {
-    mockSql(() => []);
+    const sql = mockSql(() => []);
+    Object.assign(sql, { setQueryDeadline: undefined });
 
-    expect(() => createDatabaseClient("postgresql://localhost/opentag")).toThrow(/query deadline needs updating/);
+    expect(() => createDatabaseClient("postgresql://localhost/opentag")).toThrow(/pinned query deadline/);
   });
 
   it("preserves non-Zod parser failures and returns no unauthenticated identity", async () => {
@@ -1053,8 +1080,70 @@ describe("database migration helpers", () => {
     await expect(migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle")).rejects.toThrow("migration failed");
     expect(drizzle).toHaveBeenCalledWith(sql);
     expect(migrate).toHaveBeenCalledWith({ kind: "database" }, { migrationsFolder: "/tmp/drizzle" });
-    expect(sql).toHaveBeenCalledTimes(2);
+    expect(sql).toHaveBeenCalledTimes(4);
     expect(sql.end).toHaveBeenCalledOnce();
+  });
+
+  it("caps the whole migration operation without extending the budget for progress", async () => {
+    vi.useFakeTimers();
+    const sql = mockSql(() => []);
+    vi.mocked(migrate).mockImplementationOnce(async () => {
+      for (let step = 0; step < 4; step++) await new Promise((resolve) => setTimeout(resolve, 4000));
+    });
+    try {
+      const result = migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(await result).toBeInstanceOf(DatabaseStartupTimeoutError);
+      expect(await result).toMatchObject({ operation: "migration", timeoutMs: 15000 });
+      expect(sql.end).toHaveBeenNthCalledWith(1, { timeout: 0 });
+      await vi.advanceTimersByTimeAsync(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps PostgreSQL 16 within the transaction cap through a shorter overall deadline", async () => {
+    vi.useFakeTimers();
+    const sql = mockSql(() => [], "160000");
+    vi.mocked(migrate).mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const result = migrateDatabase("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(await result).toMatchObject({ operation: "migration", timeoutMs: 10000 });
+      expect(sql.mock.calls.some(([strings]) => strings.join("").includes("transaction_timeout"))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds silent verification with its own total budget", async () => {
+    vi.useFakeTimers();
+    mockSql(() => new Promise(() => {}));
+    vi.mocked(readMigrationFiles).mockReturnValue([]);
+    try {
+      const result = verifyDatabaseMigrations("postgresql://localhost/opentag", "/tmp/drizzle").catch((error) => error);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(await result).toMatchObject({
+        reason: "unreachable",
+        cause: { operation: "verification", timeoutMs: 10000 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the migration failure as the cause when unlocking also fails", async () => {
+    const primary = new Error("primary failure"),
+      cleanup = new Error("unlock failure");
+    const sql = mockSql((query) => {
+      if (query.includes("pg_advisory_unlock")) throw cleanup;
+      return [];
+    });
+    await expect(
+      withMigrationLock(sql as never, async () => {
+        throw primary;
+      }),
+    ).rejects.toMatchObject({ cause: primary, errors: [primary, cleanup] });
   });
 
   it.each([

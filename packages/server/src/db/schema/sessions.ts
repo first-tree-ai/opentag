@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -112,22 +113,28 @@ export const sessionDescendants = pgTable(
     lastMessageId: uuid("last_message_id").notNull(),
     lastDeliveryOutcome: text("last_delivery_outcome").notNull(),
     taskPreview: text("task_preview").notNull(),
+    /**
+     * Mirrors `sessions.ended_at is null` for the descendant, maintained by the same transaction that
+     * ends the Session. The active page reads only these rows, so the partial activity indexes below
+     * never carry ended history. Every writer that changes `sessions.ended_at` must keep it in step;
+     * `services/sessions/session-closure.ts` owns that write.
+     */
+    descendantActive: boolean("descendant_active").notNull().default(true),
   },
   (table) => [
     primaryKey({ columns: [table.ancestorSessionId, table.descendantSessionId] }),
-    index("session_descendants_ancestor_activity_idx").on(
-      table.ancestorSessionId,
-      table.lastMessageCreatedAt,
-      table.lastMessageId,
-      table.descendantSessionId,
-    ),
-    index("session_descendants_ancestor_depth_activity_idx").on(
-      table.ancestorSessionId,
-      table.depth,
-      table.lastMessageCreatedAt,
-      table.lastMessageId,
-      table.descendantSessionId,
-    ),
+    index("session_descendants_ancestor_activity_active_idx")
+      .on(table.ancestorSessionId, table.lastMessageCreatedAt, table.lastMessageId, table.descendantSessionId)
+      .where(sql`${table.descendantActive}`),
+    index("session_descendants_ancestor_depth_activity_active_idx")
+      .on(
+        table.ancestorSessionId,
+        table.depth,
+        table.lastMessageCreatedAt,
+        table.lastMessageId,
+        table.descendantSessionId,
+      )
+      .where(sql`${table.descendantActive}`),
     index("session_descendants_descendant_ancestor_idx").on(table.descendantSessionId, table.ancestorSessionId),
     index("session_descendants_last_message_idx").on(table.lastMessageId),
     check("session_descendants_depth_positive", sql`${table.depth} >= 1`),

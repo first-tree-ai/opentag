@@ -38,11 +38,21 @@ Kumo Select on mobile. The selected overflow category stays in its original posi
 
 Task screens use the existing application typography: the list retains the page-title scale,
 while an individual Task title keeps its `h1` semantics and uses 16px medium text with a 24px
-line height. Requests, sent replies and execution summaries use 14px regular text with a 21px line
+line height. Requests and sent replies use 14px regular text with a 21px line
 height; authors use 14px medium and timestamps use 12px regular text. Message headings, emphasis
 and code retain their content formatting. Operational notices remain at 14px. The Activity
 section heading remains accessible without adding a visible label above the conversation.
 List task titles and supporting values use 14px regular text, with 14px medium column headings.
+On the Task detail, a content container of at least 56rem splits below the full-width back link and title
+into a shrinkable conversation column and an 18rem sticky side column of stacked facts, cancel control and
+internal Sessions; narrower containers stay in one column. This replaces the earlier full-width composition so
+the status stays in view beside a long conversation; the reasons and the keyboard order are in the
+[Tasks page](../../product/tasks.md). In the side column the facts drop their top rule so they align with the
+first message. Sections below the title use the same 16px medium heading, never larger than the
+`h1`, and read as a heading over rows between rules, rather than as a white card.
+Internal Session titles use 14px regular text, at most two lines in the side column and on narrow containers,
+and one line on a full-width row. A request's body has a flat grey fill sized to its message,
+with no border or shadow on the rounded corners. People and Agents share one 32px round letter avatar.
 
 Usage keeps the period selector beside the title and lets the concise description use the
 available width, wrapping naturally on smaller screens. Daily UTC token totals use bars from
@@ -54,28 +64,97 @@ the Tokens column supplies the unit. Cached input is a subset of input and is ex
 below the table rather than repeated as an exclusion on the row.
 
 Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
-The detail header presents the Agent identity without an availability or activity badge beside the name;
+The detail header presents the Agent identity without an availability or activity badge beside the name, and a long
+name stops at two lines (the full name stays in the heading text and its title) so the header does not push the
+page down; Settings stays aligned with the top of the name;
 dependency status and lifecycle notices remain in the page content.
 The Overview status card keeps its healthy two-section, two-line composition in every dependency state.
 Computer summarizes the connection and the selected runtime Provider, with an existing runtime status replacing
 Online when attention is needed. The identity line always includes the Agent's selected Provider after the
 Computer name and platform; this is not the Computer's list of installed Providers. At narrow card widths the
-platform is omitted and long identities are truncated. Status text remains complete; the static section name
-can truncate and the recovery arrow is omitted when space is limited. Full identities are included in the
-accessible row name and are available through the details popover or recovery destination. Existing state
-values and localized status wording remain unchanged. Recovery uses the status row itself, rather than an
-additional action or explanation line. Each row retains two line boxes even when an identity is absent. Details
-and recovery never expand the card or move its divider; there is no larger fixed-height shell or reserved third line.
+platform is omitted and long identities are truncated. Status text and the section name both stay complete: in a
+narrow card the status wraps under the section name rather than cutting the name short, and the recovery arrow is
+omitted. Full identities are included in the accessible row name and the row's title. A row with nothing to act on
+and no further guidance is plain text, not a control: a popover that only repeated the row gave keyboard users a
+stop with nothing behind it. Existing state values and localized status wording remain unchanged. Recovery uses the
+status row itself, rather than an additional action or explanation line. Each row keeps at least two line boxes
+even when an identity is absent; details and recovery never add a reserved third line.
 For paused Agents, runtime failures open the existing local recovery guidance in a popover; they do not
 link to setup, which accepts only active Agents.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page
 remains available through View all. Long Agent names, handles, and Computer identities outside the compact Overview status card wrap within
 their available space rather than widening the page.
 
+Memory's, Connectors', and Skills' empty states share one pattern: a "No … yet" heading and one short sentence
+whose blue inline phrases are the first actions.
+Balanced wrapping keeps each complete action phrase together, with repository details in the creation dialog.
+
 Soul keeps the page subtitle and Browse templates action. Saved content uses the same white document frame
 and typography as editing, with a quiet Edit action below the document on the right. Editing exposes Cancel and
 Save changes in that position; no persistent edit hint or prominent header action is added. Success feedback
 briefly appears beside these actions, with its layout space retained when it disappears.
+
+Messaging setup uses a single 720px content column on a white canvas. A compact
+horizontal progress rail precedes the 24px main heading and secondary Agent name.
+The current step and primary actions use openTag teal `#00cbb4`, with dark action
+text. Provider choices share a two-column arrangement that stacks below 560px,
+with 14px names and 13px descriptions explaining each authorization method.
+
+State cards share provider identity, concise guidance and an action area. The
+176px Feishu QR sits beside the left-aligned title, instructions and status on
+wider screens and below them on phones. Cards use 16px insets, 12–14px content
+gaps and 32px desktop footer controls (at least 44px below 768px or for coarse
+pointers). Slack inline forms place cancellation beside their
+primary action in the bottom bar, with manual setup or Back on the left. Native
+form submission and disabled/busy behavior are preserved. Saved authorization exposes prerequisite-specific guidance and expandable
+application/permission details. Retry and permission update remain the primary
+recovery actions; destructive disconnection retains its confirmation.
+
+Authorization guidance names the next action in the provider, including Slack's
+message composer and returned challenge code. Inline Slack forms use the same
+shared controls, including keyboard submission, busy guards and accessible input
+descriptions. The inline editing exit exposes its visible Cancel label to assistive
+technology; the non-editing Close action retains its contextual name. Slow operations
+report waiting without inventing a progress percentage
+or a failure. A lost response allows an explicit retry of the same operation, never
+automatic replay. Known provider errors retain their specific recovery message.
+
+Slack reports connected only when App identity is verified and the Server reports
+an active, ready handoff. Saved authorization and identity-only verification remain
+pending states. Ready screens explain that these are connection/readiness checks;
+actual delivery still requires sending a message and confirming the Bot's reply.
+No outbound-message test endpoint or reply acknowledgement is added by this UI.
+Slack configuration reads combine query-lifecycle and deadline cancellation and
+forward it to fetch, so expired reads and reads with no remaining observers abort.
+The shared deadline helper links abort events and cleans up listeners when settled;
+it does not require newer signal-composition APIs than the build browser baseline.
+The last-good view and foreground readiness polling remain available; cancellation
+does not introduce automatic authorization writes.
+
+Feishu QR pixels disappear at their supplied expiry; the Server continues to own
+attempt state and permitted recovery actions. Expired attempts offer a new QR when
+the snapshot permits a retry. Messaging observation timeouts keep the last snapshot
+visible with an explicit stale-status notice that does not promise automatic checks
+for states without polling. Reduced-motion preferences disable
+the waiting pulse, and coarse pointers retain 44px button targets.
+
+Recovery prioritizes recognized provider error codes over generic blocker labels,
+then uses the reported blocker category. An unspecified or unrecognized cause is
+explicitly described as unavailable, with the original error code available in
+expandable diagnostics when present. A separate next-step explanation guides the
+user without inventing an underlying network or authorization diagnosis.
+
+Slack setup opts into an inline presentation here, sharing the page position and
+state-card composition with Feishu. Its existing authorization command, code,
+manual configuration, busy guards and post-save verification remain functional.
+Opening focuses the inline heading and closing restores focus to its entry. The
+flow keeps one stable mount across binding changes; other callers retain the
+original dialog presentation. Platform authorization protocols remain distinct.
+
+Completion uses the same content column, ready heading, provider status and
+next-use guidance. Its existing completion callbacks and pending/retry actions
+are unchanged. Creation, Computer preparation and other consumers retain their
+existing layout and navigation behavior.
 
 ## Website reference sources
 
@@ -171,7 +250,7 @@ The marketing container is centred and capped at 1280px; comparison, testimonial
 
 Shared controls use a 40px default height, with 32px and 48px variants. Radius roles are 6, 10, 12, and 16px, with full rounding for circles. Standard controls use 10px corners; outer product cards use 16px. Keep existing illustration geometry and documented marketing exceptions intact rather than rounding SVG coordinates to the UI scale.
 
-In the expanded app sidebar, All Agents, the Agent switcher, navigation items, and the Account trigger share an icon column and text alignment. The Account trigger leaves space around its avatar inside the hover surface. Compact layouts keep the avatar centred and preserve touch targets. Repository dialogs align their title, description, filter, and list; the scrolling body leaves room for the filter's focus ring, and the footer follows the content without excess empty space.
+In the expanded app sidebar, All Agents, the Agent switcher, navigation items, and the Account trigger share an icon column and text alignment. The Account trigger leaves space around its avatar inside the hover surface. Compact layouts keep the avatar centred and preserve touch targets. In the Agent switcher menu, the Agents scroll in their own list once they outgrow the space below the trigger, while All Agents and New Agent stay in view. That list is a scrollable region, so it is keyboard focusable and named (**Agents**, **Agent 列表**); focus that lands on it moves on to its first Agent, so arrow keys keep navigating the menu. Repository dialogs align their title, description, filter, and list; the scrolling body leaves room for the filter's focus ring, and the footer follows the content without excess empty space.
 
 ## Page composition and artwork
 

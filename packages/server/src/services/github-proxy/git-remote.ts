@@ -78,23 +78,26 @@ export function seedRefspecsForAllowedRefs(lsRemoteOutput: string, allowedRefs: 
 /** Credentials reach only this trusted Git process environment, never URLs, argv, or persisted config. */
 export class GitHubPublicationRemote implements PublicationRemote {
   readonly #fullName: string;
-  readonly #token: string;
-  constructor(input: { fullName: string; token: string }) {
+  readonly #token: string | (() => Promise<string>);
+  constructor(input: { fullName: string; token: string | (() => Promise<string>) }) {
     const name = GitHubRepositoryFullNameSchema.safeParse(input.fullName);
-    if (!name.success || !/^[a-zA-Z0-9_.-]{1,4096}$/.test(input.token))
+    if (!name.success || (typeof input.token === "string" && !/^[a-zA-Z0-9_.-]{1,4096}$/.test(input.token)))
       throw new GitPublicationError("invalid_request");
     this.#fullName = name.data;
     this.#token = input.token;
   }
 
   async #options(options: GitProcessOptions): Promise<GitProcessOptions> {
+    const token = typeof this.#token === "string" ? this.#token : await this.#token();
+    if (!/^[a-zA-Z0-9_.-]{1,4096}$/.test(token)) throw new GitPublicationError("invalid_request");
+    options.signal?.throwIfAborted();
     const helper = join(options.cwd, "askpass.sh");
     await writeFile(
       helper,
       '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" x-access-token ;; *) printf "%s\\n" "$OPENTAG_GIT_TOKEN" ;; esac\n',
       { mode: 0o700 },
     );
-    return { ...options, environment: { ...options.environment, GIT_ASKPASS: helper, OPENTAG_GIT_TOKEN: this.#token } };
+    return { ...options, environment: { ...options.environment, GIT_ASKPASS: helper, OPENTAG_GIT_TOKEN: token } };
   }
 
   async seed(repository: string, options: GitProcessOptions, allowedRefs?: readonly string[]): Promise<void> {

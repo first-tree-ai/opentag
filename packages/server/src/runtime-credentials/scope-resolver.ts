@@ -1,6 +1,8 @@
+import type { ContextTreeConnection } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
@@ -46,6 +48,7 @@ export interface RuntimeValidationScopeSnapshot {
 }
 
 export interface RuntimeScopeSnapshot {
+  contextTrees?: readonly ContextTreeConnection[];
   sessionId: string;
   sessionKind: "channel" | "thread" | "internal";
   sessionEnded: boolean;
@@ -108,6 +111,7 @@ export class RuntimeScopeResolver {
   async load(sessionId: string): Promise<RuntimeScopeSnapshot | undefined> {
     const [row] = await this.#database
       .select({
+        contextTrees: agentRuntimeConfigs.contextTrees,
         sessionId: sessions.id,
         sessionKind: sessions.kind,
         sessionEndedAt: sessions.endedAt,
@@ -129,24 +133,29 @@ export class RuntimeScopeResolver {
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .leftJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(eq(sessions.id, sessionId))
       .limit(1);
     if (!row?.computerId || !row.computerKind || !row.computerOwnerAccountId) return undefined;
-    const sandboxRows = await this.#database
-      .select({
-        id: sandboxes.id,
-        resourceUid: sandboxes.currentResourceUid,
-        environmentGeneration: sandboxes.environmentGeneration,
-        lifecycle: sandboxes.lifecycle,
-      })
-      .from(sandboxes)
-      .where(eq(sandboxes.sessionId, sessionId))
-      .limit(1);
+    const sandboxRows =
+      row.computerKind === "cloud"
+        ? await this.#database
+            .select({
+              id: sandboxes.id,
+              resourceUid: sandboxes.currentResourceUid,
+              environmentGeneration: sandboxes.environmentGeneration,
+              lifecycle: sandboxes.lifecycle,
+            })
+            .from(sandboxes)
+            .where(eq(sandboxes.sessionId, sessionId))
+            .limit(1)
+        : [];
     const sandbox = sandboxRows[0];
     return {
+      contextTrees: row.contextTrees ?? [],
       sessionId: row.sessionId,
       sessionKind: row.sessionKind,
       sessionEnded: row.sessionEndedAt !== null,
@@ -197,10 +206,11 @@ export class RuntimeScopeResolver {
   ): RuntimeFenceViolation | undefined {
     if (snapshot.sessionId !== record.sessionId) return "session_unknown";
     if (snapshot.sessionEnded) return "session_ended";
-    // A Local internal Session (or any internal Session without the explicit Cloud collaboration
-    // authority) stays closed here. The exact open-time decision is carried on the record, so the
-    // per-request fence never has to re-derive authorization from the frame or the connection.
-    if (snapshot.sessionKind === "internal" && record.internalAuthority !== "cloud-session-collaboration") {
+    // Revalidate the Server-owned collaboration admission without trusting a new Client frame.
+    if (
+      snapshot.sessionKind === "internal" &&
+      record.internalAuthority !== `${record.computerKind}-session-collaboration`
+    ) {
       return "session_internal";
     }
     if (snapshot.agent.id !== record.agentId || snapshot.agent.computerId !== record.computerId) {

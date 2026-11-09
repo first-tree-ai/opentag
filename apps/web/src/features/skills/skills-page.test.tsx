@@ -138,8 +138,14 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByRole("heading", { level: 2, name: "No Skills yet" })).toBeTruthy();
-    expect(screen.getByText("Import a skill from a URL or upload a file to get started.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
+    // The empty state's sentence offers both first actions in place.
+    fireEvent.click(screen.getByRole("button", { name: "upload a file" }));
+    expect(chooseFile).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Install from a link" }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    chooseFile.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Upload file" }));
     expect(chooseFile).toHaveBeenCalledOnce();
@@ -185,6 +191,17 @@ describe("SkillsPage", () => {
       replace: false,
       sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
     });
+  });
+
+  it("confirms a finished upload by the installed Skill's name", async () => {
+    stubList([]);
+    vi.spyOn(browserApi, "uploadAgentSkill").mockResolvedValue(skill() as never);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("notes.skill", "hello")] } });
+
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", `Installed ${skill().name}`);
   });
 
   it("confirms a name conflict and only then re-uploads with replace on", async () => {
@@ -297,6 +314,20 @@ describe("SkillsPage", () => {
     fireEvent.click(await screen.findByRole("switch", { name: "Enable Release notes writer" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SKILL_ID, { enabled: false }));
+  });
+
+  it("keeps a toggled switch enabled and focused while its write is pending", async () => {
+    stubList([skill({ enabled: true })]);
+    const update = vi.spyOn(browserApi, "updateAgentSkill").mockImplementation(() => new Promise(() => undefined));
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    const toggle = await screen.findByRole("switch", { name: "Enable Release notes writer" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it("deletes only after the confirmation", async () => {

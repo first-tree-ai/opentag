@@ -291,12 +291,14 @@ describe("SlackConfigurationService persistence", () => {
     client.inspectInstallation.mockResolvedValue(
       inspection({ teamId: "T_OTHER", botUserId: "U_OTHER", botId: "B_OTHER" }),
     );
-    await service.configure(value.bootstrap.userId, value.agent.id, {
-      ...input,
-      intent: "reauthorize",
-      expectedBinding: await service.currentBinding(value.bootstrap.userId, value.agent.id),
-    });
-    expect((await read())?.bot).toEqual({ displayName: null, avatarUrl: null });
+    await expect(
+      service.configure(value.bootstrap.userId, value.agent.id, {
+        ...input,
+        intent: "reauthorize",
+        expectedBinding: await service.currentBinding(value.bootstrap.userId, value.agent.id),
+      }),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+    expect((await read())?.bot).toEqual(newer);
   });
 
   it("reads an empty binding and commits an inspected Slack installation", async () => {

@@ -423,7 +423,10 @@ describe("Skill routes", () => {
     });
     expect(uploaded.statusCode).toBe(200);
     expect(uploaded.json()).toMatchObject({ source: "agent_upload" });
-    expect(uploadForAgent).toHaveBeenCalledWith(AGENT, expect.objectContaining({ declaredSha256: SHA }));
+    expect(uploadForAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: AGENT, computerId: "computer-1" }),
+      expect.objectContaining({ declaredSha256: SHA }),
+    );
 
     const list = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSkills });
     expect(list.statusCode).toBe(200);

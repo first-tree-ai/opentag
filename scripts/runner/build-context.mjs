@@ -44,6 +44,9 @@ export const RUNNER_CONTEXT_ALLOWLIST = Object.freeze([
   "packages/shared/package.json",
   "packages/shared/tsconfig.json",
   "packages/shared/src",
+  "packages/mcp-presets/package.json",
+  "packages/mcp-presets/tsconfig.json",
+  "packages/mcp-presets/src",
   "packages/client/package.json",
   "packages/client/tsconfig.json",
   "packages/client/src",
@@ -57,6 +60,7 @@ export const RUNNER_CONTEXT_ALLOWLIST = Object.freeze([
   "scripts/portable/runtime-dependencies.mjs",
   // apps/cli's build invokes this repo-level script; the in-image build fails without it.
   "scripts/copy-web-tools-extension.mjs",
+  "scripts/check-cli-bundle.mjs",
   "scripts/prepare-cli-release.mjs",
   "scripts/release-versions.mjs",
   "scripts/channel-config.mjs",

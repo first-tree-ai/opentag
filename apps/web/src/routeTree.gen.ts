@@ -24,6 +24,7 @@ import { Route as AuthenticatedResourcesShellUsageRouteImport } from './routes/_
 import { Route as AuthenticatedResourcesAgentsSetupRouteImport } from './routes/_authenticated/_resources/agents.setup'
 import { Route as AuthenticatedResourcesShellAgentsIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.index'
 import { Route as AuthenticatedResourcesShellAgentsComputersRouteImport } from './routes/_authenticated/_resources/_shell/agents.computers'
+import { Route as AuthenticatedResourcesShellImFeedbackFeedbackIdRouteImport } from './routes/_authenticated/_resources/_shell/im-feedback.$feedbackId'
 import { Route as AuthenticatedResourcesShellTasksIndexRouteImport } from './routes/_authenticated/_resources/_shell/tasks.index'
 import { Route as AuthenticatedResourcesShellTasksTaskIdRouteImport } from './routes/_authenticated/_resources/_shell/tasks.$taskId'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.index'
@@ -120,6 +121,12 @@ const AuthenticatedResourcesShellAgentsComputersRoute =
   AuthenticatedResourcesShellAgentsComputersRouteImport.update({
     id: '/agents/computers',
     path: '/agents/computers',
+    getParentRoute: () => AuthenticatedResourcesShellRoute,
+  } as any)
+const AuthenticatedResourcesShellImFeedbackFeedbackIdRoute =
+  AuthenticatedResourcesShellImFeedbackFeedbackIdRouteImport.update({
+    id: '/im-feedback/$feedbackId',
+    path: '/im-feedback/$feedbackId',
     getParentRoute: () => AuthenticatedResourcesShellRoute,
   } as any)
 const AuthenticatedResourcesShellTasksIndexRoute =
@@ -219,6 +226,7 @@ export interface FileRoutesByFullPath {
   '/usage': typeof AuthenticatedResourcesShellUsageRoute
   '/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
+  '/im-feedback/$feedbackId': typeof AuthenticatedResourcesShellImFeedbackFeedbackIdRoute
   '/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/agents/': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -247,6 +255,7 @@ export interface FileRoutesByTo {
   '/usage': typeof AuthenticatedResourcesShellUsageRoute
   '/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
+  '/im-feedback/$feedbackId': typeof AuthenticatedResourcesShellImFeedbackFeedbackIdRoute
   '/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/agents': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/tasks': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -279,6 +288,7 @@ export interface FileRoutesById {
   '/_authenticated/_resources/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/_authenticated/_resources/_shell/': typeof AuthenticatedResourcesShellIndexRoute
   '/_authenticated/_resources/_shell/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
+  '/_authenticated/_resources/_shell/im-feedback/$feedbackId': typeof AuthenticatedResourcesShellImFeedbackFeedbackIdRoute
   '/_authenticated/_resources/_shell/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/_authenticated/_resources/_shell/agents/': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/_authenticated/_resources/_shell/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -309,6 +319,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/agents/setup'
     | '/agents/computers'
+    | '/im-feedback/$feedbackId'
     | '/tasks/$taskId'
     | '/agents/'
     | '/tasks/'
@@ -337,6 +348,7 @@ export interface FileRouteTypes {
     | '/usage'
     | '/agents/setup'
     | '/agents/computers'
+    | '/im-feedback/$feedbackId'
     | '/tasks/$taskId'
     | '/agents'
     | '/tasks'
@@ -368,6 +380,7 @@ export interface FileRouteTypes {
     | '/_authenticated/_resources/agents/setup'
     | '/_authenticated/_resources/_shell/'
     | '/_authenticated/_resources/_shell/agents/computers'
+    | '/_authenticated/_resources/_shell/im-feedback/$feedbackId'
     | '/_authenticated/_resources/_shell/tasks/$taskId'
     | '/_authenticated/_resources/_shell/agents/'
     | '/_authenticated/_resources/_shell/tasks/'
@@ -498,6 +511,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedResourcesShellAgentsComputersRouteImport
       parentRoute: typeof AuthenticatedResourcesShellRoute
     }
+    '/_authenticated/_resources/_shell/im-feedback/$feedbackId': {
+      id: '/_authenticated/_resources/_shell/im-feedback/$feedbackId'
+      path: '/im-feedback/$feedbackId'
+      fullPath: '/im-feedback/$feedbackId'
+      preLoaderRoute: typeof AuthenticatedResourcesShellImFeedbackFeedbackIdRouteImport
+      parentRoute: typeof AuthenticatedResourcesShellRoute
+    }
     '/_authenticated/_resources/_shell/tasks/': {
       id: '/_authenticated/_resources/_shell/tasks/'
       path: '/tasks'
@@ -607,6 +627,7 @@ interface AuthenticatedResourcesShellRouteChildren {
   AuthenticatedResourcesShellUsageRoute: typeof AuthenticatedResourcesShellUsageRoute
   AuthenticatedResourcesShellIndexRoute: typeof AuthenticatedResourcesShellIndexRoute
   AuthenticatedResourcesShellAgentsComputersRoute: typeof AuthenticatedResourcesShellAgentsComputersRoute
+  AuthenticatedResourcesShellImFeedbackFeedbackIdRoute: typeof AuthenticatedResourcesShellImFeedbackFeedbackIdRoute
   AuthenticatedResourcesShellTasksTaskIdRoute: typeof AuthenticatedResourcesShellTasksTaskIdRoute
   AuthenticatedResourcesShellAgentsIndexRoute: typeof AuthenticatedResourcesShellAgentsIndexRoute
   AuthenticatedResourcesShellTasksIndexRoute: typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -640,6 +661,8 @@ const AuthenticatedResourcesShellRouteChildren: AuthenticatedResourcesShellRoute
       AuthenticatedResourcesShellIndexRoute,
     AuthenticatedResourcesShellAgentsComputersRoute:
       AuthenticatedResourcesShellAgentsComputersRoute,
+    AuthenticatedResourcesShellImFeedbackFeedbackIdRoute:
+      AuthenticatedResourcesShellImFeedbackFeedbackIdRoute,
     AuthenticatedResourcesShellTasksTaskIdRoute:
       AuthenticatedResourcesShellTasksTaskIdRoute,
     AuthenticatedResourcesShellAgentsIndexRoute:

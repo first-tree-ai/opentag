@@ -56,6 +56,7 @@ export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-message
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
+export const RUNTIME_SESSION_STOP_PATH = `${API_V1_PREFIX}/runtime/sessions/stop`;
 export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`;
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account.
@@ -84,12 +85,20 @@ export const SANDBOX_RUNNER_WEBSOCKET_PATH = `${API_V1_PREFIX}/sandbox-runners/w
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
-export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/navigation-visibility`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
 /** Read-only paged subresource of the Task's platform-confirmed outbound IM replies. */
 export const TASK_REPLIES_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/replies`;
+/**
+ * The bounded Task detail and its independently paged sections. The legacy complete detail stays at
+ * `TASK_BY_ID_TEMPLATE`; these paths are its versioned replacement, so no reader is silently given a
+ * truncated legacy answer.
+ */
+export const TASK_DETAIL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/detail`;
+export const TASK_DETAIL_TURNS_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/turns`;
+export const TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/internal-sessions`;
+export const TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE = `${TASK_DETAIL_TEMPLATE}/collaboration-messages`;
 /*
  * MCP management plane. Server definitions live on the Account pool; every binding, authorization,
  * and probe is addressed under the Agent that owns it, because authorization is strictly per Agent.
@@ -99,6 +108,7 @@ export const TASK_REPLIES_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/replies`;
 export const MCP_SERVERS_PATH = `${API_V1_PREFIX}/mcp-servers`;
 export const MCP_SERVER_BY_ID_TEMPLATE = `${MCP_SERVERS_PATH}/:mcpServerId`;
 export const MCP_OAUTH_CALLBACK_PATH = `${MCP_SERVERS_PATH}/oauth/callback`;
+export const MCP_OAUTH_HANDOFF_PATH = `${MCP_SERVERS_PATH}/oauth/handoff`;
 export const AGENT_MCP_SERVERS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/mcp-servers`;
 export const AGENT_MCP_SERVER_TEMPLATE = `${AGENT_MCP_SERVERS_TEMPLATE}/:mcpServerId`;
 export const AGENT_MCP_AUTHORIZATION_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/authorization`;
@@ -177,7 +187,14 @@ export const AGENT_SCHEDULE_PAUSE_TEMPLATE = `${AGENT_SCHEDULE_TEMPLATE}/pause`;
 export const AGENT_SCHEDULE_RESUME_TEMPLATE = `${AGENT_SCHEDULE_TEMPLATE}/resume`;
 export const RUNTIME_AGENT_MCP_SERVERS_PATH = `${RUNTIME_AGENT_PATH}/mcp-servers`;
 export const RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/available`;
+/** Register a definition and mount it in one step; `/available` and `:mcpServerId` are the other reads. */
+export const RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/definitions`;
 export const RUNTIME_AGENT_MCP_SERVER_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/:mcpServerId`;
+export const RUNTIME_AGENT_MCP_SERVER_CREDENTIALS_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVER_TEMPLATE}/credentials`;
+export const RUNTIME_AGENT_MCP_SERVER_OAUTH_START_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVER_TEMPLATE}/oauth/start`;
+export const RUNTIME_AGENT_MCP_SERVER_OAUTH_STATUS_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVER_TEMPLATE}/oauth/status`;
+/** Unmount, then drop the definition when no other Agent mounts it. */
+export const RUNTIME_AGENT_MCP_SERVER_DEFINITION_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVER_TEMPLATE}/definition`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -190,7 +207,6 @@ export const HTTP_PATHS = {
   sandboxRunnerWebSocket: SANDBOX_RUNNER_WEBSOCKET_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
-  internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   agentAvatar: AGENT_AVATAR_TEMPLATE,
@@ -199,6 +215,7 @@ export const HTTP_PATHS = {
   githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
+  mcpOAuthHandoff: MCP_OAUTH_HANDOFF_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
   mcpCatalogEndpoints: MCP_CATALOG_ENDPOINTS_PATH,
   publicSkills: PUBLIC_SKILLS_PATH,
@@ -225,6 +242,7 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
+  runtimeSessionStop: RUNTIME_SESSION_STOP_PATH,
   runtimeSkills: RUNTIME_SKILLS_PATH,
   runtimeSkillPresets: RUNTIME_SKILL_PRESETS_PATH,
   runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
@@ -242,6 +260,17 @@ export function taskCancelPath(sessionId: string): string {
 
 export function taskRepliesPath(sessionId: string): string {
   return `${taskByIdPath(sessionId)}/replies`;
+}
+
+export function taskDetailPath(sessionId: string): string {
+  return `${taskByIdPath(sessionId)}/detail`;
+}
+
+export function taskDetailSectionPath(
+  sessionId: string,
+  section: "turns" | "internal-sessions" | "collaboration-messages",
+): string {
+  return `${taskDetailPath(sessionId)}/${section}`;
 }
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {
@@ -343,8 +372,9 @@ export function agentRuntimeTestPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/runtime-test`;
 }
 
-export function agentUsagePath(agentId: string, windowDays: number): string {
+export function agentUsagePath(agentId: string, windowDays: number, timezone?: string): string {
   const query = new URLSearchParams({ days: String(windowDays) });
+  if (timezone !== undefined) query.set("timezone", timezone);
   return `${agentByIdPath(agentId)}/usage?${query.toString()}`;
 }
 
@@ -540,6 +570,22 @@ export function runtimeAgentMcpServerPath(mcpServerId: string): string {
   return `${RUNTIME_AGENT_MCP_SERVERS_PATH}/${encodeURIComponent(mcpServerId)}`;
 }
 
+export function runtimeAgentMcpServerCredentialsPath(mcpServerId: string): string {
+  return `${runtimeAgentMcpServerPath(mcpServerId)}/credentials`;
+}
+
+export function runtimeAgentMcpServerOAuthStartPath(mcpServerId: string): string {
+  return `${runtimeAgentMcpServerPath(mcpServerId)}/oauth/start`;
+}
+
+export function runtimeAgentMcpServerOAuthStatusPath(mcpServerId: string): string {
+  return `${runtimeAgentMcpServerPath(mcpServerId)}/oauth/status`;
+}
+
+export function runtimeAgentMcpServerDefinitionPath(mcpServerId: string): string {
+  return `${runtimeAgentMcpServerPath(mcpServerId)}/definition`;
+}
+
 export function runtimeSkillBundlePath(name: string): string {
   return `${RUNTIME_SKILLS_PATH}/${encodeURIComponent(name)}/bundle`;
 }
@@ -554,4 +600,20 @@ export function agentSkillPresetInstallPath(agentId: string, presetName: string)
 
 export function runtimeSkillPresetInstallPath(presetName: string): string {
   return `${RUNTIME_SKILL_PRESETS_PATH}/${encodeURIComponent(presetName)}/install`;
+}
+
+export const IM_FEEDBACK_PATH = `${API_V1_PREFIX}/im-feedback`;
+export const IM_FEEDBACK_TEMPLATE = `${IM_FEEDBACK_PATH}/:feedbackId`;
+export const IM_FEEDBACK_ACTIONS_TEMPLATE = `${IM_FEEDBACK_TEMPLATE}/actions`;
+export function imFeedbackPath(feedbackId: string): string {
+  return `${IM_FEEDBACK_PATH}/${encodeURIComponent(feedbackId)}`;
+}
+export function imFeedbackActionsPath(feedbackId: string): string {
+  return `${imFeedbackPath(feedbackId)}/actions`;
+}
+
+export const AGENT_IM_FEEDBACK_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-feedback`;
+export function agentImFeedbackPath(agentId: string, cursor?: string): string {
+  const path = `${agentByIdPath(agentId)}/im-feedback`;
+  return cursor ? `${path}?${new URLSearchParams({ cursor })}` : path;
 }

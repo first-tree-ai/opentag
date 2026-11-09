@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,7 @@ import {
   type ProviderCliCatalogEntry,
   ProviderCliManager,
   type ProviderCliManagerDeps,
+  providerCliLockFilePath,
   readProviderCliSelection,
   requireProviderCliCatalogEntry,
   resolveProviderCliAccountLayout,
@@ -590,6 +591,58 @@ describe("ProviderCliManager ensure", () => {
     } finally {
       await server.close();
     }
+  });
+
+  it("cancels a never-ending managed download, releasing the provider lock and removing staging", async () => {
+    const { catalog } = await makeManagedCatalog("feishu", "1.0.92");
+    const { accountHome, layout } = await makeManager({});
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    let stagingDuringDownload: string[] = [];
+    const manager = new ProviderCliManager({
+      accountHome,
+      env: { PATH: "" },
+      catalog,
+      // The download never completes on its own; only the signal ends it.
+      fetcher: ({ signal }) =>
+        new Promise<Uint8Array>((_resolve, reject) => {
+          void readdir(join(layout.staging, "feishu")).then((entries) => {
+            stagingDuringDownload = entries;
+            fetchStarted();
+          });
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    });
+    const controller = new AbortController();
+    const reason = new Error("daemon shutting down");
+    const ensure = manager.ensure("feishu", { signal: controller.signal });
+    await started;
+    expect(stagingDuringDownload).toHaveLength(1);
+    expect(existsSync(providerCliLockFilePath(layout, "feishu"))).toBe(true);
+
+    const abortedAt = Date.now();
+    controller.abort(reason);
+    await expect(ensure).rejects.toBe(reason);
+    expect(Date.now() - abortedAt).toBeLessThan(1_000);
+    expect(existsSync(providerCliLockFilePath(layout, "feishu"))).toBe(false);
+    await expect(readdir(layout.staging)).resolves.toEqual([]);
+    await expect(readdir(join(layout.versions, "feishu"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readProviderCliSelection(layout, "feishu")).resolves.toBeUndefined();
+  });
+
+  it("stops waiting for a busy provider lock when cancelled", async () => {
+    const { accountHome, layout } = await makeManager({});
+    await mkdir(layout.state, { recursive: true });
+    await writeFile(join(layout.state, "feishu.lock"), JSON.stringify({ pid: process.pid, token: "other-token" }));
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" } });
+    const controller = new AbortController();
+    const reason = new Error("daemon shutting down");
+    controller.abort(reason);
+    await expect(manager.ensure("feishu", { signal: controller.signal })).rejects.toBe(reason);
+    // The other holder's lock is untouched.
+    await expect(readFile(join(layout.state, "feishu.lock"), "utf8")).resolves.toContain("other-token");
   });
 
   it("fails with operation_in_progress when the provider lock is held", async () => {

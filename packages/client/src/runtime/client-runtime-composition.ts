@@ -9,6 +9,8 @@ import {
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type RuntimeExecutionSandbox,
   type RuntimeProviderReadinessObservation,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckRequestSchema,
 } from "@opentag/shared";
 import type {
   AgentRuntimeConfigurationOptionsRequest,
@@ -64,8 +66,11 @@ import {
   AgentTurnRunner,
 } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
+import { ChannelActivityStore } from "./channel-idle-compaction.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
+import { InterruptedWorkRecovery } from "./interrupted-work-recovery.js";
+import { TurnRetryStore } from "./interruption-retry.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
@@ -95,6 +100,7 @@ import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
+import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
@@ -161,7 +167,7 @@ interface SharedProviderRefreshContext {
   readonly publishChecking: boolean;
 }
 
-async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+async function waitForSharedRefresh<T>(refresh: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return refresh;
   signal.throwIfAborted();
   let rejectAborted!: (reason: unknown) => void;
@@ -318,6 +324,7 @@ export interface CreateClientRuntimeOptions {
   readonly piCommand?: string;
   readonly piHome?: string;
   readonly cliCommand?: string;
+  readonly cliInvocation?: readonly string[];
   /** Authoritative packaged CLI entry for the Slack deployment hook; absent embeddings use manual setup. */
   readonly slackAutoSetupCliEntry?: string;
   readonly environment?: NodeJS.ProcessEnv;
@@ -351,8 +358,10 @@ export class ComposedClientRuntime {
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
+  readonly interruptedWork: InterruptedWorkRecovery;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
+  readonly sessionMessageOutcomes?: SessionMessageOutcomeReporter;
   readonly reportOwner: TurnReportOwner;
   readonly durabilityMetrics: RuntimeDurabilityMetrics;
   readonly runner: AgentTurnRunner;
@@ -361,7 +370,14 @@ export class ComposedClientRuntime {
   readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
   readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
-  readonly #refreshCapability: () => Promise<void>;
+  readonly #refreshCapability: (fresh?: boolean) => Promise<void>;
+  readonly #connection?: RuntimeConnection;
+  readonly #selfCheckLogger: ClientLogger;
+  readonly #unsubscribeSelfCheck?: () => void;
+  #selfCheckId?: string;
+  #selfCheckSequence = 0;
+  #pendingFreshSelfCheck = false;
+  readonly #selfCheckReports = new Set<Promise<void>>();
   readonly #capabilityRefreshIntervalMs: number;
   readonly #capabilityAbort: AbortController;
   #capabilityTimer?: ReturnType<typeof setInterval>;
@@ -378,12 +394,16 @@ export class ComposedClientRuntime {
       credentialEnvironment: RuntimeCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
+      sessionMessageOutcomes?: SessionMessageOutcomeReporter;
       reportOwner: TurnReportOwner;
       durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
+      interruptedWork: InterruptedWorkRecovery;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
-      refreshCapability: () => Promise<void>;
+      refreshCapability: (fresh?: boolean) => Promise<void>;
+      connection?: RuntimeConnection;
+      selfCheckLogger?: ClientLogger;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
       providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
@@ -399,12 +419,22 @@ export class ComposedClientRuntime {
     this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
     this.sessionMessageInbox = components.sessionMessageInbox;
+    this.sessionMessageOutcomes = components.sessionMessageOutcomes;
     this.reportOwner = components.reportOwner;
     this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
+    this.interruptedWork = components.interruptedWork;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
     this.#refreshCapability = components.refreshCapability;
+    this.#connection = components.connection;
+    this.#selfCheckLogger = components.selfCheckLogger ?? createLogger("self-check");
+    this.#unsubscribeSelfCheck = components.connection?.subscribeBusinessFrames((frame) => {
+      const request = RuntimeSelfCheckRequestSchema.safeParse(frame);
+      if (!request.success || !this.#connection?.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat)) return;
+      this.#selfCheckId = request.data.requestId;
+      this.#refreshSelfCheck(true);
+    });
     this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
     this.#capabilityAbort = components.capabilityAbort;
   }
@@ -419,10 +449,10 @@ export class ComposedClientRuntime {
   }
 
   /**
-   * Authoritative protected-work snapshot for the automatic-upgrade gate. The Session module owns
-   * the bounded lifetime of every counted unit (Turn budgets, delivery deadlines, report retries
-   * with terminal outcomes), so a caller may wait on `total === 0` indefinitely without adding a
-   * force timeout of its own.
+   * Authoritative protected-work snapshot for the automatic-upgrade wait, used only while
+   * `canInterruptWorkForUpgrade` is false. The Session module owns the bounded lifetime of every
+   * counted unit (Turn budgets, delivery deadlines, report retries with terminal outcomes), so a
+   * caller may wait on `total === 0` without adding a force timeout of its own.
    */
   protectedWork(): ProtectedWorkSnapshot {
     const reconcilerWork = this.reconciler.protectedWorkSnapshot();
@@ -446,10 +476,22 @@ export class ComposedClientRuntime {
   }
 
   /**
-   * Close admission before the updater reads its zero-work snapshot. Already accepted Session
-   * messages may still reserve capacity and drain; every new direct or Session delivery receives a
-   * retryable `client_busy` result. The returned release function is used only when the attempt is
-   * abandoned or fails — a successful install stays quiesced until supervisor handoff.
+   * Whether an upgrade may interrupt running Sessions instead of waiting for them. Only a Server
+   * known not to support Session recovery holds it. A Client that is not registered upgrades too:
+   * a rejected Client can never finish its work without the upgrade, and waiting would end nothing.
+   */
+  canInterruptWorkForUpgrade(): boolean {
+    const connection = this.#connection;
+    if (connection?.state !== "registered") return true;
+    return connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
+  }
+
+  /**
+   * Close admission before an update hands off, or before the updater reads its zero-work snapshot.
+   * Already accepted Session messages may still reserve capacity and drain; every new direct or
+   * Session delivery receives a retryable `client_busy` result. The returned release function is
+   * used only when the attempt is abandoned or fails — a successful install stays quiesced until
+   * supervisor handoff.
    */
   quiesceForUpdate(): () => void {
     this.#admission.pause();
@@ -478,11 +520,16 @@ export class ComposedClientRuntime {
 
   async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
+    this.#unsubscribeSelfCheck?.();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
+    // Before the runner: a retry dispatched to a stopped runner would be recorded as begun and never run.
+    this.interruptedWork.stop();
     this.runner.stop();
     await Promise.all([
-      this.#capabilityRefreshInFlight?.catch(() => undefined),
+      this.#capabilityRefreshInFlight,
+      Promise.allSettled([...this.#selfCheckReports]),
+      this.interruptedWork.settled(),
       this.runner.settled(),
       this.sessionMessageInbox.settled(),
     ]);
@@ -490,6 +537,7 @@ export class ComposedClientRuntime {
       await this.runtimeManager.close();
     } finally {
       this.reportOwner.stop();
+      this.sessionMessageOutcomes?.stop();
       await this.reportOwner.settled();
       await this.credentialEnvironment.close();
       // Recovery may remove PATH sentinels, so it must run only after all Runs
@@ -499,20 +547,55 @@ export class ComposedClientRuntime {
     }
   }
 
+  #refreshSelfCheck(fresh = false): void {
+    if (this.#stopped) return;
+    if (this.#capabilityRefreshInFlight) {
+      this.#pendingFreshSelfCheck ||= fresh;
+      return;
+    }
+    const selfCheckId = this.#selfCheckId;
+    const sequence = ++this.#selfCheckSequence;
+    const operations = [
+      ["runtime", this.#refreshCapability(fresh)],
+      ["messaging_cli", this.#providerCliReconciler?.refreshPublishedImCliReadiness() ?? Promise.resolve()],
+    ] as const;
+    const actual = Promise.allSettled(operations.map(([, work]) => work)).then(() => undefined);
+    this.#capabilityRefreshInFlight = actual;
+    const report = Promise.all(
+      operations.map(async ([part, work]) => {
+        const deadline = AbortSignal.timeout(10_000);
+        try {
+          await waitForSharedRefresh(work, AbortSignal.any([deadline, this.#capabilityAbort.signal]));
+          return undefined;
+        } catch {
+          return { part, reason: deadline.aborted ? ("check_timed_out" as const) : ("check_failed" as const) };
+        }
+      }),
+    ).then(async (results) => {
+      if (this.#stopped || !selfCheckId) return;
+      const problems: RuntimeSelfCheckReport["problems"] = results.filter((result) => result !== undefined);
+      await this.#connection?.publishSelfCheck(selfCheckId, sequence, new Date().toISOString(), problems);
+    });
+    this.#selfCheckReports.add(report);
+    void report.then(
+      () => this.#selfCheckReports.delete(report),
+      () => this.#selfCheckReports.delete(report),
+    );
+    void report.catch(() =>
+      this.#selfCheckLogger.warn({ code: "SELF_CHECK_REPORT_FAILED" }, "Self-check report could not be sent"),
+    );
+    void actual.finally(() => {
+      this.#capabilityRefreshInFlight = undefined;
+      if (this.#pendingFreshSelfCheck) {
+        this.#pendingFreshSelfCheck = false;
+        this.#refreshSelfCheck(true);
+      }
+    });
+  }
+
   #startCapabilityMonitor(): void {
     if (this.#capabilityTimer || this.#stopped) return;
-    this.#capabilityTimer = setInterval(() => {
-      if (this.#capabilityRefreshInFlight || this.#stopped) return;
-      const refresh = this.#refreshCapability();
-      this.#capabilityRefreshInFlight = refresh;
-      void refresh
-        .catch(() => undefined)
-        .finally(() => {
-          void this.#providerCliReconciler?.refreshPublishedImCliReadiness().catch(() => undefined);
-          /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
-          if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
-        });
-    }, this.#capabilityRefreshIntervalMs);
+    this.#capabilityTimer = setInterval(() => this.#refreshSelfCheck(), this.#capabilityRefreshIntervalMs);
     this.#capabilityTimer.unref();
   }
 
@@ -620,6 +703,7 @@ export async function createClientRuntime(
   options: CreateClientRuntimeOptions,
 ): Promise<ComposedClientRuntime> {
   const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
+  connection.setSelfCheckEnabled(true);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
   const layout = await materializeProductionProviderLayout(options, sourceEnvironment);
@@ -665,7 +749,9 @@ export async function createClientRuntime(
       }
     }
   };
-  const refreshCapability = async (): Promise<void> => {
+  const refreshCapability = async (fresh = false): Promise<void> => {
+    if (fresh) await Promise.allSettled([...sharedProviderRefreshes.values()].map((owner) => owner.promise));
+    readinessSignal.throwIfAborted();
     const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId, undefined, false)),
     ]);
@@ -751,10 +837,12 @@ export async function createClientRuntime(
     environment: sourceEnvironment,
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
+    cliInvocation: options.cliInvocation,
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
     contextTreeBin: contextTree.binDirectory(),
-    contextTreeEnvironment: (sessionId) => {
+    contextTreeEnvironment: (sessionId, configuration) => {
+      credentialEnvironment.configureContextTree(sessionId, configuration.cwd, configuration.sources);
       const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
       if (hostSide) return hostSide;
       // Cloud: the session execution environment targets the Sandbox-side loopback, so only a
@@ -788,30 +876,45 @@ export async function createClientRuntime(
     localPolicy: runtimeManager,
   });
   const admission = new AdmissionController();
+  // Always Local: the Server durable-work API does not carry outcome reports.
+  const sessionMessageOutcomes = new SessionMessageOutcomeReporter({
+    connection,
+    logger: moduleLogger("session-message-outcome"),
+    persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
+  });
+  // Durable input of accepted IM Turns, for their one automatic retry (Local only).
+  const turnRetries = new TurnRetryStore(options.home);
+  const channelActivity = ChannelActivityStore.forHome(options.home);
+  let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    channelActivity,
     cliCommand: options.cliCommand ?? "opentag",
+    /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
+    joinableRuns: {
+      reserve: (message, runId) => runner.reserveSessionMessage(message, runId),
+      release: (message, runId) => runner.releaseSessionMessage(message, runId),
+      steered: (message, runId, receipt) => runner.sessionMessageSteered(message, runId, receipt),
+    },
+    /* v8 ignore stop */
     credentialEnvironment,
     imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
     metrics: durabilityMetrics,
+    onRunOutcome: sessionMessageOutcomes.report.bind(sessionMessageOutcomes),
     persistence: durabilityStore,
     reconciler,
     runtimeManager,
     sessionCollaborationVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.sessionCollaboration),
     turnPlan: providerCliTurnPlans,
   });
-  await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
-  const mvpReportRecovery = new MvpTurnReportRecovery({
-    bindingStore,
-    logger: moduleLogger("report-recovery"),
-    reconciler,
-    reportOwner,
-  });
-  let runner: AgentTurnRunner;
+  await Promise.all([reportOwner.ready(), sessionMessageOutcomes.ready(), sessionMessageInbox.ready()]);
+  const restartRetryAvailable = () => connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
+  let interruptedWork: InterruptedWorkRecovery | undefined;
   const preflight = createClientRuntimePreflight({
     providers,
     workspace,
   });
+  const custodyLogger = moduleLogger("turn-custody");
   const custody = new TurnCustodyOwner({
     admission,
     bindingStore,
@@ -819,13 +922,32 @@ export async function createClientRuntime(
     imSteerVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imSteer),
     reconciler,
     preflight,
+    retries: turnRetries,
+    /* v8 ignore next 7 -- logging only; the custody decision is covered by interruption-retry tests. */
+    onRetryInputUnavailable: (request, turnId) =>
+      custodyLogger.warn(
+        { code: "TURN_RETRY_INPUT_UNAVAILABLE", sessionId: request.sessionId, deliveryId: request.deliveryId, turnId },
+        "Turn accepted without retry input; an interruption is reported instead of retried",
+      ),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
-    start: (owner) => runner.start(owner),
+    start: (owner, startOptions) => runner.start(owner, startOptions),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
     steer: (request) => runner.steer(request),
   });
+  const mvpReportRecovery = new MvpTurnReportRecovery({
+    bindingStore,
+    custody,
+    logger: moduleLogger("report-recovery"),
+    reconciler,
+    reportOwner,
+    /* v8 ignore next -- late-bound adapter; InterruptedWorkRecovery is covered by interruption-retry tests. */
+    retryGate: { isPendingRetry: (sessionId, turnId) => interruptedWork?.isPendingRetry(sessionId, turnId) === true },
+    /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
+    onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
+  });
   runner = new AgentTurnRunner({
     bindingStore,
+    channelActivity,
     connection,
     custody,
     logger: moduleLogger("turn"),
@@ -835,7 +957,27 @@ export async function createClientRuntime(
     turnPlan: providerCliTurnPlans,
     outgoingReplies: createOutgoingReplyCollector(providerCliTurnPlans),
     agentErrorReporter: options.agentErrorReporter,
+    retries: turnRetries,
+    restartRetryAvailable,
+    sessionMessages: {
+      input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
+      settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
+      inConversation: sessionMessageInbox.inConversation.bind(sessionMessageInbox),
+    },
   });
+  interruptedWork = new InterruptedWorkRecovery({
+    bindingStore,
+    connection,
+    custody,
+    inbox: sessionMessageInbox,
+    logger: moduleLogger("interrupted-work-recovery"),
+    reconciler,
+    retries: turnRetries,
+  });
+  reconciler.setResumer(interruptedWork);
+  reconciler.setInternalWorkStopper(sessionMessageInbox);
+  await interruptedWork.start();
+  const recovery = interruptedWork;
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
@@ -870,19 +1012,25 @@ export async function createClientRuntime(
         if (temporary) await rm(temporary, { recursive: true, force: true });
       }
     },
-    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
+    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, recovery),
+    handleSessionRecoverResult: recovery.handleResult.bind(recovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
+    handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
   });
   return new ComposedClientRuntime(runtime, {
+    connection,
+    selfCheckLogger: moduleLogger("self-check"),
     admission,
     bindingStore,
     custody,
     credentialEnvironment,
     sessionMessageInbox,
+    sessionMessageOutcomes,
     reconciler,
     reportOwner,
     durabilityMetrics,
     runner,
+    interruptedWork: recovery,
     runtimeManager,
     workspace,
     refreshCapability,
@@ -1207,6 +1355,7 @@ export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRunti
     options.createCandidateFactory ??
     ((command: string, environment: NodeJS.ProcessEnv) =>
       new PiAgentRuntimeFactory({
+        nativeResources: true,
         process: {
           args: skillArgs,
           command,
@@ -1288,6 +1437,7 @@ export function createClientRuntimeHandlers(
   custody: Pick<TurnCustodyOwner, "accept" | "acceptSteer">,
   reportOwner: Pick<TurnReportOwner, "handleResult">,
   recovery: Pick<MvpTurnReportRecovery, "afterReconciled" | "cancel" | "prepare">,
+  prepared?: Pick<InterruptedWorkRecovery, "reconcileRejected" | "sessionPrepared">,
 ): ComposedClientRuntimeHandlers {
   return {
     handleDelivery: (request) => custody.accept(request),
@@ -1295,7 +1445,18 @@ export function createClientRuntimeHandlers(
     handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
     prepareReconcileResult: (request, result) => recovery.prepare(request, result),
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
-    onReconciled: (request, result) => recovery.afterReconciled(request, result),
+    onReconciled: (request, result) => {
+      const replay = recovery.afterReconciled(request, result);
+      // Session messages that waited for this Session's preparation (e.g. after a restart) may run, or,
+      // while a resumed Turn is `running`, be steered into it.
+      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
+        prepared?.sessionPrepared(request.sessionId);
+      }
+      if (request.desired === "ready" && result.status === "rejected") {
+        prepared?.reconcileRejected(request.sessionId, result.reason ?? "session_recovery_rejected");
+      }
+      return replay;
+    },
   };
 }
 

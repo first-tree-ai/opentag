@@ -75,6 +75,7 @@ type ReadinessReader = (
   provider: ImCliProvider,
   integrationId: string,
   credentialGeneration: number,
+  refresh: boolean,
 ) => Promise<CredentialReadiness>;
 
 type ArtifactReadiness = {
@@ -87,6 +88,7 @@ type ArtifactReadinessReader = (
   provider: ImCliProvider,
   integrationId: string,
   credentialGeneration: number,
+  refresh: boolean,
 ) => Promise<ImCliReadinessStatus | ArtifactReadiness>;
 
 type BindingRow = typeof imBindings.$inferSelect;
@@ -352,6 +354,7 @@ export class ImBindingProviderCli {
     agentRuntimeReadiness: Promise<ProviderReadinessStatus>,
     now: Date,
     computerKind: "local" | "cloud" = "local",
+    refresh = true,
   ): Promise<ImBindingReadiness> {
     if (computerKind === "cloud") {
       const needsReauthorization = reauthorizationRequired(input);
@@ -376,8 +379,8 @@ export class ImBindingProviderCli {
     }
     const [runtime, artifactValue, credential] = await Promise.all([
       agentRuntimeReadiness,
-      this.#artifactReadiness(input.agentId, input.provider, input.id, input.credentialGeneration),
-      this.#credentialReadiness(input.agentId, input.provider, input.id, input.credentialGeneration),
+      this.#artifactReadiness(input.agentId, input.provider, input.id, input.credentialGeneration, refresh),
+      this.#credentialReadiness(input.agentId, input.provider, input.id, input.credentialGeneration, refresh),
     ]);
     const artifact = normalizeArtifactReadiness(artifactValue);
     const classified =

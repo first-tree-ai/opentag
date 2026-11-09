@@ -208,7 +208,7 @@ describe("Agent availability model and presentation", () => {
         ...base,
         availability: { ...base.availability, state: "suspended", reason: "agent_suspended" },
       }),
-    ).toEqual({ label: "Suspended", tone: "neutral" });
+    ).toEqual({ label: "Paused", tone: "neutral" });
     expect(
       agentStatusPresentation({
         ...base,
@@ -312,7 +312,9 @@ describe("Agent availability model and presentation", () => {
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");
-    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions required");
+    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe(
+      "Messaging permissions need updating",
+    );
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
@@ -383,10 +385,45 @@ describe("Agent availability model and presentation", () => {
       }),
     ).toBeUndefined();
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
-      detail: undefined,
       label: "Ready",
       tone: "success",
     });
+    for (const [runningTaskCount, detail] of [
+      [1, "1 task running"],
+      [3, "3 tasks running"],
+    ] as const) {
+      expect(
+        agentCardStatus({
+          ...base,
+          activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount },
+          evidenceConfirmed: true,
+        } as never),
+      ).toEqual({ detail, label: "Ready", tone: "success" });
+    }
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      } as never),
+    ).toEqual({ detail: "2 tasks running", label: "Computer offline", tone: "warning" });
+    // Queued Tasks show whatever the status, so work piling up behind an offline Computer is visible.
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "idle", queuedTaskCount: 2 },
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      } as never),
+    ).toEqual({ detail: "2 tasks waiting", label: "Computer offline", tone: "warning" });
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 1, queuedTaskCount: 1 },
+        evidenceConfirmed: true,
+      } as never),
+    ).toEqual({ detail: "1 task running · 1 task waiting", label: "Ready", tone: "success" });
     expect(
       agentCardStatus({
         ...base,
@@ -503,6 +540,10 @@ describe("Agent availability model and presentation", () => {
     ).toBe("No messaging app connected");
     expect(agentSettingsSummary(detail(base.availability), config, "identity")).toBe(agent.displayName);
     expect(agentSettingsSummary(detail(base.availability), config, "computer")).toContain("macOS");
-    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active · Accepting requests");
+    // The Cloud is named as such, without its machine name or platform.
+    expect(agentSettingsSummary({ ...detail(base.availability), computerKind: "cloud" }, config, "computer")).toBe(
+      "Cloud · Online",
+    );
+    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Running · Receiving messages");
   });
 });

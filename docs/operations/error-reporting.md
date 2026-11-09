@@ -36,6 +36,7 @@ server. Unknown fields are rejected, so a client cannot attach anything the sche
 | `platform` | CLI | Operating system, architecture, and Node.js version, as `doctor` prints them |
 | `occurredAt` | both | ISO 8601 timestamp |
 | `reportId` | both | One identifier per report, tying the tracker event to the server log line |
+| `requestId`, `traceId` | optional | Client-supplied request and trace correlation identifiers; untrusted attribution, never authorization |
 | `userId` | both | The Account the client believed it was signed in as |
 | `computerId` | CLI | The Account Computer this openTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, only when that credential names the server the report goes to |
 | `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name, only when that file names the server the report goes to; otherwise the machine credential's copy, under the same condition |
@@ -154,12 +155,18 @@ back to the package version.
 **CLI and daemon.** The CLI entry point (`apps/cli/src/cli/index.ts`) reports a command failure after presenting
 it, and only when the failure describes the program rather than the caller: categories `internal`, `dependency`,
 and `protocol`. Validation, authentication, authorization, not-found, configuration, and cancellation outcomes
-are answers, not defects, and are not reported. The same entry point installs `process.on("uncaughtException")`
-and `process.on("unhandledRejection")` handlers (`installProcessErrorReporting` in `@opentag/client`) that log
-through the client logger, wait at most two seconds for the report, write the failure to stderr and wait for
-that write to drain (at most one second, so a piped stderr keeps the output), and exit with code 1 — the code
-Node would have used. Because the daemon service runs through the CLI (`daemon service-run`), it is
-covered by the same handlers, and an unexpected terminal daemon failure is reported before the process exits.
+are answers, not defects, and are not reported. A broken output pipe (`EPIPE`) on the CLI's own `stdout` or
+`stderr` when a downstream reader such as `head` or `grep -q` closes early is likewise the caller ending the
+stream rather than a failure: `process.stdout` and `process.stderr` ignore `EPIPE` stream errors, and both the
+command presentation path and the process-level handlers exit cleanly with code 0 without writing to stderr or
+reporting when `EPIPE` originates at the CLI `stdout`/`stderr` boundary (`EPIPE` from child process `stdin` or
+other operation/transport pipes remains a reportable failure). The same entry point installs
+`process.on("uncaughtException")` and `process.on("unhandledRejection")` handlers (`installProcessErrorReporting`
+in `@opentag/client`) that log through the client logger, wait at most two seconds for the report, write the
+failure to stderr and wait for that write to drain (at most one second, so a piped stderr keeps the output), and
+exit with code 1 — the code Node would have used. Because the daemon service runs through the CLI
+(`daemon service-run`), it is covered by the same handlers, and an unexpected terminal daemon failure is reported
+before the process exits.
 
 **Agent turns.** A turn that fails inside the daemon never reaches a terminal, so the tracker is the only place
 it can be seen. The turn runner hands every turn that did not complete to the reporter installed by

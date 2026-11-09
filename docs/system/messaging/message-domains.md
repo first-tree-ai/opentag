@@ -43,6 +43,32 @@ decides whether to retry an unknown or unreachable result using the same message
 identity for best-effort deduplication. Sending from or to an ended Session is
 rejected; delivery never revives the Session.
 
+## Pending IM queue
+
+Each Session keeps the newest 99 eligible, undispatched pending inputs across direct and ambient attention.
+Capacity counts original message deliveries, not Runtime frames. Claimed inputs, persisted dispatches, unresolved steer correlations and accepted
+custody are excluded from capacity eviction on both Local and Cloud Computers. An unknown placement is retained
+conservatively. Overflow marks older eligible deliveries `expired / capacity`; it never deletes their immutable
+source messages. Rows past their ingress deadline do not count toward warning or capacity thresholds;
+the janitor retains authority for their TTL outcome. The final update rechecks the deadline, claim and
+dispatch state after any concurrent row-lock wait.
+Existing direct/continuity and ambient ingress deadlines remain unchanged.
+
+An immediately repeated created message from the same author, with identical full structured content, attachments,
+attention and reply scope, is suppressed only while the preceding representative remains pending, unclaimed and
+undispatched within its ingress deadline. Intervening distinct input, an edit, a claim or a dispatch prevents suppression. Suppressed input keeps
+its immutable message and an `expired / duplicate_pending` delivery, and is excluded from Agent history and failure
+markers. The predecessor is the immediately preceding provider tuple (`occurred_at`, revision key, source ID),
+even when ingress arrives out of order. Late-root thread backfills process the latest source revisions in
+that same order and apply the same suppression rule. Ingress uses the same Agent custody advisory fence
+as delivery claims before making this decision.
+
+Eligible direct human inputs receive durable Server-owned task feedback: a working reaction after custody acceptance,
+terminal cleanup, and a sanitized failure message on failure. Queued input alone creates no backlog reaction or progress
+message. See [IM task feedback and safe recovery](im-feedback.md) for eligibility, native provider differences,
+Account confirmation, explicit retry identity, unknown-send reconciliation, and retention. A reaction alone is not a
+delivery receipt.
+
 ## Durable inbound receipt work
 
 Slack persists recoverable work on its existing receipt before acknowledging an
@@ -81,6 +107,12 @@ Inbox call uses the existing message and Session uniqueness rules, including whe
 Inbox committed but receipt settlement was interrupted. This recovery never
 replays an accepted Turn or an outbound operation.
 
+Slack admits at most eight detached live Inbox operations per Server, in addition to the one
+serial recovery sweep. This stays below the shared pool's 20-connection default. Persisted overflow
+is acknowledged without starting another Inbox operation; it waits for the existing 60-second
+processing lease and ordinary recovery. Closing also defers newly persisted input. There is no
+additional in-memory queue, and overflow keeps its original identity, receive time and deadline.
+
 Recovery eligibility ends seven days after the original receive time. Inbox uses
 that original time for message receive timestamps and direct/ambient deadlines,
 so a retry does not restart a 24-hour or seven-day delivery window. Completed work
@@ -101,7 +133,8 @@ that a previous Server already lost.
 Agent runtimes send human-visible messages by calling the official Feishu or
 Slack CLI directly (see [Direct provider CLI messaging](direct-provider-cli.md)).
 Provider-native text, cards, Blocks, files, threads, and reactions remain
-provider concerns; openTag exposes no hosted send, reply, or reaction API.
+provider concerns; openTag exposes no general hosted send, reply, or reaction API. The Server-owned
+[task feedback surface](im-feedback.md) is a bounded exception for reactions and terminal error cards.
 
 Provider CLI calls pass through the Server's provider proxy. When a registered
 send or reply operation succeeds there, openTag captures the platform-confirmed

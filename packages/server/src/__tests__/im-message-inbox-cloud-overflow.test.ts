@@ -9,8 +9,8 @@ import { ImMessageInbox } from "../services/im/index.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
-const fixedNow = new Date("2026-08-19T00:00:00.000Z");
-const DIRECT_CAPACITY = 100;
+const fixedNow = new Date();
+const DIRECT_CAPACITY = 99;
 let unit: UnitDatabase;
 
 beforeAll(async () => {
@@ -308,7 +308,7 @@ async function seedPendingDeliveries(
         sessionId,
         attention: "direct" as const,
         placementGeneration: 1,
-        expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+        expiresAt: new Date(fixedNow.getTime() + 7 * 86_400_000),
       })),
     )
     .returning({ id: imMessageDeliveries.id });
@@ -353,7 +353,7 @@ async function seedProtectedDeliveries(scope: InboxScope, sessionId: string) {
       sessionId,
       attention: "direct",
       placementGeneration: 1,
-      expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      expiresAt: new Date(fixedNow.getTime() + 7 * 86_400_000),
       dispatchRequestId,
       dispatchInputHash: "protected-dispatch-hash",
       dispatchPayload: { requestId: dispatchRequestId } as never,
@@ -366,7 +366,7 @@ async function seedProtectedDeliveries(scope: InboxScope, sessionId: string) {
       sessionId,
       attention: "direct",
       placementGeneration: 1,
-      expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      expiresAt: new Date(fixedNow.getTime() + 7 * 86_400_000),
       state: "accepted",
       inputHash: "protected-input-hash",
       turnId: "protected-turn",

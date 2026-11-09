@@ -1,23 +1,21 @@
 import { chmod, mkdir, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import type { ContextTreeConnection } from "@opentag/shared";
 import {
-  type ContextTreeExecFile,
   type ContextTreePackage,
   hasManagedGitHubTransport,
   resolveContextTreePackage,
-  runContextTreeCli,
 } from "../runtime/context-tree.js";
+import { CONTEXT_TREE_COMMAND_CLIENT_SOURCE } from "../runtime/context-tree-commands.js";
 import {
-  type ContextTreeResult as CloudContextTreeResult,
   type ContextTreeStatus as CloudContextTreeStatus,
   configureContextTrees,
-  syncedTree,
+  preparedConnections,
 } from "../runtime/context-tree-connections.js";
 
 export const CLOUD_CONTEXT_TREE_SUBDIRECTORY = ".opentag/context-tree";
+/** Upper bound on local preparation; preparation never contacts a tree remote. */
 export const CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS = 30_000;
-const RECOVERY_BUDGET_MS = 5_000;
 
 export type { ContextTreeStatus as CloudContextTreeStatus } from "../runtime/context-tree-connections.js";
 export interface CloudContextTreePreparation {
@@ -36,13 +34,14 @@ export interface CloudContextTreePreparationInput {
 export type PrepareCloudContextTree = (input: CloudContextTreePreparationInput) => Promise<CloudContextTreePreparation>;
 export interface CloudContextTreeInternals {
   readonly contextTreePackage?: ContextTreePackage | null;
-  readonly execFile?: ContextTreeExecFile;
   readonly nodePath?: string;
-  readonly preparationBudgetMs?: number;
-  readonly recoveryBudgetMs?: number;
 }
 
-/** Persist selection first; refresh once. An interrupted refresh cannot lose the connection. */
+/**
+ * Persist the selection and write the `context-tree` shim. Preparation never syncs: the Agent
+ * syncs through the command gateway at task boundaries, so the managed prompt carries no
+ * per-revision snapshot path or commit.
+ */
 export const prepareCloudContextTree = async (
   input: CloudContextTreePreparationInput,
   internals: CloudContextTreeInternals = {},
@@ -67,15 +66,7 @@ async function prepare(
   if (!pack) return failedPreparation(input.contextTrees, "PACKAGE_MISSING");
   const home = join(workspace, CLOUD_CONTEXT_TREE_SUBDIRECTORY, "home");
   await mkdir(home, { recursive: true, mode: 0o700 });
-  const run = syncRunner(input, internals, pack, workspace, home, project);
-  const refreshed = await run(false);
-  const needsRecovery = input.contextTrees.some((source) => !syncedTree(refreshed.payload, source)?.ok);
-  const cached = needsRecovery && !input.signal?.aborted ? await run(true) : undefined;
-  const connections = await Promise.all(
-    input.contextTrees.map((source) => resolveResult(source, refreshed, cached, project, home)),
-  );
-  const status: CloudContextTreeStatus = { status: "configured", connections };
-  if (!connections.some((entry) => entry.status === "ready" || entry.status === "stale")) return { status };
+  input.signal?.throwIfAborted();
   const binDirectory = await writeContextTreeShim({
     home,
     cliPath: pack.cliPath,
@@ -83,55 +74,31 @@ async function prepare(
     scratch: input.scratch,
     agentSlug: input.agentSlug ?? "opentag-cloud-agent",
   });
-  return { status, binDirectory };
+  return { status: preparedConnections(input.contextTrees, project), binDirectory };
 }
-function syncRunner(
-  input: CloudContextTreePreparationInput,
-  internals: CloudContextTreeInternals,
-  pack: ContextTreePackage,
-  workspace: string,
-  home: string,
-  project: string,
-) {
-  return (offline: boolean) =>
-    runContextTreeCli(pack, ["sync", "--project-path", project, ...(offline ? ["--offline"] : [])], {
-      cwd: workspace,
-      network: !offline,
-      env: { ...input.environment, HOME: home, LANG: "C.UTF-8", PATH: input.path },
-      ...(internals.execFile ? { execFile: internals.execFile } : {}),
-      ...(internals.nodePath ? { nodePath: internals.nodePath } : {}),
-      signal: AbortSignal.any([
-        ...(input.signal ? [input.signal] : []),
-        AbortSignal.timeout(
-          offline
-            ? (internals.recoveryBudgetMs ?? RECOVERY_BUDGET_MS)
-            : (internals.preparationBudgetMs ?? CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS - RECOVERY_BUDGET_MS),
-        ),
-      ]),
-    });
+
+/**
+ * The Agent reads Context only through the packaged `context-tree-read` Skill and syncs only
+ * through the command gateway, so a source without either is reported unavailable rather than
+ * advertised with a read rule the Agent cannot follow.
+ */
+export function withContextTreeReadPath(
+  status: CloudContextTreeStatus,
+  readPath: { readonly skills: boolean; readonly gateway: boolean },
+): CloudContextTreeStatus {
+  const reason = !readPath.gateway ? "GATEWAY_UNAVAILABLE" : !readPath.skills ? "SKILLS_UNAVAILABLE" : undefined;
+  if (!reason || status.status !== "configured") return status;
+  return {
+    status: "configured",
+    connections: status.connections.map((connection) =>
+      connection.status === "available" ? { ...sourceOf(connection), status: "unavailable", reason } : connection,
+    ),
+  };
 }
-type CliResult = Awaited<ReturnType<typeof runContextTreeCli>>;
-async function resolveResult(
-  source: ContextTreeConnection,
-  refreshed: CliResult,
-  cached: CliResult | undefined,
-  project: string,
-  home: string,
-): Promise<CloudContextTreeResult> {
-  const fresh = syncedTree(refreshed.payload, source);
-  const fallback = cached && syncedTree(cached.payload, source);
-  const entry = fresh?.ok ? fresh : fallback?.ok ? fallback : undefined;
-  const reason = fresh && !fresh.ok ? fresh.error.code : (refreshed.failureCode ?? "SYNC_FAILED");
-  if (!entry || ["DIRTY_TREE", "INVALID_TREE"].includes(reason)) {
-    return { ...source, status: "unavailable", reason };
-  }
-  const treePath = await realpath(entry.treeRoot);
-  if (entry.connection.projectRoot !== project || !isWithin(home, treePath)) {
-    return { ...source, status: "unavailable", reason: "TREE_OUTSIDE_WORKSPACE" };
-  }
-  return fresh?.ok
-    ? { ...source, status: "ready", treePath, projectPath: project, branch: source.ref, sha: entry.repository?.sha }
-    : { ...source, status: "stale", treePath, projectPath: project, reason };
+
+function sourceOf(connection: ContextTreeConnection & { readonly projectPath?: string }): ContextTreeConnection {
+  const { projectPath: _projectPath, ...source } = connection;
+  return source;
 }
 
 function failedPreparation(sources: readonly ContextTreeConnection[], reason: string): CloudContextTreePreparation {
@@ -153,6 +120,7 @@ async function writeContextTreeShim(input: {
   await mkdir(bin, { mode: 0o700, recursive: true });
   const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
   const shim = join(bin, "context-tree");
+  await writeFile(join(bin, "context-tree-client.mjs"), CONTEXT_TREE_COMMAND_CLIENT_SOURCE, { mode: 0o600 });
   await writeFile(
     shim,
     `${[
@@ -164,15 +132,10 @@ async function writeContextTreeShim(input: {
       `GIT_COMMITTER_NAME=${quote(input.agentSlug)}`,
       `GIT_COMMITTER_EMAIL=${quote(`${input.agentSlug}@localhost`)}`,
       "export HOME GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL",
-      `exec ${quote(input.nodePath)} ${quote(input.cliPath)} "$@"`,
+      `exec ${quote(input.nodePath)} ${quote(join(bin, "context-tree-client.mjs"))} ${quote(input.cliPath)} "$@"`,
     ].join("\n")}\n`,
     { mode: 0o700 },
   );
   await chmod(shim, 0o700);
   return bin;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate));
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }

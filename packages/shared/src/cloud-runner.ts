@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerReadinessSchema } from "./cloud-runner-status.js";
 import {
   RUNNER_WORKSPACE_VERSION,
   RunnerWorkspaceSealFrameSchema,
@@ -10,13 +11,23 @@ import {
   DirectImMessageDeliveryRequestSchema,
   ProviderFailureReasonSchema,
   RuntimeImOutboxContextSchema,
+  RuntimeImSteerRequestSchema,
+  RuntimeImSteerResultSchema,
   RuntimeModelSchema,
   RuntimeOpaqueIdSchema,
   SessionMessageDeliveryRequestSchema,
   SessionMessageDeliveryRequestV3Schema,
+  TurnFailureReasonSchema,
   TurnReportRequestSchema,
 } from "./runtime-domain.js";
-import { SandboxLifecycleSchema } from "./sandbox.js";
+
+export {
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type RunnerReadiness,
+  RunnerReadinessSchema,
+} from "./cloud-runner-status.js";
+
 import { SessionCliProofGrantSchema } from "./session-cli.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 
@@ -67,10 +78,19 @@ export const RUNNER_SESSION_COLLABORATION_VERSION = 1 as const;
  * handshake instead of executing without collaboration authority.
  */
 export const RUNNER_SESSION_COLLABORATION_V2 = 2 as const;
+/**
+ * E8 version 3: everything in version 2, plus the Runner's `session:message:settled` frame may
+ * carry the terminal failure `reason` (for example `turn_timeout`). The Runner includes the field
+ * only on a connection whose welcome echoed version 3, so an older Server's strict settled schema
+ * never sees it; the Server uses it to tell an internal Session's creator why its Run ended.
+ */
+export const RUNNER_SESSION_COLLABORATION_V3 = 3 as const;
 export const RunnerSessionCollaborationVersionSchema = z.union([
   z.literal(RUNNER_SESSION_COLLABORATION_VERSION),
   z.literal(RUNNER_SESSION_COLLABORATION_V2),
+  z.literal(RUNNER_SESSION_COLLABORATION_V3),
 ]);
+export type RunnerSessionCollaborationVersion = z.infer<typeof RunnerSessionCollaborationVersionSchema>;
 
 /** The Cloud Session-collaboration frame budget; mirrors the delivery run frame bound. */
 const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
@@ -275,49 +295,6 @@ export const AccountSandboxRunnerStopRequestSchema = z.union([
 ]);
 export type AccountSandboxRunnerStopRequest = z.infer<typeof AccountSandboxRunnerStopRequestSchema>;
 
-/**
- * Native-sandbox/tool readiness as the Runner reported it after authentication. `runnerVersion`
- * is the pinned Runner build the image reports from its identity document; the Server requires
- * the exact configured version before an environment may become ready.
- */
-export const RunnerReadinessSchema = z
-  .object({
-    sandboxName: z.string().min(1).max(128),
-    rootfs: z.string().min(1).max(512),
-    nodeVersion: z.string().min(1).max(64),
-    piVersion: z.string().min(1).max(64),
-    runnerVersion: z.string().min(1).max(64),
-    reportedAt: z.string().datetime(),
-  })
-  .strict();
-
-export type RunnerReadiness = z.infer<typeof RunnerReadinessSchema>;
-
-/**
- * Runner state as an Account may read it. `runnerReady` is true only after an authenticated
- * Runner reported native sandbox/tool readiness for the CURRENT environment generation — never
- * from cloud provider readiness alone.
- */
-export const AccountSandboxRunnerStatusResponseSchema = z
-  .object({
-    sandboxId: UuidSchema,
-    sessionId: UuidSchema,
-    lifecycle: SandboxLifecycleSchema,
-    environmentGeneration: z.number().int().nonnegative(),
-    currentResourceName: ResourceNameSchema.nullable(),
-    currentResourceUid: z.string().min(1).max(128).nullable(),
-    currentOperationName: ResourceNameSchema.nullable(),
-    runnerConnected: z.boolean(),
-    runnerReady: z.boolean(),
-    runnerReadiness: RunnerReadinessSchema.nullable(),
-    lastErrorCode: z.string().min(1).max(128).nullable(),
-    lastErrorAt: z.string().datetime().nullable(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-
-export type AccountSandboxRunnerStatusResponse = z.infer<typeof AccountSandboxRunnerStatusResponseSchema>;
-
 export const AccountSandboxRunnerAcceptanceResponseSchema = z
   .object({
     requestId: z.string().min(1).max(256),
@@ -353,8 +330,10 @@ export const RunnerAuthFrameSchema = z
      * pinned E4 Runner image (handoff contract). Legacy E3 Runners never set it.
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    imInputVersion: z.literal(1).optional(),
     turnActivityVersion: z.literal(1).optional(),
     githubUserTaskVersion: z.literal(1).optional(),
+    contextTreeExecutionVersion: z.literal(1).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /**
      * E8: opt in to Cloud Session collaboration at a specific version. Only sent by a Runner
@@ -471,6 +450,36 @@ const RunnerCloudWebToolsSchema = z
     socketPath: z.string().startsWith("/").max(200),
   })
   .strict();
+
+export const RunnerCloudSteerFrameSchema = z
+  .object({
+    type: z.literal("delivery:steer"),
+    requestId: z.string().uuid(),
+    steer: RuntimeImSteerRequestSchema,
+  })
+  .strict()
+  .refine((frame) => frame.requestId === frame.steer.requestId, "Steer request identity mismatch");
+export const RunnerCloudSteerResultFrameSchema = z
+  .object({
+    type: z.literal("delivery:steer:result"),
+    requestId: z.string().uuid(),
+    inputHash: z.string().regex(/^[a-f0-9]{64}$/),
+    result: RuntimeImSteerResultSchema,
+  })
+  .strict()
+  .refine((frame) => frame.requestId === frame.result.requestId, "Steer result identity mismatch");
+export const RunnerCloudSteerAckFrameSchema = z
+  .object({
+    type: z.literal("delivery:steer:ack"),
+    requestId: z.string().uuid(),
+    deliveryId: z.string().uuid(),
+    inputHash: z.string().regex(/^[a-f0-9]{64}$/),
+    status: z.enum(["recorded", "conflict"]),
+  })
+  .strict();
+export type RunnerCloudSteerFrame = z.infer<typeof RunnerCloudSteerFrameSchema>;
+export type RunnerCloudSteerResultFrame = z.infer<typeof RunnerCloudSteerResultFrameSchema>;
+export type RunnerCloudSteerAckFrame = z.infer<typeof RunnerCloudSteerAckFrameSchema>;
 
 export const RunnerCloudDeliveryRunFrameSchema = z
   .object({
@@ -737,6 +746,12 @@ export const RunnerCloudSessionMessageSettledFrameSchema = z
     messageId: z.string().uuid(),
     turnId: RuntimeOpaqueIdSchema,
     outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+    /**
+     * Collaboration version 3 only: the terminal failure reason of a non-completed Run. Sent only
+     * after a version-3 welcome; a completed settlement never carries one, and the Server ignores
+     * it on a completed outcome.
+     */
+    reason: TurnFailureReasonSchema.optional(),
   })
   .strict();
 export type RunnerCloudSessionMessageSettledFrame = z.infer<typeof RunnerCloudSessionMessageSettledFrameSchema>;
@@ -800,12 +815,15 @@ export const RunnerCloudTurnWorkerRequestSchema = z
     webTools: RunnerCloudWebToolsSchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
+    steering: z.object({ turnId: RuntimeOpaqueIdSchema, token: z.string().uuid() }).strict().optional(),
     /**
      * Optional allocation-stable in-sandbox directory for Pi conversation continuity across the
      * turns of one Agent Session. When absent the worker uses its own default location inside the
      * disposable Sandbox. The trusted Runner only ever supplies an in-sandbox path.
      */
     piSessionDirectory: z.string().min(1).max(512).optional(),
+    /** Nonsecret outbox context of the execution's IM grant; its `sessionKind` is the Session's own. */
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
     /**
      * E8 Session collaboration material for the Session's own CLI: the current Session-CLI proof
      * plus the Server URL the in-sandbox CLI must call. Present exactly when the Server minted a
@@ -915,6 +933,7 @@ export function serializeRunnerCloudSessionWorkerStdin(input: Omit<RunnerCloudSe
 }
 
 export const RunnerClientFrameSchema = z.discriminatedUnion("type", [
+  RunnerCloudSteerResultFrameSchema,
   RunnerAuthFrameSchema,
   RunnerHeartbeatFrameSchema,
   RunnerReadyFrameSchema,
@@ -944,8 +963,10 @@ export const RunnerWelcomeFrameSchema = z
      * Cloud journal reconciliation or Cloud frame handlers without it.
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    imInputVersion: z.literal(1).optional(),
     turnActivityVersion: z.literal(1).optional(),
     githubUserTaskVersion: z.literal(1).optional(),
+    contextTreeExecutionVersion: z.literal(1).optional(),
     /**
      * E4: verified Cloud UID of the CURRENT allocation, echoed by the Runner inside credential
      * execution-open sandbox facts. Required when `cloudDeliveryVersion` is present; a
@@ -1017,6 +1038,8 @@ export const RunnerServerCredentialFrameSchema = z
   .strict();
 
 export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
+  RunnerCloudSteerFrameSchema,
+  RunnerCloudSteerAckFrameSchema,
   RunnerWelcomeFrameSchema,
   TurnActivityResultSchema,
   RunnerAuthResultFrameSchema,

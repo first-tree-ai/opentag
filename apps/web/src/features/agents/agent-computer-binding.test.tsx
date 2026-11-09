@@ -125,7 +125,7 @@ describe("An Agent with no Computer", () => {
     await renderInRouter(<AgentComputerChoice agentId={UNBOUND_AGENT_ID} onBound={onAgentChanged} />);
 
     expect(await screen.findByRole("heading", { name: "Choose a computer for this Agent" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connect a new computer" })).toBeNull();
     expect(document.querySelector('[data-ui="computer-connect"]')).toBeNull();
     // Nothing is decided for the reader while the question is open.
     expect(rebind).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ChannelNameSchema, type EffectiveRuntimeSnapshot, getChannelConfig } from "@opentag/shared";
 
 // Native parsers check every segment of compound commands against these prefixes.
@@ -86,18 +86,39 @@ export function allowedCommandsForPolicy(snapshot: EffectiveRuntimeSnapshot): re
   return snapshot.execution.approvalPolicy === "on-request" ? (snapshot.execution.allowCommands ?? []) : [];
 }
 
-export function claudePermissionRules(commands: readonly string[]) {
+function managedCliPrefixes(invocation: readonly string[] | undefined): readonly (readonly string[])[] {
+  if (invocation === undefined) return [];
+  if (
+    !invocation.length ||
+    !isAbsolute(invocation[0] ?? "") ||
+    invocation.some((token) => !token || /[\r\n\0*]/u.test(token))
+  ) {
+    throw new Error("The managed CLI invocation must contain an absolute executable and literal nonempty tokens");
+  }
+  return [invocation];
+}
+
+export function claudePermissionRules(commands: readonly string[], managedCli?: readonly string[]) {
+  const managed = managedCliPrefixes(managedCli).map((tokens) =>
+    tokens.map((token) => `'${token.replaceAll("'", `'"'"'`)}'`).join(" "),
+  );
   return {
-    allow: [...MESSAGING_COMMANDS.map((command) => command.join(" ")), ...commands].map(
+    allow: [...MESSAGING_COMMANDS.map((command) => command.join(" ")), ...commands, ...managed].map(
       (command) => `Bash(${command} *)`,
     ),
   };
 }
 
-export async function prepareCodexPermissionRules(cwd: string, commands: readonly string[]): Promise<void> {
+export async function prepareCodexPermissionRules(
+  cwd: string,
+  commands: readonly string[] | undefined,
+  managedCli?: readonly string[],
+): Promise<void> {
+  if (commands === undefined && managedCli === undefined) return;
   const rules = [
     ...MESSAGING_COMMANDS.map((pattern) => ({ pattern, decision: "allow" })),
-    ...commands.map((command) => ({ pattern: command.split(" "), decision: "allow" })),
+    ...(commands ?? []).map((command) => ({ pattern: command.split(" "), decision: "allow" })),
+    ...managedCliPrefixes(managedCli).map((pattern) => ({ pattern, decision: "allow" })),
   ];
   const directory = join(cwd, ".codex");
   for (const path of [directory, join(directory, "rules")]) {

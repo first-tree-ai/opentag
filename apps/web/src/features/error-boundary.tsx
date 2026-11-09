@@ -1,6 +1,10 @@
 import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
-import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } from "../observability/diagnostics.js";
+import {
+  createDiagnosticEnvelope,
+  isStaleAssetPreloadFallout,
+  normalizeError as normalizeDiagnosticError,
+} from "../observability/diagnostics.js";
 import { forwardErrorReport } from "../observability/error-reporting.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
@@ -132,6 +136,7 @@ export function normalizeError(value: unknown): BoundaryError {
 
 /** Logs diagnostics without copying credential-shaped values into the browser console, and relays the failure. */
 export function reportBoundaryError(boundary: BoundaryName, error: unknown, errorInfo?: BoundaryErrorInfo) {
+  if (isStaleAssetPreloadFallout(error)) return;
   const normalized = logBoundaryError(boundary, error, errorInfo);
   forwardErrorReport({
     code: normalized.code,

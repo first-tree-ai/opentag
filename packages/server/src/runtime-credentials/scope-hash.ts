@@ -51,7 +51,8 @@ export function computeGitHubScopeHash(
         execution.accountId,
         execution.sessionId,
         execution.source,
-        "user-task",
+        "context-tree",
+        execution.contextTree ?? null,
       ]),
     )
     .digest("hex");

@@ -13,7 +13,13 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
-import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
+import {
+  emitRootSpan,
+  imAttrs,
+  outcomeAttrs,
+  type PerformanceLogger,
+  traceExternalCall,
+} from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
@@ -26,6 +32,14 @@ import type {
 import { setFeishuFailureReaction } from "./failure-reaction.js";
 import { feishuMessageContent } from "./message-content.js";
 
+export type FeishuChatMode = "group" | "topic" | "p2p";
+export type FeishuGroupMessageType = "chat" | "thread";
+
+export interface FeishuChatMetadata {
+  chatMode?: FeishuChatMode;
+  groupMessageType?: FeishuGroupMessageType;
+}
+
 interface FeishuRawEnvelope {
   header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
@@ -35,6 +49,8 @@ interface FeishuRawEnvelope {
   opentagConversationKind?: "unknown";
   opentagSenderOpenId?: string;
   opentagContentTruncated?: boolean;
+  opentagChatMode?: FeishuChatMode;
+  opentagGroupMessageType?: FeishuGroupMessageType;
 }
 
 interface RawFeishuMessageEvent {
@@ -89,11 +105,22 @@ export interface FeishuChannel {
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput, signal?: AbortSignal): Promise<ReadableResource>;
   resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
+  resolveChatMetadata?(input: { chatId: string }, signal?: AbortSignal): Promise<FeishuChatMetadata | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
+      chats?: {
+        get(
+          input: { path: { chat_id: string } },
+          options?: { signal?: AbortSignal },
+        ): Promise<{
+          code?: number;
+          msg?: string;
+          data?: { chat_mode?: string; group_message_type?: string };
+        }>;
+      };
       chatMembers: {
         get(input: {
           path: { chat_id: string };
@@ -242,6 +269,14 @@ function boundedText(value: string): { text: string; truncated: boolean } {
   return { text, truncated: text !== value };
 }
 
+function feishuChatMode(value: unknown): FeishuChatMode | undefined {
+  return value === "group" || value === "topic" || value === "p2p" ? value : undefined;
+}
+
+function feishuGroupMessageType(value: unknown): FeishuGroupMessageType | undefined {
+  return value === "chat" || value === "thread" ? value : undefined;
+}
+
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
   const parsed = feishuMessageContent(raw.message.message_type, raw.message.content, raw.message.mentions);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
@@ -275,6 +310,7 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
       opentagOperation: "created",
       opentagSenderOpenId: raw.sender.sender_id?.open_id,
       opentagContentTruncated: parsed.truncated,
+      ...(raw.message.chat_type === "p2p" ? { opentagChatMode: "p2p" as const } : {}),
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -307,6 +343,33 @@ function contentWasTruncated(message: NormalizedMessage): boolean {
   return raw?.opentagContentTruncated === true || message.resources.length > 16;
 }
 
+function normalizedChatMode(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): FeishuChatMode | undefined {
+  const explicit = feishuChatMode(raw?.opentagChatMode);
+  if (explicit) return explicit;
+  if (raw?.opentagConversationKind === "unknown") return undefined;
+  return message.chatType === "p2p" ? "p2p" : undefined;
+}
+
+function normalizedProviderContext(
+  message: NormalizedMessage,
+  raw: FeishuRawEnvelope | undefined,
+): NormalizedInboundImEvent["providerContext"] {
+  const chatMode = normalizedChatMode(message, raw);
+  const groupMessageType = feishuGroupMessageType(raw?.opentagGroupMessageType);
+  return {
+    provider: "feishu",
+    ...(message.chatType ? { chatType: message.chatType } : {}),
+    ...(chatMode ? { chatMode } : {}),
+    ...(groupMessageType ? { groupMessageType } : {}),
+    ...(message.threadId ? { threadId: message.threadId } : {}),
+    ...(message.rootId ? { rootId: message.rootId } : {}),
+    ...(message.replyToMessageId ? { parentId: message.replyToMessageId } : {}),
+  };
+}
+
 export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {
   const raw = input.message.raw as FeishuRawEnvelope | undefined;
   const operation = raw?.opentagOperation ?? "created";
@@ -330,13 +393,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       externalAppId: input.appId,
       externalTeamId:
         raw?.header?.tenant_key ?? raw?.tenant_key ?? raw?.event?.sender?.tenant_key ?? input.teamId ?? input.appId,
-      providerContext: {
-        provider: "feishu",
-        ...(input.message.chatType ? { chatType: input.message.chatType } : {}),
-        ...(input.message.threadId ? { threadId: input.message.threadId } : {}),
-        ...(input.message.rootId ? { rootId: input.message.rootId } : {}),
-        ...(input.message.replyToMessageId ? { parentId: input.message.replyToMessageId } : {}),
-      },
+      providerContext: normalizedProviderContext(input.message, raw),
       conversation: {
         externalId: input.message.chatId,
         kind:
@@ -346,7 +403,9 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
         externalId: input.message.messageId,
         revisionKey: String(input.message.createTime),
         operation,
-        threadKey: input.message.threadId ?? input.message.rootId ?? null,
+        // Only a real Feishu thread defines a Thread Session. A quote reply in an ordinary group carries
+        // root_id/parent_id without thread_id and stays in the channel Session with its reply target.
+        threadKey: input.message.threadId ?? null,
         replyToExternalId: input.message.replyToMessageId ?? null,
         author: {
           externalId: input.message.senderId,
@@ -407,10 +466,13 @@ class ReliableFeishuChannel implements FeishuChannel {
   botIdentity?: { openId: string; name?: string };
   readonly #outbound: LarkChannel;
   readonly #wsClient: WSClient;
+  readonly #dispatcher: EventDispatcher;
   #handlers: Parameters<FeishuChannel["on"]>[0] = {};
   readonly #ready: Promise<void>;
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
+  #started = false;
+  #closed = false;
 
   constructor(input: {
     appId: string;
@@ -422,6 +484,8 @@ class ReliableFeishuChannel implements FeishuChannel {
       this.#resolveReady = resolve;
       this.#rejectReady = reject;
     });
+    // SDK callbacks can reject readiness after a failed or cancelled connect has already returned.
+    void this.#ready.catch(() => undefined);
     this.#outbound = createLarkChannel({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -432,7 +496,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       outbound: { retry: { maxAttempts: 1 } },
       source: "opentag",
     });
-    const dispatcher = createReliableFeishuDispatcher(async (message) => {
+    this.#dispatcher = createReliableFeishuDispatcher(async (message) => {
       const handler = this.#handlers.message;
       if (!handler) throw new Error("FEISHU_ADMISSION_NOT_READY");
       await handler(message);
@@ -446,25 +510,94 @@ class ReliableFeishuChannel implements FeishuChannel {
       autoReconnect: true,
       source: "opentag",
       handshakeTimeoutMs: 15_000,
-      onReady: () => this.#resolveReady(),
-      onError: (error) => {
-        this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR"));
-        this.#handlers.error?.(error);
+      onReady: () => {
+        if (!this.#closed) this.#resolveReady();
       },
+      onError: (error) => this.#onConnectionError(error),
       onReconnecting: () => this.#handlers.reconnecting?.(),
       onReconnected: () => this.#handlers.reconnected?.(),
     });
-    void this.#wsClient.start({ eventDispatcher: dispatcher });
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw signal.reason;
-    await this.#outbound.connect();
-    this.botIdentity = this.#outbound.botIdentity;
+    if (this.#closed) throw new Error("FEISHU_CHANNEL_CLOSED");
+    if (signal?.aborted) throw signal.reason ?? new Error("FEISHU_CONNECT_ABORTED");
+    const state = { cancelled: false };
+    let onAbort: (() => void) | undefined;
+    try {
+      if (!this.#started) {
+        this.#started = true;
+        void this.#wsClient
+          .start({ eventDispatcher: this.#dispatcher })
+          .catch((error: unknown) => this.#onConnectionError(error));
+      }
+      const connectPromise = this.#connectAndWaitReady(state, signal);
+      if (!signal) {
+        await connectPromise;
+        return;
+      }
+      await Promise.race([
+        connectPromise,
+        new Promise<never>((_, reject) => {
+          onAbort = () => {
+            this.#quarantineAbortedConnect(state);
+            reject(signal.reason ?? new Error("FEISHU_CONNECT_ABORTED"));
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } catch (error) {
+      await this.disconnect().catch(() => undefined);
+      throw error;
+    } finally {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  #onConnectionError(error: unknown): void {
+    // The cause keeps the gateway's refusal code for connection-failure classification.
+    this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
+    this.#handlers.error?.(error);
+  }
+
+  async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
+    const outboundPromise = this.#outbound.connect();
+    void outboundPromise.then(
+      async () => {
+        if (state.cancelled || this.#closed || signal?.aborted) {
+          this.botIdentity = undefined;
+          await this.#outbound.disconnect().catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+    await outboundPromise;
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
     await this.#ready;
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
+    this.botIdentity = this.#outbound.botIdentity;
+  }
+
+  async #failAbortedConnect(signal?: AbortSignal): Promise<never> {
+    this.botIdentity = undefined;
+    await this.disconnect().catch(() => undefined);
+    throw signal?.reason ?? new Error("FEISHU_CONNECT_ABORTED");
+  }
+
+  #quarantineAbortedConnect(state: { cancelled: boolean }): void {
+    state.cancelled = true;
+    void this.disconnect().catch(() => undefined);
   }
 
   async disconnect(): Promise<void> {
+    this.#closed = true;
+    this.botIdentity = undefined;
+    this.#rejectReady(new Error("FEISHU_CHANNEL_CLOSED"));
     this.#wsClient.close({ force: true });
     await this.#outbound.disconnect();
   }
@@ -477,7 +610,7 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 }
 
-function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
+export function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
   const instance = defaultHttpInstance as unknown as HttpInstance;
   const withSignal = <D>(options: HttpRequestOptions<D> | undefined): HttpRequestOptions<D> =>
     ({ ...(options ?? {}), ...(signal ? { signal } : {}) }) as HttpRequestOptions<D>;
@@ -521,6 +654,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
   readonly #policy: ExternalCallPolicy;
+  readonly #perfLogger: PerformanceLogger | undefined;
 
   constructor(input: {
     onCardAction?: (event: unknown) => Promise<unknown>;
@@ -532,6 +666,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
     /* type-only */ policy?: ExternalCallPolicy;
+    performanceLogger?: PerformanceLogger;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
@@ -540,6 +675,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       new ExternalCallPolicy({
         allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
       });
+    this.#perfLogger = input.performanceLogger ?? this.#policy.performanceLogger;
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     const clientOptions = {
       appId: input.appId,
@@ -584,7 +720,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
           input.externalMessageId,
           input.failed,
         ),
-      { circuitKey: "feishu:message-reactions", maxAttempts: 1, timeoutMs: 8_000 },
+      { circuitKey: `feishu:message-reactions:${this.#appId}`, maxAttempts: 1, timeoutMs: 8_000 },
     );
   }
 
@@ -595,7 +731,15 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    await channel.connect(signal);
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "feishu",
+        operation: "external.feishu.channel.connect",
+      },
+      () => channel.connect(signal),
+      { fallbackErrorCode: "FEISHU_CONNECT_FAILED" },
+    );
     const bot = channel.botIdentity;
     if (!bot) throw new Error("FEISHU_BOT_IDENTITY_MISSING");
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };
@@ -663,6 +807,16 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       timeoutMs: FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS,
     });
   }
+
+  async resolveChatMetadata(input: { chatId: string }): Promise<FeishuChatMetadata | undefined> {
+    const resolveChatMetadata = this.#http.resolveChatMetadata;
+    if (!resolveChatMetadata) return undefined;
+    return this.#policy.run("feishu.chat-mode.resolve", (signal) => resolveChatMetadata(input, signal), {
+      circuitKey: `feishu:chat-mode:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS,
+    });
+  }
 }
 
 const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
@@ -677,6 +831,13 @@ const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
 const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 4_000;
 /** Invariant: the policy deadline outlives the lookup deadline, so the lookup reports its own timeout. */
 const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 5_000;
+
+const FEISHU_CHAT_MODE_TTL_MS = 60 * 60 * 1000;
+const FEISHU_MISSING_CHAT_MODE_TTL_MS = 5 * 60 * 1000;
+const FEISHU_FAILED_CHAT_MODE_TTL_MS = 30 * 1000;
+const FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES = 10_000;
+const FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS = 4_000;
+const FEISHU_CHAT_MODE_POLICY_TIMEOUT_MS = 5_000;
 
 export function feishuSenderOpenId(message: NormalizedMessage): string | null {
   const raw = message.raw as FeishuRawEnvelope | undefined;
@@ -777,11 +938,119 @@ function createCachedFeishuSenderNameResolver(
   };
 }
 
+async function fetchFeishuChatMetadata(
+  client: FeishuHttpClient,
+  input: { chatId: string },
+  signal: AbortSignal,
+): Promise<FeishuChatMetadata | undefined> {
+  const chats = client.im.v1.chats;
+  if (!chats) return undefined;
+  const response = await chats.get({ path: { chat_id: input.chatId } }, { signal });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error("FEISHU_CHAT_MODE_LOOKUP_FAILED");
+  }
+  const chatMode = feishuChatMode(response.data?.chat_mode?.trim());
+  const groupMessageType = feishuGroupMessageType(response.data?.group_message_type?.trim());
+  if (!chatMode && !groupMessageType) return undefined;
+  return {
+    ...(chatMode ? { chatMode } : {}),
+    ...(groupMessageType ? { groupMessageType } : {}),
+  };
+}
+
+function withFeishuChatModeTimeout<T>(
+  parentSignal: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const onParentAbort = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error("FEISHU_CHAT_MODE_LOOKUP_ABORTED"));
+  };
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("FEISHU_CHAT_MODE_LOOKUP_TIMEOUT");
+      controller.abort(error);
+      reject(error);
+    }, FEISHU_CHAT_MODE_LOOKUP_TIMEOUT_MS);
+    timer.unref();
+  });
+  return Promise.race([run(controller.signal), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  });
+}
+
+function createCachedFeishuChatMetadataResolver(
+  client: FeishuHttpClient,
+  createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
+): (input: { chatId: string }, signal?: AbortSignal) => Promise<FeishuChatMetadata | undefined> {
+  const chatMetadata = new Map<string, { expiresAt: number; metadata: FeishuChatMetadata | undefined }>();
+  const pendingChatMetadata = new Map<string, Promise<FeishuChatMetadata | undefined>>();
+
+  const remember = (
+    chatId: string,
+    metadata: FeishuChatMetadata | undefined,
+    now: number,
+    ttlMs = metadata?.chatMode ? FEISHU_CHAT_MODE_TTL_MS : FEISHU_MISSING_CHAT_MODE_TTL_MS,
+  ): void => {
+    chatMetadata.delete(chatId);
+    chatMetadata.set(chatId, {
+      expiresAt: now + ttlMs,
+      metadata,
+    });
+    while (chatMetadata.size > FEISHU_CHAT_MODE_CACHE_MAX_ENTRIES) {
+      const oldest = chatMetadata.keys().next().value;
+      if (oldest === undefined) break;
+      chatMetadata.delete(oldest);
+    }
+  };
+
+  return async (input, signal) => {
+    const key = input.chatId;
+    const now = Date.now();
+    const cached = chatMetadata.get(key);
+    if (cached && cached.expiresAt > now) {
+      chatMetadata.delete(key);
+      chatMetadata.set(key, cached);
+      return cached.metadata;
+    }
+    if (cached) chatMetadata.delete(key);
+    const pending = pendingChatMetadata.get(key);
+    if (pending) return pending;
+
+    const lookup = withFeishuChatModeTimeout(signal, (lookupSignal) =>
+      fetchFeishuChatMetadata(createClientForSignal(lookupSignal), input, lookupSignal),
+    ).then(
+      (metadata) => {
+        remember(key, metadata, Date.now());
+        return metadata;
+      },
+      (error: unknown) => {
+        remember(key, undefined, Date.now(), FEISHU_FAILED_CHAT_MODE_TTL_MS);
+        throw error;
+      },
+    );
+    pendingChatMetadata.set(key, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (pendingChatMetadata.get(key) === lookup) pendingChatMetadata.delete(key);
+    }
+  };
+}
+
 export function createFeishuHttpCapability(
   client: FeishuHttpClient,
   createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
 ): FeishuHttpCapability {
   const resolveSenderName = createCachedFeishuSenderNameResolver(client);
+  const resolveChatMetadata = createCachedFeishuChatMetadataResolver(client, createClientForSignal);
   return {
     async fetchResource(input, signal) {
       const activeClient = signal ? createClientForSignal(signal) : client;
@@ -795,6 +1064,7 @@ export function createFeishuHttpCapability(
       return { stream: response.getReadableStream() };
     },
     resolveSenderName,
+    resolveChatMetadata,
   };
 }
 

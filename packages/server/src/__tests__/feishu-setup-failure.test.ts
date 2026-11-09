@@ -65,10 +65,16 @@ function registration(
   result: Promise<{ appId: string; appSecret: string; teamBrand?: "feishu" | "lark" }>,
   qr = setupNow,
 ): FeishuRegistration {
+  let cancel!: (error: Error) => void;
+  const canceled = new Promise<never>((_, reject) => {
+    cancel = reject;
+  });
+  const observed = Promise.race([result, canceled]);
+  void observed.catch(() => undefined);
   return {
     qrReady: Promise.resolve({ url: "https://feishu.example/qr", expiresAt: new Date(qr.getTime() + 60_000) }),
-    result,
-    abort: vi.fn(),
+    result: observed,
+    abort: vi.fn(() => cancel(Object.assign(new Error("Registration canceled"), { code: "abort" }))),
   };
 }
 
@@ -396,7 +402,7 @@ describe("FeishuSetupService persistence", () => {
       const value = await setupFixture();
       const pendingResult = new Promise<never>(() => undefined);
       const gateway: FeishuRegistrationGateway = {
-        start: vi.fn(() => ({ ...registration(pendingResult, new Date()), abort: vi.fn() })),
+        start: vi.fn(() => registration(pendingResult, new Date())),
       };
       const events: unknown[] = [];
       const counters: unknown[] = [];
@@ -606,7 +612,13 @@ describe("FeishuSetupService persistence", () => {
       .spyOn(setupDatabase.database, "transaction")
       .mockRejectedValueOnce(new Error("database unavailable during shutdown"));
     try {
-      await expect(service.stop()).rejects.toThrow("database unavailable during shutdown");
+      await expect(service.stop()).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({
+            cause: expect.objectContaining({ message: "database unavailable during shutdown" }),
+          }),
+        ],
+      });
       expect(pending.abort).toHaveBeenCalledTimes(1);
     } finally {
       transaction.mockRestore();
@@ -628,7 +640,13 @@ describe("FeishuSetupService persistence", () => {
         cipher: value.cipher,
         instanceId: crypto.randomUUID(),
         imBindings: value.imBindings,
-        registrations: { start: vi.fn(() => ({ ...registration(result), abort })) },
+        registrations: {
+          start: vi.fn(() => {
+            const flow = registration(result);
+            abort.mockImplementation(flow.abort);
+            return { ...flow, abort };
+          }),
+        },
         activation: { activateAtomicAttempt: vi.fn() },
       });
       service.start();

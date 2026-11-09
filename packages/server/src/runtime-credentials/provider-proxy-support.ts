@@ -1,17 +1,19 @@
 import type { RuntimeCredentialProvider } from "@opentag/shared";
 import type { ProviderOperation, ProviderOperationRewriteContext } from "./operation-registry.js";
 
-export type RuntimeProxyFailureCode =
-  | "operation_not_registered"
-  | "validation_scope"
-  | "header_rejected"
-  | "body_invalid"
-  | "body_too_large"
-  | "write_outcome_unknown"
-  | "upstream_unavailable"
-  | "handle_invalid"
-  | "cancelled"
-  | "response_invalid";
+export const RUNTIME_PROXY_FAILURE_CODES = [
+  "operation_not_registered",
+  "validation_scope",
+  "header_rejected",
+  "body_invalid",
+  "body_too_large",
+  "write_outcome_unknown",
+  "upstream_unavailable",
+  "handle_invalid",
+  "cancelled",
+  "response_invalid",
+] as const;
+export type RuntimeProxyFailureCode = (typeof RUNTIME_PROXY_FAILURE_CODES)[number];
 
 export class RuntimeProxyError extends Error {
   constructor(

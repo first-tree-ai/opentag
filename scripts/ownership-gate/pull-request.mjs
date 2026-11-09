@@ -289,8 +289,8 @@ export function truncateDescription(description, limit = MAX_DESCRIPTION_LENGTH)
 
 /**
  * Publishes the gate's verdict on a commit. Re-posting to the same sha and
- * context is the supported way to update a status -- the latest one wins -- so
- * there is nothing to reconcile and the client's default retries stay on.
+ * context updates the status with the latest write. The workflow must hold its
+ * exclusive writer slot through every client retry to avoid stale overwrites.
  */
 export async function postCommitStatus(client, { owner, name, sha, state, context, description, targetUrl, logger }) {
   if (!COMMIT_STATUS_STATES.has(state)) {

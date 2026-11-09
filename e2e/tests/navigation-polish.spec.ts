@@ -1,33 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { InternalNavigationVisibilitySchema } from "@opentag/shared/browser";
 import type { Page } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
-
-const internalToolsTest = test.extend<{ restoreInternalNavigation: undefined }>({
-  restoreInternalNavigation: [
-    async ({ page }, use) => {
-      const csrf = (await page.context().cookies()).find((cookie) => cookie.name === "opentag_csrf")?.value;
-      if (!csrf) throw new Error("Missing authenticated CSRF cookie");
-      const response = await page.request.get("/api/v1/internal/navigation-visibility");
-      expect(response.ok(), await response.text()).toBeTruthy();
-      const original = InternalNavigationVisibilitySchema.parse(await response.json());
-      try {
-        await use(undefined);
-      } finally {
-        // This state belongs to the shared Server, so restore it even when the UI test fails.
-        const restored = await page.request.put("/api/v1/internal/navigation-visibility", {
-          data: original,
-          headers: { Origin: baseURL, "x-opentag-csrf": csrf },
-        });
-        expect(restored.ok(), await restored.text()).toBeTruthy();
-        expect(await restored.json()).toEqual(original);
-      }
-    },
-    { auto: true },
-  ],
-});
 
 async function createAgent(page: Page, displayName: string): Promise<string> {
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === "opentag_csrf")?.value;
@@ -96,51 +71,37 @@ test("sidebar account menu dismisses when page content is clicked", async ({ pag
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 });
 
-internalToolsTest(
-  "Internal tools opens from Agent navigation and retains working previews and reset cancellation",
-  async ({ page }) => {
-    const agentId = await createAgent(page, "Navigation Review");
-    await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Account menu" }).click();
-    await page.getByRole("menuitem", { name: "Internal tools" }).click();
-    await expect(page).toHaveURL(/\/internal$/);
-    await expect(page.getByRole("heading", { name: "Internal tools", exact: true })).toBeVisible();
-    const integrations = page.getByRole("switch", { name: "Show Integrations", exact: true });
-    await expect(integrations).not.toBeChecked();
-    await integrations.click();
-    await expect(integrations).toBeChecked();
-    await expect(integrations).toBeEnabled();
-    await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
-    await expect(page.getByRole("link", { name: "Skills", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Integrations", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Account menu" }).click();
-    await page.getByRole("menuitem", { name: "Internal tools" }).click();
-    await integrations.click();
-    await expect(integrations).not.toBeChecked();
-    await expect(integrations).toBeEnabled();
-    await page.screenshot({ path: test.info().outputPath("internal-tools.png"), fullPage: true });
-    let resetRequests = 0;
-    page.on("request", (request) => {
-      if (request.method() === "POST" && request.url().endsWith("/me/setup/reset")) resetRequests += 1;
-    });
-    for (const name of ["Re-board", "Reset and start onboarding"]) {
-      const trigger = page.getByRole("button", { name, exact: true });
-      await trigger.click();
-      const dialog = page.getByRole("dialog");
-      await expect(dialog).toBeVisible();
-      await expectAccessible(page);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect(dialog).toBeHidden();
-      await expect(trigger).toBeFocused();
-    }
-    expect(resetRequests).toBe(0);
-    const me = await page.request.get("/api/v1/me");
-    expect((await me.json()).setupCompletedAt).toEqual(expect.any(String));
-    await page.getByRole("link", { name: /Agent Setup lab/ }).click();
-    await expect(page).toHaveURL(/\/internal\/agent-setup$/);
-    await expect(page.getByRole("button", { name: "Mock control" })).toBeVisible();
-  },
-);
+test("Internal tools opens from Agent navigation and keeps reset cancellation", async ({ page }) => {
+  const agentId = await createAgent(page, "Navigation Review");
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Internal tools" }).click();
+  await expect(page).toHaveURL(/\/internal$/);
+  await expect(page.getByRole("heading", { name: "Internal tools", exact: true })).toBeVisible();
+  // There are no navigation previews left to switch on.
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("internal-tools.png"), fullPage: true });
+  let resetRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/me/setup/reset")) resetRequests += 1;
+  });
+  for (const name of ["Re-board", "Reset and start onboarding"]) {
+    const trigger = page.getByRole("button", { name, exact: true });
+    await trigger.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expectAccessible(page);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toBeFocused();
+  }
+  expect(resetRequests).toBe(0);
+  const me = await page.request.get("/api/v1/me");
+  expect((await me.json()).setupCompletedAt).toEqual(expect.any(String));
+  await page.getByRole("link", { name: /Agent Setup lab/ }).click();
+  await expect(page).toHaveURL(/\/internal\/agent-setup$/);
+  await expect(page.getByRole("button", { name: "Mock control" })).toBeVisible();
+});
 
 test("long Agent names stay bounded in the switcher and preserve the current section", async ({ page }) => {
   const longName = "CustomerResearchAndProductStrategy".repeat(3);
@@ -247,6 +208,36 @@ for (const width of [320, 390]) {
       await expectAccessible(page);
       await page.getByRole("menuitem", { name: "Internal tools", exact: true }).tap();
       await expect(page).toHaveURL(/\/internal$/);
+    });
+  });
+}
+
+for (const width of [320, 390]) {
+  test.describe(`${width}px long Agent roster`, () => {
+    test.use({ hasTouch: true, viewport: { width, height: 720 } });
+
+    test("scrolls the Agent list inside the switcher and keeps it keyboard reachable", async ({ page }) => {
+      let lastId = "";
+      for (let index = 0; index < 16; index += 1) lastId = await createAgent(page, `Roster ${width} ${index}`);
+      await page.goto(`/agents/${lastId}`, { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: /Switch Agent/ }).tap();
+      const menu = page.getByRole("menu");
+      await expectWithinViewport(menu);
+      // The roster is the scrollable region: focusable and named, with the menu's actions kept in view.
+      const roster = menu.getByRole("group", { name: "Agents", exact: true });
+      await expect(roster).toHaveAttribute("tabindex", "0");
+      expect(await roster.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+      await expectWithinViewport(menu.getByRole("menuitem", { name: "All Agents", exact: true }));
+      await expectWithinViewport(menu.getByRole("menuitem", { name: "New Agent", exact: true }));
+      await expectAccessible(page);
+      await page.screenshot({ path: test.info().outputPath(`agent-roster-${width}.png`) });
+      // Arrow keys reach the last Agent, and the list scrolls it into view.
+      const current = menu.getByRole("menuitem", { name: new RegExp(`Roster ${width} 15$`, "u") });
+      await page.keyboard.press("End");
+      await page.keyboard.press("ArrowUp");
+      await page.keyboard.press("ArrowUp");
+      await expect(current).toBeFocused();
+      await expectWithinViewport(current);
     });
   });
 }

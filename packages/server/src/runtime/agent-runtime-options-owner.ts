@@ -48,7 +48,7 @@ export class AgentRuntimeOptionsOwner {
     input: Omit<AgentRuntimeOptionsRequestFrame, "type" | "requestId">,
     signal?: AbortSignal,
   ): Promise<AgentRuntimeOptions> {
-    signal?.throwIfAborted();
+    if (signal?.aborted) throw abortedUnavailable();
     const instanceId = this.registry.currentInstanceId(input.computerId);
     if (!instanceId) throw unavailable(503);
     if (!this.registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeOptions))
@@ -70,7 +70,7 @@ export class AgentRuntimeOptionsOwner {
           reject(error);
         } else if (options) resolve(options);
       };
-      const onAbort = () => finish(undefined, unavailable(503));
+      const onAbort = () => finish(undefined, abortedUnavailable());
       const timer = setTimeout(() => finish(undefined, unavailable(504)), this.ttlMs);
       timer.unref();
       this.#pending.set(requestId, { computerId: input.computerId, instanceId, finish });
@@ -86,6 +86,18 @@ export class AgentRuntimeOptionsOwner {
   close(): void {
     for (const pending of this.#pending.values()) pending.finish(undefined, unavailable(503));
   }
+}
+
+const abortedErrors = new WeakSet<object>();
+
+export function isRuntimeOptionsAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && abortedErrors.has(error);
+}
+
+function abortedUnavailable() {
+  const error = unavailable(503);
+  abortedErrors.add(error);
+  return error;
 }
 
 function unavailable(status: number) {

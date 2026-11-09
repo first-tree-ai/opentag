@@ -199,7 +199,7 @@ export const AgentScheduleLastDispatchSchema = z
     /** The deterministic occurrence message id; null when no message was materialized. */
     messageId: z.string().uuid().nullable(),
     outcome: AgentScheduleDispatchOutcomeSchema,
-    /** Stable machine code (existing outcome code or skip/disable reason); null when none applies. */
+    /** Stable machine code (outcome code, skip/disable reason, or why a delivered Run failed); null when none applies. */
     code: z
       .string()
       .regex(/^[a-z][a-z0-9_]{0,127}$/)
@@ -217,9 +217,15 @@ export const AgentScheduleTargetSchema = z
   .object({
     sessionId: z.string().uuid(),
     provider: z.enum(["feishu", "slack"]),
+    /** The conversation scope. An internal Session has one too, but it doesn't post there: see `internal`. */
     sessionKind: z.enum(["channel", "thread"]),
     channelId: z.string().min(1).max(512),
     threadKey: z.string().min(1).max(512).nullable(),
+    /**
+     * The schedule fires into an internal Session, which has no IM outlet. A separate field, because a new
+     * `sessionKind` value would make released CLIs and open Web tabs reject every schedule list that holds one.
+     */
+    internal: z.literal(true).optional(),
   })
   .strict();
 export type AgentScheduleTarget = z.infer<typeof AgentScheduleTargetSchema>;

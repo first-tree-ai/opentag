@@ -220,6 +220,51 @@ describe("projectAgentAvailability", () => {
     expect(availability.dependencies.handoff.state).toBe("setting_up");
   });
 
+  it.each([
+    { bindingState: "reauthorization_required", reason: "im_reauthorization_required" },
+    { bindingState: "error", reason: "im_error" },
+    { bindingState: "disabled", reason: "im_disabled" },
+  ] as const)(
+    "shows a confirmed $bindingState binding over a Provider check still running",
+    ({ bindingState, reason }) => {
+      const availability = projectAgentAvailability(
+        agent(),
+        computer({ providerReadiness: [{ provider: "codex", status: "checking", observedAt: null }] }),
+        binding(bindingState),
+        { bindingState, handoffReady: false },
+        true,
+        true,
+      );
+      expect(availability).toMatchObject({ state: "action_required", reason });
+      expect(availability.dependencies.runtime).toEqual({ provider: "codex", status: "checking" });
+    },
+  );
+
+  it("keeps a confirmed runtime problem ahead of a messaging problem", () => {
+    const availability = projectAgentAvailability(
+      agent(),
+      computer({ providerReadiness: [{ provider: "codex", status: "sign-in", observedAt: null }] }),
+      binding("reauthorization_required"),
+      { bindingState: "reauthorization_required", handoffReady: false },
+      true,
+      true,
+    );
+    expect(availability).toMatchObject({ state: "action_required", reason: "runtime_unavailable" });
+  });
+
+  it("keeps checking while the binding could not be read", () => {
+    const availability = projectAgentAvailability(
+      agent(),
+      computer({ providerReadiness: [{ provider: "codex", status: "checking", observedAt: null }] }),
+      binding("reauthorization_required"),
+      undefined,
+      false,
+      true,
+    );
+    expect(availability).toMatchObject({ reason: "runtime_unavailable" });
+    expect(availability.dependencies.runtime.status).toBe("checking");
+  });
+
   it("asks for action when the binding needs reauthorization", () => {
     const availability = projectAgentAvailability(
       agent(),

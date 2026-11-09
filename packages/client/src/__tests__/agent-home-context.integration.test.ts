@@ -97,7 +97,6 @@ exec /usr/bin/git "$@"
       home: openTagHome,
       codexHome: join(fixture.accountHome, ".codex"),
       contextTreePackage,
-      sessionStartBudgetMs: 30_000,
       execFile: isolatedExecFile,
     });
     const statuses = await Promise.all([
@@ -109,7 +108,15 @@ exec /usr/bin/git "$@"
       ]),
     ]);
     for (const status of statuses)
-      expect(status).toMatchObject({ connections: [{ repository: "acme/memory", status: "ready", treePath }] });
+      expect(status).toMatchObject({
+        connections: [
+          {
+            repository: "acme/memory",
+            status: "available",
+            projectPath: join(await realpath(agentHome), ".opentag/context-tree/project"),
+          },
+        ],
+      });
     expect(await readFile(join(agentHome, "AGENTS.md"), "utf8")).toBe(userInstructions);
     await expect(
       readFile(join(agentHome, ".claude", "skills", "context-tree-read", "SKILL.md"), "utf8"),

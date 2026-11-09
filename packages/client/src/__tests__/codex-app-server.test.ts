@@ -28,6 +28,46 @@ describe("CodexAppServerProcess", () => {
     await process.close();
   });
 
+  it("accepts a response larger than 1 MiB from a real offline App Server", async () => {
+    const process = await appServer("normal");
+    try {
+      await process.initialize("0.0.1");
+      const result = (await process.request("fixture/large-output", {})) as { output: string };
+      expect(result.output.length).toBe(1024 * 1024 + 1);
+      await expect(process.request("fixture/echo", { next: true })).resolves.toEqual({ next: true });
+    } finally {
+      await process.close();
+    }
+  });
+
+  it("terminates the provider and descendants after an oversized response", async () => {
+    const process = await appServer("process-tree");
+    const descendant = new Promise<number>((resolve) => {
+      const unsubscribe = process.subscribe((message) => {
+        if (message.method !== "fixture/processTree") return;
+        unsubscribe();
+        resolve((message.params as { pid: number }).pid);
+      });
+    });
+    try {
+      await process.initialize("0.0.1");
+      const pid = await descendant;
+      await expect(process.request("fixture/large-output", { oversized: true })).rejects.toMatchObject({
+        code: "protocol",
+        message: "Codex emitted an oversized JSONL line",
+      });
+      await vi.waitFor(
+        () => {
+          expect(processExists(pid)).toBe(false);
+          expect(processExists(process.pid as number)).toBe(false);
+        },
+        { timeout: 3_000 },
+      );
+    } finally {
+      await process.close();
+    }
+  });
+
   it.each(["malformed", "oversized", "truncated"])("D-06 fails closed for %s output", async (scenario) => {
     const process = await appServer(scenario, 1024);
     const failure = processFailure(process);

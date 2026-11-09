@@ -7,9 +7,36 @@
  * probe attempt open, and probes never queue behind a saturated application pool.
  */
 import postgres, { type Sql } from "postgres";
+import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "./timeouts.js";
 
 /** The `/readyz` deadline. The dedicated probe uses the same bound so each attempt settles inside it. */
 export const DATABASE_READINESS_TIMEOUT_MS = 1_000;
+
+export function createApplicationDatabaseReadinessProbe(
+  sql: Sql,
+  dedicated: DedicatedReadinessProbe,
+  deadlineMs = DATABASE_READINESS_TIMEOUT_MS,
+): () => Promise<void> {
+  let inFlight: Promise<void> | undefined;
+  return () => {
+    inFlight ??= Promise.allSettled([
+      dedicated.run(),
+      sql.unsafe("select 1", [], { query_timeout: deadlineMs, no_pipeline: true }),
+    ])
+      .then(([connectivity, application]) => {
+        if (connectivity.status === "rejected") {
+          throw new Error("Database connectivity readiness failed", { cause: connectivity.reason });
+        }
+        if (application.status === "rejected") {
+          throw new Error("Application database pool readiness failed", { cause: application.reason });
+        }
+      })
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
+  };
+}
 
 export class DatabaseProbeTimeoutError extends Error {
   constructor(deadlineMs: number) {
@@ -87,7 +114,7 @@ export function createDedicatedDatabaseReadinessProbe(
       closed = true;
       const current = client;
       client = undefined;
-      if (current) await current.end({ timeout: 1 });
+      if (current) await current.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS });
     },
   };
 }

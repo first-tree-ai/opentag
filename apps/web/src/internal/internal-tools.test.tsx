@@ -12,7 +12,6 @@ const user: UserProfile = {
 };
 
 async function renderTools() {
-  vi.spyOn(browserApi, "internalNavigationVisibility").mockResolvedValue({ integrations: false });
   const onResetSucceeded = vi.fn();
   await renderInRouter(<InternalToolsPage user={user} onResetSucceeded={onResetSucceeded} />, { path: "/internal" });
   return { onResetSucceeded };
@@ -37,18 +36,10 @@ describe("internal tools page", () => {
     expect(screen.getByRole("button", { name: "Reset and start onboarding" })).toBeTruthy();
   });
 
-  it("keeps Integrations out of navigation until its preview is enabled, and no longer gates Skills", async () => {
-    const update = vi.spyOn(browserApi, "updateInternalNavigationVisibility").mockResolvedValue({ integrations: true });
+  it("offers no navigation previews", async () => {
     await renderTools();
 
-    const integrations = await screen.findByRole("switch", { name: "Show Integrations" });
-    expect(integrations.getAttribute("aria-checked")).toBe("false");
-    expect(screen.queryByRole("switch", { name: "Show Skills" })).toBeNull();
-
-    fireEvent.click(integrations);
-
-    await waitFor(() => expect(integrations.getAttribute("aria-checked")).toBe("true"));
-    expect(update).toHaveBeenCalledExactlyOnceWith({ integrations: true });
+    expect(screen.queryByRole("switch")).toBeNull();
   });
 
   it("re-boards without asking the Server to destroy anything", async () => {

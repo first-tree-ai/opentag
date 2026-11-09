@@ -47,6 +47,7 @@ export const TaskTitleUpdateRequestSchema = z.object({ title: TaskTitleSchema.nu
 
 export const TaskSummarySchema = z
   .object({
+    /** The id of the chat Session the Task is; any other id that resolves to it is an alias. */
     id: z.string().uuid(),
     agent: z
       .object({
@@ -63,6 +64,8 @@ export const TaskSummarySchema = z
         conversationKind: ImConversationKindSchema,
         channelId: z.string().min(1),
         threadKey: z.string().min(1).nullable(),
+        chatMode: z.enum(["group", "topic", "p2p"]).nullable().optional(),
+        groupMessageType: z.enum(["chat", "thread"]).nullable().optional(),
       })
       .strict(),
     sessionKind: TaskSessionKindSchema,
@@ -81,8 +84,8 @@ export const ListTasksResponseSchema = z
 export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
 /**
- * The Task after its queued deliveries were withdrawn. The withdrawal is the topic's latest
- * activity, so the status reads `cancelled` until a later Turn runs in the topic.
+ * The Task after its queued deliveries were withdrawn. The withdrawal is the Task's latest
+ * activity, so the status reads `cancelled` until a later Turn runs in its Session.
  */
 export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
@@ -196,6 +199,13 @@ export const TaskInternalSessionSchema = z
     endedAt: z.string().datetime().nullable(),
     runtimeModel: z.string().nullable(),
     runtimeReasoningEffort: z.string().nullable(),
+    /**
+     * Its stored title, or the start of the first collaboration message it received: what it was
+     * created to do. Optional so a reader still accepts an older Server's rows.
+     */
+    title: z.string().min(1).nullable().optional(),
+    /** Its creation, its end, or its newest collaboration message, whichever is latest. */
+    lastActivityAt: z.string().datetime().optional(),
   })
   .strict();
 
@@ -228,6 +238,50 @@ export const TaskDetailSchema = z
   })
   .strict();
 
+/**
+ * One page of a Task detail section. Each section pages on its own cursor, so a reader that needs
+ * more Internal Sessions never re-reads the Turns it already has, and no section can answer with
+ * more than its page size.
+ */
+export const TaskTurnPageSchema = z
+  .object({ items: z.array(TaskTurnSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+export const TaskInternalSessionPageSchema = z
+  .object({ items: z.array(TaskInternalSessionSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+export const TaskCollaborationMessagePageSchema = z
+  .object({ items: z.array(TaskCollaborationMessageSchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+
+/** The default and maximum number of rows one Task detail section returns. */
+export const TASK_SECTION_DEFAULT_LIMIT = 20;
+export const TASK_SECTION_MAX_LIMIT = 100;
+
+/**
+ * The bounded Task detail: one page of each section, the first page when no cursor is given. It is
+ * the contract new readers use; `TaskDetailSchema` remains the legacy complete answer.
+ */
+/**
+ * The sections of a bounded Task detail. A reader names the ones it renders, and the Server reads
+ * only those: a conversation view never pays for the Internal Session or collaboration history it
+ * would discard.
+ */
+export const TASK_DETAIL_SECTIONS = ["turns", "internal-sessions", "collaboration-messages"] as const;
+export const TaskDetailSectionSchema = z.enum(TASK_DETAIL_SECTIONS);
+export type TaskDetailSection = z.infer<typeof TaskDetailSectionSchema>;
+/** Every section, which is what the first page returns when the caller names none. */
+export const TASK_DETAIL_ALL_SECTIONS = TASK_DETAIL_SECTIONS;
+
+export const TaskDetailPageSchema = z
+  .object({
+    task: TaskSummarySchema,
+    // Present exactly when the caller asked for the section; the request decides, not a missing value.
+    turns: TaskTurnPageSchema.optional(),
+    internalSessions: TaskInternalSessionPageSchema.optional(),
+    collaborationMessages: TaskCollaborationMessagePageSchema.optional(),
+  })
+  .strict();
+
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;
@@ -242,3 +296,7 @@ export type TaskReply = z.infer<typeof TaskReplySchema>;
 export type ListTaskRepliesResponse = z.infer<typeof ListTaskRepliesResponseSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
+export type TaskTurnPage = z.infer<typeof TaskTurnPageSchema>;
+export type TaskInternalSessionPage = z.infer<typeof TaskInternalSessionPageSchema>;
+export type TaskCollaborationMessagePage = z.infer<typeof TaskCollaborationMessagePageSchema>;
+export type TaskDetailPage = z.infer<typeof TaskDetailPageSchema>;

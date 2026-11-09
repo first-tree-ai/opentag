@@ -89,7 +89,7 @@ describe("OpenTag Web App Shell", () => {
       within(agentRow as HTMLElement)
         .getAllByRole("link")
         .map((item) => item.getAttribute("href")),
-    ).toEqual([`/agents/setup?agentId=${agentId}`, `/agents/${agentId}`]);
+    ).toEqual([`/agents/${agentId}`, `/agents/setup?agentId=${agentId}`]);
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-status"] [data-state]')).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
@@ -154,7 +154,6 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps removed Agent repository assignment navigation absent even with Internal Tools", async () => {
     installApi({
-      internalNavigationVisibility: { integrations: true },
       internalToolsOffered: true,
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
@@ -197,7 +196,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(agentRow as HTMLElement).getByText("Working now · started 8m ago")).toBeTruthy();
   });
 
-  it("states an offline reason once and carries no exit of its own", async () => {
+  it("states an offline reason once with one exit to the Computer recovery", async () => {
     installApi({
       bound: true,
       computerStatus: () => "offline",
@@ -216,11 +215,14 @@ describe("OpenTag Web App Shell", () => {
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]')).toBeNull();
     expect((status as HTMLElement).closest('[data-ui="agent-row-status"]')).toBeTruthy();
     /*
-     * No recovery exit beside the reason. Which page repairs an offline Computer is the Agent's
-     * business, so the card states the problem and the row link is the single way to follow it.
+     * The status itself stays plain text; the row adds one action to where an offline Computer is
+     * repaired, the same connection recovery the Agent page's Computer row opens.
      */
     expect(within(status as HTMLElement).queryByRole("link")).toBeNull();
-    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([open]);
+    const restore = within(agentRow as HTMLElement).getByRole("link", { name: /Restore connection/ });
+    expect(restore.getAttribute("href")).toMatch(/^\/agents\/computers\?computerId=/);
+    // The row's own link comes first, so keyboard focus reaches the Agent before its action.
+    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([open, restore]);
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {
@@ -277,8 +279,10 @@ describe("Workspace and Agent navigation boundaries", () => {
     const navigation = await screen.findByRole("navigation", { name: "Agent" });
     const home = screen.getByRole("link", { name: "All Agents" });
     expect(home.getAttribute("aria-current")).not.toBe("page");
-    if (section.startsWith("/settings")) {
-      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).not.toBe("page");
+    // /settings/instructions redirects to the Instructions page, which has its own item.
+    if (section.startsWith("/settings") && section !== "/settings/instructions") {
+      // Settings opens from the Overview and has no item of its own, so the Overview stays current.
+      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
     }
     const frame = document.querySelector('[data-ui="content-page-frame"]');
     fireEvent.click(home);
@@ -325,4 +329,20 @@ it("switches Agents within Tasks without sharing their search state", async () =
   fireEvent.click(await screen.findByRole("menuitem", { name: "Reviewer" }));
   await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/tasks`));
   expect((screen.getByRole("searchbox", { name: "Search Tasks" }) as HTMLInputElement).value).toBe("deployment");
+});
+
+it("puts the switcher's Agents in their own focusable, named scroll region", async () => {
+  resetWebAppState();
+  installApi({ agentList: [agentListItem, secondAgentListItem] });
+  window.history.replaceState({}, "", `/agents/${agentId}`);
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Switch Agent, current Agent Reviewer" }));
+  // A long roster scrolls here, so the region is reachable by keyboard and has a name.
+  const roster = await screen.findByRole("group", { name: "Agents" });
+  expect(roster.getAttribute("tabindex")).toBe("0");
+  expect(within(roster).getByRole("menuitem", { name: "Reviewer" })).toBeTruthy();
+  expect(within(roster).getByRole("menuitem", { name: "Helper" })).toBeTruthy();
+  // All Agents and New Agent stay outside it, so they remain in view however long the list is.
+  expect(within(roster).queryByRole("menuitem", { name: "All Agents" })).toBeNull();
+  expect(screen.getByRole("menuitem", { name: "New Agent" })).toBeTruthy();
 });

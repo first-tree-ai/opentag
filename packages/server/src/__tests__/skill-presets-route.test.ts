@@ -240,7 +240,7 @@ describe("preset Skill routes", () => {
       headers: PROOF_HEADERS,
     });
     expect(listed.statusCode).toBe(200);
-    expect(preset.listForAgent).toHaveBeenCalledWith(AGENT);
+    expect(preset.listForAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT }));
 
     const installed = await app.inject({
       method: "POST",
@@ -250,7 +250,7 @@ describe("preset Skill routes", () => {
     });
     expect(installed.statusCode).toBe(200);
     expect(installed.json()).toMatchObject({ action: "updated", skill: { source: "preset" } });
-    expect(preset.installForAgent).toHaveBeenCalledWith(AGENT, "mcp-onboarding");
+    expect(preset.installForAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT }), "mcp-onboarding");
     await app.close();
   });
 });

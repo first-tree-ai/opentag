@@ -22,6 +22,11 @@ import {
 } from "./runtime-config.js";
 import { AgentRuntimeOptionsSchema } from "./runtime-configuration-options.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import {
+  RuntimeCredentialFailureHintSchema,
+  RuntimeSelfCheckReportSchema,
+  RuntimeSelfCheckRequestSchema,
+} from "./runtime-self-check.js";
 import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { SlackAutoSetupRuntimeRequestSchema } from "./slack-auto-setup.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
@@ -33,6 +38,7 @@ export {
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_ID_MAX_BYTES,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
@@ -243,6 +249,13 @@ export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
   return 1;
 }
 
+const SessionMessageContentSchema = z
+  .object({
+    kind: z.literal("text"),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
+  })
+  .strict();
+
 export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
@@ -261,6 +274,15 @@ export const SessionReconcileRequestSchema = z
       .strict()
       .optional(),
     desired: z.enum(["ready", "stopped"]),
+    // Only sent to a Local Client that negotiated runtime.sessionMessageReconcile.
+    sessionMessage: z
+      .object({
+        messageId: z.string().uuid(),
+        sourceSessionId: z.string().uuid(),
+        content: SessionMessageContentSchema,
+      })
+      .strict()
+      .optional(),
     runtime: EffectiveRuntimeSnapshotSchema.optional(),
   })
   .strict()
@@ -287,6 +309,18 @@ export const SessionReconcileRequestSchema = z
     }
     if (frame.sessionKind !== "internal" && frame.creatorSessionId) {
       context.addIssue({ code: "custom", path: ["creatorSessionId"], message: "A visible Session forbids a creator" });
+    }
+    if (
+      frame.sessionMessage &&
+      (frame.desired !== "ready" ||
+        !z.uuid().safeParse(frame.sessionId).success ||
+        !z.uuid().safeParse(frame.agentId).success)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionMessage"],
+        message: "A Session message requires a ready reconcile with Session and Agent UUIDs",
+      });
     }
     if (frame.desired === "stopped" && frame.sessionCliProof) {
       context.addIssue({
@@ -386,6 +420,26 @@ export const RetainedTurnReportClaimSchema = z
   })
   .strict();
 
+export const SessionMessageDeliveryResultSchema = z
+  .object({
+    type: z.literal("session:message:deliver:result"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    targetSessionId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    status: z.enum(["accepted", "rejected"]),
+    reason: InputRejectReasonSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "accepted" && frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
+    }
+    if (frame.status === "rejected" && !frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
+    }
+  });
+
 export const SessionReconcileResultSchema = z
   .object({
     type: z.literal("session:reconcile:result"),
@@ -395,6 +449,7 @@ export const SessionReconcileResultSchema = z
     status: z.enum(["ready", "stopped", "running", "reporting", "busy", "recovery_required", "rejected"]),
     reason: byteString(256, "Reconcile reason exceeds the 256-byte limit", 1).optional(),
     turn: ReconcileTurnSchema.optional(),
+    sessionMessage: z.union([z.literal("deferred"), SessionMessageDeliveryResultSchema]).optional(),
     // MVP-only recovery manifest. Durable Server-side Turn ownership replaces it after MVP.
     retainedReports: z.array(RetainedTurnReportClaimSchema).max(RUNTIME_MVP_RETAINED_REPORT_LIMIT).optional(),
   })
@@ -448,7 +503,43 @@ export const SessionReconcileResultSchema = z
         });
       }
     }
-  });
+  })
+  .refine(
+    ({ sessionMessage: message, requestId, sessionId, placementGeneration, status, retainedReports }) =>
+      !message ||
+      message === "deferred" ||
+      (message.requestId === requestId &&
+        message.targetSessionId === sessionId &&
+        message.placementGeneration === placementGeneration &&
+        ["ready", "running", "reporting"].includes(status) &&
+        !retainedReports?.length),
+    { path: ["sessionMessage"], message: "The delivery result does not match a ready reconcile" },
+  );
+
+export const RUNTIME_IM_BATCH_MAX_COUNT = 32;
+export const RuntimeImBatchMemberSchema = z
+  .object({
+    deliveryId: RuntimeOpaqueIdSchema,
+    imMessageId: RuntimeOpaqueIdSchema,
+    inputHash: RuntimeSha256Schema,
+  })
+  .strict();
+const RuntimeImBatchSchema = z
+  .array(RuntimeImBatchMemberSchema)
+  .min(1)
+  .max(RUNTIME_IM_BATCH_MAX_COUNT - 1);
+
+function validateImBatch(
+  frame: { deliveryId: string; imMessageId: string; batch?: Array<{ deliveryId: string; imMessageId: string }> },
+  context: z.RefinementCtx,
+): void {
+  if (!frame.batch) return;
+  const deliveryIds = [frame.deliveryId, ...frame.batch.map((item) => item.deliveryId)];
+  const messageIds = [frame.imMessageId, ...frame.batch.map((item) => item.imMessageId)];
+  if (new Set(deliveryIds).size !== deliveryIds.length || new Set(messageIds).size !== messageIds.length) {
+    context.addIssue({ code: "custom", path: ["batch"], message: "Batch members must have unique identities" });
+  }
+}
 
 export const DirectImMessageDeliveryRequestSchema = z
   .object({
@@ -462,11 +553,13 @@ export const DirectImMessageDeliveryRequestSchema = z
     attention: z.enum(["direct", "ambient"]),
     replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
+    batch: RuntimeImBatchSchema.optional(),
     runtime: EffectiveRuntimeSnapshotSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
   .strict()
   .superRefine((frame, context) => {
+    validateImBatch(frame, context);
     if (frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
     }
@@ -486,9 +579,11 @@ export const RuntimeImSteerRequestSchema = z
     attention: z.enum(["direct", "ambient"]),
     replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
+    batch: RuntimeImBatchSchema.optional(),
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(validateImBatch);
 
 export const RuntimeImCredentialGrantRequestSchema = z
   .object({
@@ -643,13 +738,6 @@ export const InternalSessionRuntimeOverridesSchema = z
   })
   .strict();
 
-const SessionMessageContentSchema = z
-  .object({
-    kind: z.literal("text"),
-    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
-  })
-  .strict();
-
 export const SessionMessageDeliveryRequestSchema = z
   .object({
     type: z.literal("session:message:deliver"),
@@ -669,25 +757,6 @@ export const SessionMessageDeliveryRequestSchema = z
     }
   });
 
-export const SessionMessageDeliveryResultSchema = z
-  .object({
-    type: z.literal("session:message:deliver:result"),
-    requestId: RuntimeRequestIdSchema,
-    messageId: z.string().uuid(),
-    targetSessionId: z.string().uuid(),
-    placementGeneration: RuntimeSequenceSchema,
-    status: z.enum(["accepted", "rejected"]),
-    reason: InputRejectReasonSchema.optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if (frame.status === "accepted" && frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
-    }
-    if (frame.status === "rejected" && !frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
-    }
-  });
 /*
  * Session-collaboration v3: the scheduled-origin branch. The v2
  * `SessionMessageDeliveryRequestSchema` above is frozen forever; ordinary messages keep flowing
@@ -747,6 +816,89 @@ export const SessionMessageDeliveryRequestV3Schema = z
       });
     }
   });
+
+/*
+ * Session-collaboration v4: Run outcome reporting. A Client that negotiated
+ * `runtime.sessionCollaboration` >= 4 reports a Session message Run that ended terminally without
+ * completing (timeout, permanent failure, exhausted retries). The Server uses it only to notify
+ * the creator of an internal Session; it is not a Turn Report and never changes delivery custody.
+ * A peer that negotiated a lower version never receives or sends these frames.
+ */
+export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "cancelled", "unknown"]);
+/**
+ * The first line of the Server-written creator notice for a non-completed internal Session Run.
+ * Managed instructions describe notices by this exact header, so both sides share one constant.
+ */
+export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+/** Stable machine-readable reason, e.g. `turn_timeout`; never free text or provider output. */
+export const SessionMessageRunOutcomeReasonSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+
+export const SessionMessageOutcomeReportSchema = z
+  .object({
+    type: z.literal("session:message:outcome"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    targetSessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    outcome: SessionMessageRunOutcomeSchema,
+    reason: SessionMessageRunOutcomeReasonSchema,
+  })
+  .strict();
+
+/**
+ * Server answer to one Run outcome report. `notified` and `ignored` are final for the report;
+ * `retry` means the creator notice exists but its delivery was not accepted yet (or the Server
+ * could not process the report), so the Client resends the same report later. `stale_generation`
+ * and `unsupported_capability` are final for this connection.
+ */
+export const SessionMessageOutcomeResultSchema = z
+  .object({
+    type: z.literal("session:message:outcome:result"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    status: z.enum(["notified", "ignored", "retry", "stale_generation", "unsupported_capability"]),
+  })
+  .strict();
+
+/**
+ * Client -> Server: re-prepare a Session whose accepted work was interrupted (daemon crash or
+ * restart) so the Client can run its one automatic retry. The Server answers with this result
+ * and, when `scheduled`, sends an ordinary `session:reconcile` (`desired: ready`) afterwards.
+ * For an IM Turn, `deliveryId`/`turnId` name the accepted, unreported delivery; the Server moves
+ * its report ownership to the requesting connection. Requires `runtime.sessionRecovery` v1.
+ */
+export const SessionRecoverRequestSchema = z
+  .object({
+    type: z.literal("session:recover"),
+    requestId: RuntimeRequestIdSchema,
+    sessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    deliveryId: z.string().uuid().optional(),
+    turnId: RuntimeOpaqueIdSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if ((frame.deliveryId === undefined) !== (frame.turnId === undefined)) {
+      context.addIssue({ code: "custom", path: ["turnId"], message: "A recovered Turn names both delivery and Turn" });
+    }
+  });
+
+/**
+ * `scheduled`: a ready reconcile follows. `rejected`: the Session or Turn cannot be recovered on this
+ * connection (final; the Client reports the interrupted work as failed). `retry`: transient, resend.
+ * `unsupported_capability`: the connection did not negotiate `runtime.sessionRecovery`.
+ */
+export const SessionRecoverResultSchema = z
+  .object({
+    type: z.literal("session:recover:result"),
+    requestId: RuntimeRequestIdSchema,
+    sessionId: z.string().uuid(),
+    status: z.enum(["scheduled", "rejected", "retry", "unsupported_capability"]),
+    reason: SessionMessageRunOutcomeReasonSchema.optional(),
+  })
+  .strict();
 
 const TraceEventBaseSchema = z.object({
   sequence: z.number().int().safe().positive(),
@@ -1235,6 +1387,7 @@ export type RuntimeApprovalDecision = z.infer<typeof RuntimeApprovalDecisionSche
 export type RuntimeApprovalResult = z.infer<typeof RuntimeApprovalResultSchema>;
 
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  RuntimeSelfCheckRequestSchema,
   RuntimeApprovalDecisionSchema,
   SlackAutoSetupRuntimeRequestSchema,
   SessionReconcileRequestSchema,
@@ -1247,6 +1400,8 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
    * only `runtime.sessionCollaboration` v2 never receives a scheduled frame at all.
    */
   SessionMessageDeliveryRequestV3Schema,
+  SessionMessageOutcomeResultSchema,
+  SessionRecoverResultSchema,
   TurnReportResultSchema,
   TurnActivityResultSchema,
   RuntimeImCredentialGrantResultSchema,
@@ -1262,12 +1417,16 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  RuntimeSelfCheckReportSchema,
+  RuntimeCredentialFailureHintSchema,
   RuntimeApprovalRequestSchema,
   RuntimeApprovalResultSchema,
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,
   SessionMessageDeliveryResultSchema,
+  SessionMessageOutcomeReportSchema,
+  SessionRecoverRequestSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   TurnActivityRequestSchema,
@@ -1305,6 +1464,11 @@ export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRunt
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
+export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;
+export type SessionMessageOutcomeReport = z.infer<typeof SessionMessageOutcomeReportSchema>;
+export type SessionMessageOutcomeResult = z.infer<typeof SessionMessageOutcomeResultSchema>;
+export type SessionRecoverRequest = z.infer<typeof SessionRecoverRequestSchema>;
+export type SessionRecoverResult = z.infer<typeof SessionRecoverResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
@@ -1447,7 +1611,8 @@ function directInputHash(frame: DirectImMessageDeliveryRequest, effectiveSnapsho
     effectiveSnapshotHash,
     frame.deadlineAt ?? null,
   ];
-  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  const hash = frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  return frame.batch ? hashTuple([3, hash, frame.batch]) : hash;
 }
 
 export function computeRuntimeImMessageSemanticHash(
@@ -1469,7 +1634,8 @@ export function computeRuntimeImMessageSemanticHash(
     frame.content.providerRef,
     frame.deadlineAt ?? null,
   ];
-  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  const hash = frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
+  return frame.batch ? hashTuple([3, hash, frame.batch]) : hash;
 }
 
 export function computeRuntimeImSteerInputHash(input: RuntimeImSteerRequest): string {
@@ -1496,6 +1662,9 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
     frame.sessionCliProof?.proofId ?? null,
     frame.desired,
     frame.runtime ? computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash : null,
+    ...(frame.sessionMessage
+      ? [frame.sessionMessage.messageId, frame.sessionMessage.sourceSessionId, frame.sessionMessage.content.text]
+      : []),
   ]);
 }
 

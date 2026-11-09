@@ -118,7 +118,7 @@ export function useMcpAddConnection(props: McpAddProps) {
   async function resolveServer(current: Attempt): Promise<MCPServer> {
     if (current.server) return current.server;
     if (current.binding) return (await browserApi.mcpServer(current.binding.mcpServerId)).server;
-    return await createMcpInstallation(newServerInput(current), create.mutateAsync);
+    return await createMcpInstallation(newServerInput(current), create.mutateAsync, props.agentId);
   }
   async function resolveBinding(current: Attempt) {
     if (current.binding) return current.binding;

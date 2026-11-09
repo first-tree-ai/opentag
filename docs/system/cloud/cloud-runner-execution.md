@@ -7,7 +7,7 @@ description: "Cloud Run Instances and native Sandboxes for Agent Sessions: lifec
 
 E3 connects an existing Agent Session's Sandbox identity to a real Cloud Run Instance and the
 Cloud Run native Sandbox CLI. It is opt-in and disabled by default. Each allocation uses **one
-Instance, one native Sandbox, one vCPU and 1 GiB**. The Runner remains part of Client and uses the
+Instance, one native Sandbox, one vCPU and 2 GiB**. The Runner remains part of Client and uses the
 CLI release version. E3 adds no database migration or table.
 
 ## Boundaries
@@ -26,11 +26,31 @@ CLI release version. E3 adds no database migration or table.
 
 ## Lifecycle and control
 
+`SandboxRunnerService` remains the allocation and Account-operation facade. Its token authority
+validates and renews Runner scopes; the workspace sealer proves the exact saved archive before
+release; the idle-reclaim collaborator owns automatic claims and same-account reuse. Allocation
+operations retain their original transaction boundaries and provider calls remain outside transactions.
+The Cloud delivery and Session collaboration owners share exact-connection helpers while retaining
+their own custody and terminal protocols.
+
+The Runner uses one work-kind descriptor for delivery and Session-message FIFO admission,
+synchronous active-slot reservation, execution and interrupted-namespace cleanup. Delivery reports
+and Session settlements retain their separate durable formats. Deadline construction, steering and
+activity reporting remain specific to each kind of work.
+
 The existing lifecycle is `unallocated → preparing → ready → releasing → unallocated`.
 The Server reserves the allocation name before cloud I/O. Competing callers reconcile the same
 allocation. An uncertain create or delete retains the row's resource reference and an actionable
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
+
+Cloud Admin Instance and operation GETs make at most three attempts for HTTP 502/503/504
+or transport failures, with 150 ms then 300 ms backoff. Credential acquisition, requests,
+response reads and backoff share one deadline, capped by the caller's read budget and the
+configured API timeout; cancellation stops the read without another attempt. A missing
+Instance still returns absence immediately; other HTTP errors, invalid responses and ownership
+failures are not retried. This read policy does not retry create or delete requests. Image
+prewarming uses its own separate deadline-bound read loop.
 
 The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
 native readiness is verified the Runner listens on that **declared port by default** (an injected
@@ -47,7 +67,8 @@ permission before admitting work/results.
 
 Cloud provider readiness alone does not make a Sandbox ready. The authenticated Runner must
 prove native execution, tool versions, image Runner version, and filesystem/credential isolation.
-Every launch and every post-cleanup reset re-runs that probe in full: real native Node execution,
+Every launch and every post-cleanup reset re-runs that probe in full, using one bounded native
+Node process for the Node version, metadata and isolation checks: real native Node execution,
 a bounded read of the image identity plus the locked Pi package metadata from the immutable
 rootfs (shape-checked and required to match the identity's Pi package/version, with the fixed Pi
 shim and its declared CLI entry verified accessible), and fresh filesystem/credential/
@@ -142,8 +163,9 @@ queued on the old connection cannot authorize a new start after reconnect.
 A queued Turn cancelled before it starts reports `not_started` and immediately advances the
 remaining FIFO queue; it does not require a new message or availability signal.
 
-Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
-direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
+Undispatched Cloud inputs use the existing ingress TTL and share a 99-input per-Session queue
+capacity across direct and ambient attention. Claimed inputs are protected from capacity eviction.
+Expiry/overflow records an explicit terminal reason. Dispatched Cloud
 inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
 pending input. The Server settles accepted work as `unknown` once it can no longer accept a report
 for it: a superseded allocation, a proven physical absence, or the end of the frozen execution
@@ -153,11 +175,54 @@ authenticated late report is answered `conflict`, the `unknown` outcome stays te
 children returned to the queue by that settlement are not re-absorbed into the turn. A live Runner
 that answers `reported` is never settled that way, because it replays the journaled report on the
 same socket; an overdue replay is logged as `CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE` for the report
-path to explain. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
-replacement allocation is permitted but cannot execute before verified restoration. A stopped
+path to explain. The first overdue recovery warns immediately with the delivery, Turn, connection
+and query phase; repeats on that connection warn at most once per hour while queries and report
+replays continue normally. A replacement connection gets a fresh warning. This process-local
+throttle retains at most 1,024 deliveries, evicting the oldest warning when full; an evicted
+delivery or a Server restart can warn again sooner. Recording a report or detaching its connection
+clears the corresponding warning state. Without E5 persistence, `restore_required` rejects replacement
+explicitly. With E5, replacement allocation is permitted but cannot execute before verified restoration. A stopped
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
-attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+attempt counter.
+
+Cloud follow-ups negotiate `imInputVersion: 1` and use `delivery:steer` on the same authenticated
+control connection. The Server freezes the existing delivery rows before sending. The Runner fsyncs
+the exact steer input and target Turn before a single native injection, fsyncs journaled results before
+`delivery:steer:result`, and retires it only after the exact `delivery:steer:ack`. Report-only
+connections may settle receipts but cannot submit new execution. A reopened `received` intent
+requires fresh authority; a reopened `started` intent reports uncertainty and never injects again.
+After an uncertainty receipt is acknowledged, the Server retains the exact frozen unknown state and
+does not resubmit it while its Root Turn is running. A later negative receipt cannot erase that
+uncertainty; an exact successful receipt can settle it. Existing child journal evidence is checked
+before the Root journal. A previously unseen input whose Root journal has retired receives a
+repeatable no-effect response without launching work or inventing a Root runtime snapshot. If failed
+Root recovery assigns an input to another Turn while its older receipt still awaits acknowledgement,
+the Runner replays that older evidence and returns a known no-effect retry for the untouched new
+attempt. This also applies when the recovered input becomes the next Turn's initial delivery:
+known unexecuted steer intents can be replaced atomically, while older effect evidence must be
+acknowledged before the new direct input is admitted.
+That old receipt can also retire after the child moves to a replacement Session: authenticated old
+scope and exact retired-parent evidence authorize only its old journal acknowledgement, not a
+mutation of the recovered child.
+
+Cloud direct and steer admission consume the same pre-send custody outcomes as Local dispatch.
+A selected batch member becoming unavailable defers with `IM_DELIVERY_BATCH_CHANGED`; a matching
+steer target's recorded completed report defers with `IM_DELIVERY_STEER_TARGET_ENDED`. The Cloud
+owner sends neither `delivery:run` nor `delivery:steer` for these outcomes and creates no pending
+request or release. The worker retains pending input, bounded backoff, retry warnings and counters
+without an error diagnostic. Identity and generation conflicts, frozen dispatches, transport errors
+and unknown outcomes keep their existing custody and recovery paths.
+
+The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
+token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single
+bounded native relay; the Worker checks the Session, Agent, placement and expected Turn before
+using the active Pi runtime's steer API. The existing model, credential execution and Turn remain in
+use. Steering is optional: a control-socket startup failure is recorded diagnostically while the Prompt
+continues, and Pi/process cleanup still runs. A stale socket path is removed before listening. Socket
+cleanup failure cannot mask the completed Turn or skip runtime/process cleanup. No host listener, extra
+model grant, database schema or independent retry loop is introduced.
+Ordered batching and message budgets follow [IM content delivery](../messaging/im-content-delivery.md).
 
 Once the current Runner connection and its verified allocation are both ready, the allocation
 service publishes a composition-injected notification. The IM worker wakes already-due initial inputs
@@ -169,7 +234,29 @@ a ready-triggered attempt that still fails retains bounded backoff. Model/capaci
 dispatches and claimed or accepted work are not reset. Missed notifications retain the regular scan
 and retry fallback; repeated readiness reports on one connection do not repeatedly wake the queue.
 
-Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
+An allocation result of `pending` stops before Agent admission and Runner dispatch, and records
+`allocation_wait` as failed. Normal startup uses the existing two-to-thirty-second capped backoff.
+For the first five claims of an undispatched input, an allocation without an idle-reclaim claim or
+recorded Sandbox error uses `IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING`: the retry log is `debug`,
+the operation outcome is `deferred`, and no Server error diagnostic is emitted. The next claim
+after those five backoffs (60 seconds on the ordinary schedule) uses the diagnostic
+`IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY` if allocation is still pending. Existing Sandbox errors,
+idle-reclaim claims, and frozen dispatches retain failure diagnostics immediately.
+An undispatched input observed behind an automatic claim with `workspace_save_failed` instead
+retries after ten minutes through the same `next_attempt_at` field and readiness wakeup. The
+Sandbox snapshot only chooses a delay; current Account and dispatch authority are still checked.
+The original ingress TTL, ordering, correlation, accepted custody and reports remain authoritative.
+
+Accepted recovery distinguishes a confirmed live `started` answer under active authority and an
+active allocation (`IM_DELIVERY_CLOUD_TURN_RUNNING`) from an exact Runner's `reported` answer
+awaiting durable replay (`IM_DELIVERY_CLOUD_REPORTING`). Before the existing report-acceptance
+cutoff, these are `deferred` outcomes with `debug` retry logs and no Server error diagnostic.
+They retain the same attempt counter, capped retry schedule and custody until the actual report.
+Missing connections, unanswered or failed queries, paused/stopped `started` recovery, and overdue
+answers remain `IM_DELIVERY_CLOUD_REPORT_PENDING` failures. The overdue replay warning is unchanged.
+Distinct waiting codes ensure that a later fault is diagnosed even after repeated normal waits.
+
+Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
 the execution and its lifetime is bounded by the runtime deadline. In E4,
@@ -191,13 +278,59 @@ Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasonin
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
 
+### Model retry ownership
+
+The model proxy is the sole automatic retry owner for each managed Cloud model call, including
+compaction summaries. It retries only a confirmed HTTP 429 rate-limit rejection, at most three
+times after the initial attempt. Pi session, summarization and provider retries are explicitly
+zero; the underlying OpenAI SDK also performs no retries. The Router, LiteLLM Router and
+provider SDK configuration must keep retries at zero so forwarding never multiplies the budget.
+
+New managed Pi settings disable all retry loops and the generated provider sends
+`x-opentag-model-retry-owner: proxy`. Only requests declaring that ownership receive proxy
+retries. Requests from older Runners are forwarded once, preserving their retry boundary during
+rolling upgrades. An older proxy ignores the declaration and forwards once; a new Runner does
+not compensate with a second retry owner.
+
+A confirmed rate-limit response preserves a validated `Retry-After` hint. Integer seconds are
+accepted and canonical HTTP-dates are rounded up to seconds. Arbitrary upstream headers and
+error text remain hidden; permanent quota errors expose no hint. A requested wait above 60
+seconds terminates the call instead of retrying early. Without a usable hint, the proxy uses
+jittered exponential delays based on 500 ms, 1 second and 2 seconds. One request timeout covers
+all attempts and waits. Cancellation, grant revocation and the existing absolute Turn deadline
+interrupt the work; a retry never extends permission lifetime or resets its deadline.
+
+HTTP 408/409/5xx, statusless transport failures, unusable successful responses and uncertain
+stream errors are not automatically replayed. This includes a lost Pi-to-proxy connection and a
+lost Router response after dispatch. The conservative policy also leaves provably undispatched
+503 responses terminal. A missing response is not evidence that the model did not execute.
+Each confirmed rejected attempt keeps the existing model-service usage settlement; accounting
+and idempotency semantics are unchanged.
+
+Compaction remains enabled. Native context-overflow recovery can compact history and make one
+bounded recovery with changed context; partial tool calls from a failed response are not
+executed. This differs from replaying an identical failed call. No model failure triggers a
+whole-Turn, delivery or scheduled-occurrence replay. `CLOUD_MODEL_RATE_LIMIT` records the attempt,
+planned wait and ownership declaration without logging upstream content or credentials.
+
+The Router can report a definite pre-output Provider rate limit inside HTTP 200 SSE. The model
+proxy inspects at most 8 KiB before the first complete data event, including heartbeat comments,
+and normalizes an initial `rate_limit_exceeded` envelope only when the Router sets
+`error.pre_stream_rejection` to boolean `true`. The Router emits that marker only after observing
+an upstream HTTP 429 rejection; it does not imply a ledger release committed. A validated string
+`error.retry_after` supplies the wait hint. The same proxy retry budget covers this shape.
+Unmarked or uncertain complete errors, events after model data and prefixes exceeding the cap
+retain their original stream behavior without replay. An accepted stream that fails, times out
+or reaches clean EOF before its first complete data event returns terminal HTTP 400
+`CLOUD_MODEL_UPSTREAM_UNCERTAIN`. Explicit permission revocation and shutdown return HTTP 401.
+
 The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
 is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness
 remain resource-policy follow-ups; the current global limit can be consumed by one Account.
 
 Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
 report, plus the Runner's per-allocation input journal — not a generic provider write journal or
-receipt. Provider writes proxied on behalf of a Turn follow the #634 rules: one upstream attempt
+receipt. Provider writes proxied on behalf of a Turn make one upstream attempt
 per proxied request, classified in memory as succeeded, definitely rejected, or unknown; an
 unknown write surfaces as an explicit `write_outcome_unknown` and is reconciled by the task layer
 instead of being replayed automatically. E4 therefore does not promise exactly-once provider
@@ -277,9 +410,9 @@ heartbeat cannot precede the authentication result.
 
 Boundary: E3 remains the native-execution acceptance path. The E4 acceptance path does not cover
 GCS workspace restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or
-Context Tree synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
-provider ingress/reply acceptance remain pending; current evidence is local composition and
-external local probes only. Do not claim E4 accepted from local results.
+Context Tree synchronization (E8). Local composition and external local probes do not establish
+native Cloud Run execution, GCP acceptance, or real IM ingress and reply delivery; verify those
+boundaries separately before claiming Cloud delivery acceptance.
 
 ## Required configuration
 
@@ -400,9 +533,16 @@ One Cloud Agent can execute several **Agent Sessions** concurrently. Each Sessio
 Sandbox and one Instance; it does not share a writable workspace or Pi history with another
 Session. Cloud Computer remains the Account's logical identity, not an execution lock.
 
-The existing IM delivery worker uses a Session lane for Cloud and an Agent lane for Local. Durable
-custody follows the same boundary: a running or uncertain Cloud delivery fences its own Session;
-Local custody retains the Agent-wide fence. The short PostgreSQL advisory lock still serializes
+Physical occupancy and cleanup follow the retained Session placement's Cloud Computer owner until
+verified absence, including after Agent suspension, deletion or transfer. Managed execution still
+requires current active Account/Agent/binding/Session authority and the Agent's current Computer.
+Reservation locks capacity first, then authority rows before Sandbox; physical cleanup and borrow
+ownership checks never acquire those authority locks after locking Sandbox. Agent overview keeps
+current Agent ownership and can use its retained owned Cloud placements after detach.
+
+The existing IM delivery worker uses a Session lane. Durable custody follows the same boundary: a
+running or uncertain delivery fences its own Session, and a Local and a Cloud delivery of one Agent
+fence each other. The short PostgreSQL advisory lock still serializes
 claim decisions for an Agent, ending before allocation, dispatch or execution. Committed custody
 then prevents a second Worker from admitting overlapping work in the same Session.
 
@@ -454,7 +594,9 @@ There is no retention clock, no preallocated pool and no new scheduler service.
 
 E7 requires a single Server process while Runner control ownership, busy state and readiness live
 in the process-local `RunnerHub`. Database CAS alone does not make active-active Servers supported.
-Shutdown drains the current sweep before closing the database.
+Shutdown stops admission of further sweep candidates and drains the current candidate before
+closing the database. An in-flight seal or Cloud Admin request remains owned until it settles
+under its existing timeout; shutdown does not race it against a detached timeout.
 
 A second, same-account Session may borrow the physical Instance on demand instead of cold
 allocating. The borrower must be an `unallocated` Sandbox on the same logical Cloud Computer, and
@@ -476,10 +618,35 @@ new table). While it is set, execution authority is revoked, a start reports pen
 ingress returns `pending` — never a terminal `environment_stopped` — so a message that arrives
 during recycle or borrow is retried. Lifecycle stays `ready` while sealing; only a proven seal
 moves an automatically reclaimed row to `releasing` for verified deletion. The budget clock is
-always `last_activity_at`; `idle_reclaim_at` only records who owns the reclamation intent, so an
-abandoned claim is retried after the row's original budget, never after a fresh window. Once a
-proven seal moved a row to `releasing`, a failed or interrupted delete is retried on the next
-sweep from the durable marker without waiting out another budget. A failed or unknown seal keeps
+always `last_activity_at`; `idle_reclaim_at` records reclamation intent. Already claimed rows
+and failed automatic releases wait ten minutes from `updated_at` before another attempt. A
+successful DELETE followed by a still-present UID instead records `cloud_delete_pending` in the
+existing `last_error_code`, with the confirmation window's start in `last_error_at`. The binding
+stays `releasing`: DELETE acceptance alone never clears ownership or counts as a release.
+The overview treats this marker as a normal phase: it adds no attention count or public error,
+so workspace controls keep their existing pending-release behavior.
+Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
+most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
+15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
+release; a different UID or a failed read is an incomplete release. A still-present UID at a due
+read after the original 60-second confirmation window also becomes incomplete and returns to
+the ten-minute failure cooldown. The start of this window
+survives restarts and is never extended by a confirmation read. Explicit Account stop retains
+its bounded synchronous verification. No schema change or additional worker is needed.
+
+The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
+each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,
+resource name/UID, phase marker and claim; only its winner performs external I/O. Failures
+advance the retry clock, while ordinary
+polls leave it untouched. The initial claim and its successful transition to deletion proceed
+immediately; a failed deletion is not retried again within the same pass. Unknown DELETE or
+marker-write outcomes retain the binding and retry through the same UID/etag-fenced conditional
+delete after cooldown. A lost acknowledgement of a committed pending marker instead resumes
+confirmation. Restart recovery of an abandoned claim or failed release can wait up to ten
+minutes. This is retry pacing, not an
+exactly-once guarantee for a worker stalled beyond that interval; socket, generation, object CAS
+and UID fences still protect external effects and late results. Explicit generation-bound Account
+save/release bypasses the automatic cooldown. A failed or unknown seal keeps
 the resource binding, the claim and the existing workspace-save marker. A provider-confirmed
 absent UID clears the binding; a failed read never does. An explicit Account stop clears the
 marker in the same transition that precedes cloud DELETE, so a late transfer can never win.

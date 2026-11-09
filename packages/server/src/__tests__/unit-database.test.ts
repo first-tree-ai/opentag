@@ -135,7 +135,7 @@ describe("unit database harness", () => {
     ]);
   });
 
-  it("fails closed for a missing Account, an unowned repair target, and a second binding of one installation", async () => {
+  it("fails closed for a missing Account, an unowned repair target, and a second Account binding one installation", async () => {
     const now = new Date("2026-08-30T00:00:00.000Z");
     const machine = new MachineAuthService(unitDatabase.database, { now: () => now });
     await expect(machine.issueForAccount(randomUUID(), {})).rejects.toMatchObject({ code: "AUTH_USER_SUSPENDED" });
@@ -158,16 +158,22 @@ describe("unit database harness", () => {
       arch: "x64",
       clientVersion: "0.0.2",
     });
+    const otherAccountId = randomUUID();
+    await unitDatabase.database.insert(users).values({
+      id: otherAccountId,
+      displayName: "Other account",
+      email: "other-guarded@example.com",
+    });
     await expect(
       machine.exchangeConnectCode({
-        code: (await machine.issueForAccount(accountId, {})).code,
+        code: (await machine.issueForAccount(otherAccountId, {})).code,
         installationId: first.installationId,
         displayName: "Second",
         platform: "linux",
         arch: "x64",
         clientVersion: "0.0.2",
       }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: "COMPUTER_ACCOUNT_CONFLICT" });
     expect(await unitDatabase.database.select().from(computers)).toHaveLength(1);
   });
 

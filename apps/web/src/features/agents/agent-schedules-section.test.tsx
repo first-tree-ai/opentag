@@ -3,7 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
-import { AgentSchedulesSection, formatScheduleTime } from "./agent-schedules-section.js";
+import * as m from "../../paraglide/messages.js";
+import { AgentSchedulesSection } from "./agent-schedules-section.js";
+import { shortScheduleTime } from "./schedule-rule.js";
 
 const AGENT_ID = "10c4a3b9-1631-4e4b-8922-23932ea36237";
 const SCHEDULE_ID = "5238c0ee-a939-4bc0-8772-66d46c9df934";
@@ -54,39 +56,65 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("AgentSchedulesSection", () => {
   it.each([
-    ["accepted", "Received by the runtime"],
-    ["unreachable", "Runtime unreachable"],
-    ["rejected", "Rejected by the runtime"],
-    ["unknown", "Handoff result unknown"],
-    ["skipped", "Skipped"],
-  ] as const)("shows the latest %s handoff before details are opened", async (outcome, label) => {
+    ["accepted", null, null, ""],
+    ["unreachable", null, "text-kumo-danger", "didn't run: the computer was offline"],
+    ["rejected", null, "text-kumo-danger", "didn't run: the Agent didn't accept it"],
+    ["skipped", "late", "text-kumo-danger", "didn't run: the time was missed"],
+    ["rejected", "agent_suspended", "text-kumo-danger", "didn't run: the Agent was paused"],
+    ["unknown", null, "text-kumo-warning", "not confirmed"],
+    ["accepted", "provider_process_exited", "text-kumo-danger", "failed"],
+  ] as const)("says what happened to a %s (%s) last run in the reader's terms", async (outcome, code, tone, suffix) => {
     const item = schedule({
-      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code: null },
+      lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code },
     });
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
     const detail = vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
     mount();
-    expect(await screen.findByText(`Latest handoff: ${label}`)).toBeTruthy();
-    expect(screen.getByText(formatScheduleTime(TIME, item.timezone))).toBeTruthy();
-    expect(screen.getByText("Enabled")).toBeTruthy();
+    const time = shortScheduleTime(TIME, item.timezone);
+    expect(await screen.findByText(time)).toBeTruthy();
+    const last = screen.getByText(time).parentElement;
+    expect(last?.textContent).toBe(suffix ? `Last ${time} ${suffix}` : `Last ${time}`);
+    if (tone) expect(last?.classList.contains(tone)).toBe(true);
+    else expect(last?.className).toBe("");
+    expect(screen.getByText("Every minute")).toBeTruthy();
+    // Running on schedule is the default state, so it carries no label.
+    expect(screen.queryByText("Enabled")).toBeNull();
     expect(screen.queryByText(item.prompt)).toBeNull();
     expect(detail).not.toHaveBeenCalled();
   });
 
+  it("names why a delivered Run failed in its detail, for the IM failure message's link", async () => {
+    const item = schedule({
+      lastDispatch: {
+        scheduledFor: TIME,
+        attemptedAt: TIME,
+        messageId: null,
+        outcome: "accepted",
+        code: "provider_process_exited",
+      },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
+    const note = await screen.findByText(
+      "This Run failed with code provider_process_exited. It won't be rerun; the next run follows the schedule.",
+    );
+    // A stable reason can be 64 characters with no space to break at.
+    expect(note.classList.contains("wrap-anywhere")).toBe(true);
+    expect(m.agents_schedules_run_failed_note({ code: "x", next: "不会补跑。" }, { locale: "zh" })).toBe(
+      "这次运行失败，错误代码 x。不会补跑。",
+    );
+  });
+
   it.each([
-    [
-      "accepted",
-      "The runtime received this occurrence. This does not confirm task completion; check Tasks for progress and results.",
-    ],
-    ["unreachable", "This occurrence could not reach the runtime. Check the Agent’s Computer status."],
-    ["rejected", "The runtime did not accept this occurrence. Check the reason code and the Agent’s Computer status."],
-    [
-      "unknown",
-      "The handoff has not been confirmed yet. The task may have started; check Tasks before starting it again.",
-    ],
-    ["skipped", "This occurrence was skipped. See the reason code."],
-  ] as const)("explains %s without claiming the business task completed", async (outcome, explanation) => {
+    ["unreachable", "It won't be rerun; the next run follows the schedule."],
+    ["rejected", "It won't be rerun; the next run follows the schedule."],
+    ["skipped", "It won't be rerun; the next run follows the schedule."],
+    ["unknown", "It may have started. Check Tasks before starting it again."],
+  ] as const)("adds only what the row does not say for a %s last run", async (outcome, note) => {
     const item = schedule({
       lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
     });
@@ -94,40 +122,35 @@ describe("AgentSchedulesSection", () => {
     vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Show details" }));
-    expect(await screen.findByText(explanation)).toBeTruthy();
-    expect(screen.getByText("runtime_not_ready")).toBeTruthy();
-    expect(screen.getByText("Next scheduled time", { exact: true })).toBeTruthy();
-    expect(screen.queryByText("The schedule will not retry this occurrence.") !== null).toBe(outcome !== "accepted");
+    fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
+    expect(await screen.findByText(item.prompt)).toBeTruthy();
+    expect(screen.getByText("Lark · thread")).toBeTruthy();
+    if (note) expect(screen.getByText(note)).toBeTruthy();
+    expect(screen.queryByText("runtime_not_ready")).toBeNull();
+    expect(screen.queryByText(/test-chat|test-thread/)).toBeNull();
+    expect(screen.queryByText("Next scheduled time")).toBeNull();
   });
 
   it.each(["unreachable", "rejected"] as const)(
-    "explains an exhausted one-time %s handoff without implying another occurrence",
+    "does not promise another run after an exhausted one-time %s occurrence",
     async (outcome) => {
       const item = schedule({
         schedule: { kind: "at", at: TIME },
         nextTriggerAt: null,
-        lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: "runtime_not_ready" },
+        lastDispatch: { scheduledFor: TIME, attemptedAt: TIME, messageId: null, outcome, code: null },
       });
       vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
       vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
 
       mount();
-      expect(await screen.findByText("One-time schedule exhausted")).toBeTruthy();
-      expect(
-        screen.getByText(
-          `Latest handoff: ${outcome === "unreachable" ? "Runtime unreachable" : "Rejected by the runtime"}`,
-        ),
-      ).toBeTruthy();
-      expect(screen.queryByText("Enabled")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Show details" }));
-      expect(await screen.findByText("The schedule will not retry this occurrence.")).toBeTruthy();
-      expect(screen.getByText("runtime_not_ready")).toBeTruthy();
-      expect(screen.queryByText(/before the next scheduled time|Future occurrences/)).toBeNull();
+      expect(await screen.findByText("Finished")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
+      expect(await screen.findByText("It won't be rerun.")).toBeTruthy();
+      expect(screen.queryByText(/next run/)).toBeNull();
     },
   );
 
-  it("keeps a past failed handoff visible when the schedule is paused", async () => {
+  it("labels a paused schedule and keeps its past failed run visible", async () => {
     const item = schedule({
       enabled: false,
       nextTriggerAt: null,
@@ -136,8 +159,20 @@ describe("AgentSchedulesSection", () => {
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
     mount();
     expect(await screen.findByText("Paused")).toBeTruthy();
-    expect(screen.getByText("Latest handoff: Runtime unreachable")).toBeTruthy();
-    expect(screen.queryByText(/Next scheduled time/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect(screen.getByText(/didn't run: the computer was offline$/)).toBeTruthy();
+    expect(screen.queryByText(/^Next /)).toBeNull();
+  });
+
+  it("names the internal Session a schedule belongs to, in the row and in its details", async () => {
+    const item = schedule({ target: { ...schedule().target, internal: true } });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+    mount();
+    expect(await screen.findByText(`Internal Session ${TARGET_ID.slice(0, 8)}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
+    expect(await screen.findByText(`Internal Session ${TARGET_ID}`)).toBeTruthy();
+    expect(screen.queryByText("Feishu · thread")).toBeNull();
   });
 
   it("keeps the full task behind the Account detail read", async () => {
@@ -149,11 +184,11 @@ describe("AgentSchedulesSection", () => {
     expect(await screen.findByText("Daily check")).toBeTruthy();
     expect(screen.queryByText(item.prompt)).toBeNull();
     expect(detail).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Latest handoff:/)).toBeNull();
+    expect(screen.queryByText(/^Last /)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
     expect(await screen.findByText(item.prompt)).toBeTruthy();
-    expect(screen.getByText(/feishu channel test-chat, thread test-thread/)).toBeTruthy();
+    expect(screen.getByText("Lark · thread")).toBeTruthy();
     expect(detail).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID);
   });
 
@@ -192,8 +227,36 @@ describe("AgentSchedulesSection", () => {
     await waitFor(() => expect(pause).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID, 3));
     expect(await screen.findByText("Paused")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show details" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
+    expect(screen.getByRole("button", { name: "Daily check" }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID, 4));
+  });
+
+  it("keeps keyboard focus on the control when Pause turns into Resume", async () => {
+    const current = schedule();
+    const paused = schedule({ enabled: false, nextTriggerAt: null, revision: 4 });
+    vi.spyOn(browserApi, "agentSchedules")
+      .mockResolvedValueOnce({ items: [summaryOf(current)], nextCursor: null })
+      .mockResolvedValue({ items: [summaryOf(paused)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(paused);
+    let settle: (value: typeof paused) => void = () => undefined;
+    vi.spyOn(browserApi, "pauseAgentSchedule").mockImplementation(
+      () => new Promise((resolve) => (settle = resolve)) as never,
+    );
+
+    mount();
+    const button = await screen.findByRole("button", { name: "Pause" });
+    button.focus();
+    fireEvent.click(button);
+    // Still enabled and focused while the change is pending, so focus never falls to the page.
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(button);
+    settle(paused);
+    expect(await screen.findByRole("button", { name: "Resume" })).toBe(document.activeElement);
   });
 });

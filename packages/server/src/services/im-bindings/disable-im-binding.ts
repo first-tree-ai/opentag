@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { imBindings, sessions, slackInstallations } from "../../db/schema/index.js";
+import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
 import { TERMINAL_SETUP_STATES } from "./current-binding.js";
 
 /**
@@ -83,6 +84,7 @@ export async function disableImBindingInTransaction(
     .update(sessions)
     .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
     .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
+  await markEndedDescendantsInactive(transaction, { imBindingId });
   return true;
 }
 

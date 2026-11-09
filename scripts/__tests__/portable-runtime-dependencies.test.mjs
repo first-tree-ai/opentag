@@ -144,6 +144,28 @@ test("the portable runtime dependency contract accepts only the supported exact 
   ]);
   assert.deepEqual(readPortableDirectDependencyPins({}), []);
   assert.deepEqual(readPortableDirectDependencyPins({ dependencies: {} }), []);
+  for (const version of ["1.0.2-alpha.202611020650", "1.0.2-rc.1", "1.0.2-0"]) {
+    assert.deepEqual(readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": version } }), [
+      { name: "@first-tree-ai/context-tree", version },
+    ]);
+  }
+  for (const version of [
+    "staging",
+    "1.0.2-alpha.*",
+    "^1.0.2-alpha.1",
+    "1.0.2-alpha.01",
+    "1.0.2-01",
+    "1.0.2-",
+    "01.0.2",
+    "1.0.2-alpha..1",
+    "npm:@first-tree-ai/context-tree@1.0.2-alpha.1",
+    "file:context-tree.tgz",
+  ]) {
+    assert.throws(
+      () => readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": version } }),
+      /exact x\.y\.z/,
+    );
+  }
   assert.throws(
     () => readPortableDirectDependencyPins({ dependencies: { commander: "^15.0.0" } }),
     /unsupported runtime dependency/,
@@ -177,7 +199,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
 test("the checked-in apps/cli manifest is accepted under the portable shipping contract", () => {
   const cliManifest = JSON.parse(readFileSync(join(repoRoot, "apps", "cli", "package.json"), "utf8"));
   assert.deepEqual(readPortableDirectDependencyPins(cliManifest), [
-    { name: "@first-tree-ai/context-tree", version: "1.0.1" },
+    { name: "@first-tree-ai/context-tree", version: "1.1.1" },
   ]);
 });
 
@@ -529,13 +551,13 @@ test("the real frozen install closure assembles, verifies, and runs the embedded
   });
   assert.equal(closure.direct.length, 1);
   assert.equal(closure.packages[0].name, "@first-tree-ai/context-tree");
-  assert.equal(closure.packages[0].version, "1.0.1");
+  assert.equal(closure.packages[0].version, "1.1.1");
   assert.ok(closure.packages.length >= 20, `real closure is unexpectedly small: ${closure.packages.length}`);
   writeJson(join(appDir, "package.json"), {
     name: "open-tag",
     version: "0.0.2",
     type: "module",
-    dependencies: { "@first-tree-ai/context-tree": "1.0.1" },
+    dependencies: { "@first-tree-ai/context-tree": "1.1.1" },
   });
   writeDependencyClosureFile(appDir, closure);
   writeText(join(appDir, "cli", "index.mjs"), "export {};\n");

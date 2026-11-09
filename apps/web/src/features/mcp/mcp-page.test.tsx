@@ -41,7 +41,7 @@ describe("MCP connector list", () => {
   });
   it.each([
     ["expired", null, "Authorization expired"],
-    ["error", "MCP_OAUTH_TOKEN_INVALID", "Authorization failed"],
+    ["error", "MCP_OAUTH_TOKEN_INVALID", "Authorization didn't finish. Try again."],
   ] as const)("shows the known reason for %s", async (status, failureCode, label) => {
     stub([entry({ authorization: { ...authorization(), status, failureCode } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
@@ -104,7 +104,7 @@ describe("MCP connector list", () => {
         active: null,
         expired: "Authorization expired",
         missing: "Authorization required",
-        "probe-failed": "Request timed out",
+        "probe-failed": "The service timed out. Try again.",
       }[state];
       if (label) expect(screen.getByText(label)).toBeTruthy();
       else expect(screen.queryByRole("alert")).toBeNull();
@@ -250,7 +250,7 @@ describe("MCP authorization returns", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&mcp_oauth_error=ARBITRARY`);
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(screen.queryByText(/ARBITRARY/)).toBeNull();
   });
   it("returns a failed detail authorization to the same inline authentication section", async () => {
@@ -259,7 +259,7 @@ describe("MCP authorization returns", () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     const dialog = await screen.findByRole("dialog", { name: "linear" });
-    expect(await within(dialog).findByText("Authorization failed")).toBeTruthy();
+    expect(await within(dialog).findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(within(dialog).getByLabelText("Connector address")).toBeTruthy();
     expect(within(dialog).queryByRole("button", { name: "Back" })).toBeNull();
   });

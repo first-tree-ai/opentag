@@ -9,6 +9,7 @@ import {
   type RuntimeApprovalRequest,
   RuntimeApprovalRequestSchema,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeImOutboxContext,
   type RuntimeImSteerRequest,
   ServerRuntimeBusinessFrameSchema,
   type TurnActivityRequest,
@@ -21,6 +22,7 @@ import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
+  type AgentTurnRunnerOptions,
   buildAgentInput,
   completionForError,
   completionForResult,
@@ -1321,6 +1323,7 @@ describe("AgentTurnRunner", () => {
 
     runner.start(liveOwner(delivery()));
     await runner.settled();
+    expect(environment.cleanup).not.toHaveBeenCalled();
     expect(logs).toContainEqual(
       expect.objectContaining({
         level: "warn",
@@ -1483,6 +1486,14 @@ describe("AgentTurnRunner", () => {
     const driftedPlanPrepare = vi.fn(async () => {
       throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
     });
+    const driftedCredentials = {
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "feishu" as const,
+        executionId: "exec-drifted",
+      })),
+      cleanup: vi.fn(async () => undefined),
+    };
     const drifted = new AgentTurnRunner({
       bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
       connection: { send: vi.fn(async () => undefined) },
@@ -1496,10 +1507,7 @@ describe("AgentTurnRunner", () => {
         cwd: () => "/workspace",
         sessionKind: () => "visible",
       } as unknown as SessionRuntimeManager,
-      credentialEnvironment: {
-        prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
-        cleanup: vi.fn(async () => undefined),
-      },
+      credentialEnvironment: driftedCredentials,
       turnPlan: {
         prepare: driftedPlanPrepare,
         cleanup: vi.fn(async () => undefined),
@@ -1507,6 +1515,7 @@ describe("AgentTurnRunner", () => {
     });
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
+    expect(driftedCredentials.cleanup).toHaveBeenCalledExactlyOnceWith("session-1", "exec-drifted");
     expect(driftedPlanPrepare).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "feishu" }),
       expect.any(AbortSignal),
@@ -1608,7 +1617,10 @@ describe("AgentTurnRunner", () => {
     let receipt: RecordedSteerInput | undefined;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
-    const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
+    const steer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("steer failed"))
+      .mockResolvedValue({ outcome: Promise.resolve("processed") });
     const markReporting = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -1922,7 +1934,9 @@ describe("AgentTurnRunner", () => {
   });
 });
 
-function outgoingHarness() {
+function outgoingHarness(
+  options: { channelActivity?: AgentTurnRunnerOptions["channelActivity"]; outboxContext?: RuntimeImOutboxContext } = {},
+) {
   const request = delivery();
   request.content.providerRef = {
     provider: "feishu",
@@ -1967,6 +1981,7 @@ function outgoingHarness() {
   const send = vi.fn(async (_frame: { type: string; phase?: string }) => undefined);
   const runner = new AgentTurnRunner({
     now: Date.now,
+    ...(options.channelActivity ? { channelActivity: options.channelActivity } : {}),
     bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
     connection: { send, capabilityVersion },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -1983,7 +1998,11 @@ function outgoingHarness() {
       },
     } as unknown as SessionRuntimeManager,
     credentialEnvironment: {
-      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "feishu" as const,
+        ...(options.outboxContext ? { outboxContext: options.outboxContext } : {}),
+      })),
       cleanup: vi.fn(async () => undefined),
     },
     turnPlan: { prepare, cleanup: vi.fn(async () => undefined) },
@@ -2006,6 +2025,68 @@ function outgoingHarness() {
     logs,
   };
 }
+
+describe("Channel Session idle compaction", () => {
+  const CHANNEL = { provider: "feishu", sessionKind: "channel", chatId: "oc_1" } as const;
+  const THREAD = { provider: "feishu", sessionKind: "thread", chatId: "oc_1", threadId: "omt_1" } as const;
+
+  function compactionHarness(idle: boolean, outboxContext?: RuntimeImOutboxContext) {
+    const beginTurn = vi.fn(async () => idle);
+    const recordActivity = vi.fn(async () => undefined);
+    return {
+      ...outgoingHarness({
+        channelActivity: { beginTurn, recordActivity },
+        ...(outboxContext ? { outboxContext } : {}),
+      }),
+      beginTurn,
+      recordActivity,
+    };
+  }
+  const promptOf = (prompt: ReturnType<typeof outgoingHarness>["prompt"]) =>
+    (prompt.mock.calls[0] as unknown as [{ compactContext?: boolean }])[0];
+
+  it("asks the Provider to compact when the Channel Session has been idle", async () => {
+    const { runner, request, prompt, beginTurn, recordActivity } = compactionHarness(true, CHANNEL);
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalledWith(request.sessionId, expect.any(Number)));
+    expect(beginTurn).toHaveBeenCalledWith(request.sessionId, expect.any(Number));
+    expect(promptOf(prompt).compactContext).toBe(true);
+  });
+
+  it("does not compact a Channel Session that was active recently", async () => {
+    const { runner, request, prompt, recordActivity } = compactionHarness(false, CHANNEL);
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
+    expect(promptOf(prompt).compactContext).toBeUndefined();
+  });
+
+  it.each([
+    ["a Thread Session", THREAD],
+    ["a Session whose Server sent no outbox", undefined],
+  ])("leaves %s alone", async (_name, outboxContext) => {
+    const { runner, request, prompt, beginTurn, recordActivity, submit } = compactionHarness(true, outboxContext);
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(beginTurn).not.toHaveBeenCalled();
+    expect(recordActivity).not.toHaveBeenCalled();
+    expect(promptOf(prompt).compactContext).toBeUndefined();
+  });
+
+  it.each([
+    ["an observer copy of a thread message", "observer" as const],
+    ["a reply in an ended thread, with no reply role", undefined],
+  ])("compacts the Channel Session on %s", async (_name, replyRole) => {
+    const { runner, request, prompt, recordActivity } = compactionHarness(true, CHANNEL);
+    request.content.providerRef = {
+      ...request.content.providerRef,
+      threadId: "omt_1",
+    } as typeof request.content.providerRef;
+    if (replyRole) request.replyRole = replyRole;
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
+    expect(promptOf(prompt).compactContext).toBe(true);
+  });
+});
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {
   return {

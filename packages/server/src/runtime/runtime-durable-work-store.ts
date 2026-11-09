@@ -215,7 +215,7 @@ export class PostgresRuntimeDurableWorkStore {
       const pageRows = hasMore ? rows.slice(0, limit) : rows;
       const lastRow = pageRows.at(-1);
       return {
-        items: pageRows.map((row) => rowToRecord(row)),
+        items: pageRows.map((row) => runtimeDurableRecordFromRow(row)),
         ...(hasMore && lastRow ? { nextCursor: encodeCursor(lastRow) } : {}),
       };
     });
@@ -242,7 +242,7 @@ export class PostgresRuntimeDurableWorkStore {
         ),
       )
       .limit(1);
-    return row ? rowToRecord(row) : undefined;
+    return row ? runtimeDurableRecordFromRow(row) : undefined;
   }
 
   async write(computerId: string, input: RuntimeDurableWorkRecord): Promise<void> {
@@ -260,7 +260,7 @@ export class PostgresRuntimeDurableWorkStore {
   }
 
   /**
-   * Compare-and-set replacement of one Session-message record. The Cloud Session collaboration
+   * Compare-and-set replacement or settlement of one Session-message record. The Cloud Session collaboration
    * owner is the only caller: it evaluates its custody policy against `expected` before this
    * transaction, and this method re-checks that exact record — payload, status, timestamps and
    * all — under the Computer-row and record-row locks, so a concurrent settlement, re-announcement
@@ -364,8 +364,6 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    // Existing receipt updates do not consume a record slot. Only payload growth is quota-bound.
-    await this.#assertPayloadQuota(transaction, computerId, payloadBytes, existing);
     const updated = await transaction
       .update(runtimeDurableWork)
       .set(recordValues(computerId, record))
@@ -447,30 +445,6 @@ export class PostgresRuntimeDurableWorkStore {
     }
   }
 
-  async #assertPayloadQuota(
-    transaction: DatabaseTransaction,
-    computerId: string,
-    incomingPayloadBytes: number,
-    replacing: RuntimeDurableWorkRow,
-  ): Promise<void> {
-    const currentPayloadBytes = serializedPayloadBytes(replacing.payload);
-    if (incomingPayloadBytes <= currentPayloadBytes) return;
-    const rows = await transaction
-      .select({ payload: runtimeDurableWork.payload })
-      .from(runtimeDurableWork)
-      .where(eq(runtimeDurableWork.computerId, computerId));
-    const retainedPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
-    const requestedPayloadBytes = retainedPayloadBytes - currentPayloadBytes + incomingPayloadBytes;
-    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
-      throw new RuntimeDurableWorkQuotaExceededError(
-        "payload-bytes",
-        this.#maxPayloadBytesPerComputer,
-        retainedPayloadBytes - currentPayloadBytes,
-        requestedPayloadBytes,
-      );
-    }
-  }
-
   async #prune(
     transaction: DatabaseTransaction,
     computerId: string,
@@ -531,7 +505,7 @@ function recordValues(computerId: string, record: RuntimeDurableWorkRecord) {
   } as const;
 }
 
-function rowToRecord(row: RuntimeDurableWorkRow): RuntimeDurableWorkRecord {
+export function runtimeDurableRecordFromRow(row: RuntimeDurableWorkRow): RuntimeDurableWorkRecord {
   return RuntimeDurableWorkRecordSchema.parse({
     attempts: row.attempts,
     acceptedAt: row.acceptedAt,

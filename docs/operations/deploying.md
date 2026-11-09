@@ -185,8 +185,9 @@ or not at all; the server refuses to start on a partially configured group.
 
 Bundles stream through the server under the caller's own credential — the Account session, a Computer
 machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
-fully private. Object keys are derived server-side from the Account, Agent, Skill, and content hash;
-a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
+fully private. Object keys are derived server-side from the Account, Agent, Skill, and an independent
+random object ID; the content hash verifies archive integrity rather than naming the object. A caller
+never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
 container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
 the server at it.
 
@@ -278,6 +279,45 @@ archive reports `name_conflict` and refuses updates. Reinstalling the same-named
 restore the original source from the backup, or delete that Skill and reinstall it. If the original sources must remain
 in the live database, roll back only to a Server that accepts them. Deploying the enum migrations alone does not make
 older application validators compatible.
+
+Feishu chat metadata enrichment also requires a JSONB compatibility check when rolling back to a Server revision that
+predates `chatMode` and `groupMessageType` in `ProviderInboundContextSchema`. Older Server revisions spread
+`im_messages.provider_context` directly into the strict `RuntimeProviderMessageRefSchema` and parse
+`feishu_inbound_receipts.work_payload` with the older strict `ProviderInboundContextSchema`. On the documented
+single-replica staging and production deployments (stop-then-start replacement), stop the current OpenTag Server
+instance before rolling back; if running multiple replicas, roll out the tolerant reader before enabling metadata
+writes. To roll back safely across this boundary, follow this ordered sequence:
+
+1. **Quiesce the current Server**: stop the running Server container so no live Feishu WebSocket writer or detached
+   `#enrichChatMetadata` background task can write `chatMode` or `groupMessageType` while cleanup is in progress.
+2. **Audit both tables**:
+
+```sql
+select count(*) from im_messages where provider_context ?| array['chatMode', 'groupMessageType'];
+select count(*) from feishu_inbound_receipts
+where work_payload is not null
+  and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
+```
+
+3. **Strip the keys** if either count is non-zero:
+
+```sql
+update im_messages
+set provider_context = provider_context - 'chatMode' - 'groupMessageType'
+where provider_context ?| array['chatMode', 'groupMessageType'];
+
+update feishu_inbound_receipts
+set work_payload = jsonb_set(
+  work_payload,
+  '{event,providerContext}',
+  (work_payload #> '{event,providerContext}') - 'chatMode' - 'groupMessageType'
+)
+where work_payload is not null
+  and (work_payload #> '{event,providerContext}') ?| array['chatMode', 'groupMessageType'];
+```
+
+4. **Verify zero remaining rows**: re-run both `select count(*)` audit queries above and require both counts to be `0`.
+5. **Start the older Server revision** and restore traffic.
 
 ## Verifying a deployment
 

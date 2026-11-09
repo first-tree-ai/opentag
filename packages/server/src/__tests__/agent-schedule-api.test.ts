@@ -1,3 +1,4 @@
+import { stubScheduleScope } from "./support/schedule-scope.js";
 /**
  * HTTP contract for the Agent Schedule management routes. The ScheduleService is stubbed: what is
  * under test here is the wire behavior — Session proof authentication happens BEFORE any request
@@ -36,7 +37,7 @@ const sessionId = randomUUID();
 const scheduleId = randomUUID();
 const now = "2026-09-28T01:00:00.000Z";
 
-const scope: AgentScheduleScope = { accountId, agentId, sessionId, sessionKind: "channel" };
+const scope: AgentScheduleScope = stubScheduleScope({ accountId, agentId, sessionId, sessionKind: "channel" });
 
 const schedule: AgentSchedule = {
   id: scheduleId,

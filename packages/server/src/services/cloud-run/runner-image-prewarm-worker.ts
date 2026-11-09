@@ -1,6 +1,8 @@
 import type { ChannelName } from "@opentag/shared";
 import type { CloudRunnerConfig } from "../../cloud-runner-config.js";
 import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
+import { createInstrumentedFetch } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
   createRunnerImagePrewarmCoordinator,
@@ -120,13 +122,20 @@ export function createRunnerImagePrewarmWorker(input: {
   databaseUrl: string;
   logger: Pick<ServiceLogger, "info" | "warn">;
   supervisor?: BackgroundFailureSupervisor;
+  performanceLogger?: PerformanceLogger;
 }): RunnerImagePrewarmWorker | undefined {
   const config = input.config;
   if (!config.enabled || !config.prewarm?.enabled) return undefined;
+  const perfLogger = input.performanceLogger;
+  const metadataFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "gcp-metadata" }) : undefined;
+  const prewarmFetch = perfLogger ? createInstrumentedFetch(perfLogger, { provider: "cloud-run" }) : undefined;
   const tokenProvider = config.staticAccessToken
     ? createStaticTokenProvider(config.staticAccessToken)
-    : createMetadataServerTokenProvider();
-  const prewarmer = new RunnerImagePrewarmer(input.environment, config, { tokenProvider });
+    : createMetadataServerTokenProvider(metadataFetch ? { fetchImpl: metadataFetch } : {});
+  const prewarmer = new RunnerImagePrewarmer(input.environment, config, {
+    tokenProvider,
+    ...(prewarmFetch ? { fetchImpl: prewarmFetch } : {}),
+  });
   return new RunnerImagePrewarmWorker({
     prewarmer,
     acquire: createRunnerImagePrewarmCoordinator(input.databaseUrl, prewarmer.resourceName),

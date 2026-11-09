@@ -59,11 +59,45 @@ export interface AgentPromptRequest {
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;
   readonly signal?: AbortSignal;
+  /**
+   * Compact the existing native conversation before this input, keeping its identity. A failed
+   * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.
+   */
+  readonly compactContext?: boolean;
 }
 
 export interface AgentSteerRequest {
   readonly expectedRunId: AgentRunId;
   readonly input: AgentInput;
+}
+
+/**
+ * What became of accepted steer input, known once the Run it joined settles:
+ * - `processed`: the Run completed after the Provider began processing the input.
+ * - `not_started`: the Provider reports it never began processing the input, so delivering it
+ *   again cannot repeat its effects.
+ * - `interrupted`: the Provider may have begun processing the input, but the Run did not complete.
+ */
+export type AgentSteerOutcome = "processed" | "not_started" | "interrupted";
+
+export interface AgentSteerReceipt {
+  /** Settles with the joined Run; never rejects. */
+  readonly outcome: Promise<AgentSteerOutcome>;
+  /** See `AgentProviderSteerCustody.inConversation`. */
+  readonly inConversation?: Promise<void>;
+}
+
+/**
+ * Provider custody of one steer input. A Provider whose steer acknowledgement already means it owns
+ * the input returns none; one that can still drop acknowledged input reports whether it started.
+ */
+export interface AgentProviderSteerCustody {
+  started(): boolean;
+  /**
+   * Resolves once the input is durably in the Provider's conversation, so a process killed now and resumed
+   * still has it. Never settles otherwise, and absent when the Provider gives no such signal.
+   */
+  readonly inConversation?: Promise<void>;
 }
 
 export interface AgentAbortRequest {
@@ -129,6 +163,8 @@ export interface AgentRunResult {
   readonly binding?: AgentRuntimeBinding;
   readonly error?: AgentRunError;
   readonly providerDiagnostics?: JsonValue;
+  /** Background work the Provider process may still have had when the Run ended; if so, it stopped with it. */
+  readonly abandonedBackgroundWork?: readonly string[];
 }
 
 export interface AgentRuntimeWorkspace {
@@ -141,6 +177,7 @@ export interface AgentRuntimeWorkspace {
 
 export interface AgentRuntimePolicy {
   readonly allowedCommands?: readonly string[];
+  readonly managedCli?: readonly string[];
   readonly fileSystem: "read-only" | "workspace-write" | "unrestricted";
   readonly network: "disabled" | "enabled";
   readonly approvals: "never" | "on-request" | "unless-trusted";
@@ -292,6 +329,7 @@ export interface AgentProviderRunResult {
   readonly usage?: AgentUsage;
   readonly error?: AgentRunError;
   readonly diagnostics?: JsonValue;
+  readonly abandonedBackgroundWork?: readonly string[];
 }
 
 export interface AgentProviderRunContext {
@@ -312,7 +350,7 @@ export interface AgentRuntime {
   readonly binding: AgentRuntimeBinding | undefined;
 
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
-  steer(request: AgentSteerRequest): Promise<void>;
+  steer(request: AgentSteerRequest): Promise<AgentSteerReceipt>;
   followUp(request: AgentPromptRequest): Promise<AgentRunResult>;
   respond(response: AgentInteractionResponse): Promise<void>;
   abort(request: AgentAbortRequest): Promise<void>;

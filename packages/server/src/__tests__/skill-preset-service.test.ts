@@ -1,6 +1,7 @@
 import { type ListAgentSkillsResponse, SKILL_ERROR_CODES } from "@opentag/shared";
 import type { PresetSkill } from "@opentag/skill-presets";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SkillPresetService, SkillService, type SkillServiceOptions } from "../services/skills/index.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
 import { createSkillHarness, type SkillHarness } from "./support/skill-service-harness.js";
@@ -167,11 +168,15 @@ describe("SkillPresetService runtime surface", () => {
     const { agentId } = await agentFor();
     const service = serviceFor([await preset("demo-preset")], new FakeSkillObjectStore());
 
-    expect((await service.listForAgent(agentId)).presets[0]).toMatchObject({ state: "not_installed" });
-    const installed = await service.installForAgent(agentId, "demo-preset");
+    expect((await service.listForAgent(await h.runtimeSource(agentId))).presets[0]).toMatchObject({
+      state: "not_installed",
+    });
+    const installed = await service.installForAgent(await h.runtimeSource(agentId), "demo-preset");
     expect(installed.action).toBe("installed");
     expect(installed.skill).toMatchObject({ agentId, source: "preset" });
-    expect((await service.listForAgent(agentId)).presets[0]).toMatchObject({ state: "installed" });
+    expect((await service.listForAgent(await h.runtimeSource(agentId))).presets[0]).toMatchObject({
+      state: "installed",
+    });
   });
 });
 
@@ -195,8 +200,8 @@ class InterleavedReadSkillService extends SkillService {
     return snapshot;
   }
 
-  override async listForAgent(agentId: string): Promise<ListAgentSkillsResponse> {
-    const snapshot = await super.listForAgent(agentId);
+  override async listForAgent(source: SessionCliSourceContext): Promise<ListAgentSkillsResponse> {
+    const snapshot = await super.listForAgent(source);
     await this.#interleaveOnce();
     return snapshot;
   }
@@ -224,24 +229,27 @@ async function installWithInterleavedUserUpload(surface: "account" | "runtime"):
   await seeded.install(accountId, agentId, "demo-preset");
 
   const user = { id: "", archiveSha256: "" };
-  const racing = new InterleavedReadSkillService({ database: h.database, store, keyPrefix: "skills" }, async () => {
-    const uploaded = await h.upload(skills, accountId, agentId, "demo-preset", {
-      replace: true,
-      source: "web_upload",
-      files: { "notes.md": "user content" },
-    });
-    user.id = uploaded.id;
-    user.archiveSha256 = uploaded.archiveSha256;
-  });
+  const racing = new InterleavedReadSkillService(
+    { database: h.database, proofs: h.proofs, store, keyPrefix: "skills" },
+    async () => {
+      const uploaded = await h.upload(skills, accountId, agentId, "demo-preset", {
+        replace: true,
+        source: "web_upload",
+        files: { "notes.md": "user content" },
+      });
+      user.id = uploaded.id;
+      user.archiveSha256 = uploaded.archiveSha256;
+    },
+  );
   const service = new SkillPresetService({
     skills: racing,
     presets: [await preset("demo-preset", "v2")],
     categories: [...CATEGORIES],
   });
-  const install = () =>
+  const install = async () =>
     surface === "account"
       ? service.install(accountId, agentId, "demo-preset")
-      : service.installForAgent(agentId, "demo-preset");
+      : service.installForAgent(await h.runtimeSource(agentId), "demo-preset");
 
   // The lost race is reported as a name conflict, which is what the catalog already says about a
   // same-named Skill the user owns — the install is refused rather than retried into an overwrite.

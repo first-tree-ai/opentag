@@ -19,12 +19,15 @@ import {
   GitHubContextTreeOperations,
   type GitHubContextTreeOperationsOptions,
 } from "../services/agents/github-context-tree-operations.js";
+import { AgentGitHubAuthorizationError } from "../services/github/agent-github-credential-service.js";
 import { GitHubConnectionServiceError } from "../services/github/errors.js";
 import { GitPublicationError } from "../services/github-proxy/git-packets.js";
 import { type GitProcessOptions, runTrustedProcess } from "../services/github-proxy/git-process.js";
 import type { PublicationRemote } from "../services/github-proxy/git-remote.js";
 import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
+import { githubMcpFixture } from "./support/github-mcp.js";
 import type { GitHubRepositoryBinding } from "./support/legacy-github-fixtures.js";
+import { createUnitDatabase } from "./support/unit-database.js";
 
 const exec = promisify(execFile);
 type GitHubConnectionStatus = CurrentGitHubConnectionStatus & {
@@ -88,8 +91,13 @@ function overview(row: GitHubConnectionStatus | null) {
 function management(row: GitHubConnectionStatus | null | (() => GitHubConnectionStatus | null)) {
   const current = () => (typeof row === "function" ? row() : row);
   const stub = {
-    getOverview: vi.fn(async () => overview(current())),
-    getCurrentUserCredential: vi.fn(async (connectionId: string) => {
+    getOverview: vi.fn(async () => {
+      const row = current();
+      return overview(row?.status === "active" ? row : null);
+    }),
+    getExecutionUserCredential: vi.fn(async (input: { connectionId: string; signal?: AbortSignal }) => {
+      input.signal?.throwIfAborted();
+      const connectionId = input.connectionId;
       const observed = current();
       if (!observed) return null;
       return {
@@ -111,7 +119,7 @@ function management(row: GitHubConnectionStatus | null | (() => GitHubConnection
         installationId: "555",
         fullName: input.fullName,
         defaultBranch: input.fullName === "acme/product" ? "main" : "master",
-        authorizationVersion: BigInt(observed?.authorizationVersion ?? "1"),
+        authorizationVersion: observed?.authorizationVersion ?? "1",
         credentialGeneration: BigInt(observed?.credentialGeneration ?? "1"),
       };
     }),
@@ -134,18 +142,31 @@ function operations(
   managementStub: ContextTreeGitHubManagement,
   options: Partial<GitHubContextTreeOperationsOptions> = {},
 ) {
-  return new GitHubContextTreeOperations({
-    management: managementStub,
-    api: { createPrivateRepository: vi.fn(), initializeContextTree: vi.fn(), getRepository: vi.fn() },
-    credentials: {
-      acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
-    },
-    computerKind: vi.fn(async () => "cloud" as const),
-    workspace: { close: vi.fn(async () => undefined) } as unknown as GitWorkspace,
-    treeHeads: verifier(),
-    remoteFactory: vi.fn(() => ({}) as PublicationRemote),
-    ...options,
-  });
+  return presentOperations(
+    new GitHubContextTreeOperations({
+      management: managementStub,
+      api: {
+        getAuthenticatedUser: vi.fn(async () => ({ id: "42", login: "acme" })),
+        createPrivateRepository: vi.fn(),
+        initializeContextTree: vi.fn(),
+        getRepository: vi.fn(),
+      },
+      computerKind: vi.fn(async () => "cloud" as const),
+      workspace: { close: vi.fn(async () => undefined) } as unknown as GitWorkspace,
+      treeHeads: verifier(),
+      remoteFactory: vi.fn(() => ({}) as PublicationRemote),
+      ...options,
+    }),
+  );
+}
+
+function presentOperations(operation: GitHubContextTreeOperations) {
+  return {
+    availability: (accountId: string, agentId: string) => operation.availability(accountId, agentId),
+    execute: (input: Parameters<GitHubContextTreeOperations["run"]>[0]) => operation.run(input),
+    run: async (input: Parameters<GitHubContextTreeOperations["run"]>[0]) => (await operation.run(input)).result,
+    close: () => operation.close(),
+  };
 }
 
 function runInput(overrides: Partial<Parameters<GitHubContextTreeOperations["run"]>[0]> = {}) {
@@ -181,13 +202,16 @@ describe("Cloud Context Tree connect", () => {
       status: "completed",
       repository: "acme/memory",
     });
-    expect(github.getOverview).toHaveBeenCalledWith(ACCOUNT);
+    expect(github.getOverview).toHaveBeenCalledWith(ACCOUNT, AGENT);
     expect(verify).toHaveBeenCalledWith(
       expect.objectContaining({ repositoryId: "777", ref: "refs/heads/main", signal: expect.any(AbortSignal) }),
     );
-    expect(remoteFactory).toHaveBeenCalledWith("acme/memory", "ghu_scoped_test_token");
+    expect(remoteFactory).toHaveBeenCalledWith("acme/memory", expect.any(Function));
     expect(github.resolveRepository).toHaveBeenCalledWith({
+      accountId: ACCOUNT,
+      agentId: AGENT,
       connectionId: row.id,
+      expectedAuthorizationVersion: row.authorizationVersion,
       fullName: "acme/memory",
       access: "read",
       signal: expect.any(AbortSignal),
@@ -217,7 +241,7 @@ describe("Cloud Context Tree connect", () => {
     );
     const cloud = operations(github);
     expect(await cloud.run(runInput())).toEqual({ status: "completed", repository: "Acme/Memory" });
-    expect(github.getCurrentUserCredential).not.toHaveBeenCalled();
+    expect(github.getExecutionUserCredential).not.toHaveBeenCalled();
   });
 
   it("requires an active connection, an Account-owned credential, and an unchanged fencing state", async () => {
@@ -251,7 +275,7 @@ describe("Cloud Context Tree connect", () => {
       installationId: "555",
       fullName: input.fullName,
       defaultBranch: "master",
-      authorizationVersion: BigInt(versions.shift() ?? "2"),
+      authorizationVersion: versions.shift() ?? "2",
       credentialGeneration: 1n,
     }));
     expect(await operations(racing).run(runInput())).toEqual({ status: "failed", code: "stale_configuration" });
@@ -297,11 +321,11 @@ describe("Cloud Context Tree connect", () => {
         }),
       },
     });
-    const first = cloud.run(runInput());
-    expect(cloud.run(runInput({ repository: "acme/Memory" }))).toBe(first);
+    const first = cloud.execute(runInput());
+    expect(cloud.execute(runInput({ repository: "acme/Memory" }))).toBe(first);
     expect(await cloud.run(runInput({ repository: "acme/Other" }))).toEqual({ status: "failed", code: "busy" });
     release();
-    expect(await first).toEqual({ status: "completed", repository: "Acme/Memory" });
+    expect((await first).result).toEqual({ status: "completed", repository: "Acme/Memory" });
 
     const next = cloud.run(runInput());
     expect(await next).toMatchObject({ status: "completed" });
@@ -370,8 +394,9 @@ function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConf
     updateContextTreeSelection: vi.fn(async () => config),
   };
   const cloud = {
+    availability: async () => ({ status: "ready" as const, readOnly: false }),
     computerKind: vi.fn(async () => kind),
-    run: vi.fn(async () => ({ status: "completed", repository: "acme/memory" }) as const),
+    run: vi.fn(async () => ({ result: { status: "completed", repository: "acme/memory" } }) as const),
   };
   const service = new ContextTreeOperationService(agents, registry, cloud);
   return { agents, cloud, registry, service };
@@ -404,7 +429,7 @@ describe("ContextTreeOperationService dispatch", () => {
     const f = dispatchFixture("local");
     f.cloud.run.mockImplementationOnce(async () => {
       f.registry.supportsCapability.mockReturnValue(false);
-      return { status: "completed", repository: "acme/memory" };
+      return { result: { status: "completed" as const, repository: "acme/memory" as const } };
     });
     expect(await f.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "capability_missing" });
     expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
@@ -471,8 +496,8 @@ describe("ContextTreeOperationService dispatch", () => {
     );
   });
 
-  it("requires pausing before a Cloud selection change and reports a lost revision race", async () => {
-    const paused = dispatchFixture(
+  it("changes a running Cloud Agent's selection and reports a lost revision race", async () => {
+    const running = dispatchFixture(
       "cloud",
       agentConfig({
         status: "active",
@@ -482,8 +507,14 @@ describe("ContextTreeOperationService dispatch", () => {
         },
       }),
     );
-    expect(await paused.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "pause_required" });
-    expect(paused.cloud.run).not.toHaveBeenCalled();
+    expect(await running.service.run(ACCOUNT, AGENT, request())).toMatchObject({ status: "completed" });
+    expect(running.cloud.run).toHaveBeenCalledOnce();
+    expect(running.agents.updateContextTreeSelection).toHaveBeenCalledWith(
+      ACCOUNT,
+      AGENT,
+      expect.objectContaining({ status: "active" }),
+      expect.arrayContaining([{ kind: "git", path: ".", ref: "main", repository: "acme/old" }]),
+    );
 
     const raced = dispatchFixture("cloud");
     raced.agents.updateContextTreeSelection.mockRejectedValue(
@@ -498,7 +529,7 @@ describe("ContextTreeOperationService dispatch", () => {
   it.each(["local", "cloud"] as const)("creates for %s on the Server without Computer credentials", async (kind) => {
     const f = dispatchFixture(kind);
     const result = { status: "completed", repository: "acme/memory", ref: "trunk" } as const;
-    f.cloud.run.mockResolvedValue(result);
+    f.cloud.run.mockResolvedValue({ result });
     expect(await f.service.run(ACCOUNT, AGENT, request({ action: "create", ref: "HEAD" }))).toEqual(result);
     expect(f.cloud.run).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: ACCOUNT, action: "create", ref: "HEAD" }),
@@ -556,15 +587,17 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
     const github = management(connection({ bindings: [binding({ fullNameDisplay: `acme/${name}` })] }));
     const cloud = new GitHubContextTreeOperations({
       management: github,
-      api: { createPrivateRepository: vi.fn(), initializeContextTree: vi.fn(), getRepository: vi.fn() },
-      credentials: {
-        acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
+      api: {
+        getAuthenticatedUser: vi.fn(async () => ({ id: "42", login: "acme" })),
+        createPrivateRepository: vi.fn(),
+        initializeContextTree: vi.fn(),
+        getRepository: vi.fn(),
       },
       computerKind: async () => "cloud",
       workspace,
       remoteFactory: () => localRemote(origin),
     });
-    return { cloud, workspace };
+    return { cloud: presentOperations(cloud), workspace };
   }
 
   beforeEach(async () => {
@@ -612,6 +645,65 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
     await cloud.close();
     expect(existsSync(stagingRoot as string)).toBe(false);
   });
+
+  it.each(["local", "cloud"] as const)(
+    "verifies %s settings with the real MCP root and refreshes between Git calls",
+    async (kind) => {
+      const unit = await createUnitDatabase();
+      const f = await githubMcpFixture(unit.database);
+      const agentId = f.ids[1] as string;
+      await f.connect(agentId);
+      vi.spyOn(f.api, "getRepository").mockResolvedValue({
+        repositoryId: "77",
+        fullName: "acme/memory",
+        defaultBranch: "main",
+        private: true,
+        permissions: { pull: true, push: true, admin: true },
+      });
+      const observed: string[] = [];
+      const operation = new GitHubContextTreeOperations({
+        management: f.github,
+        api: f.api,
+        computerKind: async () => kind,
+        remoteFactory: (_repository, token) => {
+          const remote = localRemote(tree);
+          const current = async () => {
+            const value = await token();
+            expect((await f.auth.buildHeaders(f.accountId, agentId, f.server.id)).authorization).toBe(
+              `Bearer ${value}`,
+            );
+            observed.push(value);
+          };
+          return {
+            refs: async (...args) => {
+              await current();
+              return remote.refs(...args);
+            },
+            seed: async (...args) => {
+              await current();
+              await remote.seed(...args);
+              await f.flows.refreshAuthorization(f.root.id);
+            },
+            publish: remote.publish,
+          };
+        },
+      });
+      try {
+        expect(
+          await operation.run(runInput({ accountId: f.accountId, agentId, repository: "acme/memory" })),
+        ).toMatchObject({
+          result: { status: "completed", repository: "acme/memory" },
+          authority: { rootAuthorizationId: f.root.id },
+        });
+        expect(new Set(observed).size).toBe(2);
+        expect(f.exchange).not.toHaveBeenCalled();
+      } finally {
+        await operation.close();
+        await unit.close();
+      }
+    },
+    30_000,
+  );
 
   it("verifies a subtree on a selected branch despite unrelated repository symlinks", async () => {
     await mkdir(join(tree, "docs"));
@@ -708,5 +800,112 @@ it("does not accept another remaining Tree binding when the requested grant is r
   expect(await cloud.run(runInput({ path: ".", ref: "main", repository: "acme/product" }))).toEqual({
     status: "failed",
     code: "permission_denied",
+  });
+});
+
+it.each(["missing", "abort"] as const)("keeps direct settings credential failure=%s fenced", async (mode) => {
+  const github = management(connection());
+  const credential = await github.getExecutionUserCredential({ connectionId: "connection" });
+  let release!: () => void, enter!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const entered = new Promise<void>((r) => {
+    enter = r;
+  });
+  github.getExecutionUserCredential.mockImplementation(async () => {
+    enter();
+    if (mode === "abort") await gate;
+    return mode === "missing" ? null : credential;
+  });
+  let token!: () => Promise<string>;
+  const observed: string[] = [];
+  const operation = operations(github, {
+    remoteFactory: (_repository, read) => {
+      token = read;
+      return {} as PublicationRemote;
+    },
+    treeHeads: {
+      verify: async () => {
+        observed.push(await token());
+        return "a".repeat(40);
+      },
+    },
+  });
+  const running = operation.run(runInput());
+  try {
+    await entered;
+    if (mode === "abort") {
+      const closing = operation.close();
+      release();
+      await closing;
+    }
+    expect(await running).toEqual({ status: "failed", code: mode === "missing" ? "permission_denied" : "failed" });
+    expect(observed).toEqual([]);
+    expect(github.getExecutionUserCredential).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        agentId: AGENT,
+        authorizationRevision: "github:1",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  } finally {
+    release();
+    await running;
+    await operation.close();
+  }
+});
+
+describe("Context Tree GitHub availability", () => {
+  it.each([false, true])(
+    "reports readOnly=%s from the selected MCP authority without remote work",
+    async (readOnly) => {
+      const m = management(connection());
+      m.getOverview = vi.fn(async () => ({ ...overview(connection()), connection: { ...connection(), readOnly } }));
+      const api = {
+        getAuthenticatedUser: vi.fn(),
+        createPrivateRepository: vi.fn(),
+        initializeContextTree: vi.fn(),
+        getRepository: vi.fn(),
+      };
+      const op = operations(m, { api });
+      try {
+        expect(await op.availability(ACCOUNT, AGENT)).toEqual({ status: "ready", readOnly });
+        expect(m.getOverview).toHaveBeenCalledWith(ACCOUNT, AGENT);
+        expect(m.getExecutionUserCredential).not.toHaveBeenCalled();
+        for (const call of Object.values(api)) expect(call).not.toHaveBeenCalled();
+      } finally {
+        await op.close();
+      }
+    },
+  );
+  it.each(["authentication_required", "github_connector_disabled", "github_connector_unsupported"] as const)(
+    "reports %s before repository details are requested",
+    async (code) => {
+      const m = management(null);
+      if (code !== "authentication_required")
+        m.getOverview = vi.fn(async () => {
+          throw new AgentGitHubAuthorizationError(code);
+        });
+      const op = operations(m);
+      try {
+        expect(await op.availability(ACCOUNT, AGENT)).toEqual({ status: "failed", code });
+      } finally {
+        await op.close();
+      }
+    },
+  );
+  it("propagates unexpected read failures for explicit retry", async () => {
+    const m = management(null);
+    m.getOverview = vi.fn(async () => {
+      throw new Error("database unavailable");
+    });
+    const op = operations(m);
+    try {
+      await expect(op.availability(ACCOUNT, AGENT)).rejects.toThrow("database unavailable");
+    } finally {
+      await op.close();
+    }
   });
 });

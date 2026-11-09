@@ -1,6 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { agentUsagePath } from "@opentag/shared/browser";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { viewerTimezone } from "../query/keys.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
@@ -17,10 +19,9 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Total tokens")).toBeTruthy();
     expect(screen.queryByText("Failed Tasks")).toBeNull();
     expect(screen.queryByText("Average per measured Task")).toBeNull();
-    const coverage = screen.getByRole("status");
-    expect(
-      within(coverage).getByText("31 of 32 tasks reported token usage; totals and charts show recorded usage only."),
-    ).toBeTruthy();
+    // A missing report is a quiet line under the totals, not a warning banner.
+    expect(screen.getByText("Tasks without reported usage: 1")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("heading", { name: "Daily token usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
@@ -37,7 +38,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(sevenDayOption);
     await waitFor(() =>
       expect(
-        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/v1/agents/${agentId}/usage?days=7`),
+        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === agentUsagePath(agentId, 7, viewerTimezone())),
       ).toBe(true),
     );
     expect(await screen.findByRole("img", { name: /428K Tokens used · Last 7 days/ })).toBeTruthy();
@@ -59,16 +60,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/usage`);
     render(<App />);
 
-    const coverage = (
-      await screen.findByText("No token data was reported for the 4 tasks. Totals and charts show recorded usage only.")
-    ).closest<HTMLElement>("[role='status']");
-    expect(coverage).toBeTruthy();
-    if (!coverage) throw new Error("Expected the unavailable Token data banner");
-    expect(
-      within(coverage).getByText(
-        "No token data was reported for the 4 tasks. Totals and charts show recorded usage only.",
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText("Tasks without reported usage: 4")).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "No token usage" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Daily token usage" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Token breakdown" })).toBeNull();
@@ -93,6 +85,6 @@ describe("OpenTag Web App Shell", () => {
     const loading = await screen.findByLabelText("Loading Agent usage");
     expect(loading.children).toHaveLength(2);
     releaseUsage();
-    expect(await screen.findByText(/31 of 32 tasks reported token usage/)).toBeTruthy();
+    expect(await screen.findByText("Tasks without reported usage: 1")).toBeTruthy();
   });
 });

@@ -295,7 +295,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
     }
   });
 
-  it("moves non-ended Sessions atomically and leaves ended Sessions in place", async () => {
+  it("rejects Computer replacement without changing current or ended Session placement", async () => {
     const value = await fixture();
     try {
       const first = await connect(value);
@@ -320,22 +320,20 @@ describe("Computer repair and Agent rebind boundaries", () => {
         ended: true,
       });
 
-      const rebound = await value.agents.rebindById(value.bootstrap.userId, agent.id, second.computerId);
-      expect(rebound).toMatchObject({
-        computerId: second.computerId,
-        revision: 2,
+      await expect(value.agents.rebindById(value.bootstrap.userId, agent.id, second.computerId)).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
       });
       const [agentRow] = await value.database.select().from(agents).where(eq(agents.id, agent.id));
       expect(agentRow).toMatchObject({
-        computerId: second.computerId,
+        computerId: first.computerId,
       });
       const [moved] = await value.database
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, active.session.id));
       expect(moved).toMatchObject({
-        computerId: second.computerId,
-        generation: 2,
+        computerId: first.computerId,
+        generation: 1,
       });
       const [unchanged] = await value.database
         .select()
@@ -416,7 +414,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
           .where(eq(sessionPlacements.sessionId, bound.session.id));
         await expect(
           value.agents.rebindById(value.bootstrap.userId, agent.id, second.computerId),
-        ).rejects.toMatchObject({ code: "AGENT_REBIND_BLOCKED", statusCode: 409 });
+        ).rejects.toMatchObject({ code: "AGENT_LIFECYCLE_CONFLICT", statusCode: 409 });
         expect(await value.database.select().from(agents).where(eq(agents.id, agent.id))).toEqual(beforeAgent);
         expect(
           await value.database

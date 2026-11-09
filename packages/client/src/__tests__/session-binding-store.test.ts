@@ -542,6 +542,125 @@ describe("SessionBindingStore", () => {
     );
   });
 
+  it("resumes an interrupted Turn on its pinned configuration when a new chat reaches a newer one first", async () => {
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 81);
+    await fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-81");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-81", "running");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-81" };
+    const resumer = { pending: vi.fn(() => true), resume: vi.fn(async () => true), abandon: vi.fn() };
+    const restarted = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: fixture.workspace,
+      resumer,
+    });
+    restarted.setRecovery("session-1", turn);
+    const newer: EffectiveRuntimeSnapshot = {
+      ...fixture.runtime,
+      revision: {
+        agent: { sequence: fixture.runtime.revision.agent.sequence + 1, id: "agent-revision-newer" },
+        session: { sequence: fixture.runtime.revision.session.sequence + 1, id: "session-revision-newer" },
+      },
+    };
+    await expect(
+      restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID(), sessionId: "session-new", runtime: newer }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await expect(restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "running",
+      turn,
+    });
+    expect(resumer.resume).toHaveBeenCalledExactlyOnceWith("session-1", turn);
+    expect(resumer.abandon).not.toHaveBeenCalled();
+  });
+
+  it("prepares a restarted Session around its interrupted Turn only for that Turn's automatic retry", async () => {
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 80);
+    await fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-80");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-80", "running");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-80" };
+
+    // A restarted daemon: fresh in-memory reconciler, the same durable binding.
+    const resumer = { pending: vi.fn(() => true), resume: vi.fn(async () => true), abandon: vi.fn() };
+    const restarted = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: fixture.workspace,
+      resumer,
+    });
+    restarted.setRecovery("session-1", turn);
+    // A stopped reconcile (the Server's accepted recovery) never prepares or resumes; it defers as live work.
+    await expect(
+      restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
+    ).resolves.toMatchObject({ status: "busy", reason: "active_turn" });
+    expect(resumer.resume).not.toHaveBeenCalled();
+
+    const result = await restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID() });
+    expect(result).toMatchObject({ status: "running", turn });
+    expect(resumer.resume).toHaveBeenCalledExactlyOnceWith("session-1", turn);
+    expect(resumer.abandon).not.toHaveBeenCalled();
+    expect(restarted.getSession("session-1")?.status).toBe("ready");
+    const binding = await fixture.store.read("agent-1", "session-1");
+    expect(binding?.unresolvedTurn).toMatchObject({ turnId: "turn-80", phase: "running" });
+
+    // Without the resume identity the unresolved Turn still fences preparation.
+    await expect(
+      fixture.store.prepare(fixture.reconcile, computeRuntimeSnapshotHashes(fixture.runtime)),
+    ).resolves.toMatchObject({ unresolvedTurn: { turnId: "turn-80" } });
+  });
+
+  it("keeps the pending retry when the prepared Turn cannot start yet, and abandons it when preparation fails", async () => {
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 81);
+    await fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-81");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-81" };
+
+    // The resumer refuses to start for now (for example admission is saturated): no abandon.
+    const busy = { pending: vi.fn(() => true), resume: vi.fn(async () => false), abandon: vi.fn() };
+    const first = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: fixture.workspace,
+      resumer: busy,
+    });
+    first.setRecovery("session-1", turn);
+    await expect(first.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "recovery_required",
+      turn,
+    });
+    expect(busy.resume).toHaveBeenCalledOnce();
+    expect(busy.abandon).not.toHaveBeenCalled();
+    // Still pending: the Server's accepted recovery keeps deferring instead of getting a report.
+    await expect(
+      first.reconcile({ ...fixture.reconcile, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
+    ).resolves.toMatchObject({ status: "busy", reason: "active_turn" });
+
+    // A changed snapshot fails the binding fence: the retry is abandoned and the Turn reported.
+    let abandoned = false;
+    const fenced = {
+      pending: vi.fn(() => !abandoned),
+      resume: vi.fn(async () => true),
+      abandon: vi.fn(() => {
+        abandoned = true;
+      }),
+    };
+    const second = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: fixture.workspace,
+      resumer: fenced,
+    });
+    second.setRecovery("session-1", turn);
+    const runtime = {
+      ...fixture.runtime,
+      revision: { ...fixture.runtime.revision, session: { sequence: 2, id: "next" } },
+    };
+    const result = await second.reconcile({ ...fixture.reconcile, requestId: randomUUID(), runtime });
+    expect(result.status).not.toBe("running");
+    expect(fenced.resume).not.toHaveBeenCalled();
+    expect(fenced.abandon).toHaveBeenCalledOnce();
+    await expect(
+      second.reconcile({ ...fixture.reconcile, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
+    ).resolves.toMatchObject({ status: "recovery_required", turn });
+  });
+
   it("absorbs matching redelivery through a recorded steer and validates delivery identities", async () => {
     const fixture = await bindingFixture();
     const root = delivery(fixture.runtime, 1);

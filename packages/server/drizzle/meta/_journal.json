@@ -484,6 +484,48 @@
       "when": 1792739031119,
       "tag": "0068_release_terminal_setup_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793003668615,
+      "tag": "0069_session_descendant_active",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1793016066995,
+      "tag": "0070_unreported_accepted_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793100263891,
+      "tag": "0071_glossy_joystick",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1793157286147,
+      "tag": "0072_self_configuration_default_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1793680596498,
+      "tag": "0073_im-feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1793774658776,
+      "tag": "0074_im_feedback_message_format",
+      "breakpoints": true
     }
   ]
 }

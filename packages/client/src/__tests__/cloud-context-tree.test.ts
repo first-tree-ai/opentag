@@ -1,9 +1,8 @@
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { prepareCloudContextTree } from "../runner/cloud-context-tree.js";
-import type { ContextTreeExecFile } from "../runtime/context-tree.js";
 import { managedAgentSlug } from "../runtime/managed-instructions.js";
 
 const roots: string[] = [];
@@ -29,207 +28,74 @@ async function fixture() {
     path: process.env.PATH ?? "",
     scratch: join(workspace, "scratch"),
   };
-  const entry = {
-    ok: true,
-    connection: { projectRoot, source },
-    treeRoot,
-    repository: { root: treeRoot, directory: "docs", sha: "a".repeat(40), branch: "main" },
-    dirty: false,
-  };
-  const payload = { schemaVersion: 3, connections: [entry] };
   const pack = { root: workspace, cliPath: join(workspace, "cli.mjs"), skillsPath: workspace };
-  return { workspace, projectRoot, treeRoot, input, payload, pack };
+  return { workspace, projectRoot, treeRoot, input, pack };
 }
-it("saves selection before one sync and leaves repository configuration alone", async () => {
+it("saves the selection and writes the shim without syncing or touching repository configuration", async () => {
   const f = await fixture();
   await writeFile(join(f.workspace, ".context-tree.json"), "repository owned");
-  const execFile = vi.fn<ContextTreeExecFile>(async (_file, args, options) => {
-    expect(args[1]).toBe("sync");
-    expect(args).not.toContain("--offline");
-    expect(JSON.parse(await readFile(join(f.projectRoot, ".context-tree.json"), "utf8")).trees).toEqual([source]);
-    expect(options.env?.HOME).toBe(join(f.workspace, ".opentag/context-tree/home"));
-    return { stdout: JSON.stringify(f.payload) };
+  const other = { ...source, path: "notes" };
+  const result = await prepareCloudContextTree(
+    { ...f.input, contextTrees: [source, other] },
+    { contextTreePackage: f.pack },
+  );
+  expect(result.status).toEqual({
+    status: "configured",
+    connections: [
+      { ...source, status: "available", projectPath: f.projectRoot },
+      { ...other, status: "available", projectPath: f.projectRoot },
+    ],
   });
-  const result = await prepareCloudContextTree(f.input, { contextTreePackage: f.pack, execFile });
-  expect(result.status).toMatchObject({
-    connections: [{ status: "ready", treePath: f.treeRoot, projectPath: f.projectRoot }],
-  });
-  expect(execFile).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(join(f.projectRoot, ".context-tree.json"), "utf8")).trees).toEqual([source, other]);
   expect(await readFile(join(f.workspace, ".context-tree.json"), "utf8")).toBe("repository owned");
   if (!result.binDirectory) throw new Error("Missing shim");
-  expect(await readFile(join(result.binDirectory, "context-tree"), "utf8")).not.toContain(GRANT.GH_TOKEN);
+  const shim = await readFile(join(result.binDirectory, "context-tree"), "utf8");
+  expect(shim).toContain(`HOME='${join(f.workspace, ".opentag/context-tree/home")}'`);
+  expect(shim).not.toContain(GRANT.GH_TOKEN);
 });
-it("recovers offline with a fresh budget after refresh times out, and succeeds next turn", async () => {
+it("returns the same status for every preparation of an unchanged selection", async () => {
   const f = await fixture();
-  let timeout = true;
-  const execFile = vi.fn<ContextTreeExecFile>(async (_file, args, options) => {
-    if (timeout && !args.includes("--offline")) {
-      await new Promise<void>((done) => options.signal?.addEventListener("abort", () => done(), { once: true }));
-      throw Object.assign(new Error("cancelled"), { killed: true, signal: "SIGTERM", stdout: "" });
-    }
-    expect(options.signal?.aborted).toBe(false);
-    return { stdout: JSON.stringify(f.payload) };
-  });
-  const internals = { contextTreePackage: f.pack, execFile, preparationBudgetMs: 10 };
-  expect((await prepareCloudContextTree(f.input, internals)).status).toMatchObject({
-    connections: [{ status: "stale", reason: "TIMEOUT" }],
-  });
-  timeout = false;
-  expect((await prepareCloudContextTree(f.input, internals)).status).toMatchObject({
-    connections: [{ status: "ready" }],
-  });
-  expect(execFile.mock.calls.map((call) => call[1].slice(1)[0])).toEqual(["sync", "sync", "sync"]);
+  const first = await prepareCloudContextTree(f.input, { contextTreePackage: f.pack });
+  const second = await prepareCloudContextTree(
+    { ...f.input, environment: { ...GRANT, GH_TOKEN: "next-execution" } },
+    { contextTreePackage: f.pack },
+  );
+  expect(second).toEqual(first);
 });
-it("preserves healthy entries from a nonzero sync result", async () => {
+it("reports a missing package as unavailable without a shim", async () => {
   const f = await fixture();
-  const other = { ...source, path: "notes" };
-  const execFile: ContextTreeExecFile = async () => {
-    throw Object.assign(new Error("partial"), {
-      stdout: JSON.stringify({
-        ...f.payload,
-        connections: [
-          ...f.payload.connections,
-          {
-            ok: false,
-            connection: { projectRoot: f.projectRoot, source: other },
-            error: { code: "CONTEXT_TREE_FAILED", message: "missing" },
-          },
-        ],
-      }),
-    });
-  };
-  expect(
-    (
-      await prepareCloudContextTree(
-        { ...f.input, contextTrees: [source, other] },
-        { contextTreePackage: f.pack, execFile },
-      )
-    ).status,
-  ).toMatchObject({ connections: [{ status: "ready" }, { status: "unavailable" }] });
-});
-it.each(["INVALID_TREE", "DIRTY_TREE"])("does not recover a rejected snapshot offline: %s", async (code) => {
-  const f = await fixture();
-  const execFile: ContextTreeExecFile = async (_file, args) => ({
-    stdout: JSON.stringify(
-      args.includes("--offline")
-        ? f.payload
-        : {
-            schemaVersion: 3,
-            connections: [
-              { ok: false, connection: { projectRoot: f.projectRoot, source }, error: { code, message: "rejected" } },
-            ],
-          },
-    ),
-  });
-  const result = await prepareCloudContextTree(f.input, { contextTreePackage: f.pack, execFile });
-  expect(result.status).toMatchObject({ connections: [{ status: "unavailable", reason: code }] });
+  const result = await prepareCloudContextTree(f.input, { contextTreePackage: null });
+  expect(result.status).toMatchObject({ connections: [{ status: "unavailable", reason: "PACKAGE_MISSING" }] });
   expect(result.binDirectory).toBeUndefined();
-});
-it("never exposes another project's or branch's snapshot", async () => {
-  const f = await fixture();
-  for (const connection of [
-    { projectRoot: f.workspace, source },
-    { projectRoot: f.projectRoot, source: { ...source, ref: "other" } },
-  ]) {
-    const execFile: ContextTreeExecFile = async () => ({
-      stdout: JSON.stringify({ ...f.payload, connections: [{ ...f.payload.connections[0], connection }] }),
-    });
-    const result = await prepareCloudContextTree(f.input, { contextTreePackage: f.pack, execFile });
-    expect(result.status).toMatchObject({ connections: [{ status: "unavailable" }] });
-    expect(result.binDirectory).toBeUndefined();
-  }
 });
 it("revokes selection without deleting cached files or exposing a CLI", async () => {
   const f = await fixture();
-  const execFile = vi.fn<ContextTreeExecFile>();
-  const result = await prepareCloudContextTree(
-    { ...f.input, environment: {} },
-    { contextTreePackage: f.pack, execFile },
-  );
+  const result = await prepareCloudContextTree({ ...f.input, environment: {} }, { contextTreePackage: f.pack });
   expect(result.status).toMatchObject({ connections: [{ reason: "GITHUB_PERMISSION" }] });
   expect(result.binDirectory).toBeUndefined();
-  expect(execFile).not.toHaveBeenCalled();
   expect(JSON.parse(await readFile(join(f.projectRoot, ".context-tree.json"), "utf8")).trees).toEqual([]);
   await expect(access(f.treeRoot)).resolves.toBeUndefined();
 });
-describe("prepareCloudContextTree process ownership", () => {
-  it("stops the whole owned process tree and leaves no write after the preparation is aborted", async () => {
-    const root = await temporaryDirectory("opentag-cloud-ct-abort-");
-    const workspace = join(root, "workspace");
-    await mkdir(workspace, { recursive: true });
-    const scratch = join(root, "scratch");
-    await mkdir(scratch, { recursive: true });
-    const script = join(root, "fake-cli.mjs");
-    const pidsFile = join(root, "pids.json");
-    const markerFile = join(workspace, "late-write.txt");
-    // The fake CLI emulates the packaged CLI: it stays alive while a detached child (like the
-    // CLI's own `git`) mutates the workspace after a delay. Only killing the CLI's process group
-    // would leave that child running and writing.
-    await writeFile(
-      script,
-      [
-        'import { spawn } from "node:child_process";',
-        'import { writeFileSync } from "node:fs";',
-        'const nested = spawn(process.execPath, ["-e", `const { writeFileSync } = require("node:fs"); setTimeout(() => writeFileSync(process.env.OPENTAG_TEST_MARKER, "late"), 3000); setInterval(() => {}, 1000);`], { detached: true, env: process.env, stdio: "ignore" });',
-        "nested.unref();",
-        "writeFileSync(process.env.OPENTAG_TEST_PIDS, JSON.stringify([process.pid, nested.pid]));",
-        "setInterval(() => {}, 1000);",
-      ].join("\n"),
-    );
-    const controller = new AbortController();
-    const preparation = prepareCloudContextTree(
-      {
-        agentSlug: "tree-agent",
-        environment: { ...GRANT, OPENTAG_TEST_MARKER: markerFile, OPENTAG_TEST_PIDS: pidsFile },
-        path: process.env.PATH ?? "",
-        contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "acme/memory" }],
-        scratch,
-        signal: controller.signal,
-        workspace,
-      },
-      { contextTreePackage: { root, cliPath: script, skillsPath: root } },
-    );
-    let pids: number[] = [];
-    for (let attempt = 0; attempt < 200 && pids.length === 0; attempt += 1) {
-      try {
-        pids = JSON.parse(await readFile(pidsFile, "utf8")) as number[];
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-    }
-    const [cliPid, nestedPid] = pids;
-    if (cliPid === undefined || nestedPid === undefined) throw new Error("the fake CLI did not record its pids");
-    expect(processAlive(cliPid)).toBe(true);
-
-    controller.abort();
-    await expect(preparation).resolves.toMatchObject({
-      status: { connections: [{ status: "unavailable", reason: "TIMEOUT" }] },
-    });
-    for (let attempt = 0; attempt < 100 && (processAlive(cliPid) || processAlive(nestedPid)); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    // The detached nested process is gone too: the failed preparation owns no writer.
-    expect(processAlive(cliPid)).toBe(false);
-    expect(processAlive(nestedPid)).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect(access(markerFile)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+it("reports an aborted preparation as a timeout without a shim", async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  controller.abort();
+  const result = await prepareCloudContextTree(
+    { ...f.input, signal: controller.signal },
+    { contextTreePackage: f.pack },
+  );
+  expect(result.status).toMatchObject({ connections: [{ status: "unavailable", reason: "TIMEOUT" }] });
+  expect(result.binDirectory).toBeUndefined();
+  await expect(access(join(f.input.scratch, "context-tree-bin"))).rejects.toMatchObject({ code: "ENOENT" });
 });
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 describe("managedAgentSlug", () => {
   it.each([
     ["You run inside OpenTag.\n\nOpenTag Agent slug: tree-agent", "tree-agent"],
     ["OpenTag Agent slug: a1\nTrailing line.", "a1"],
-    ["OpenTag Agent slug: Tree-Agent", undefined],
+    ["OpenTag Agent slug: Tree-Agent", "Tree-Agent"],
+    ["OpenTag Agent slug: 研发助理-2", "研发助理-2"],
+    ["OpenTag Agent slug: -leading", undefined],
     ["OpenTag Agent slug: not a slug!", undefined],
     ["no slug here", undefined],
     ["", undefined],

@@ -15,6 +15,10 @@ export function registerRuntimeProviderProxyRoutes(
   app: FastifyInstance,
   options: RuntimeProviderProxyRoutesOptions,
 ): void {
+  app.addHook("preClose", async () => {
+    void options.transport.close();
+  });
+  app.addHook("onClose", () => options.transport.close());
   app.get(RUNTIME_PROVIDER_PROXY_PATH, { websocket: true }, (socket, request) => {
     const queryIndex = request.raw.url?.indexOf("?") ?? -1;
     if (queryIndex >= 0) {

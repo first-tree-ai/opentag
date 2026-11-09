@@ -34,8 +34,8 @@ function errorFrom(callback: ReturnType<typeof vi.fn>): unknown {
 function localDispatcherFactory(port: number) {
   return (resolve: AvatarAddressResolver) =>
     new Agent({
-      connect: (_options, callback) => {
-        createAvatarLookup(resolve)("avatar.example.test", { all: false }, (error) => {
+      connect: (options, callback) => {
+        createAvatarLookup(resolve)(options.hostname, { all: false }, (error) => {
           if (error) {
             callback(error, null);
             return;
@@ -189,6 +189,161 @@ describe("avatar connection destination policy", () => {
       expect(response.headers.get("content-type")).toBe("image/png");
       expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_BYTES);
       expect(resolve).toHaveBeenCalledOnce();
+    } finally {
+      await transport.close();
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    }
+  });
+
+  it("follows 302 redirects across HTTPS CDN hosts and strips non-accept headers on redirect hops", async () => {
+    const seenRequests: Array<{ host: string | undefined; url: string | undefined; extra: string }> = [];
+    const server = createServer((request, response) => {
+      seenRequests.push({
+        host: request.headers.host,
+        url: request.url,
+        extra: String(request.headers["x-extra"] ?? "none"),
+      });
+      if (request.headers.host === "secure.gravatar.com") {
+        response.writeHead(302, {
+          location: "https://a.slack-edge.com/avatars/default-bot.png",
+        });
+        response.end("redirecting");
+        return;
+      }
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(PNG_BYTES);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const resolve = scriptedResolver(["93.184.216.34"]);
+    const transport = createAvatarTransport(resolve, localDispatcherFactory(port));
+
+    try {
+      const response = await transport(
+        "https://secure.gravatar.com/avatar/abc?s=512&d=https%3A%2F%2Fa.slack-edge.com%2Favatars%2Fdefault-bot.png",
+        {
+          headers: {
+            accept: "image/*",
+            "x-extra": "only-first-hop",
+          },
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_BYTES);
+      expect(seenRequests).toEqual([
+        {
+          host: "secure.gravatar.com",
+          url: "/avatar/abc?s=512&d=https%3A%2F%2Fa.slack-edge.com%2Favatars%2Fdefault-bot.png",
+          extra: "only-first-hop",
+        },
+        {
+          host: "a.slack-edge.com",
+          url: "/avatars/default-bot.png",
+          extra: "none",
+        },
+      ]);
+      expect(resolve).toHaveBeenCalledTimes(2);
+    } finally {
+      await transport.close();
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    }
+  });
+
+  it.each([
+    ["HTTP downgrade", "http://a.slack-edge.com/default.png", "IM_AVATAR_REDIRECT_REJECTED"],
+    ["private IPv4 literal", "https://10.0.0.1/default.png", BLOCKED_CODE],
+    ["loopback IPv4 literal", "https://127.0.0.1/default.png", BLOCKED_CODE],
+    ["loopback hostname", "https://localhost/default.png", BLOCKED_CODE],
+    ["userinfo in URL", "https://alice@a.slack-edge.com/default.png", "IM_AVATAR_REDIRECT_REJECTED"],
+    ["non-default port", "https://a.slack-edge.com:8443/default.png", "IM_AVATAR_REDIRECT_REJECTED"],
+  ])("rejects a redirect to %s before connecting", async (_label, location, expectedCode) => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(302, { location });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const resolve = scriptedResolver(["93.184.216.34"]);
+    const transport = createAvatarTransport(resolve, localDispatcherFactory(port));
+
+    try {
+      await expect(transport("https://secure.gravatar.com/avatar/abc")).rejects.toMatchObject({
+        code: expectedCode,
+      });
+      expect(requests).toBe(1);
+    } finally {
+      await transport.close();
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    }
+  });
+
+  it("rejects a redirect whose target hostname resolves to a private IP", async () => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(302, { location: "https://internal.example.test/avatar.png" });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const resolve = vi.fn((hostname: string, _options: LookupAllOptions, callback: LookupCallback) => {
+      const address = hostname === "internal.example.test" ? "10.0.0.1" : "93.184.216.34";
+      callback(null, [{ address, family: 4 }]);
+    });
+    const transport = createAvatarTransport(resolve, localDispatcherFactory(port));
+
+    try {
+      await expect(transport("https://secure.gravatar.com/avatar/abc")).rejects.toMatchObject({
+        cause: { code: BLOCKED_CODE },
+      });
+      expect(requests).toBe(1);
+    } finally {
+      await transport.close();
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    }
+  });
+
+  it("rejects redirect chains longer than 3 hops", async () => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(302, { location: `https://cdn-${requests}.example.test/avatar.png` });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const resolve = scriptedResolver(["93.184.216.34"]);
+    const transport = createAvatarTransport(resolve, localDispatcherFactory(port));
+
+    try {
+      await expect(transport("https://secure.gravatar.com/avatar/abc")).rejects.toMatchObject({
+        code: "IM_AVATAR_REDIRECT_REJECTED",
+        message: "Avatar redirect limit (3) exceeded",
+      });
+      expect(requests).toBe(4);
     } finally {
       await transport.close();
       await new Promise<void>((resolveClose, reject) =>

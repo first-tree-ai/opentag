@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { agents, computers, imBindings, imMessages } from "../../db/schema/index.js";
 import { ImOutboundCapture, type OutboundCaptureEvent } from "../../services/im/im-outbound-capture.js";
+import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -228,6 +229,7 @@ describe("ImOutboundCapture persistence safety", () => {
     expect(sameChannel?.threadKey).toBe("omt_target");
     expect(sameChannel?.providerContext).toEqual({
       provider: "feishu",
+      threadId: "omt_target",
       parentId: "om_target_root",
       rootId: "om_target_root",
     });
@@ -237,3 +239,49 @@ describe("ImOutboundCapture persistence safety", () => {
     await value.sql.end();
   });
 });
+
+it.each(["resolve", "reject"] as const)(
+  "drains the original capture query after deadline and late %s",
+  async (outcome) => {
+    const value = await accountFixture({ max: 1 });
+    const binding = await bind(value.database, value.agent.id, "slack");
+    const entered = deferred();
+    const release = deferred();
+    const unsafe = value.sql.unsafe.bind(value.sql);
+    const spy = vi.spyOn(value.sql, "unsafe").mockImplementationOnce(((...args: Parameters<typeof unsafe>) => {
+      const actual = unsafe(...args);
+      const observed = Promise.resolve(actual).then(async (rows) => {
+        entered.resolve();
+        await release.promise;
+        if (outcome === "reject") throw new Error("Controlled delayed driver error");
+        return rows;
+      });
+      return Object.assign(observed, { cancel: () => actual.cancel() });
+    }) as typeof value.sql.unsafe);
+    const capture = new ImOutboundCapture(value.database, { deadlineMs: 30 });
+    let closed = false;
+    try {
+      const result = capture.capture(slackCaptureEvent(binding.id, "1790035270.000002", "Late driver"));
+      await entered.promise;
+      await result;
+      const closing = capture.close().then(() => {
+        closed = true;
+      });
+      expect(capture.close()).toBe(capture.close());
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(closed).toBe(false);
+      await capture.capture(slackCaptureEvent(binding.id, "1790035271.000002", "Stopped"));
+      expect(await value.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+      release.resolve();
+      await closing;
+      expect(closed).toBe(true);
+      expect(await storedRows(value.database, "1790035270.000002")).toHaveLength(0);
+      expect(await storedRows(value.database, "1790035271.000002")).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await capture.close();
+      spy.mockRestore();
+      await value.sql.end({ timeout: 5 });
+    }
+  },
+);

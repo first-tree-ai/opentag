@@ -8,12 +8,15 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_RUNTIME_COVERAGE_INCLUDE,
   assertCoverageArtifacts,
+  COVERAGE_PROJECTS,
   COVERAGE_REPORTER_FLAGS,
   concatenateCoverageMaps,
   evaluateCoverageFloors,
   formatTestFailureLines,
-  projectCoverageInclude,
+  projectCoverageIncludes,
+  projectWorkerArgs,
   ratchetCoverageFloors,
+  sourceFilesUnder,
   summarizeTestResults,
   TEST_REPORTER_FLAGS,
   validateCoverageManifest,
@@ -392,36 +395,130 @@ test("real Vitest unhandled errors stay visible when every assertion passes", as
   });
 });
 
-const sharedProject = { name: "shared", root: "packages/shared", sources: "packages/shared/src" };
+const sharedProject = { name: "shared", root: "packages/shared", sources: ["packages/shared/src"] };
 
 test("coverage include is project-relative so Vitest resolves it against the project root", () => {
-  assert.equal(projectCoverageInclude(sharedProject, null), "src/**/*.{ts,tsx}");
+  assert.deepEqual(projectCoverageIncludes(sharedProject, null), ["src/**/*.{ts,tsx}"]);
 });
 
 test("a repository-relative scope has its workspace prefix stripped", () => {
-  assert.equal(projectCoverageInclude(sharedProject, "packages/shared/src/http-paths.ts"), "src/http-paths.ts");
+  assert.deepEqual(projectCoverageIncludes(sharedProject, "packages/shared/src/http-paths.ts"), ["src/http-paths.ts"]);
 });
 
 test("an already project-relative scope is passed through untouched", () => {
-  assert.equal(projectCoverageInclude(sharedProject, "src/**/*.ts"), "src/**/*.ts");
+  assert.deepEqual(projectCoverageIncludes(sharedProject, "src/**/*.ts"), ["src/**/*.ts"]);
 });
 
 test("a scope belonging to another workspace keeps its prefix rather than being mangled", () => {
-  assert.equal(projectCoverageInclude(sharedProject, "packages/server/src/**/*.ts"), "packages/server/src/**/*.ts");
+  assert.deepEqual(projectCoverageIncludes(sharedProject, "packages/server/src/**/*.ts"), [
+    "packages/server/src/**/*.ts",
+  ]);
 });
 
 test("no project's default include still carries its own workspace prefix", () => {
   for (const project of [
-    { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
-    { name: "web", root: "apps/web", sources: "apps/web/src" },
+    { name: "cli", root: "apps/cli", sources: ["apps/cli/src"] },
+    { name: "web", root: "apps/web", sources: ["apps/web/src"] },
     sharedProject,
-    { name: "client", root: "packages/client", sources: "packages/client/src" },
-    { name: "server", root: "packages/server", sources: "packages/server/src" },
+    { name: "client", root: "packages/client", sources: ["packages/client/src"] },
+    { name: "server", root: "packages/server", sources: ["packages/server/src", "packages/server/scripts"] },
   ]) {
-    const include = projectCoverageInclude(project, null);
-    assert.ok(
-      !include.startsWith(`${project.root}/`),
-      `${project.name} include ${include} would resolve under ${project.root}/${project.root}`,
+    for (const include of projectCoverageIncludes(project, null)) {
+      assert.ok(
+        !include.startsWith(`${project.root}/`),
+        `${project.name} include ${include} would resolve under ${project.root}/${project.root}`,
+      );
+    }
+  }
+});
+
+test("the server project measures its verification scripts as well as its src tree", () => {
+  const server = COVERAGE_PROJECTS.find((project) => project.name === "server");
+  assert.deepEqual(server.sources, ["packages/server/src", "packages/server/scripts"]);
+  assert.deepEqual(projectCoverageIncludes(server, null), ["src/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}"]);
+  // Every other project keeps its single `src` root: a scripts directory is only measured where it
+  // holds executable verification code.
+  for (const project of COVERAGE_PROJECTS.filter((entry) => entry.name !== "server")) {
+    assert.deepEqual(project.sources, [`${project.root}/src`]);
+  }
+});
+
+test("a scope narrows the measured set to one pattern instead of a project's whole source list", () => {
+  const server = COVERAGE_PROJECTS.find((project) => project.name === "server");
+  assert.deepEqual(projectCoverageIncludes(server, "packages/server/scripts/cancel-benchmark.ts"), [
+    "scripts/cancel-benchmark.ts",
+  ]);
+});
+
+test("the checked-in coverage config measures a package's scripts directory too", async () => {
+  const config = await readFile(join(repoRoot, "vitest.coverage.config.ts"), "utf8");
+  assert.match(config, /include: \["src\/\*\*\/\*\.\{ts,tsx\}", "scripts\/\*\*\/\*\.\{ts,tsx\}"\]/);
+  // Exclusions may not grow to hide the newly measured sources.
+  assert.match(config, /coverageConfigDefaults\.exclude/);
+  for (const forbidden of ["scripts/**", "cancel-benchmark"]) {
+    assert.equal(
+      config.includes(`exclude: [${forbidden}`) || config.includes(`"${forbidden}"`),
+      false,
+      `the config must not exclude ${forbidden}`,
     );
   }
+});
+
+test("the real repository manifest owns every source under packages/server/scripts", () => {
+  const result = validateRepositoryCoverageManifest(repoRoot);
+  assert.deepEqual(result.root.missing, []);
+  assert.deepEqual(result.root.unmatchedPatterns, []);
+});
+
+test("source discovery measures TypeScript sources only, never tests or ignored scratch state", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const scripts = join(directory, "packages", "server", "scripts");
+    await mkdir(join(scripts, ".dispatch"), { recursive: true });
+    await mkdir(join(scripts, "__tests__"), { recursive: true });
+    await writeFile(join(scripts, "cancel-benchmark.ts"), "export const value = 1;\n");
+    await writeFile(join(scripts, "cancel-benchmark.test.ts"), "test;\n");
+    await writeFile(join(scripts, "__tests__", "cancel-benchmark.test.ts"), "test;\n");
+    await writeFile(join(scripts, ".dispatch", "private-copy.ts"), "export const value = 3;\n");
+    await writeFile(join(scripts, "database-performance-seed.sql"), "select 1;\n");
+
+    assert.deepEqual(sourceFilesUnder(scripts, directory), ["packages/server/scripts/cancel-benchmark.ts"]);
+    // A root that does not exist yields nothing instead of throwing; the manifest reports the
+    // unmatched pattern instead of crashing on a partial checkout.
+    assert.deepEqual(sourceFilesUnder(join(directory, "packages", "absent")), []);
+  });
+});
+
+test("manifest validation fails closed when a declared source root holds no measured file", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    // A partial tree: the verification-script root has no files, so its ownership pattern matches
+    // nothing and the manifest reports it rather than passing silently.
+    await mkdir(join(directory, "packages", "server", "src"), { recursive: true });
+    await writeFile(join(directory, "packages", "server", "src", "index.ts"), "export const value = 1;\n");
+    const result = validateRepositoryCoverageManifest(directory);
+    assert.ok(result.root.unmatchedPatterns.includes("packages/server/scripts/**/*.{ts,tsx}"));
+    assert.ok(result.root.unmatchedPatterns.includes("apps/cli/src/**/*.{ts,tsx}"));
+    assert.deepEqual(result.root.missing, []);
+  });
+});
+
+test("the spawned-CLI suites run on the worker count their own test script uses", () => {
+  const byName = Object.fromEntries(COVERAGE_PROJECTS.map((project) => [project.name, project]));
+  assert.deepEqual(projectWorkerArgs(byName.cli), ["--maxWorkers=1"]);
+  assert.deepEqual(projectWorkerArgs(byName.client), ["--maxWorkers=1"]);
+  // Everything else keeps the config default: only the two suites that assert on fixed windows around
+  // spawned child processes are narrowed, and their includes, assertions and timeouts are untouched.
+  for (const project of COVERAGE_PROJECTS.filter((entry) => !["cli", "client"].includes(entry.name))) {
+    assert.equal(project.workers, undefined, `${project.name} must keep the config default worker count`);
+    assert.deepEqual(projectWorkerArgs(project), []);
+  }
+  // A project may not declare a nonsensical override.
+  assert.deepEqual(projectWorkerArgs({ name: "x", root: "x", sources: ["x/src"], workers: 0 }), []);
+  assert.deepEqual(projectWorkerArgs({ name: "x", root: "x", sources: ["x/src"], workers: 2 }), ["--maxWorkers=2"]);
+});
+
+test("the runner forwards the per-project worker override to Vitest", async () => {
+  const source = await readFile(join(repoRoot, "scripts/unit-coverage.mjs"), "utf8");
+  assert.match(source, /\.\.\.projectWorkerArgs\(project\)/);
+  // The narrowing must not touch how the project's files are selected.
+  assert.match(source, /\.\.\.includes\.map\(\(pattern\) => `--coverage\.include=\$\{pattern\}`\)/);
 });

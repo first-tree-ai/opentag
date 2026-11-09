@@ -16,6 +16,12 @@ skills, tools, MCP Servers, Context Trees, receive mode, credentials, permission
 settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
+An Agent's Computer, runtime Provider, and messaging channel are fixed once set. Moving any of them is not supported;
+to change one, create a new Agent and add it to the conversation. Why: an Agent's Sessions are bound to the channel,
+the runtime, and the local storage on that Computer (Provider sessions, memory, files), so migration is costly and
+risky; what must survive across Agents belongs in shared knowledge (the Context Tree), not in per-Agent memory. Moves
+of Cloud sandbox storage are internal and never shown, so no migration concept is exposed for Cloud Agents.
+
 A Session is a stable logical identity, not a Provider process or an activity
 status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and
@@ -31,6 +37,15 @@ Channel and thread Sessions are long-lived. Idle time, Turn completion, Provider
 Runtime suspension, and Computer disconnect do not end them. Only an explicit
 end sets `ended_at`. A later valid ensure for the same chat scope creates a new
 Session identity instead of reviving the ended Session.
+
+The Session closure (`session_descendants`) records, per ancestor and descendant
+pair, the latest message activity and `descendant_active`, which is defined as
+`descendant.ended_at is null`. The transaction that ends a Session writes both
+facts, so the pair never disagrees: an ended descendant is inactive in every row
+that names it as the descendant, including the rows of its own ancestors. The
+flag describes the descendant only — ending an ancestor does not change it. `session stop` ends the descendants as
+well, so their own rows go inactive because they ended, in the same transaction; see
+[Internal Session collaboration](messaging/internal-session-collaboration.md#stopping-an-internal-session).
 
 ## Execution and placement
 
@@ -64,6 +79,20 @@ without consulting readiness. Readiness can affect route availability and Turn
 execution, but it cannot silently rewrite the Agent's Provider or create a
 Session lifecycle state.
 
+## Configuration identity
+
+An Agent's nonempty Computer, runtime Provider and messaging App/Bot identity cannot be replaced.
+The legacy rebind and Feishu replace commands obey the same boundary. An empty Computer can be
+bound to an owned target at any revision: editing an unbound Agent never requires recreating it.
+Selecting the existing Computer is an idempotent no-op. Same-Computer reconnect, upgrades and
+credential repair, same-App reauthorization, and ordinary model, permissions and profile edits
+remain available. Configured messaging cannot be replaced by disconnecting and recreating it. After disconnection,
+setup names the retired identity and offers a new Agent instead of connection actions. A never-activated
+provisioning slot can still be cleared and creation resumed on the same Agent.
+Operator transfer rejects an Agent with a Computer or configured messaging identity; it preserves
+custody checks and retained data. An unbound, unconfigured Agent may still transfer under the
+existing operator preconditions and finish creation under its owner.
+
 ## Management writes
 
 Agent rebind and targeted Computer connect-code issuance/exchange lock the Agent
@@ -90,17 +119,57 @@ locks when the send is marked, without waiting for the Runtime receipt. The tran
 also checks the current connection and cancellation signal, so delayed preparation cannot bypass
 a committed management change or send after the dispatch deadline.
 
+Schedule management follows the same Agent-first admission. Account writes recheck ownership
+under that guard. Runtime Skill and Schedule writes retain their complete authenticated Session
+source and lock binding → Session → placement → Computer → proof before their own mutation rows.
+Final proof validation uses the transaction executor and the existing Local connection or Cloud
+execution liveness rules. Their multi-query reads share a read-only snapshot; neither capability
+inherits the Agent configuration self-edit opt-in switch.
+
+Retained-report claims skip empty manifests. Nonempty claims lock the live Session with
+`FOR NO KEY UPDATE` before its placement with `FOR UPDATE`, matching failed-report recovery.
+Claims for a different Session are excluded before locking that Session's placement.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small
 transactions so related durable facts commit together. Connection cleanup and
 Runtime notifications run after commit.
 
+Lifecycle stop targets carry the Agent revision produced by suspend, delete or transfer.
+Immediately before Local stop or Cloud cancellation enqueue, the caller locks Agent → Session →
+placement and requires that exact revision, an inactive Agent and the captured Session placement.
+A superseded decision is skipped. Local proof preparation finishes before this admission; its
+enqueue is synchronous, so admission releases SQL without awaiting a socket callback or Runner
+result. Cloud selects specific delivery/message/execution identities on the guarded executor and
+retains durable work until terminal evidence. Proof retirement compares the selected proof ID and
+update version; only a successful delete drops that proof's execution correlation. A later reused
+or replaced proof survives an older result.
+
+Local and Cloud final stop admission acquires Agent → Session → placement locks through
+dependent locking CTEs in one SQL statement, retaining the transaction through enqueue.
+Confirmed Local stop retires its captured proof with a single statement that locks the
+matching placement before conditionally deleting that exact proof ID and update version.
+Unfenced revocation retains separate placement locking and deletion statements so it observes
+proofs committed by a preceding mint while it waited for the placement lock.
+
+Local lifecycle stop runs at most 16 complete requests concurrently within one
+30-second dispatch window. Deadline expiry or shared-domain capacity stops new
+targets; admitted requests retain their result timers. Confirmed stop proof cleanup
+remains owned by the Runtime domain through actual settlement even if notification
+times out; shutdown joins it before disposing SQL. Late preparation checks the signal before final authority SQL, and
+final enqueue checks it again. Unconfirmed targets retain the existing best-effort
+failure diagnostic without being marked stopped or automatically retried. This
+window starts after existing Cloud cancellation and is not the lifecycle HTTP
+response deadline.
+
 AgentService mutation queries select the caller's ownership in the locking
 predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign
 Agent row lock. Detail and configuration reads apply the same ownership
-predicate in their first query.
+predicate in their first query. Agent detail and IM binding metadata/activity reads keep
+authorization and enrichment in the same read-only snapshot. A concurrent transfer cannot combine
+the previous Account's authorization with the new Account's binding or activity facts.
 
 ## Rationale
 

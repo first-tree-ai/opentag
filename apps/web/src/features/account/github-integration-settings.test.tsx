@@ -149,7 +149,11 @@ describe("GitHub account settings", () => {
     const discover = vi.spyOn(browserApi, "githubRepositories").mockRejectedValue(new Error("GitHub outage"));
     render(<GitHubIntegrationSettings />);
     expect(await screen.findByText("@octocat")).toBeTruthy();
-    expect(screen.getByText("Authorize your GitHub account for all your Agents.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Authorize GitHub for Context Tree. Connect GitHub MCP separately in each Agent’s connectors for GitHub tasks.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "GitHub authorization settings" })).toBeNull();
     expect(discover).not.toHaveBeenCalled();
     expect(screen.queryByText("Connected")).toBeNull();
@@ -201,7 +205,7 @@ describe("GitHub account settings", () => {
     const identity = screen.getByText("@octocat").closest('[data-ui="github-account-identity"]');
     expect(identity?.contains(reauthorize)).toBe(true);
     expect(within(identity as HTMLElement).getByRole("alert").textContent).toBe(
-      "Authorize this account again so your Agents can continue using GitHub.",
+      "Authorize this account again so Context Tree can continue syncing and publishing.",
     );
     fireEvent.click(reauthorize);
     await waitFor(() =>
@@ -236,7 +240,7 @@ describe("GitHub account settings", () => {
     render(<GitHubIntegrationSettings />);
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect account authorization" }));
     const dialog = await screen.findByRole("dialog", { name: "Disconnect GitHub account authorization?" });
-    expect(within(dialog).getByText(/All your Agents will lose GitHub access through @octocat/)).toBeTruthy();
+    expect(within(dialog).getByText(/Context Tree will lose access through @octocat/)).toBeTruthy();
     expect(within(dialog).getByText(/You can revoke it in GitHub settings/)).toBeTruthy();
     expect(disconnect).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -324,10 +328,8 @@ describe("GitHub account settings", () => {
     fireEvent.click(help);
     const popover = await screen.findByRole("dialog", { name: "About GitHub authorization" });
     expect(help.getAttribute("aria-expanded")).toBe("true");
-    expect(within(popover).getByText(/OAuth repository access follows your GitHub account permissions/)).toBeTruthy();
-    expect(
-      within(popover).getByText(/All your Agents share this account authorization and repository access/),
-    ).toBeTruthy();
+    expect(within(popover).getByText(/Each Agent uses its own GitHub MCP connector for GitHub tasks/)).toBeTruthy();
+    expect(within(popover).getByText(/This account authorization is used by Context Tree/)).toBeTruthy();
     expect(
       within(popover).getByText(/Organization repositories may require organization approval or SSO authorization/),
     ).toBeTruthy();

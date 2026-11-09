@@ -45,6 +45,7 @@ export interface PublishExecutionMaterialOptions {
    * is OpenTag code that imports the same logic directly, so it skips the generated programs.
    */
   includeEntryPrograms: boolean;
+  contextTreeUrl?: string;
   /**
    * In-sandbox absolute path where `publicDirectory` becomes visible (the bind-mount destination,
    * plus the per-turn directory name for the native Sandbox). Defaults to the fixed mount point.
@@ -92,7 +93,11 @@ export async function publishExecutionMaterial(
   const caFile = join(published, CLOUD_SANDBOX_CA_FILE);
   await copyFile(adapter.caCertPath, caFile);
   await chmod(caFile, 0o444);
-  const handles = new Map(relay.providers.map((entry) => [entry.provider, relay.localHandleFor(entry.provider)]));
+  const handles = new Map(
+    relay.providers
+      .filter((entry) => entry.provider !== "github" || relay.contextTreeExecution)
+      .map((entry) => [entry.provider, relay.localHandleFor(entry.provider)]),
+  );
   const layout: RuntimeProxyExecutionLayout = {
     adapterCaCertPath: `${mount}/${CLOUD_SANDBOX_CA_FILE}`,
     executionDir: mount,
@@ -110,11 +115,14 @@ export async function publishExecutionMaterial(
     layout,
     slackApiHost: `https://127.0.0.1:${CLOUD_SLACK_API_PORT}`,
   });
+  if (options.contextTreeUrl) Object.assign(environment, { OPENTAG_CONTEXT_TREE_URL: options.contextTreeUrl });
   const routing = providerRoutingEnvironment(environment);
   // This directory is mounted read-only. Native gh must find a current config before
   // startup, rather than trying to create or migrate one inside the execution mount.
-  await mkdir(join(published, "gh-config"), { mode: 0o755 });
-  await writePublicFile(join(published, "gh-config", "config.yml"), renderRuntimeProxyGhConfig());
+  if (handles.has("github")) {
+    await mkdir(join(published, "gh-config"), { mode: 0o755 });
+    await writePublicFile(join(published, "gh-config", "config.yml"), renderRuntimeProxyGhConfig());
+  }
   await writePublicFile(
     join(published, "environment.json"),
     JSON.stringify({ executionId: relay.executionId, environment }),
@@ -125,17 +133,19 @@ export async function publishExecutionMaterial(
   }
   // The Sandbox Git configuration disables every ambient proxy variable and routes only
   // github.com through the execution proxy and CA; other hosts stay direct with the system CA.
-  await writePublicFile(
-    join(published, "gitconfig"),
-    routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined
-      ? renderRuntimeProxyGitConfig({ caCertPath: routing.SSL_CERT_FILE, connectProxyUrl: routing.HTTPS_PROXY })
-      : "",
-  );
-  await writePublicFile(
-    join(published, "git-credential-helper"),
-    renderRuntimeProxyGitCredentialHelper(handles.get("github") ?? "unavailable"),
-    0o555,
-  );
+  if (handles.has("github"))
+    await writePublicFile(
+      join(published, "gitconfig"),
+      handles.has("github") && routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined
+        ? renderRuntimeProxyGitConfig({ caCertPath: routing.SSL_CERT_FILE, connectProxyUrl: routing.HTTPS_PROXY })
+        : "",
+    );
+  if (handles.has("github"))
+    await writePublicFile(
+      join(published, "git-credential-helper"),
+      renderRuntimeProxyGitCredentialHelper(handles.get("github") ?? "unavailable"),
+      0o555,
+    );
   await mkdir(join(published, "bin"), { mode: 0o755 });
   // The Slack launcher pins the catalog location; both launchers scope routing/trust to their
   // own process so the Agent environment keeps public routing and the system trust store.
@@ -144,8 +154,10 @@ export async function publishExecutionMaterial(
     `#!/bin/sh\n# OpenTag execution-local Slack launcher; do not edit.\n${renderRuntimeProxyScopePreamble()}\nexec /opt/opentag/tools/bin/slack --apihost https://127.0.0.1:${CLOUD_SLACK_API_PORT} "$@"\n`,
     0o555,
   );
-  await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
-  await writePublicFile(join(published, "bin", "git"), renderRuntimeProxyProviderLauncher("git"), 0o555);
+  if (handles.has("github"))
+    await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
+  if (handles.has("github"))
+    await writePublicFile(join(published, "bin", "git"), renderRuntimeProxyProviderLauncher("git"), 0o555);
   return published;
 }
 

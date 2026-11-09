@@ -3,10 +3,12 @@ import { mkdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
+  RUNNER_SESSION_COLLABORATION_V3,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -33,6 +35,7 @@ import {
 } from "./assignment-state.js";
 import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
 import { CloudJournal } from "./cloud-journal.js";
+import { RunnerCloudLatencyObserver } from "./cloud-latency-observer.js";
 import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
 import { CloudWorkspace } from "./cloud-workspace.js";
 import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
@@ -44,8 +47,16 @@ import {
   SANDBOX_WORKER_ENTRY,
   type SandboxProbeResult,
 } from "./native-sandbox.js";
+import {
+  createRunnerPerformanceStderrSink,
+  emitRunnerPerformance,
+  type RunnerPerformanceSink,
+  safeRunnerErrorCode,
+  traceRunnerOperation,
+} from "./perf-log.js";
 import { redactAcceptanceRecord } from "./redact.js";
 import { ServeWorkspace } from "./serve-workspace.js";
+import { RunnerShutdownObserver } from "./shutdown-observer.js";
 import {
   NativeSandboxWebGateway,
   type NativeWebExecutionAuthority,
@@ -124,6 +135,7 @@ export interface RunnerServeOptions {
    */
   readonly cloudTurnSeams?: Pick<CloudTurnRunnerOptions, "openExecution" | "runWorker">;
   readonly workspaceFetchImpl?: typeof fetch;
+  readonly onPerformanceLog?: RunnerPerformanceSink;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -242,6 +254,25 @@ const RUNNER_STATE_SEGMENT_MAX = 32;
  * for any accepted Sandbox name, while the deterministic hash
  * keeps one distinct durable journal/private root per Sandbox.
  */
+/**
+ * The settlement failure reason is a collaboration-v3 field: a channel that negotiated a lower
+ * version keeps receiving the exact v1/v2 settled shape its strict schema accepts.
+ */
+export function negotiatedRunnerClientFrame(
+  frame: RunnerClientFrame,
+  sessionCollaborationVersion: number,
+): RunnerClientFrame {
+  if (
+    frame.type === "session:message:settled" &&
+    frame.reason !== undefined &&
+    sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V3
+  ) {
+    const { reason: _reason, ...legacy } = frame;
+    return legacy;
+  }
+  return frame;
+}
+
 export function runnerStateDirectorySegment(sandboxName: string): string {
   if (sandboxName.length <= RUNNER_STATE_SEGMENT_MAX) return sandboxName;
   const digest = createHash("sha256").update(sandboxName).digest("hex").slice(0, 8);
@@ -257,6 +288,7 @@ export function defaultRunnerStateDir(sandboxName: string, temporaryRoot: string
 }
 
 interface WorkState {
+  latency?: RunnerCloudLatencyObserver;
   active?: { requestId: string; abort: AbortController; done: Promise<void> };
   probe: SandboxProbeResult;
   stopping: boolean;
@@ -300,6 +332,7 @@ interface WorkState {
    * Cleared when the next connection starts.
    */
   credentialInterrupt?: Error;
+  readonly onPerformanceLog?: RunnerPerformanceSink;
 }
 
 /** Assignment identity used to bind a Session bearer to the welcome that produced it. */
@@ -379,6 +412,7 @@ async function ensureAssignmentCredential(
  * boundary with the E3 acceptance run so Cloud Turns wait instead of racing a destroy/relaunch.
  */
 function createCloudTurnRunner(input: {
+  latency: RunnerCloudLatencyObserver;
   bridge: RunnerChannelBridge;
   journal: CloudJournal;
   options: RunnerServeOptions;
@@ -406,6 +440,7 @@ function createCloudTurnRunner(input: {
     },
     credentialChannel: () => input.bridge,
     turnActivityEnabled: () => input.bridge.turnActivityEnabled,
+    steeringEnabled: () => input.bridge.imInputEnabled,
     journal: input.journal,
     onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
     publicDirectory: input.publicRoot,
@@ -421,19 +456,28 @@ function createCloudTurnRunner(input: {
     },
     ...(input.workspacePersistence
       ? {
-          checkpoint: async () => {
+          checkpoint: async (options) => {
             const workspace = input.state()?.workspace;
             if (!workspace) throw new Error("Workspace persistence is not initialized");
-            await workspace.checkpoint();
+            await input.latency.checkpoint(() => workspace.checkpoint(options));
           },
         }
       : {}),
     scope: () => input.bridge.scope,
-    send: (frame) => input.bridge.sendFrame(frame),
+    send: (frame) => {
+      input.bridge.sendFrame(frame);
+      input.latency.sent(frame);
+    },
     serverUrl: server.origin,
     stateDirectory: input.privateTurnRoot,
     log: (message) => logLine(input.options.stderr, message),
+    onStartupDiagnostic: (record) => {
+      if (typeof record.sessionId === "string" && input.latency.observes(record.sessionId)) {
+        writeDiagnostic(`${JSON.stringify(record)}\n`);
+      }
+    },
     onDiagnostic: (record) => {
+      input.latency.diagnostic(record);
       const probe = input.state()?.probe;
       writeDiagnostic(
         `${JSON.stringify({
@@ -457,15 +501,18 @@ function createCloudTurnRunner(input: {
 class RunnerChannelBridge implements CloudCredentialChannel {
   sendFn?: (frame: RunnerClientFrame) => void;
   scope?: CloudTurnScope;
+  /** Diagnostic correlation only; never authorizes work after a channel closes. */
+  lastWelcomedScope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
+  imInputEnabled = false;
   turnActivityEnabled = false;
   /*
    * The negotiated E8 Session-collaboration version echoed at the current welcome (0 when the
    * Server did not echo the capability). The exact number is the fence: a scheduled-origin
    * dispatch requires version 2, an ordinary one version 1 — never a bare eligible boolean.
    */
-  sessionCollaborationVersion: 0 | 1 | 2 = 0;
+  sessionCollaborationVersion: 0 | 1 | 2 | 3 = 0;
 
   /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
   get sessionCollaborationEnabled(): boolean {
@@ -476,7 +523,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
 
   sendFrame(frame: RunnerClientFrame): void {
     if (!this.sendFn) throw new Error("The Runner control channel is not connected");
-    this.sendFn(frame);
+    this.sendFn(negotiatedRunnerClientFrame(frame, this.sessionCollaborationVersion));
   }
 
   onCredentialFrame(listener: (frame: RuntimeCredentialServerFrame) => void): () => void {
@@ -511,7 +558,14 @@ function attachWorkspace(
   bridge: RunnerChannelBridge,
   web: { gateway: NativeSandboxWebGateway | undefined; extensionPath: string | undefined },
 ): void {
+  const writeLatency = createPiDiagnosticStderrWriter(options.stderr);
+  current.latency = new RunnerCloudLatencyObserver({
+    env: options.env ?? process.env,
+    scope: () => bridge.scope,
+    write: (record) => writeLatency(`${JSON.stringify(record)}\n`),
+  });
   current.turns = createCloudTurnRunner({
+    latency: current.latency,
     bridge,
     journal: current.journal,
     options,
@@ -533,6 +587,7 @@ function attachWorkspace(
       token: () => current.token,
       environmentGeneration: () => bridge.scope?.environmentGeneration,
       ...(options.workspaceFetchImpl ? { fetchImpl: options.workspaceFetchImpl } : {}),
+      ...(options.onPerformanceLog ? { onPerformanceLog: options.onPerformanceLog } : {}),
     }),
     sandbox,
     state: () => current,
@@ -623,7 +678,34 @@ interface WebGatewayRuntime {
   readonly extensionPath: string | undefined;
 }
 
-export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
+function resolveRunnerServePerfSink(
+  config: RunnerServeConfig,
+  rawOptions: RunnerServeOptions,
+  bridge: RunnerChannelBridge,
+  getState: () => WorkState | undefined,
+): RunnerPerformanceSink {
+  if (rawOptions.onPerformanceLog) return rawOptions.onPerformanceLog;
+  return createRunnerPerformanceStderrSink(rawOptions.stderr, () => {
+    const state = getState();
+    return {
+      sandboxName: config.sandboxName,
+      sandboxId: bridge.scope?.sandboxId ?? state?.assignment?.sandboxId,
+      sessionId: bridge.scope?.sessionId ?? state?.assignment?.sessionId,
+      environmentGeneration: bridge.scope?.environmentGeneration ?? state?.assignment?.environmentGeneration,
+      runnerVersion: state?.probe.runnerVersion,
+    };
+  });
+}
+
+export async function runRunnerServe(config: RunnerServeConfig, rawOptions: RunnerServeOptions): Promise<number> {
+  const bootStartedAt = performance.now();
+  let state: WorkState | undefined;
+  const bridge = new RunnerChannelBridge();
+  const perfSink = resolveRunnerServePerfSink(config, rawOptions, bridge, () => state);
+  const options: RunnerServeOptions = {
+    ...rawOptions,
+    onPerformanceLog: perfSink,
+  };
   const gatewayStartup = await startServeWebGateway(config.sandboxName, options);
   if (gatewayStartup.exitCode !== undefined) return gatewayStartup.exitCode;
   const web: WebGatewayRuntime = {
@@ -637,7 +719,12 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   await mkdir(privateTurnRoot, { recursive: true, mode: 0o700 });
   await mkdir(publicRoot, { recursive: true, mode: 0o700 });
   const journal = await CloudJournal.open(journalDir);
-  const bridge = new RunnerChannelBridge();
+  const writeShutdown = createPiDiagnosticStderrWriter(options.stderr);
+  const shutdown = new RunnerShutdownObserver({
+    env: options.env ?? process.env,
+    assignment: () => bridge.lastWelcomedScope && (state?.assignment ?? bridge.lastWelcomedScope),
+    write: (record) => writeShutdown(`${JSON.stringify(record)}\n`),
+  });
   let sandbox: NativeSandbox;
   try {
     // ONLY the public per-turn subtree is mounted read-only at the fixed execution mount. The
@@ -649,6 +736,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
           name,
           workspace,
           extraMounts: [{ source: publicRoot, destination: CLOUD_EXECUTION_MOUNT }],
+          onPerformanceLog: perfSink,
         }))
     )(config.sandboxName, config.workspace);
   } catch (error) {
@@ -656,7 +744,6 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     reportStartupError(error, options);
     return startupExitCode(error);
   }
-  let state: WorkState | undefined;
   let health: RunnerHealthListener | undefined;
   let stopping = false,
     exitCode = 143,
@@ -701,6 +788,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   };
 
   const requestStop = (code: number) => {
+    shutdown.start("request");
     stopping = true;
     exitCode = code;
     if (state) {
@@ -716,9 +804,14 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     await mkdir(config.workspace, { recursive: true, mode: 0o700 });
     if (stopping) return exitCode;
     launchAttempted = true;
+    const launchStarted = performance.now();
     await sandbox.launch();
+    const launchDurationMs = Math.max(0, Math.round(performance.now() - launchStarted));
+    const probeStarted = performance.now();
+    const probe = await sandbox.probe();
+    const probeDurationMs = Math.max(0, Math.round(performance.now() - probeStarted));
     state = {
-      probe: await sandbox.probe(),
+      probe,
       stopping,
       fatal: false,
       present: true,
@@ -733,6 +826,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       credentialWaiters: [],
       assignment: await readRunnerAssignment(config.stateDir),
       turns: undefined as unknown as CloudTurnRunner,
+      onPerformanceLog: perfSink,
     };
     attachWorkspace(config, options, state, sandbox, bridge, web);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
@@ -740,9 +834,21 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
     // it only after native readiness is proven.
     health = await startServeHealthListener(config, options, stopping);
+    emitRunnerPerformance(perfSink, {
+      operation: "runner.boot.ready",
+      durationMs: performance.now() - bootStartedAt,
+      outcome: "success",
+      metrics: {
+        sandboxName: config.sandboxName,
+        runnerVersion: probe.runnerVersion,
+        launchDurationMs,
+        probeDurationMs,
+      },
+    });
     await maintainConnections(config, state, sandbox, options, stopListeners, bridge, rebindAssignment);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
+    emitBootFailure(perfSink, bootStartedAt, config.sandboxName, error);
     reportStartupError(error, options);
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
@@ -751,17 +857,43 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     // Mark it before settling the controller so an interrupted turn's verified reset can only
     // delete the namespace, never relaunch it ahead of cleanup; then await the live worker and
     // abort it before any sandbox deletion.
-    await settleCloudController(state);
-    // The probe listener and process handlers are released even when sandbox cleanup throws.
-    try {
-      if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
-    } finally {
-      await webGateway?.close();
-      await health?.close();
-      removeSignals();
-    }
+    await shutdown.cleanup(async () => {
+      await shutdown.measure("controller_drain", () => settleCloudController(state));
+      // The probe listener and process handlers are released even when sandbox cleanup throws.
+      try {
+        if (
+          !(await shutdown.measure("native_cleanup", () => cleanupRunner(sandbox, state, launchAttempted, options), {
+            falseIsFailure: true,
+          }))
+        )
+          result = 5;
+      } finally {
+        await shutdown.measure("gateway_health_close", async () => {
+          await webGateway?.close();
+          await health?.close();
+          removeSignals();
+        });
+      }
+    });
   }
   return result;
+}
+
+function emitBootFailure(
+  perfSink: RunnerPerformanceSink,
+  bootStartedAt: number,
+  sandboxName: string,
+  error: unknown,
+): void {
+  emitRunnerPerformance(perfSink, {
+    operation: "runner.boot.ready",
+    durationMs: performance.now() - bootStartedAt,
+    outcome: "error",
+    metrics: {
+      sandboxName,
+      errorCode: safeRunnerErrorCode(error) ?? "startup_failed",
+    },
+  });
 }
 
 /** Acceptance-harness path: opens the acceptance run's own channel when an authority was injected. */
@@ -864,6 +996,8 @@ async function serveOnce(
 ): Promise<ConnectionOutcome> {
   // The previous connection drained before this one starts; its interrupt no longer applies.
   state.credentialInterrupt = undefined;
+  const authStarted = performance.now();
+  const authRequestId = randomUUID();
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
     handshakeTimeout: options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS,
@@ -926,6 +1060,14 @@ async function serveOnce(
     const finish = (kind: ConnectionOutcome["kind"] = "closed") => {
       if (closed) return;
       closed = true;
+      if (!welcome) {
+        emitRunnerPerformance(state.onPerformanceLog, {
+          operation: "runner.connection.auth",
+          durationMs: performance.now() - authStarted,
+          outcome: kind === "renewed" ? "success" : "error",
+          metrics: { sandboxName: config.sandboxName, requestId: authRequestId, connectionOutcome: kind },
+        });
+      }
       state.persistenceFailure = undefined;
       clearTimeout(authTimer);
       clearInterval(heartbeatTimer);
@@ -934,6 +1076,7 @@ async function serveOnce(
       bridge.sendFn = undefined;
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
+      bridge.imInputEnabled = false;
       bridge.turnActivityEnabled = false;
       bridge.sessionCollaborationVersion = 0;
       bridge.emitState("closed");
@@ -988,17 +1131,19 @@ async function serveOnce(
     socket.on("open", () =>
       send({
         type: "auth",
-        requestId: randomUUID(),
+        requestId: authRequestId,
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+        imInputVersion: 1,
         turnActivityVersion: 1,
-        githubUserTaskVersion: 1,
+        contextTreeExecutionVersion: 1,
         /*
-         * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
-         * auth schema only admits v1 fails the strict handshake; a foundation Server that parses
-         * but does not echo simply leaves collaboration off — the Runner never pretends.
+         * This build speaks Session collaboration v3 (scheduled origin plus the settlement failure
+         * reason). An older Server whose auth schema does not admit v3 fails the strict handshake;
+         * a foundation Server that parses but does not echo simply leaves collaboration off — the
+         * Runner never pretends.
          */
-        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V2,
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V3,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
@@ -1032,7 +1177,22 @@ async function serveOnce(
         resourceName: data.resourceName,
         resourceUid: data.resourceUid ?? null,
       };
+      bridge.lastWelcomedScope = bridge.scope;
+      emitRunnerPerformance(state.onPerformanceLog, {
+        operation: "runner.connection.auth",
+        durationMs: performance.now() - authStarted,
+        outcome: "success",
+        metrics: {
+          sandboxName: config.sandboxName,
+          sandboxId: data.sandboxId,
+          sessionId: data.sessionId,
+          environmentGeneration: data.environmentGeneration,
+          requestId: authRequestId,
+          connectionOutcome: "welcomed",
+        },
+      });
       bridge.cloudEnabled = cloudCapable;
+      bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;
       bridge.sessionCollaborationVersion = negotiatedRunnerSessionCollaborationVersion(data);
       bridge.sendFn = send;
@@ -1048,7 +1208,28 @@ async function serveOnce(
         ready,
         isClosed: () => closed,
         enqueue: enqueueCloudControl,
-        rebind,
+        rebind: async () => {
+          const started = performance.now();
+          const unchanged = state.assignment !== undefined && assignmentsMatch(state.assignment, data);
+          let bound = false;
+          try {
+            bound = await rebind();
+            return bound;
+          } finally {
+            emitRunnerPerformance(state.onPerformanceLog, {
+              operation: "runner.connection.rebind",
+              durationMs: performance.now() - started,
+              outcome: bound ? "success" : "error",
+              metrics: {
+                sandboxId: data.sandboxId,
+                sessionId: data.sessionId,
+                environmentGeneration: data.environmentGeneration,
+                requestId: authRequestId,
+                connectionOutcome: bound ? (unchanged ? "unchanged" : "bound") : "refused",
+              },
+            });
+          }
+        },
         ensureCredential: () =>
           ensureAssignmentCredential(state, data, options.authTimeoutMs ?? PERSISTENT_AUTH_TIMEOUT_MS, {
             required: data.reuseVersion === RUNNER_REUSE_VERSION,
@@ -1082,6 +1263,7 @@ async function serveOnce(
     };
     const handle = (data: RunnerServerFrame) =>
       dispatchFrame(data, {
+        ...(state.latency ? { latency: state.latency } : {}),
         closed,
         authenticated,
         welcomed: welcome !== undefined,
@@ -1194,7 +1376,9 @@ function prepareRunnerConnection(
     // (a fresh first bind may use the bearer minted for it at creation).
     await callbacks.ensureCredential();
     const currentWorkspace = state.workspace;
-    if (!currentWorkspace || !(await currentWorkspace.prepare()) || callbacks.isClosed()) return;
+    if (!currentWorkspace) return;
+    const prepare = () => currentWorkspace.prepare();
+    if (!(state.latency ? await state.latency.workspace(prepare) : await prepare()) || callbacks.isClosed()) return;
     await state.afterWorkspaceRestore?.();
     state.afterWorkspaceRestore = undefined;
     callbacks.ready();
@@ -1377,17 +1561,28 @@ interface WorkCallbacks {
  * Sandbox occupation boundary. A failure marks the Runner fatal instead of reusing the namespace.
  */
 async function recycleNativeSandbox(sandbox: NativeSandbox, state: WorkState): Promise<void> {
-  try {
-    await sandbox.destroy();
-    state.present = false;
-    if (state.stopping) return;
-    state.present = true;
-    await sandbox.launch();
-    state.probe = await sandbox.probe();
-  } catch (error) {
-    state.fatal = true;
-    throw error;
-  }
+  await traceRunnerOperation(
+    state.onPerformanceLog,
+    "runner.native_sandbox.reset",
+    async (addMetrics) => {
+      try {
+        await sandbox.destroy();
+        state.present = false;
+        if (state.stopping) return;
+        state.present = true;
+        await sandbox.launch();
+        state.probe = await sandbox.probe();
+        addMetrics({ runnerVersion: state.probe.runnerVersion });
+      } catch (error) {
+        state.fatal = true;
+        throw error;
+      }
+    },
+    {
+      sandboxName: sandbox.name,
+      runnerVersion: state.probe.runnerVersion,
+    },
+  );
 }
 
 function startAcceptance(
@@ -1496,7 +1691,8 @@ function runnerWelcomeRejection(
   return undefined;
 }
 
-function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 {
+function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 {
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION) {
     return RUNNER_SESSION_COLLABORATION_VERSION;
@@ -1505,6 +1701,7 @@ function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 
 }
 
 interface FrameDispatch {
+  latency?: RunnerCloudLatencyObserver;
   closed: boolean;
   authenticated: boolean;
   welcomed: boolean;
@@ -1599,6 +1796,8 @@ type CloudServerFrame = Extract<
   RunnerServerFrame,
   {
     type:
+      | "delivery:steer"
+      | "delivery:steer:ack"
       | "delivery:run"
       | "delivery:verified"
       | "delivery:cancel"
@@ -1616,6 +1815,8 @@ type CloudServerFrame = Extract<
 function isCloudServerFrame(frame: RunnerServerFrame): frame is CloudServerFrame {
   return (
     frame.type === "turn:activity:result" ||
+    frame.type === "delivery:steer" ||
+    frame.type === "delivery:steer:ack" ||
     frame.type === "delivery:run" ||
     frame.type === "delivery:verified" ||
     frame.type === "delivery:cancel" ||
@@ -1656,7 +1857,17 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
     c.finish();
     return;
   }
+  if ((data.type === "delivery:steer" || data.type === "delivery:steer:ack") && !c.bridge.imInputEnabled) {
+    c.finish();
+    return;
+  }
   switch (data.type) {
+    case "delivery:steer":
+      c.enqueueCloudControl(data.type, () => c.turns.handleSteer(data));
+      break;
+    case "delivery:steer:ack":
+      c.enqueueCloudControl(data.type, () => c.turns.handleSteerAck(data));
+      break;
     case "turn:activity:result":
       if (c.bridge.turnActivityEnabled) c.turns.handleActivityResult(data);
       else c.finish();
@@ -1671,7 +1882,10 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
       c.turns.handleCancel(data.deliveryId);
       break;
     case "delivery:report:ack":
-      c.enqueueCloudControl("delivery:report:ack", () => c.turns.handleReportAck(data));
+      c.enqueueCloudControl("delivery:report:ack", async () => {
+        await c.turns.handleReportAck(data);
+        c.latency?.acknowledged(data);
+      });
       break;
     case "delivery:query":
       c.enqueueCloudControl("delivery:query", () => c.turns.handleQuery(data));
@@ -1686,7 +1900,10 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
       c.turns.handleSessionMessageCancel(data.messageId);
       break;
     case "session:message:settled:ack":
-      c.enqueueCloudControl("session:message:settled:ack", () => c.turns.handleSessionMessageSettledAck(data));
+      c.enqueueCloudControl("session:message:settled:ack", async () => {
+        await c.turns.handleSessionMessageSettledAck(data);
+        c.latency?.acknowledged(data);
+      });
       break;
     case "credential:frame":
       c.bridge.emitCredential(data.frame);

@@ -42,6 +42,36 @@ describe("computer contracts", () => {
     expect(() => ComputerConnectCodeExchangeResponseSchema.parse({ ...response, accessToken: "human" })).toThrow();
   });
 
+  it("carries an optional token and outcome, and omits the token only for already connected", () => {
+    const base = { computerId: crypto.randomUUID(), installationId: crypto.randomUUID() };
+    for (const outcome of ["created", "repaired"] as const) {
+      expect(ComputerConnectCodeExchangeResponseSchema.parse({ ...base, machineToken: "t", outcome })).toMatchObject({
+        outcome,
+      });
+      expect(() => ComputerConnectCodeExchangeResponseSchema.parse({ ...base, outcome })).toThrow();
+    }
+    expect(ComputerConnectCodeExchangeResponseSchema.parse({ ...base, outcome: "already_connected" })).toEqual({
+      ...base,
+      outcome: "already_connected",
+    });
+    expect(() =>
+      ComputerConnectCodeExchangeResponseSchema.parse({ ...base, outcome: "already_connected", machineToken: "t" }),
+    ).toThrow();
+    expect(() => ComputerConnectCodeExchangeResponseSchema.parse(base)).toThrow();
+    const request = {
+      code: "1234567890abcdef",
+      installationId: crypto.randomUUID(),
+      displayName: "Laptop",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "0.0.1",
+    };
+    expect(
+      ComputerConnectCodeExchangeRequestSchema.parse({ ...request, machineToken: "t", reportOutcome: true }),
+    ).toEqual({ ...request, machineToken: "t", reportOutcome: true });
+    expect(() => ComputerConnectCodeExchangeRequestSchema.parse({ ...request, reportOutcome: false })).toThrow();
+  });
+
   it("treats an empty Account connect-code request as create and requires an explicit repair target", () => {
     expect(AccountComputerConnectCodeIssueRequestSchema.parse({})).toEqual({});
     expect(AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "create" })).toEqual({ mode: "create" });

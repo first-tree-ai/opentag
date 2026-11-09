@@ -490,7 +490,7 @@ describe("Agent CLI core", () => {
     await runAgentUpdate(agentId, {
       accessToken: "access",
       api: client,
-      instructions: "",
+      clearInstructions: true,
       clearModel: true,
       clearReasoningEffort: true,
       clearMaxDuration: true,
@@ -500,7 +500,7 @@ describe("Agent CLI core", () => {
       runtimeConfig: {
         model: null,
         reasoningEffort: null,
-        instructions: "",
+        instructions: null,
         maxDurationMs: null,
       },
     });
@@ -526,6 +526,8 @@ describe("Agent CLI core", () => {
       { reasoningEffort: "high", clearReasoningEffort: true },
       { maxDurationMs: "100", clearMaxDuration: true },
       { instructions: "inline", instructionsFile: "/tmp/unused" },
+      { instructions: "inline", clearInstructions: true },
+      { instructionsFile: "/tmp/unused", clearInstructions: true },
     ]) {
       const client = api();
       await expect(runAgentUpdate(agentId, { accessToken: "access", api: client, ...options })).rejects.toThrow(
@@ -586,6 +588,7 @@ describe("Agent CLI core", () => {
         "--clear-reasoning-effort",
         "--instructions",
         "--instructions-file",
+        "--clear-instructions",
         "--max-duration-ms",
         "--clear-max-duration",
       ]),
@@ -599,6 +602,9 @@ describe("Agent CLI core", () => {
     expect(update?.options.find((option) => option.long === "--model")?.description).toContain("selected runtime");
     expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain(
       "runtime manage model",
+    );
+    expect(update?.options.find((option) => option.long === "--clear-instructions")?.description).toBe(
+      "Clear custom instructions and revert to defaults",
     );
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
       "openTag default",
@@ -673,7 +679,7 @@ describe("Agent CLI core", () => {
     try {
       const commands = [
         ["agent", "create", "--name", "reviewer", "--display-name", "Reviewer", "--provider", "codex"],
-        ["agent", "update", agentId, "--display-name", "Reviewer", "--clear-model"],
+        ["agent", "update", agentId, "--display-name", "Reviewer", "--clear-model", "--clear-instructions"],
         ["agent", "list"],
         ["agent", "show", agentId],
         ["agent", "delete", agentId],
@@ -691,7 +697,10 @@ describe("Agent CLI core", () => {
         createProgram().parseAsync(["node", "opentag", "agent", "receive-mode", "set", agentId, "invalid"]),
       ).rejects.toThrow("Receive mode must be all-message or mention-only");
       expect(createSpy).toHaveBeenCalledOnce();
-      expect(updateSpy).toHaveBeenCalledWith(agentId, expect.objectContaining({ clearModel: true }));
+      expect(updateSpy).toHaveBeenCalledWith(
+        agentId,
+        expect.objectContaining({ clearInstructions: true, clearModel: true }),
+      );
       expect(listSpy).toHaveBeenCalledOnce();
       expect(showSpy).toHaveBeenCalledWith(agentId);
       expect(deleteSpy).toHaveBeenCalledWith(agentId);

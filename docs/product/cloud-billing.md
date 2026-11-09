@@ -31,9 +31,17 @@ Requests cancelled before dispatch, router-confirmed pre-dispatch rejections (`X
 
 Startup marks abandoned calls pending before cloud readiness, including billing-disabled calls. Stale in-flight records become pending after the request timeout plus a grace period. Resolve pending calls and drain active calls before changing the gateway identity or endpoint. Operators can write off reviewed unresolved customer calls with `node scripts/write-off.mjs <call-id> <reason>` from the built private checkout using the application environment; the reason is recorded.
 
+Runtime usage expiry locks at most 100 in-flight calls in stable created-at/ID order with
+`FOR UPDATE SKIP LOCKED`; a busy call cannot delay unrelated due usage. The existing 100-call
+recovery loop isolates each call, including fallback defer failures, and stops admitting SQL stages
+when closing. Router I/O remains outside transactions. Pending fallback is attempted once; an
+unacknowledged write leaves the original call recoverable. Startup abandonment retains its
+single-owner behavior. A bounded mutation count does not imply a bounded historical scan;
+index changes require their own plan and deployment assessment.
+
 ## Payments
 
-Account displays one available USD balance, including starting and purchased credit, with custom top-ups from $10 to $1,000 in cents. Stripe-hosted Checkout returns to `/account`; only verified paid Stripe sessions add credit. The signed webhook endpoint is `/stripe/webhook`. Register `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, and `charge.dispute.created`. Refunds remove purchased credit once; refunds and disputes block cloud spending for operator review. Events received before fulfillment remain durable. Provider availability does not affect payment fulfillment or balance reads.
+Account displays one available USD balance, including starting and purchased credit, with custom top-ups from $10 to $1,000 in cents. The Account credits section uses the same settings rows and feedback banners as the rest of Account settings. The amount field shows the allowed range before submission, and exhausted credit offers a shortcut to the top-up field. Stripe-hosted Checkout returns to `/account`; a recent checkout in the same browser tab shows an informational notice and a balance-refresh action. The reminder is Account-scoped and dismissible; checkouts older than 30 minutes do not restore it. It does not infer payment success from returning, a balance change, or browser storage. Only verified paid Stripe sessions add credit. The signed webhook endpoint is `/stripe/webhook`. Register `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, and `charge.dispute.created`. Refunds remove purchased credit once; refunds and disputes block cloud spending for operator review. Events received before fulfillment remain durable. Provider availability does not affect payment fulfillment or balance reads.
 
 Configure `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and optionally `BILLING_FREE_CENTS` and `BILLING_MAX_CONCURRENT_PER_ACCOUNT` in the private package's application environment. Rates come from the bundled private plan file. Use Stripe test mode for acceptance testing. Auto-recharge, subscriptions, request reservations, and a billing administration UI are outside this MVP.
 

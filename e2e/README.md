@@ -18,6 +18,10 @@ migrations and the admin bootstrap, serves the built Web app, runs the tests, wr
 `e2e/screenshots/index.html`, and removes its database, temporary credentials, daemon, server, and PostgreSQL
 container at shutdown.
 
+Container-side PostgreSQL clients use `-h 127.0.0.1` so they cannot connect to the image's temporary initialization
+server. Keep new probes consistent with the [container PostgreSQL convention](../DEVELOPMENT.md#container-postgresql-probes),
+which `pnpm check` enforces.
+
 The pull-request smoke path is intentionally separate from that serial journey:
 
 ```bash

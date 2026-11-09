@@ -346,7 +346,7 @@ describe("MCP write invalidation", () => {
     };
   }
 
-  it("retires this Agent's reads, the Account pool, and every definition detail after a write", async () => {
+  it("retires all Agent reads, shared authentication views, the Account pool, and definition details after a write", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue({} as never);
@@ -357,7 +357,7 @@ describe("MCP write invalidation", () => {
     await result.current.mutateAsync(SERVER_ID);
 
     const keys = invalidate.mock.calls.map((call) => call[0]?.queryKey);
-    expect(keys).toContainEqual(["mcp", "agents", AGENT_ID]);
+    expect(keys).toContainEqual(["mcp", "agents"]);
     // Prefix invalidation also retires the Agent's available-server query.
     expect(keys).toContainEqual(["mcp", "servers"]);
     expect(keys).toContainEqual(["mcp", "server"]);

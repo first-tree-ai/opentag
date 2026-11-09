@@ -1,6 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
+import http from "node:http";
 import { connect, createServer, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { NATIVE_PROVIDER_BRIDGE_SOURCE, NativeProviderBridge } from "../runner/native-provider-bridge.js";
@@ -129,6 +130,23 @@ describe("native provider transport over exec stdio", () => {
     expect(bridge.failure).toBeUndefined();
   });
 
+  it("routes the optional Context Tree entry only to its enumerated target and removes it on close", async () => {
+    const ordinary = await listen((socket) => socket.end("ordinary"));
+    const contextTree = await listen((socket) => socket.end("context-tree"));
+    const local = localSandbox();
+    const entries = { ...(await freeEntryPorts()), contextTree: await freePort() };
+    const bridge = await NativeProviderBridge.open({
+      sandbox: local.sandbox,
+      targets: { connect: ordinary.port, slack: ordinary.port, contextTree: contextTree.port },
+      entryPorts: entries,
+    });
+    teardowns.push(() => bridge.close());
+    expect((await exchange(entries.contextTree)).toString()).toBe("context-tree");
+    expect((await exchange(entries.connect)).toString()).toBe("ordinary");
+    await bridge.close();
+    await expect(exchange(entries.contextTree)).rejects.toBeDefined();
+  });
+
   it("drains a large upload before propagating FIN and receiving its result", async () => {
     const payload = randomBytes(2 * 1024 * 1024 + 37);
     const upstream = await listen((socket) => {
@@ -142,6 +160,55 @@ describe("native provider transport over exec stdio", () => {
     });
     const { ports } = await open(upstream.port);
     expect((await exchange(ports.connect, payload)).toString()).toBe(hash(payload));
+  });
+
+  it("cancels the parent Context Tree request when its Sandbox caller disconnects", async () => {
+    let started!: () => void;
+    const received = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let cancelled!: () => void;
+    const cancellation = new Promise<void>((resolve) => {
+      cancelled = resolve;
+    });
+    const server = http.createServer((request, response) => {
+      request.resume();
+      request.on("end", started);
+      response.on("close", cancelled);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    teardowns.push(async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    const local = localSandbox();
+    const entries = { ...(await freeEntryPorts()), contextTree: await freePort() };
+    const port = (server.address() as { port: number }).port;
+    const bridge = await NativeProviderBridge.open({
+      sandbox: local.sandbox,
+      targets: { connect: port, slack: port, contextTree: port },
+      entryPorts: entries,
+    });
+    teardowns.push(() => bridge.close());
+    const request = connect({ host: "127.0.0.1", port: entries.contextTree, allowHalfOpen: true });
+    request.on("error", () => undefined);
+    request.write("POST /command HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}");
+    await received;
+    request.end();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        cancellation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Context Tree caller cancellation did not reach parent")), 1000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      request.destroy();
+    }
+    expect(bridge.failure).toBeUndefined();
   });
 
   it("rejects occupied entry ports and reaps the partially started helper", async () => {

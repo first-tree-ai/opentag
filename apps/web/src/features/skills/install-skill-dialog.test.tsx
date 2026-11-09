@@ -125,13 +125,132 @@ describe("InstallSkillDialog", () => {
     expect(within(results).getByText(/could not be understood/)).toBeTruthy();
   });
 
+  it("reviews only failed skills with fresh fingerprints and explicit confirmation", async () => {
+    const initial = [candidate(), candidate({ name: "other" })];
+    const fresh = [candidate({ alreadyInstalled: true }), candidate({ name: "other", fingerprint: "fresh-other" })];
+    const resolve = stubResolve(initial)
+      .mockResolvedValueOnce({ source: { kind: "github", url: "https://github.com/o/r.git" }, skills: initial })
+      .mockResolvedValue({ source: { kind: "github", url: "https://github.com/o/r.git" }, skills: fresh });
+    const install = stubInstall([{ name: "other", status: "installed" }]).mockResolvedValueOnce({
+      results: [
+        { name: "demo", status: "installed" },
+        { name: "other", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_UNREACHABLE },
+      ],
+    });
+    const { onClose } = renderDialog();
+    await lookUp("owner/repo");
+    fireEvent.click(screen.getByRole("checkbox", { name: "demo" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "other" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install 2 skills" }));
+    const report = await screen.findByRole("list", { name: "Install results" });
+    await waitFor(() => expect(document.activeElement).toBe(report));
+    fireEvent.click(screen.getByRole("button", { name: "Review failed skills" }));
+    const retry = await screen.findByRole("checkbox", { name: "other" });
+    expect(retry.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("checkbox", { name: "demo" }).getAttribute("aria-disabled")).toBe("true");
+    expect((screen.getByLabelText("URL") as HTMLInputElement).value).toBe("owner/repo");
+    expect(document.activeElement).toBe(screen.getByLabelText("URL"));
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(install).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(install).toHaveBeenLastCalledWith(AGENT_ID, {
+      source: "owner/repo",
+      selections: [{ name: "other", fingerprint: "fresh-other" }],
+    });
+  });
+
+  it("retains the source and failed selection through an explicit preview retry", async () => {
+    const resolve = stubResolve([candidate()]);
+    const install = stubInstall([{ name: "demo", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_UNREACHABLE }]);
+    renderDialog();
+    await lookUp("owner/retained");
+    fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
+    await screen.findByRole("button", { name: "Review failed skills" });
+    resolve.mockRejectedValueOnce(new ApiError(503, "Offline", SKILL_ERROR_CODES.SOURCE_UNREACHABLE));
+    fireEvent.click(screen.getByRole("button", { name: "Review failed skills" }));
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect((screen.getByLabelText("URL") as HTMLInputElement).value).toBe("owner/retained");
+    expect((screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(install).toHaveBeenCalledOnce();
+    fireEvent.click(retry);
+    await screen.findByText("Skill found at this URL");
+    expect(resolve).toHaveBeenLastCalledWith(AGENT_ID, "owner/retained");
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it("does not reselect a failed item that became installed before review", async () => {
+    const resolve = stubResolve([candidate(), candidate({ name: "other" })]);
+    const install = stubInstall([{ name: "demo", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_UNREACHABLE }]);
+    renderDialog();
+    await lookUp();
+    fireEvent.click(screen.getByRole("checkbox", { name: "demo" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
+    await screen.findByRole("button", { name: "Review failed skills" });
+    resolve.mockResolvedValue({
+      source: { kind: "github", url: "https://github.com/o/r.git" },
+      skills: [candidate({ alreadyInstalled: true }), candidate({ name: "other" })],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Review failed skills" }));
+    await screen.findByRole("checkbox", { name: "other" });
+    expect(screen.getByRole("checkbox", { name: "other" }).getAttribute("aria-checked")).toBe("false");
+    expect((screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it.each(["other", "new-unrelated-skill"])(
+    "preserves failed-only selection when recovery contains only %s",
+    async (freshName) => {
+      const resolve = stubResolve([candidate(), candidate({ name: "other" })]);
+      const install = stubInstall([{ name: freshName, status: "installed" }]).mockResolvedValueOnce({
+        results: [
+          { name: "demo", status: "installed" },
+          { name: "other", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_UNREACHABLE },
+        ],
+      });
+      const { onClose } = renderDialog();
+      await lookUp();
+      fireEvent.click(screen.getByRole("checkbox", { name: "demo" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "other" }));
+      fireEvent.click(screen.getByRole("button", { name: "Install 2 skills" }));
+      await screen.findByRole("button", { name: "Review failed skills" });
+      resolve.mockResolvedValue({
+        source: { kind: "github", url: "https://github.com/o/r.git" },
+        skills: [candidate({ name: freshName, fingerprint: "fresh-single" })],
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Review failed skills" }));
+      const choice = await screen.findByRole("checkbox", { name: freshName });
+      const confirm = screen.getByRole("button", { name: "Install skill" }) as HTMLButtonElement;
+      expect(choice.getAttribute("aria-checked")).toBe(freshName === "other" ? "true" : "false");
+      expect(confirm.disabled).toBe(freshName !== "other");
+      expect(install).toHaveBeenCalledOnce();
+      if (freshName !== "other") {
+        fireEvent.click(confirm);
+        expect(install).toHaveBeenCalledOnce();
+        fireEvent.click(choice);
+      }
+      fireEvent.click(confirm);
+      await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+      expect(install).toHaveBeenLastCalledWith(AGENT_ID, {
+        source: "owner/repo",
+        selections: [{ name: freshName, fingerprint: "fresh-single" }],
+      });
+    },
+  );
+
   it("shows an already installed candidate without offering another install", async () => {
     stubResolve([candidate({ alreadyInstalled: true })]);
     renderDialog();
     await lookUp();
     expect(screen.getByText("Installed")).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
-    expect((screen.getByRole("button", { name: "Install skill" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 
   it("shows a candidate the Server cannot package, disabled, with the reason", async () => {
@@ -208,7 +327,9 @@ describe("InstallSkillDialog", () => {
     fireEvent.paste(screen.getByLabelText("URL"), { clipboardData: { getData: () => "https://github.com/o/r" } });
     expect(await screen.findByText("Skill found at this URL")).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
-    expect((screen.getByRole("button", { name: "Install skill" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
     fireEvent.blur(screen.getByLabelText("URL"));
     expect(resolve).toHaveBeenCalledOnce();
     expect(install).not.toHaveBeenCalled();
@@ -220,7 +341,7 @@ describe("InstallSkillDialog", () => {
     const { onClose } = renderDialog();
     await lookUp();
     expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Install skill" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
@@ -248,7 +369,7 @@ describe("InstallSkillDialog", () => {
     });
     await waitFor(() => expect(screen.getByText("new-skill")).toBeTruthy());
     expect(screen.queryByText("old-skill")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Install skill" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
     await waitFor(() =>
       expect(install).toHaveBeenCalledWith(AGENT_ID, expect.objectContaining({ source: "owner/new" })),
     );

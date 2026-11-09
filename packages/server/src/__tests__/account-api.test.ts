@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
   accountComputerDisconnectPath,
@@ -9,6 +10,8 @@ import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -161,6 +164,23 @@ function services() {
         collaborationMessages: [],
         nextCursor: null,
       }),
+      detail: vi
+        .fn()
+        .mockImplementation(async (_accountId: string, _taskId: string, options: { sections?: string[] }) => ({
+          task: taskSummary,
+          ...(options.sections === undefined || options.sections.includes("turns")
+            ? { turns: { items: [], nextCursor: null } }
+            : {}),
+          ...(options.sections === undefined || options.sections.includes("internal-sessions")
+            ? { internalSessions: { items: [], nextCursor: null } }
+            : {}),
+          ...(options.sections === undefined || options.sections.includes("collaboration-messages")
+            ? { collaborationMessages: { items: [], nextCursor: null } }
+            : {}),
+        })),
+      listTurns: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      listInternalSessions: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      listCollaborationMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       listReplies: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     },
     computerService: {
@@ -214,15 +234,10 @@ function services() {
 function appWith(
   overrides: Partial<ReturnType<typeof services>> = {},
   setupReset?: { enabled?: boolean; reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
-  internalNavigationService?: {
-    read: ReturnType<typeof vi.fn>;
-    update: ReturnType<typeof vi.fn>;
-  },
 ) {
   const service = { ...services(), ...overrides };
   const app = createApp({
     ...(setupReset ? { setupResetService: setupReset as never } : {}),
-    ...(internalNavigationService ? { internalNavigationService: internalNavigationService as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
@@ -239,83 +254,6 @@ function appWith(
   apps.push(app);
   return { app, service };
 }
-
-describe("staging-wide internal navigation", () => {
-  function navigationService() {
-    let value = { integrations: false };
-    return {
-      read: vi.fn(() => value),
-      update: vi.fn((updated: typeof value) => {
-        value = { ...updated };
-        return value;
-      }),
-    };
-  }
-
-  it("reads and updates one deployment-wide value", async () => {
-    const navigation = navigationService();
-    const { app } = appWith({}, undefined, navigation);
-
-    const initial = await app.inject({
-      method: "GET",
-      url: HTTP_PATHS.internalNavigationVisibility,
-      headers: authorization,
-    });
-    const updated = await app.inject({
-      method: "PUT",
-      url: HTTP_PATHS.internalNavigationVisibility,
-      headers: authorization,
-      payload: { integrations: true },
-    });
-    const nextRead = await app.inject({
-      method: "GET",
-      url: HTTP_PATHS.internalNavigationVisibility,
-      headers: authorization,
-    });
-
-    expect(initial.statusCode).toBe(200);
-    expect(initial.json()).toEqual({ integrations: false });
-    expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toEqual({ integrations: true });
-    expect(nextRead.json()).toEqual({ integrations: true });
-    expect(navigation.update).toHaveBeenCalledExactlyOnceWith({ integrations: true });
-  });
-
-  it("is absent when the staging-only service is not supplied", async () => {
-    const { app } = appWith();
-
-    const response = await app.inject({
-      method: "GET",
-      url: HTTP_PATHS.internalNavigationVisibility,
-      headers: authorization,
-    });
-
-    expect(response.statusCode).toBe(404);
-  });
-
-  it("requires authentication and a complete setting", async () => {
-    const navigation = navigationService();
-    const { app } = appWith({}, undefined, navigation);
-
-    const [unauthenticated, malformed] = await Promise.all([
-      app.inject({
-        method: "PUT",
-        url: HTTP_PATHS.internalNavigationVisibility,
-        payload: { integrations: true },
-      }),
-      app.inject({
-        method: "PUT",
-        url: HTTP_PATHS.internalNavigationVisibility,
-        headers: authorization,
-        payload: { skills: true },
-      }),
-    ]);
-
-    expect(unauthenticated.statusCode).toBe(401);
-    expect(malformed.statusCode).toBe(400);
-    expect(navigation.update).not.toHaveBeenCalled();
-  });
-});
 
 describe("undoing setup on the authenticated Account", () => {
   function resetService(enabled = true) {
@@ -480,6 +418,97 @@ describe("Account-native management collections", () => {
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
     expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
+  });
+
+  it("reads the bounded Task detail and each section under its own cursor", async () => {
+    const { app, service } = appWith();
+
+    const detail = await app.inject({
+      method: "GET",
+      url: taskDetailPath(taskSummary.id),
+      headers: authorization,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.headers["cache-control"]).toBe("no-store");
+    expect(detail.json()).toEqual({
+      task: taskSummary,
+      turns: { items: [], nextCursor: null },
+      internalSessions: { items: [], nextCursor: null },
+      collaborationMessages: { items: [], nextCursor: null },
+    });
+    // The first section page is twenty rows unless the caller asks for another size, and names no
+    // sections, so the Server answers with every section.
+    expect(service.taskService.detail).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 20 });
+
+    // A reader that renders only the conversation names the Turns, and is answered with those alone.
+    const selective = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns`,
+      headers: authorization,
+    });
+    expect(selective.statusCode).toBe(200);
+    expect(selective.json()).toEqual({ task: taskSummary, turns: { items: [], nextCursor: null } });
+    expect(service.taskService.detail).toHaveBeenLastCalledWith(userId, taskSummary.id, {
+      limit: 20,
+      sections: ["turns"],
+    });
+
+    const twoSections = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns,internal-sessions`,
+      headers: authorization,
+    });
+    expect(twoSections.statusCode).toBe(200);
+    expect(service.taskService.detail).toHaveBeenLastCalledWith(userId, taskSummary.id, {
+      limit: 20,
+      sections: ["turns", "internal-sessions"],
+    });
+
+    // An unknown section name is a rejected request, not a silently smaller page.
+    const unknownSection = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?sections=turns,replies`,
+      headers: authorization,
+    });
+    expect(unknownSection.statusCode).toBe(400);
+
+    for (const [section, read] of [
+      ["turns", service.taskService.listTurns],
+      ["internal-sessions", service.taskService.listInternalSessions],
+      ["collaboration-messages", service.taskService.listCollaborationMessages],
+    ] as const) {
+      const page = await app.inject({
+        method: "GET",
+        url: `${taskDetailSectionPath(taskSummary.id, section)}?limit=50&cursor=abc`,
+        headers: authorization,
+      });
+      expect(page.statusCode).toBe(200);
+      expect(page.json()).toEqual({ items: [], nextCursor: null });
+      expect(read).toHaveBeenLastCalledWith(userId, taskSummary.id, { limit: 50, cursor: "abc" });
+      const defaulted = await app.inject({
+        method: "GET",
+        url: taskDetailSectionPath(taskSummary.id, section),
+        headers: authorization,
+      });
+      expect(defaulted.statusCode).toBe(200);
+      expect(read).toHaveBeenLastCalledWith(userId, taskSummary.id, { limit: 20 });
+      const beyondCap = await app.inject({
+        method: "GET",
+        url: `${taskDetailSectionPath(taskSummary.id, section)}?limit=101`,
+        headers: authorization,
+      });
+      expect(beyondCap.statusCode).toBe(400);
+    }
+
+    // The first page takes no cursor: a section cursor belongs to its own section.
+    const cursorOnFirstPage = await app.inject({
+      method: "GET",
+      url: `${taskDetailPath(taskSummary.id)}?cursor=abc`,
+      headers: authorization,
+    });
+    expect(cursorOnFirstPage.statusCode).toBe(400);
+    // Every accepted read above went through the service once; the rejected ones never did.
+    expect(service.taskService.detail).toHaveBeenCalledTimes(3);
   });
 
   it("reads the Task's captured replies with the authenticated scope and bounded paging", async () => {
@@ -914,6 +943,43 @@ describe("Account-native management collections", () => {
       expect(response.statusCode).toBe(401);
     }
     expect(service.agentService.listForAccount).not.toHaveBeenCalled();
+  });
+
+  it("sends the running Task count only to clients that declare they read it", async () => {
+    const service = services();
+    service.agentService.listForAccount.mockResolvedValue({
+      agents: [{ ...agentListItem, activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 } }],
+    });
+    const app = createApp({
+      authService: authService(),
+      agentService: service.agentService as unknown as AgentService,
+    });
+    apps.push(app);
+    // The working activity exactly as a client released before the count validates it.
+    const legacyActivity = z.discriminatedUnion("state", [
+      z.object({ state: z.literal("idle") }).strict(),
+      z.object({ state: z.literal("unknown") }).strict(),
+      z.object({ state: z.literal("working"), startedAt: z.string().datetime() }).strict(),
+    ]);
+
+    const legacy = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
+    expect(legacy.statusCode).toBe(200);
+    expect(legacyActivity.parse(legacy.json().agents[0].activity)).toEqual({
+      state: "working",
+      startedAt: agent.updatedAt,
+    });
+
+    const current = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountAgents,
+      headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
+    });
+    expect(current.json().agents[0].activity).toEqual({
+      state: "working",
+      startedAt: agent.updatedAt,
+      runningTaskCount: 2,
+    });
+    expect(() => legacyActivity.parse(current.json().agents[0].activity)).toThrow();
   });
 
   it("registers Account-native collections without the compatibility resolver", async () => {

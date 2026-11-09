@@ -1,5 +1,5 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import * as client from "@opentag/client";
 import {
@@ -50,7 +50,8 @@ describe("computer connect", () => {
         expect.objectContaining({ code: "code", home, noStart: false, serverUrl: channelServerUrl() }),
       );
       expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
-      expect(stdout).toHaveBeenCalledWith("Daemon service opentag-dev is active\n");
+      // A running service is implied; no extra status line.
+      expect(stdout).toHaveBeenCalledTimes(1);
     } finally {
       stdout.mockRestore();
       runSpy.mockRestore();
@@ -191,7 +192,8 @@ describe("computer connect", () => {
       noStart: true,
       serverUrl: "https://opentag.example",
     });
-    expect(result.message).toBe(`Connected Computer ${firstComputerId}`);
+    expect(result.message).toBe(`Connected this computer (${hostname()}) to openTag.`);
+    expect(result.computerId).toBe(firstComputerId);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "second-code",
@@ -203,8 +205,12 @@ describe("computer connect", () => {
     expect(await readCredentials(home)).toEqual(accountCredentials);
     const stored = await readMachineCredentials(home);
     expect(stored?.computer.computerId).toBe(secondComputerId);
-    const exchangedComputerIds = exchangeComputerConnectCode.mock.calls.map(([input]) => input.installationId);
-    expect(new Set(exchangedComputerIds).size).toBe(2);
+    // A rerun on the same home keeps its installation identity and proves the current credential.
+    const exchanged = exchangeComputerConnectCode.mock.calls.map(([input]) => input as Record<string, unknown>);
+    expect(new Set(exchanged.map((input) => input.installationId)).size).toBe(1);
+    expect(exchanged[0]?.machineToken).toBeUndefined();
+    expect(exchanged[1]?.machineToken).toMatch(/^otmc_/);
+    expect(exchanged.every((input) => input.reportOutcome === true)).toBe(true);
     expect(JSON.stringify(stored)).not.toContain("account-access");
     expect(JSON.stringify(stored)).not.toContain("account-refresh");
   });
@@ -286,6 +292,68 @@ describe("computer connect", () => {
     expect(await readMachineCredentials(home)).toEqual(credentialsBefore);
   });
 
+  it("stops a repair command on a computer other than the one it restores, before using the code", async () => {
+    const home = await temporaryHome();
+    const computerId = crypto.randomUUID();
+    await runComputerConnect({
+      api: {
+        exchangeComputerConnectCode: vi.fn(async (input: { installationId: string }) => ({
+          computerId,
+          installationId: input.installationId,
+          machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
+        })),
+      },
+      code: "valid-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+    });
+    const exchange = vi.fn();
+
+    await expect(
+      runComputerConnect({
+        api: { exchangeComputerConnectCode: exchange },
+        code: "repair-code",
+        home,
+        noStart: true,
+        serverUrl: "https://opentag.example",
+        expectedComputerId: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "COMPUTER_TARGET_MISMATCH" });
+    expect(exchange).not.toHaveBeenCalled();
+
+    // The named Computer, or a home whose identity is gone, proceeds.
+    const same = vi.fn(async (input: { installationId: string }) => ({
+      computerId,
+      installationId: input.installationId,
+      machineToken: `otmc_${crypto.randomUUID()}.${"b".repeat(43)}`,
+    }));
+    await runComputerConnect({
+      api: { exchangeComputerConnectCode: same },
+      code: "repair-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+      expectedComputerId: computerId,
+    });
+    expect(same).toHaveBeenCalledOnce();
+    const fresh = await temporaryHome();
+    const unknown = vi.fn(async (input: { installationId: string }) => ({
+      computerId,
+      installationId: input.installationId,
+      machineToken: `otmc_${crypto.randomUUID()}.${"c".repeat(43)}`,
+    }));
+    await runComputerConnect({
+      api: { exchangeComputerConnectCode: unknown },
+      code: "repair-code",
+      home: fresh,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+      expectedComputerId: computerId,
+    });
+    expect(unknown).toHaveBeenCalledOnce();
+  });
+
   it("restarts an active daemon after storing a machine credential without requiring Account login", async () => {
     const home = await temporaryHome();
     const manager = managerFixture();
@@ -332,6 +400,142 @@ describe("computer connect", () => {
 
     expect(manager.installAndStart).toHaveBeenCalledOnce();
     expect(manager.restart).not.toHaveBeenCalled();
+  });
+});
+
+describe("idempotent computer connect", () => {
+  function token() {
+    return `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`;
+  }
+
+  it("keeps local credentials and a healthy daemon untouched when the Server reports already connected", async () => {
+    const home = await temporaryHome();
+    const computerId = crypto.randomUUID();
+    await runComputerConnect({
+      api: {
+        exchangeComputerConnectCode: vi.fn(async (input: { installationId: string }) => ({
+          computerId,
+          installationId: input.installationId,
+          machineToken: token(),
+          outcome: "created" as const,
+        })),
+      },
+      code: "first-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+    });
+    const credentialsBefore = await readMachineCredentials(home);
+    const identityBefore = await readComputerIdentity(home);
+    const manager = managerFixture();
+    const exchangeComputerConnectCode = vi.fn(async (input: { installationId: string }) => ({
+      computerId,
+      installationId: input.installationId,
+      outcome: "already_connected" as const,
+    }));
+
+    const result = await runComputerConnect({
+      api: { exchangeComputerConnectCode },
+      code: "second-code",
+      home,
+      manager,
+      serverUrl: "https://opentag.example",
+    });
+
+    expect(result).toMatchObject({ outcome: "already_connected", computerId, service: { state: "active" } });
+    // The same short success as any connect: whether anything changed is internal detail.
+    expect(result.message).toBe(`Connected this computer (${hostname()}) to openTag.`);
+    expect(exchangeComputerConnectCode.mock.calls[0]?.[0]).toMatchObject({
+      installationId: identityBefore?.computerId,
+      machineToken: credentialsBefore?.computer.machineToken,
+    });
+    expect(await readMachineCredentials(home)).toEqual(credentialsBefore);
+    expect(manager.restart).not.toHaveBeenCalled();
+    expect(manager.installAndStart).not.toHaveBeenCalled();
+  });
+
+  it("starts a stopped daemon when the Server reports already connected", async () => {
+    const home = await temporaryHome();
+    const manager = managerFixture();
+    manager.status = vi.fn(async () => ({ ...(await managerFixture().status()), state: "inactive" as const }));
+    await runComputerConnect({
+      api: {
+        exchangeComputerConnectCode: vi.fn(async (input: { installationId: string }) => ({
+          computerId: crypto.randomUUID(),
+          installationId: input.installationId,
+          outcome: "already_connected" as const,
+        })),
+      },
+      code: "code",
+      home,
+      manager,
+      serverUrl: "https://opentag.example",
+    });
+    expect(manager.installAndStart).toHaveBeenCalledOnce();
+    expect(await readMachineCredentials(home)).toBeUndefined();
+  });
+
+  it("describes repaired and created outcomes in plain language", async () => {
+    for (const outcome of ["created", "repaired"] as const) {
+      const home = await temporaryHome();
+      const result = await runComputerConnect({
+        api: {
+          exchangeComputerConnectCode: vi.fn(async (input: { installationId: string }) => ({
+            computerId: "11111111-1111-4111-8111-111111111111",
+            installationId: input.installationId,
+            machineToken: token(),
+            outcome,
+          })),
+        },
+        code: "code",
+        home,
+        noStart: true,
+        serverUrl: "https://opentag.example",
+      });
+      expect(result.message).toBe(
+        outcome === "created"
+          ? `Connected this computer (${hostname()}) to openTag.`
+          : `Connected this computer (${hostname()}) to openTag.`,
+      );
+      expect(result.message).not.toContain("11111111");
+    }
+  });
+
+  it("prints one plain reason and a next step instead of an error code for connect failures", async () => {
+    const cases = [
+      [new client.OpenTagApiError("AUTH_CODE_EXPIRED", "credential", "expired", 401), /has expired/],
+      [new client.OpenTagApiError("AUTH_CODE_CONSUMED", "credential", "used", 401), /already been used/],
+      [
+        new client.OpenTagApiError("COMPUTER_ACCOUNT_CONFLICT", "deterministic", "conflict", 409),
+        /^This computer is linked to another openTag account\.$/,
+      ],
+      [
+        new client.OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "unavailable", undefined, undefined, {
+          phase: "transport",
+        }),
+        /Could not reach the openTag server/,
+      ],
+      [Object.assign(new Error("EACCES: permission denied, mkdir '/x'"), { code: "EACCES" }), /permission denied/],
+    ] as const;
+    for (const [error, reason] of cases) {
+      const home = await temporaryHome();
+      const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockRejectedValue(error);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home]);
+        const output = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+        const [first, second] = output.split("\n");
+        expect(first).toMatch(reason);
+        expect(first).not.toMatch(/^[A-Z_]+:/);
+        expect(second).toMatch(/^Next: /);
+        expect(output).not.toMatch(/details|request|nothing was changed/i);
+        expect(process.exitCode).not.toBe(0);
+      } finally {
+        stderr.mockRestore();
+        runSpy.mockRestore();
+        process.exitCode = undefined;
+      }
+    }
   });
 });
 

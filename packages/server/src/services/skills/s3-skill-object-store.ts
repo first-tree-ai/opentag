@@ -41,7 +41,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 3_600_000;
 const DEFAULT_LIST_LIMIT = 1000;
 const MAX_LIST_LIMIT = 1000;
-const MAX_LIST_BODY_CHARS = 4 * 1024 * 1024;
+const MAX_LIST_BODY_BYTES = 4 * 1024 * 1024;
 
 type Method = "PUT" | "GET" | "HEAD" | "DELETE";
 
@@ -83,9 +83,6 @@ function tagValue(block: string, tag: string): string | undefined {
  * size, a truncated page without a continuation token — is `invalid_response` rather than a guess.
  */
 function parseSkillObjectList(xml: string, limit: number): SkillObjectListResult {
-  if (xml.length > MAX_LIST_BODY_CHARS) {
-    throw new SkillObjectStoreError("invalid_response", "Skill object store LIST body is implausibly large");
-  }
   const objects: SkillObjectListEntry[] = [];
   for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     if (objects.length >= limit) break;
@@ -216,13 +213,7 @@ export class S3SkillObjectStore implements SkillObjectStore {
       cancelQuietly(response);
       throw this.#httpError("GET", response);
     }
-    let xml: string;
-    try {
-      xml = await response.text();
-    } catch {
-      throw new SkillObjectStoreError("invalid_response", "Skill object store LIST body could not be read");
-    }
-    return parseSkillObjectList(xml, limit);
+    return parseSkillObjectList(await readListBody(response), limit);
   }
 
   /** Builds the object URL from the configured endpoint and the derived key; signs, then sends. */
@@ -297,5 +288,30 @@ export class S3SkillObjectStore implements SkillObjectStore {
   /** Key, status, and duration only; the access key and secret never reach a log line. */
   #log(method: Method, key: string, status: number | undefined, startedAt: number): void {
     this.#logger?.debug({ key, method, status, durationMs: Date.now() - startedAt }, "Skill object store request");
+  }
+}
+
+async function readListBody(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_LIST_BODY_BYTES) {
+        await reader.cancel();
+        throw new SkillObjectStoreError("invalid_response", "Skill object store LIST body is implausibly large");
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks, bytes).toString("utf8");
+  } catch (error) {
+    if (error instanceof SkillObjectStoreError) throw error;
+    throw new SkillObjectStoreError("invalid_response", "Skill object store LIST body could not be read");
+  } finally {
+    reader.releaseLock();
   }
 }

@@ -5,6 +5,7 @@ import { createApp } from "../app.js";
 import { SessionCliProofError } from "../services/sessions/index.js";
 
 const source = {
+  proofId: crypto.randomUUID(),
   agentId: randomUUID(),
   computerId: randomUUID(),
   connectionInstanceId: randomUUID(),
@@ -22,11 +23,16 @@ describe("Runtime Session CLI routes", () => {
       status: "accepted" as const,
     }));
     const send = vi.fn(async (input) => ({ messageId: input.messageId, status: "accepted" as const }));
+    const stop = vi.fn(async (input: { targetSessionId: string }) => ({
+      status: "stopped" as const,
+      sessionId: input.targetSessionId,
+      execution: "stopped" as const,
+    }));
     const listInternalSessions = vi.fn(async () => ({ items: [] }));
     const authenticate = vi.fn(async () => source);
     const app = createApp({
       runtimeSessions: {
-        collaboration: { create, send },
+        collaboration: { create, send, stop },
         proofs: { authenticate },
         sessions: { listInternalSessions },
       },
@@ -100,10 +106,55 @@ describe("Runtime Session CLI routes", () => {
     await app.close();
   });
 
+  it("stops a Session through the proof-authenticated route and passes the list flag through", async () => {
+    const targetSessionId = randomUUID();
+    const stop = vi.fn(async () => ({
+      status: "stopped" as const,
+      sessionId: targetSessionId,
+      execution: "pending" as const,
+    }));
+    const listInternalSessions = vi.fn(async () => ({ items: [] }));
+    const authenticate = vi.fn(async () => source);
+    const app = createApp({
+      runtimeSessions: {
+        collaboration: { create: vi.fn(), send: vi.fn(), stop },
+        proofs: { authenticate },
+        sessions: { listInternalSessions },
+      },
+    });
+    const stopped = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.runtimeSessionStop,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+      payload: { targetSessionId },
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.headers["cache-control"]).toBe("no-store");
+    expect(stopped.json()).toEqual({ status: "stopped", sessionId: targetSessionId, execution: "pending" });
+    expect(stop).toHaveBeenCalledWith({ targetSessionId }, source);
+    const invalid = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.runtimeSessionStop,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+      payload: { targetSessionId: "not-a-uuid" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeSessions}?includeStopped=true`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(listInternalSessions).toHaveBeenCalledWith(
+      source.sessionId,
+      expect.objectContaining({ includeStopped: true }),
+    );
+    await app.close();
+  });
+
   it("fails closed when managed proof context is missing", async () => {
     const app = createApp({
       runtimeSessions: {
-        collaboration: { create: vi.fn(), send: vi.fn() },
+        collaboration: { create: vi.fn(), send: vi.fn(), stop: vi.fn() },
         proofs: {
           authenticate: async () => {
             throw new SessionCliProofError("invalid_proof", "invalid");

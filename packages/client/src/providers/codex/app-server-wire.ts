@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
-export const CODEX_APP_SERVER_MAX_LINE_BYTES = 1024 * 1024;
+export const CODEX_APP_SERVER_MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const CODEX_APP_SERVER_MAX_STDERR_BYTES = 64 * 1024;
 export const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 
@@ -233,7 +233,8 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         signal?.removeEventListener("abort", onAbort);
       };
       const onAbort = () => {
-        cleanup();
+        // Native requests can still reply after local cancellation. Keep their bounded slot until
+        // the reply or request timeout so it cannot poison the next Run as an unknown response.
         reject(new CodexAppServerError("aborted", "Codex request was aborted"));
       };
       const timer = setTimeout(() => {

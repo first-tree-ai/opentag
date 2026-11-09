@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { ImInboundPersistenceError } from "../services/im/index.js";
 import { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
+import { deferred } from "./support/deferred.js";
 
 const now = new Date("2026-08-20T00:00:00.000Z");
 const timestamp = String(Math.floor(now.getTime() / 1000));
@@ -887,4 +888,67 @@ describe("Slack Events API ingress", () => {
     expect(logs).not.toContain("password=super-secret-db-url");
     expect(logs).not.toContain("xoxb-sensitive");
   });
+});
+
+it.each(["lookup", "claim"] as const)("joins a disconnected Slack %s before durable handoff", async (phase) => {
+  const entered = deferred();
+  const release = deferred();
+  const receipts = {
+    claim: vi.fn(async () => {
+      if (phase === "claim") {
+        entered.resolve();
+        await release.promise;
+      }
+      return { accepted: true, duplicate: false, receiptId: "owned-receipt" };
+    }),
+    markProcessed: vi.fn(),
+    markFailed: vi.fn(),
+  };
+  const { app, imBindings, inbox } = createServices({ receipts: receipts as never });
+  if (phase === "lookup")
+    imBindings.findSlackInstallationIngress.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return installation();
+    });
+  const input = signedRequest({
+    type: "event_callback",
+    api_app_id: "A1",
+    team_id: "T1",
+    authorizations: matchingBotAuthorization(),
+    event_id: "Ev-drain",
+    event: { type: "app_mention", channel: "C1", text: "hello" },
+  });
+  const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+  const abort = new AbortController();
+  const request = fetch(`${origin}${input.url}`, {
+    method: "POST",
+    headers: input.headers,
+    body: input.payload,
+    signal: abort.signal,
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closing: Promise<void> | undefined;
+  let closed = false;
+  try {
+    await entered.promise;
+    abort.abort();
+    expect(await request).toMatchObject({ name: "AbortError" });
+    closing = app.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    release.resolve();
+    await closing;
+    expect(receipts.claim).toHaveBeenCalledOnce();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    abort.abort();
+    await request;
+    await closing;
+  }
 });

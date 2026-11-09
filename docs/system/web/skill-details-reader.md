@@ -25,9 +25,13 @@ Names use 16px semibold text and descriptions use 14px regular text. Controls ce
 on wide containers and align with the name in narrow containers. In narrow content containers the description spans
 the full width below the first row. The stretched trigger extends across that mobile content region, with the
 independent control group layered above it. Descriptions stay on one line and truncate with an ellipsis, without a
-tooltip; the reader shows the full description. The header keeps a single
-outlined Import skill menu with Install from URL and Upload file. The empty state explains these two import methods
-without repeating the action. Explore skills is temporarily hidden in both the header and empty state while the discovery
+tooltip; the reader shows the full description. A Skill openTag ships shows a short localized summary instead of its
+SKILL.md description, here and in the catalog, because that description is written for the Agent (when to use the
+Skill) rather than for the admin. An uploaded Skill keeps its own description. A finished upload confirms
+"Installed {name}" next to the list, and Install from URL labels its action plainly until it knows how many Skills
+it will install. The header keeps a single
+outlined Import skill menu with Install from URL and Upload file. The empty state, **No Skills yet** (尚未添加技能),
+offers the same two import methods as the inline actions of one sentence: **Install from a link, or upload a file.** Explore skills is temporarily hidden in both the header and empty state while the discovery
 experience is being designed. The catalog component, translations and server APIs remain available for future integration.
 
 ## Reading experience

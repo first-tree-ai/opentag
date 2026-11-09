@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { test as base, expect, request as playwrightRequest } from "@playwright/test";
+import { test as base, expect, type Page, request as playwrightRequest } from "@playwright/test";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +72,8 @@ async function psql(url: string, sql: string): Promise<string> {
       `PGPASSWORD=${password}`,
       "postgres",
       "psql",
+      "-h",
+      "127.0.0.1",
       "-U",
       username,
       "-d",
@@ -135,14 +137,16 @@ async function startDaemon(
       throw new Error(`Computer connect code failed with HTTP ${response.status()}: ${await response.text()}`);
     const payload = (await response.json()) as { bootstrapCommand: string };
     const match =
-      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
+      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?(?:\s+--computer\s+'?([^\s']+?)'?)?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
         payload.bootstrapCommand,
       );
-    if (!match?.[2]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
+    if (!match?.[3]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
+    // A repair command names the Computer it restores (`--computer <id>`); pass it on like the real command.
+    const computerArgs = match[2] ? ["--computer", match[2]] : [];
     const cli = join(repositoryRoot, "apps/cli/dist/cli/index.mjs");
     await execFileAsync(
       process.execPath,
-      [cli, "computer", "connect", "--no-start", "--server", baseURL, "--", match[2]],
+      [cli, "computer", "connect", "--no-start", "--server", baseURL, ...computerArgs, "--", match[3]],
       {
         env: { ...process.env, HOME: home, OPENTAG_HOME: openTagHome },
       },
@@ -225,18 +229,58 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
   return messageId;
 }
 
+export type ExpectedDiagnostic = {
+  routeTemplate: string;
+  status?: number;
+  code?: string;
+};
+
+/**
+ * The journey daemon runs stub provider CLIs that cannot list native models, so the Model page's
+ * local runtime-options read answers 503 there. The page handles it (the model can be typed), so
+ * every journey page allows that one diagnostic.
+ */
+const STUB_RUNTIME_OPTIONS_UNAVAILABLE: ExpectedDiagnostic = {
+  routeTemplate: "/api/v1/agents/:id/runtime-options",
+  status: 503,
+  code: "SERVICE_UNAVAILABLE",
+};
+
+const pageExpectedDiagnostics = new WeakMap<object, ExpectedDiagnostic[]>();
+
+export function allowExpectedDiagnostic(page: Page, ...diagnostics: ExpectedDiagnostic[]): void {
+  const current = pageExpectedDiagnostics.get(page) ?? [];
+  current.push(...diagnostics);
+  pageExpectedDiagnostics.set(page, current);
+}
+
 const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
+    allowExpectedDiagnostic(page, STUB_RUNTIME_OPTIONS_UNAVAILABLE);
     const browserErrors: string[] = [];
     page.on("console", (message) => {
       // Chromium reports this CSP fallback as console.error even though it is emitted by the
       // development server's policy and is not an application failure.
-      if (
-        message.type() === "error" &&
-        !/script-src.*not explicitly set/u.test(message.text()) &&
-        !message.text().startsWith("Failed to load resource:")
-      ) {
-        browserErrors.push(`console.error: ${message.text()}`);
+      const text = message.text();
+      const isExpectedCsp = /script-src.*not explicitly set/u.test(text);
+      const isResourceLoad = text.startsWith("Failed to load resource:");
+      const allowed = pageExpectedDiagnostics.get(page);
+      const isAllowedDiagnostic =
+        allowed !== undefined &&
+        allowed.some((expected) => {
+          if (!text.includes("[OpenTag] Diagnostic")) return false;
+          if (!text.includes(expected.routeTemplate)) return false;
+          if (expected.status !== undefined && !new RegExp(`\\bstatus:\\s*${expected.status}\\b`, "u").test(text)) {
+            return false;
+          }
+          if (expected.code !== undefined && !new RegExp(`\\bcode:\\s*${expected.code}\\b`, "u").test(text)) {
+            return false;
+          }
+          return true;
+        });
+
+      if (message.type() === "error" && !isExpectedCsp && !isResourceLoad && !isAllowedDiagnostic) {
+        browserErrors.push(`console.error: ${text}`);
       }
     });
     page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));

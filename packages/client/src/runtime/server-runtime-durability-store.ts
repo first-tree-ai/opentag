@@ -33,7 +33,19 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 
   async write<T>(record: DurableWorkRecord<T>): Promise<void> {
-    const parsed = RuntimeDurableWorkRecordSchema.parse(record);
+    // The Server row has none of these; they are Local-only (file store). Without them a recovered Run
+    // still resumes, reported as a crash, its count never resets, and it counts as running on its own.
+    const {
+      outcomeReport: _localOnly,
+      ranMs: _localRan,
+      retryRanMs: _localRetryRan,
+      joinedRunId: _localRun,
+      steerInConversation: _localConversation,
+      runConversation: _localRunConversation,
+      interruption: _localReason,
+      ...portable
+    } = record;
+    const parsed = RuntimeDurableWorkRecordSchema.parse(portable);
     // Keep the seam's clock injectable for deterministic adapters and future lease metadata.
     this.#now();
     await this.#api.writeRuntimeDurableWork(this.#machineToken, parsed as RuntimeDurableWorkRecord);

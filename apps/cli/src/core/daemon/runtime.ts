@@ -32,7 +32,8 @@ import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environme
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
-import { DaemonServiceError } from "./service/types.js";
+import { quotePosix, resolveCliInvocation } from "./service/shared.js";
+import { CliInvocationError, DaemonServiceError } from "./service/types.js";
 import { resolveWebToolsOptIn } from "./web-tools.js";
 
 export function resolveSlackAutoSetupCliEntry(moduleUrl = import.meta.url): string | undefined {
@@ -257,12 +258,15 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
    * failure filed before then.
    */
   const composed: { runtime?: Pick<ComposedClientRuntime, "runtimeManager"> } = {};
+  const cli = await resolveCliInvocation({ binName: channelConfig.binName });
+  const cliInvocation = [cli.program, ...cli.args];
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
-    cliCommand: channelConfig.binName,
+    cliCommand: cliInvocation.map(quotePosix).join(" "),
+    cliInvocation,
     slackAutoSetupCliEntry: resolveSlackAutoSetupCliEntry(),
     logger: runtimeLogger,
     signal,
@@ -376,6 +380,7 @@ async function attachAutoUpdater(
     home: context.home,
     installMode,
     protectedWork: () => runtime.protectedWork(),
+    canInterruptWork: () => runtime.canInterruptWorkForUpgrade(),
     quiesce: () => runtime.quiesceForUpdate(),
     onHandoff: () => {
       context.state.handoffRequested = true;
@@ -469,7 +474,13 @@ function runtimeRecoveryStatus(category: RuntimeConnectionErrorCategory): Update
 
 function logTerminalFailure(logger: ClientLogger, error: unknown): void {
   if (isExpectedDaemonStop(error)) {
-    logger.warn({ category: daemonFailureCategory(error) }, daemonOperatorMessage(error));
+    logger.warn(
+      {
+        category: daemonFailureCategory(error),
+        ...(error instanceof CliInvocationError ? { cliInvocation: error.diagnostic } : {}),
+      },
+      daemonOperatorMessage(error),
+    );
     return;
   }
   logger.error({ category: daemonFailureCategory(error) }, "Daemon stopped because of an unexpected internal failure");

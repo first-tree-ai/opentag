@@ -28,6 +28,13 @@ code is bundled into the CLI tarball, and the packed manifest must not expose an
 `THIRD_PARTY_NOTICES` is generated from the exact third-party packages bundled into the CLI and contains their complete
 license texts. Run `pnpm notices:write` after a bundled dependency changes; `pnpm check` rejects stale notices.
 
+## Release regression
+
+Before every release, run the [Markdown regression catalogue](https://github.com/first-tree-ai/opentag/blob/main/testing/regression/README.md)
+against the release candidate on the dedicated regression computer. Record the exact revision, results and blocked
+coverage in the release PR or Issue. CI and release artifact smoke checks remain separate checks; neither alone proves
+completion of the product regression catalogue.
+
 ## Release authority
 
 GitHub Actions is the only release authority. npm publishing uses trusted publishing with `id-token: write`; the

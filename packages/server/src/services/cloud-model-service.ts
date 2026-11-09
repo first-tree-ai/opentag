@@ -6,6 +6,7 @@ import {
   CloudModelRequestSchema,
   type CloudModelTransportLimits,
 } from "../cloud-model-request.js";
+import { cloudModelRetryAfter } from "../cloud-model-retry.js";
 import { CLOUD_USAGE_FAST_RETRY_SECONDS, type CloudCall, type CloudCallStore } from "./cloud-call-store.js";
 import { RouterClient } from "./router-client.js";
 
@@ -63,22 +64,23 @@ export class CloudModelService {
   }
   async finish(id: string | undefined, model: string, sent: boolean): Promise<void> {
     if (!id) return;
+    let failed = false;
     try {
       const result = sent ? await this.router.usage(id, this.workerAbort.signal) : { status: "no_charge" as const };
-      if (!result || result.status === "pending") {
-        await this.options.calls.markPending(id);
+      if (result && result.status !== "pending") {
+        if ("model" in result && result.model !== model) throw new Error("Router usage model mismatch");
+        await this.applyResult(
+          id,
+          result.status === "complete" ? { status: "complete", usage: result.usage } : { status: "no_charge" },
+          Boolean(this.options.billing),
+        );
         return;
       }
-      if ("model" in result && result.model !== model) throw new Error("Router usage model mismatch");
-      await this.applyResult(
-        id,
-        result.status === "complete" ? { status: "complete", usage: result.usage } : { status: "no_charge" },
-        Boolean(this.options.billing),
-      );
     } catch {
-      await this.options.calls.markPending(id);
-      this.report("cloud_usage_pending");
+      failed = true;
     }
+    await this.options.calls.markPending(id);
+    if (failed) this.report("cloud_usage_pending");
   }
   async request(
     raw: unknown,
@@ -139,6 +141,7 @@ export class CloudModelService {
       }
       reader = response.body.getReader();
       const type = response.headers.get("content-type") ?? "";
+      const retryAfter = cloudModelRetryAfter(response.headers.get("retry-after"));
       let total = 0;
       let streamController: ReadableStreamDefaultController<Uint8Array>;
       const cancelAndSettle = async () => {
@@ -188,6 +191,7 @@ export class CloudModelService {
         status: response.status,
         headers: {
           "content-type": type,
+          ...(retryAfter === undefined ? {} : { "retry-after": retryAfter }),
           ...(response.headers.has("content-length")
             ? { "content-length": response.headers.get("content-length") ?? "" }
             : {}),
@@ -204,14 +208,21 @@ export class CloudModelService {
     const { calls } = this.options;
     if (this.stopped) return;
     await calls.expire(new Date(Date.now() - this.config.requestTimeoutMs - 60_000));
+    if (this.stopped) return;
     for (const call of await calls.pending()) {
-      await this.reconcileCall(call);
+      if (this.stopped) break;
+      try {
+        await this.reconcileCall(call);
+      } catch {
+        this.report("cloud_usage_recovery_failed");
+      }
     }
   }
   private async reconcileCall(call: CloudCall): Promise<void> {
     try {
       if (call.gateway !== this.gateway) throw new Error("Pending call belongs to another gateway");
       const result = await this.router.usage(call.id, this.workerAbort.signal);
+      if (this.stopped) return;
       if (result && result.status !== "pending") {
         if (result.model !== call.model) throw new Error("Router usage model mismatch");
         await this.applyResult(
@@ -224,6 +235,7 @@ export class CloudModelService {
     } catch {
       this.report("cloud_usage_recovery_pending");
     }
+    if (this.stopped) return;
     const pendingSeconds = Math.floor((Date.now() - (call.finished_at?.getTime() ?? Date.now())) / 1000);
     if (call.reconcile_failures === 0 && pendingSeconds >= CLOUD_USAGE_FAST_RETRY_SECONDS) {
       this.options.onError?.("cloud_usage_unresolved", { callId: call.id, accountId: call.account, pendingSeconds });

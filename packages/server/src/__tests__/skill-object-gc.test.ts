@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSkills } from "../db/schema/index.js";
 import { SkillObjectGc, SkillObjectStoreError, SkillService, skillObjectKey } from "../services/skills/index.js";
+import { deferred } from "./support/deferred.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
 import { createSkillHarness, type SkillHarness } from "./support/skill-service-harness.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -22,6 +23,8 @@ let h: SkillHarness;
  */
 let stagingUnit: UnitDatabase;
 let stagingH: SkillHarness;
+
+afterEach(() => vi.restoreAllMocks());
 
 const NOW = new Date("2026-06-01T00:00:00.000Z");
 const GRACE_MS = 60_000;
@@ -59,6 +62,126 @@ function gc(store: FakeSkillObjectStore, options: Partial<ConstructorParameters<
 }
 
 describe("SkillObjectGc", () => {
+  it.each(["young", "referenced", "failed"] as const)(
+    "bounds %s pages and advances through the prefix before wrapping",
+    async (kind) => {
+      const store = new FakeSkillObjectStore(),
+        accountId = await h.createUser(),
+        agentId = await h.createAgent(accountId);
+      const keys = Array.from({ length: 6 }, () => objectKey(accountId, agentId)).sort();
+      for (const key of keys) {
+        store.plant(key, new Uint8Array([1]));
+        store.setLastModified(key, kind === "young" ? YOUNG : OLD);
+      }
+      if (kind === "referenced")
+        await unit.database.insert(agentSkills).values(
+          keys.map((key, index) => ({
+            agentId,
+            name: `kept-${index}`,
+            description: "kept",
+            archiveBytes: 1,
+            archiveSha256: "a".repeat(64),
+            fileCount: 1,
+            source: "web_upload" as const,
+            objectKey: key,
+          })),
+        );
+      const list = vi.spyOn(store, "list");
+      const deletion = vi.spyOn(store, "delete");
+      if (kind === "failed") deletion.mockRejectedValue(new SkillObjectStoreError("unavailable", "controlled"));
+      const collector = gc(store, { pageSize: 2, maxPagesPerRun: 1, maxDeletesPerRun: 2 });
+      for (let page = 0; page < 4; page += 1)
+        expect(await collector.runOnce()).toMatchObject({ scanned: 2, deleted: 0 });
+      expect(list.mock.calls.map((call) => call[1]?.cursor)).toEqual([undefined, keys[1], keys[3], undefined]);
+      expect(deletion).toHaveBeenCalledTimes(kind === "failed" ? 8 : 0);
+    },
+  );
+
+  it("revisits unfinished pages on a later wrap when the deletion cap ends mid-page", async () => {
+    const store = new FakeSkillObjectStore();
+    for (let n = 0; n < 6; n += 1) {
+      const key = objectKey(randomUUID(), randomUUID());
+      store.plant(key, new Uint8Array([1]));
+      store.setLastModified(key, OLD);
+    }
+    const keys = store.keys().sort(),
+      collector = gc(store, { pageSize: 2, maxPagesPerRun: 1, maxDeletesPerRun: 1 });
+    for (let pass = 0; pass < 3; pass += 1) expect((await collector.runOnce()).deleted).toBe(1);
+    expect(store.keys().sort()).toEqual([keys[1], keys[3], keys[5]]);
+    for (let pass = 0; pass < 3; pass += 1) expect((await collector.runOnce()).deleted).toBe(1);
+    expect(store.keys()).toEqual([]);
+  });
+
+  it("drops an unusable continuation after a failed LIST without retrying inside the pass", async () => {
+    const store = new FakeSkillObjectStore();
+    for (let n = 0; n < 4; n += 1) {
+      const key = objectKey(randomUUID(), randomUUID());
+      store.plant(key, new Uint8Array([1]));
+      store.setLastModified(key, YOUNG);
+    }
+    const collector = gc(store, { pageSize: 2, maxPagesPerRun: 1 }),
+      list = vi.spyOn(store, "list");
+    await collector.runOnce();
+    list.mockRejectedValueOnce(new SkillObjectStoreError("rejected", "invalid continuation"));
+    await expect(collector.runOnce()).rejects.toThrow("invalid continuation");
+    expect(list).toHaveBeenCalledTimes(2);
+    await collector.runOnce();
+    expect(list.mock.calls[2]?.[1]?.cursor).toBeUndefined();
+  });
+
+  it.each([0, 1.5, Infinity])("rejects invalid page quota %s", (maxPagesPerRun) => {
+    expect(() => gc(new FakeSkillObjectStore(), { maxPagesPerRun })).toThrow("positive safe integer");
+  });
+
+  it.each(["list", "delete"] as const)(
+    "joins an admitted %s on repeated stop and admits no further work",
+    async (boundary) => {
+      const store = new FakeSkillObjectStore();
+      for (let n = 0; n < 4; n += 1) {
+        const key = objectKey(randomUUID(), randomUUID());
+        store.plant(key, new Uint8Array([1]));
+        store.setLastModified(key, OLD);
+      }
+      const entered = deferred(),
+        release = deferred(),
+        collector = gc(store, { pageSize: 2 });
+      if (boundary === "list")
+        store.onList = async () => {
+          entered.resolve();
+          await release.promise;
+        };
+      else {
+        const original = store.delete.bind(store);
+        vi.spyOn(store, "delete").mockImplementation(async (key) => {
+          entered.resolve();
+          await release.promise;
+          await original(key);
+        });
+      }
+      const running = collector.runOnce();
+      await entered.promise;
+      let stopped = false;
+      const first = collector.stop().then(() => {
+          stopped = true;
+        }),
+        second = collector.stop();
+      try {
+        await Promise.resolve();
+        expect(stopped).toBe(false);
+        expect(await collector.runOnce()).toMatchObject({ scanned: 0, deleted: 0 });
+        release.resolve();
+        await Promise.all([first, second, running]);
+        expect(store.deletes).toBe(boundary === "delete" ? 1 : 0);
+        expect(store.lists).toBe(1);
+        collector.start();
+        expect(await collector.runOnce()).toMatchObject({ scanned: 0, deleted: 0 });
+      } finally {
+        release.resolve();
+        await Promise.allSettled([running, first, second]);
+      }
+    },
+  );
+
   it("deletes an unreferenced object past the grace period", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);

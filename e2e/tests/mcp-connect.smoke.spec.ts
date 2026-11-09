@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import type { ListAgentMCPServersResponse, MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
-import { expect, smokeTest as test } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect, smokeTest as test } from "./fixtures.js";
+import { respondMcpReuseDisabled } from "./mcp-browser-fixture.js";
 
 // Real API scenarios share the Account's definition-name namespace.
 test.describe.configure({ mode: "default" });
@@ -306,8 +307,8 @@ for (const kind of ["bearer", "none"] as const) {
       if (kind === "bearer") {
         await dialog.locator('input[type="password"]').fill("wrong-key");
         await dialog.getByRole("button", { name: "Save", exact: true }).click();
-        await expect(dialog).toContainText("Authorization failed");
-      } else await expect(dialog).toContainText("Couldn't load tools");
+        await expect(dialog).toContainText("The key was rejected. Update it.");
+      } else await expect(dialog).toContainText("Couldn't load tools. Try again.");
       const initial = await mounts(page, current.id);
       expect(initial).toHaveLength(1);
       await dialog.getByRole("button", { name: /^Close / }).click();
@@ -379,7 +380,7 @@ test("real local OAuth popup cancellation removes new setup and reconnect retain
     upstream.tokenFailure(true);
     await (await failureWindow).getByRole("link", { name: "Approve", exact: true }).click();
     await expect(
-      page.locator('[data-ui="mcp-server-list"]').getByText("Authorization failed", { exact: true }),
+      page.locator('[data-ui="mcp-server-list"]').getByText("Authorization didn't finish. Try again.", { exact: true }),
     ).toBeVisible();
     upstream.tokenFailure(false);
     const finalWindow = page.waitForEvent("popup");
@@ -408,32 +409,28 @@ test("closing reauthorization keeps saved tools quiet without waiting for a back
     await page.getByRole("button", { name: installed.name, exact: true }).click();
     const details = page.getByRole("dialog", { name: installed.name, exact: true });
     const opening = page.waitForEvent("popup");
-    const pendingRead = page.waitForResponse(async (response) => {
-      if (
-        response.request().method() !== "GET" ||
-        new URL(response.url()).pathname !== `/api/v1/agents/${current.id}/mcp-servers`
-      )
-        return false;
-      const body = (await response.json()) as ListAgentMCPServersResponse;
-      return body.servers.some(
-        (row) => row.mcpServerId === installed.mcpServerId && row.authorization?.probeState === "pending",
-      );
-    });
+    const flowRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          `/api/v1/agents/${current.id}/mcp-servers/${installed.mcpServerId}/authorization/oauth` &&
+        response.status() === 200,
+    );
     await details.getByRole("button", { name: "Reauthorize", exact: true }).click();
     const consent = await opening;
     await consent.getByRole("heading", { name: "Local consent fixture", exact: true }).waitFor();
-    const pendingRows = (await (await pendingRead).json()) as ListAgentMCPServersResponse;
-    const lastProbeAt = pendingRows.servers.find((row) => row.mcpServerId === installed.mcpServerId)?.authorization
-      ?.probedAt;
-    expect(lastProbeAt).toEqual(expect.any(String));
+    await flowRead;
+    expect((await mounts(page, current.id))[0]?.snapshot).toEqual(installed.snapshot);
     await consent.close();
     await details.getByRole("button", { name: `Close ${installed.name}`, exact: true }).click();
     await expect(page.locator('[data-ui="mcp-server-list"]').getByText("Checking connection…")).toHaveCount(0);
-    expect((await mounts(page, current.id))[0]?.authorization).toMatchObject({
+    const closed = (await mounts(page, current.id))[0];
+    expect(closed?.snapshot).toEqual(installed.snapshot);
+    // Close cancels the flow and probes in the background, so probedAt can move after close.
+    expect(closed?.authorization).toMatchObject({
       status: "active",
       hasCredential: true,
-      probeState: "pending",
-      probedAt: lastProbeAt,
+      probeState: "succeeded",
     });
     await page.screenshot({ path: testInfo.outputPath("reauthorization-background.png") });
   } finally {
@@ -544,6 +541,10 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
   test(`catalog additions and existing ${kind} list connections retain their authentication behavior`, async ({
     page,
   }) => {
+    allowExpectedDiagnostic(page, {
+      routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+      status: 503,
+    });
     const first = await agent(page);
     const second = await agent(page);
     const third = await agent(page);
@@ -590,6 +591,7 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       const path = new URL(route.request().url()).pathname;
       const method = route.request().method();
       if (method !== "GET") writes.push(path);
+      if (await respondMcpReuseDisabled(route, path, method)) return;
       if (await respondDefinition(route, path)) return;
       const id = path.split("/")[4] ?? "";
       const list = fixtureEntries(id);
@@ -677,9 +679,9 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       });
     }
     const oauthFailureCopy = {
-      add: "Authorization failed",
-      discover: "Authorization failed",
-      list: "Authorization failed",
+      add: "Authorization didn't finish. Try again.",
+      discover: "Authorization didn't finish. Try again.",
+      list: "Authorization didn't finish. Try again.",
     };
     const sources = mcpEntrySources(kind, first.id, second.id, third.id);
     const addedCount = Number(kind === "oauth") * 2;
@@ -751,9 +753,16 @@ for (const width of [320, 390, 768, 1440]) {
       await expect(controls.getByRole("switch")).toHaveCount(0);
       await expect(controls.getByRole("button", { name: `Authorize: ${name}`, exact: true })).toBeVisible();
       await expect(controls.getByRole("button", { name: `Remove ${name}`, exact: true })).toBeVisible();
-      const rowBox = await row.boundingBox();
-      const controlBox = await controls.boundingBox();
-      if (!rowBox || !controlBox) throw new Error("Missing connector row geometry");
+      const { rowBox, controlBox } = await row.evaluate((element) => {
+        const control = element.querySelector(".mcp-server-controls");
+        if (!control) throw new Error("Missing connector controls");
+        const row = element.getBoundingClientRect();
+        const controls = control.getBoundingClientRect();
+        return {
+          rowBox: { y: row.y, height: row.height },
+          controlBox: { y: controls.y, height: controls.height },
+        };
+      });
       if (width >= 768)
         expect(Math.abs(rowBox.y + rowBox.height / 2 - controlBox.y - controlBox.height / 2)).toBeLessThan(1);
       else expect(controlBox.y + controlBox.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);
@@ -878,7 +887,7 @@ test("changing Add custom input preserves the submitted installation when the di
     const current = await agent(page);
     upstream.unavailable(true);
     const dialog = await openAdd(page, current.id, upstream.url, "none");
-    await expect(dialog).toContainText("Couldn't load tools");
+    await expect(dialog).toContainText("Couldn't load tools. Try again.");
     expect(await mounts(page, current.id)).toHaveLength(1);
     await dialog.getByLabel("Connector address", { exact: true }).fill("https://another.example/mcp");
     await dialog.getByRole("button", { name: "Close Add custom connector", exact: true }).click();
@@ -896,7 +905,7 @@ test("editing Add custom away and back retries the submitted installation withou
     const current = await agent(page);
     upstream.unavailable(true);
     const dialog = await openAdd(page, current.id, upstream.url, "none");
-    await expect(dialog).toContainText("Couldn't load tools");
+    await expect(dialog).toContainText("Couldn't load tools. Try again.");
     const initial = await mounts(page, current.id);
     expect(initial).toHaveLength(1);
     await dialog.getByLabel("Connector address", { exact: true }).fill(`${upstream.url}x`);
@@ -982,19 +991,19 @@ const discoverCopy = {
     add: "Add: Linear",
     preparing: "Authorizing…",
     cancel: "Cancel: Linear",
-    reconnect: "Authorize: Linear",
-    failed: "Authorization failed",
+    reauthorize: "Reauthorize: Linear",
+    failed: "Authorization didn't finish. Try again.",
   },
   zh: {
     title: "发现",
-    empty: "暂无连接器",
+    empty: "尚未添加连接器",
     close: "关闭 发现",
     search: "搜索连接器",
     add: "添加: Linear",
     preparing: "正在授权…",
     cancel: "取消: Linear",
-    reconnect: "授权: Linear",
-    failed: "授权失败",
+    reauthorize: "重新授权: Linear",
+    failed: "授权未完成，请重试",
   },
 } as const;
 
@@ -1029,6 +1038,10 @@ async function expectAddContrast(button: import("@playwright/test").Locator) {
 for (const locale of ["en", "zh"] as const) {
   for (const width of [320, 390, 768, 1440]) {
     test(`Discover visual and interaction states in ${locale} at ${width}px`, async ({ page }) => {
+      allowExpectedDiagnostic(page, {
+        routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+        status: 502,
+      });
       const upstream = await peer("oauth");
       let release = () => {};
       try {
@@ -1092,9 +1105,18 @@ for (const locale of ["en", "zh"] as const) {
         }
         release();
         await expect(card.getByRole("alert")).toHaveText(copy.failed);
-        await expect(card.getByRole("button", { name: copy.reconnect, exact: true })).toBeEnabled();
+        await expect(card.getByRole("button", { name: copy.reauthorize, exact: true })).toBeEnabled();
         await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
-        await expect.poll(() => mounts(page, current.id)).toHaveLength(1);
+        await expect
+          .poll(async () =>
+            (await mounts(page, current.id)).map((row) => ({
+              kind: row.authorization?.kind,
+              status: row.authorization?.status,
+              hasCredential: row.authorization?.hasCredential,
+              failureCode: row.authorization?.failureCode,
+            })),
+          )
+          .toEqual([{ kind: "oauth", status: "error", hasCredential: false, failureCode: "MCP_OAUTH_FAILED" }]);
         await expect(dialog.getByLabel(copy.search, { exact: true })).toHaveValue("Linear");
         await expectAccessible(page);
         await expectNoPageOverflow(page);

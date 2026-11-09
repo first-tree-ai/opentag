@@ -11,6 +11,7 @@ import {
   bigint,
   check,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -82,6 +83,8 @@ export const imMessageDeliveries = pgTable(
   "im_message_deliveries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    attemptOrdinal: integer("attempt_ordinal").notNull().default(0),
+    retryOfDeliveryId: uuid("retry_of_delivery_id"),
     messageId: uuid("message_id")
       .notNull()
       .references(() => imMessages.id, { onDelete: "restrict" }),
@@ -113,7 +116,15 @@ export const imMessageDeliveries = pgTable(
     lastErrorCode: text("last_error_code"),
   },
   (table) => [
-    uniqueIndex("im_message_deliveries_message_session_unique").on(table.messageId, table.sessionId),
+    check(
+      "im_message_deliveries_attempt_shape",
+      sql`(${table.attemptOrdinal} = 0 and ${table.retryOfDeliveryId} is null) or (${table.attemptOrdinal} between 1 and 3 and ${table.retryOfDeliveryId} is not null)`,
+    ),
+    uniqueIndex("im_message_deliveries_message_session_attempt_unique").on(
+      table.messageId,
+      table.sessionId,
+      table.attemptOrdinal,
+    ),
     index("im_message_deliveries_session_id_idx").on(table.sessionId),
     index("im_message_deliveries_overflow_idx").on(
       table.sessionId,
@@ -125,6 +136,15 @@ export const imMessageDeliveries = pgTable(
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
     index("im_delivery_work_idx").on(table.nextAttemptAt, table.id).where(deliveryWorkPredicate(table)),
+    // The Agent list asks "which Turns are accepted but unreported?" for every Agent it shows. Without this
+    // partial index the query walks every Session of the binding to answer it: 100,001 probes for one hot
+    // Agent in the 100k-row benchmark, and the hot list read 161.85 ms against a 100 ms target. The rows it
+    // covers are exactly the turns a Computer still owes a report for, so it stays small and shrinks as
+    // reports arrive. `accepted_at` leads because both list reads range-filter it; `id` keeps the
+    // deduplication deterministic and `session_id` lets the join stay index-only.
+    index("im_message_deliveries_unreported_accepted_idx")
+      .on(table.acceptedAt, table.id, table.sessionId)
+      .where(sql`${table.state} = 'accepted' and ${table.reportedAt} is null`),
     index("im_message_deliveries_expiry_idx")
       .on(table.expiresAt, table.id)
       .where(sql`${table.state} = 'pending' and ${table.reason} is null`),

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AgentAdminConfigSchema,
   AgentCreationIntentResultSchema,
   AgentDetailSchema,
@@ -9,11 +11,16 @@ import {
   AgentRuntimeTestResponseSchema,
   AgentSummarySchema,
   AgentUsageDetailSchema,
+  AgentUsageQuerySchema,
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
+  projectAgentActivityForClient,
   RebindAgentComputerRequestSchema,
+  requestsAgentActivityQueuedCount,
+  requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
+  UsageTimezoneSchema,
 } from "../agent.js";
 import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
 import {
@@ -98,6 +105,27 @@ const agent = {
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 
 describe("Agent contracts", () => {
+  it.each(["Atlas", "研发助理", "Atlas-研发-2", "a1", "a".repeat(64), "中".repeat(21)])(
+    "accepts the Agent name %j",
+    (name) => {
+      expect(AgentNameSchema.parse(name)).toBe(name);
+    },
+  );
+
+  it.each(["-atlas", "研发 助理", "研发助理！", "café", "a_b", "中".repeat(65)])(
+    "refuses the Agent name %j",
+    (name) => {
+      expect(AgentNameSchema.safeParse(name).success).toBe(false);
+    },
+  );
+
+  it("folds a compatibility ideograph into its unified form and refuses radicals", () => {
+    // U+F900 is a compatibility ideograph that renders as U+8C48; NFC stores the unified form.
+    expect(AgentNameSchema.parse("\uF900助手")).toBe("\u8C48助手");
+    // Kangxi radicals render like 一人 but are not unified ideographs.
+    expect(AgentNameSchema.safeParse("\u2F00\u2F08").success).toBe(false);
+  });
+
   it("normalizes canonical names and strict create/update payloads", () => {
     expect(AgentNameSchema.parse("  code-reviewer  ")).toBe("code-reviewer");
     expect(
@@ -124,24 +152,24 @@ describe("Agent contracts", () => {
     expect(
       UpdateAgentRequestSchema.parse({
         expectedRevision: 1,
-        runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
+        runtimeConfig: { instructions: null, maxDurationMs: null, model: null, reasoningEffort: null },
       }),
     ).toEqual({
       expectedRevision: 1,
-      runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
+      runtimeConfig: { instructions: null, maxDurationMs: null, model: null, reasoningEffort: null },
     });
   });
 
-  it.each(["", "UPPER", "has space", "under_score", "-leading"])("rejects invalid canonical name %j", (name) =>
+  it.each(["", "has space", "under_score", "-leading", "中".repeat(22)])("rejects invalid canonical name %j", (name) =>
     expect(() => AgentNameSchema.parse(name)).toThrow(),
   );
 
   it.each([
     ["", "Agent name is required"],
-    ["a".repeat(65), "Agent name must be at most 64 characters"],
+    ["a".repeat(65), "Agent name must be at most 64 bytes (21 Chinese characters)"],
     [
-      "Bestony",
-      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+      "Best ony",
+      "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
     ],
   ])("provides a stable validation message for %j", (name, message) => {
     const result = AgentNameSchema.safeParse(name);
@@ -251,6 +279,23 @@ describe("Agent contracts", () => {
         ],
       }),
     ).toMatchObject({ agents: [{ activity: { state: "working", startedAt: agent.updatedAt } }] });
+    expect(
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 },
+      }).activity,
+    ).toEqual({ state: "working", startedAt: agent.updatedAt, runningTaskCount: 2 });
+    expect(() =>
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 0 },
+      }),
+    ).toThrow();
+    expect(AgentDetailSchema.parse({ ...summary, activity: { state: "idle", queuedTaskCount: 3 } }).activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 3,
+    });
+    expect(() => AgentDetailSchema.parse({ ...summary, activity: { state: "idle", queuedTaskCount: 0 } })).toThrow();
     expect(() =>
       ListAgentsResponseSchema.parse({
         agents: [
@@ -312,6 +357,17 @@ describe("Agent contracts", () => {
     ).toThrow();
     expect([7, 30, 90].map((days) => AgentUsageWindowDaysSchema.parse(days))).toEqual([7, 30, 90]);
     expect(() => AgentUsageWindowDaysSchema.parse(14)).toThrow();
+    expect(AgentUsageQuerySchema.parse({ days: "30" })).toEqual({ days: 30, timezone: "UTC" });
+    expect(AgentUsageQuerySchema.parse({ days: 7, timezone: "Asia/Shanghai" })).toEqual({
+      days: 7,
+      timezone: "Asia/Shanghai",
+    });
+    expect(UsageTimezoneSchema.parse("UTC")).toBe("UTC");
+    expect(UsageTimezoneSchema.parse("America/New_York")).toBe("America/New_York");
+    expect(() => UsageTimezoneSchema.parse("+08:00")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("-05:00")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("Mars/Phobos")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("")).toThrow();
   });
 
   it("rejects inconsistent detailed usage relationships", () => {
@@ -511,5 +567,33 @@ describe("Agent contracts", () => {
     expect(RUNTIME_IM_RESOURCE_TEMPLATE).toContain(":imMessageId");
     expect(runtimeWebSocketUrl("https://example.test/base")).toBe("wss://example.test/api/v1/computer/ws");
     expect(runtimeWebSocketUrl("http://example.test")).toBe("ws://example.test/api/v1/computer/ws");
+  });
+});
+
+describe("Agent activity count negotiation", () => {
+  const activity = {
+    state: "working" as const,
+    startedAt: "2026-11-05T00:00:00.000Z",
+    runningTaskCount: 2,
+    queuedTaskCount: 3,
+  };
+
+  it("keeps the running count against a released Server, which recognizes only the exact value 1", () => {
+    // That Server's whole negotiation: it knows no queued header, and strips the count for any other value.
+    const releasedServerRecognizes = (value: string) => value === "1";
+    expect(releasedServerRecognizes(AGENT_ACTIVITY_TASK_COUNT_VERSION)).toBe(true);
+  });
+
+  it("gives each client only the counts it declared", () => {
+    const { queuedTaskCount: _queued, ...runningOnly } = activity;
+    const { runningTaskCount: _running, ...queuedOnly } = activity;
+    const { queuedTaskCount: _q, runningTaskCount: _r, ...neither } = activity;
+    expect(projectAgentActivityForClient(activity, true, true)).toEqual(activity);
+    expect(projectAgentActivityForClient(activity, true)).toEqual(runningOnly);
+    expect(projectAgentActivityForClient(activity, false, true)).toEqual(queuedOnly);
+    expect(projectAgentActivityForClient(activity, false)).toEqual(neither);
+    expect(requestsAgentActivityTaskCount("2")).toBe(false);
+    expect(requestsAgentActivityQueuedCount(AGENT_ACTIVITY_QUEUED_COUNT_VERSION)).toBe(true);
+    expect(requestsAgentActivityQueuedCount(undefined)).toBe(false);
   });
 });

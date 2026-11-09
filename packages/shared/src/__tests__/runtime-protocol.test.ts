@@ -97,10 +97,11 @@ describe("runtime protocol", () => {
    * R01 (shared part): `runtime.sessionCollaboration` v2 is the frozen ordinary-message contract;
    * v3 adds the Server-scheduled origin. A v2-only peer negotiates exactly 2 with a new
    * counterparty, so ordinary messages keep flowing and scheduled messages stay gated on 3.
+   * v4 adds the Client Run outcome report; a v3 peer negotiates 3 and never exchanges it.
    * The outer Runtime protocol version does not move.
    */
-  it("negotiates Session collaboration v2 with frozen peers and v3 with new peers", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 3 });
+  it("negotiates Session collaboration v2 with frozen peers, v3 with scheduled peers, and v4 with new peers", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 4 });
     expect(RUNTIME_PROTOCOL_VERSION).toBe(RUNTIME_PROTOCOL_V2);
     const frozenV2 = { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 } };
     expect(negotiateRuntimeCapabilities(frozenV2, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({
@@ -115,13 +116,18 @@ describe("runtime protocol", () => {
         RUNTIME_SERVER_CAPABILITY_OFFERS,
       ),
     ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 3 });
+    expect(
+      negotiateRuntimeCapabilities(RUNTIME_SERVER_CAPABILITY_OFFERS, RUNTIME_SERVER_CAPABILITY_OFFERS),
+    ).toMatchObject({
+      [RUNTIME_CAPABILITY.sessionCollaboration]: 4,
+    });
     // A legacy peer without the capability negotiates nothing rather than falling to v1.
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
   });
 
-  it("negotiates observer-safe IM delivery and steer independently from owner-compatible v1", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 2 });
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 2 });
+  it("negotiates batched IM input while preserving owner-compatible v1 and observer-safe v2", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 3 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 3 });
     expect(
       negotiateRuntimeCapabilities(
         {
@@ -252,9 +258,9 @@ describe("runtime protocol", () => {
     );
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
-    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(3);
-    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
-    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(4);
+    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(3);
+    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
     expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(3);
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });

@@ -5,39 +5,93 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 
 # MCP Server integration
 
-> **Status: the management plane and local Claude Code/Codex runtime paths are delivered. This
-> change adds local Pi and Cloud Pi runtime paths; deployment acceptance remains separate.**
->
-> The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
-> with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
-> and background token maintenance, in the Server API, the Web UI, and the CLI.
->
-> Runtime delivery is [the MCP gateway](#the-mcp-gateway): one inbound Streamable HTTP endpoint on
-> the openTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
-> upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
-> authorization row and calls upstream itself.
->
-> The Cloud sandbox runs Pi only. It uses the same execution-scoped MCP gateway token and Server
-> authorization as a local Computer, through its existing Runtime Credential Relay. Claude Code
-> and Codex do not run inside the Cloud sandbox.
->
-> An earlier revision of this page proposed a different path — push credentials down to the Client
-> and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
-> replaces it, and inverts the trust: the Client holds only a token that is worthless outside one
-> live execution, and every upstream secret stays behind the outbound URL policy, the per-Account
-> concurrency budget, and the response bounds already described below.
+The management plane provides Server definitions, per-Agent bindings and overrides, authorization,
+capability probing, and background token maintenance through the Server API, Web, and CLI.
+Runtime delivery uses [the MCP gateway](#the-mcp-gateway): the Provider receives an execution-scoped
+token while the Server resolves upstream authorization and applies outbound URL policy, per-Account
+concurrency, and response bounds. Upstream credentials never reach the Provider or a Client-side
+credential proxy. Local execution supports Claude Code, Codex, and Pi; Cloud runs Pi only and obtains
+its gateway token through the Runtime Credential Relay. Deployment acceptance remains separate from
+management-plane readiness.
 
 ## What this feature is for
 
 An Agent's usefulness is bounded by the tools it can reach. MCP is the emerging standard for
 exposing those tools, so openTag needs to be able to register an MCP Server once per Account,
-mount it selectively per Agent, and hold a distinct credential for each of those mounts.
+mount it selectively per Agent, and resolve the authentication each mount is allowed to use.
+Anonymous and Bearer authorizations remain independent. Compatible OAuth mounts within one Account
+can reference one authentication. Context Tree consumes the current Agent’s official GitHub MCP OAuth credential through its existing restricted Server transport; it maintains no separate Account token.
 
-The design goal that shapes everything below: **authorization is strictly per Agent.** One Server
-may be authorized with a Bearer key for one Agent and OAuth for another, and there is no
-Account-level credential that either could fall back to. That is a deliberate product decision, not
-an implementation detail — it is what makes "this Agent has access to production Linear, that one
-only to the sandbox" expressible.
+### Shared OAuth authentication
+
+`OPENTAG_MCP_OAUTH_REUSE` controls creation of new references and defaults to `false`. The Web Connect
+operation tries reuse before starting OAuth. Ordinary URL and catalog installations first ask the
+Server to select an existing definition with a usable compatible root. Both the definition defaults
+and the source mount must exactly match the submitted URL, authorization header/scheme and extra
+headers; catalog scopes and the OAuth client boundary must also match. This Account-authenticated
+lookup is read-only and returns one safe definition, never source identities or credentials. It does
+not merge historical definitions. Mounting and Connect revalidate current ownership and compatibility,
+so an earlier lookup does not grant access after revocation or a configuration change.
+
+Connect selects a usable root on the mounted definition with
+identical effective URL, header, scheme and extra headers, compatible granted scopes and a provable
+OAuth client binding. Unreadable candidate envelopes are logged by authentication ID and skipped;
+they neither block a later usable candidate nor mutate the old authentication. Selection is
+`created_at ASC, id ASC`, with one bounded database candidate at
+a time and no browser chooser. Up to 100 invalid historical candidates are inspected per attempt.
+`offline_access` is lifecycle permission rather than an additional business permission for matching.
+A refresh claim or live consent flow does not exclude a root whose access credential still works.
+
+An existing binding retains its authentication even when it needs renewal. Reauthorization from
+any referring Agent updates that same authentication for every member. The existing Agent MCP DTO
+projects credential status, failure and expiry from the root while retaining the requesting Agent's
+own probe and tool snapshot. Web keeps its existing page, buttons, feedback and browser-attempt
+guards. There is no separate authentication view, shared badge, impact notice or group operation.
+Every settled browser OAuth attempt invalidates existing Agent mount queries, including denial,
+callback failure and cancellation. Polling and focus refresh retain their existing cross-page behavior.
+
+Removing or revoking a connection affects only the current Agent. If it holds the shared credential,
+the same root ID and encrypted credential move to a surviving compatible member before removal.
+Changing the current Agent's effective URL, header, scheme or extra headers similarly unlinks that
+Agent inside the configuration-save transaction, before writing its new overrides. The mount remains
+with a new independent revoked OAuth row and uses the existing authorization entry; it cannot select
+another root automatically. Other members retain the old credential, refresh claim and pending flow.
+Unchanged effective settings and enable switches retain sharing. Definition-wide configuration edits
+still reject changes affecting shared members; independent mounts keep their existing edit behavior.
+
+A new binding reserves its authorization row ID before discovery. A refused discovery leaves no
+published flow or credential, and a detach/recreate during discovery cannot receive the old result.
+The credential envelope records its issuing client ID for shared-format authorizations. Legacy
+registrations can be matched through their existing registration row. A historical static-client or
+CIMD credential without provable client identity remains independent until a refresh or new consent
+records that identity. Deployment clients with null `client_registration_id`, including GitHub, are
+supported. Refresh refuses to apply a changed deployment client ID to an existing pinned credential.
+
+No usable source means a new OAuth flow on the current binding. Initial authorizations on different
+Agents can proceed independently; neither business calls nor new binds wait for another Agent's
+refresh or consent. Legacy OAuth-start API and CLI responses keep their existing shapes; automatic
+reuse is exposed through the new Web Connect operation.
+
+### Compatibility and rollout
+
+Apply the additive migration with new reuse disabled, upgrade every Server/Worker, drain old
+processes, then enable `OPENTAG_MCP_OAUTH_REUSE`. Compatibility mode writes legacy envelopes for
+independent authorizations. Shared families retain the versioned flow format even with new reuse
+disabled. All existing references continue resolving, refreshing and handing off when the flag is off.
+
+Use a compatible binary for rollback. Disabling new reuse does not make an old binary safe: it cannot
+read references, versioned PKCE flows, or credentials containing the client identity. Before any
+legacy downgrade, disable new reuse, stop concurrent OAuth writes and run the read-only admission
+command with the deployment database and encryption configuration:
+
+```bash
+pnpm --filter @opentag/server mcp:rollout-status
+```
+
+It emits counts only and exits nonzero while references, new envelope formats or unreadable
+envelopes remain. Old binaries cannot enforce this check themselves; the deployment operator must
+run it before selecting an old image. Clear affected authorizations through the current compatible
+version when a legacy downgrade is required. Never copy refresh tokens or reverse the migration.
 
 ## Scope
 
@@ -49,23 +103,59 @@ only to the sandbox" expressible.
 | Background token refresh | The 2024-11-05 HTTP+SSE dual-endpoint transport |
 | Web UI, CLI, Server API | Cloning an Agent with its mounts |
 
+### Local runtime delivery
+
+Local MCP delivery requires `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` in the daemon launch
+environment, including `<OpenTag Home>/config/daemon.env`. Restart the daemon after changing it.
+The default `legacy` mode can configure and authorize connectors in the Web App, but does not open
+the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
+per-action approval settings.
+
+Both IM Turns and Session messages pass the current execution's service grants to the Provider.
+In proxy mode, Local internal Sessions open their own execution for an accepted Session message
+over a connection that negotiated Session collaboration. They receive only their Agent's authorized
+platform services, without inheriting the visible Session's IM provider credentials or outbox.
+Legacy-mode internal Sessions retain their credential-free execution path. An older Server that
+refuses the internal execution leaves the message without managed services and emits a bounded
+warning; it supplies no replacement credentials. Each message prepares
+and closes its own execution; a new Session or runtime snapshot does not reuse a previous bearer.
+
 ### Pi and Cloud runtime delivery
 
-Pi has no native MCP configuration surface. openTag pins `pi-mcp-adapter` 2.36.0 and explicitly
-loads one openTag wrapper extension while Pi's implicit extension discovery remains disabled. The
-wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
-and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
-not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
-MCP handshake and exposes only the bounded `mcp` proxy tool. Direct tools, per-server namespace
-proxies, resources, Tasks and scripting are disabled. A missing Agent mount or rejected service grant
-leaves the Turn without MCP tools.
+Pi uses extensions for MCP. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly loads its gateway
+wrapper only for actual execution. The gateway bearer travels in the process environment, not
+arguments or persisted Session bindings. It uses the supported legacy MCP handshake with direct
+tools, resources, Tasks, and scripting disabled for the managed server.
+
+Local Pi keeps native resource discovery enabled. After all native extension factories load, the
+wrapper registers a fresh private server name through the adapter's public runtime registration
+API. The native adapter retains its own configuration and tool/command namespace, including any
+user server named `opentag-mcp`. Runtime registrations never write native MCP settings. Discover
+the private server in the native `mcp` directory and connect it before calling its tools; a newly
+registered server need not have cached metadata. Native adapter settings still control its own
+services and tool surface.
+
+When no native MCP tool or command occupies the namespace, the wrapper initializes one adapter
+with an isolated, platform-only programmatic configuration. It does not read ambient MCP files or
+enable a disabled native adapter. An incompatible native adapter occupying the namespace produces
+a warning and leaves platform MCP unavailable, preserving native resources. OpenTag does not load
+a second competing `mcp` proxy or overwrite user configuration. Each Run owns a new Pi process and
+private registration; closing it discards that Run's credentials, and a following Run receives its
+own grant or no platform gateway.
+
+Cloud retains disabled implicit discovery and the isolated adapter configuration containing only
+`opentag-mcp`, with per-server namespace proxies disabled. Native global and project MCP files are
+not merged into that configuration. A missing Agent mount or rejected service grant leaves the
+Turn without platform MCP tools.
 
 For Cloud, the trusted Runner requests the existing `mcp` execution service after verified custody,
 acquires a bearer over the existing credential control tunnel, and passes the Server URL and bearer
 to the disposable Sandbox worker through its stdin document. The Sandbox uses its existing public
 egress to call the Server's `/api/v1/mcp` endpoint. The Server checks the live execution, Agent
 scope, Sandbox generation, current control connection and custody on every call. Closing the
-execution revokes the bearer. Cloud's current topology requires one Server process while Runner
+execution revokes the bearer. Registry close events also reclaim child execution capabilities,
+proxy tickets and MCP/Web bearers immediately on cascading close, expiry or connection loss.
+Cloud's current topology requires one Server process while Runner
 control state is process-local; this path adds no separate WebSocket proxy or multi-Server promise.
 No Account MCP schema, upstream credential flow, or management UI changes are needed.
 
@@ -102,8 +192,25 @@ Every POST carries these headers:
 | `MCP-Protocol-Version` | e.g. `2026-07-28` | Required, and must **exactly** match the body's `_meta` version or the Server answers `400 HeaderMismatch` |
 | `Mcp-Method` | the JSON-RPC `method` | Required on every request |
 | `Mcp-Name` | `params.name` / `params.uri` | Required for `tools/call`, `resources/read`, `prompts/get` |
+| `Mcp-Param-{name}` | The argument at a property's exact path, annotated with `x-mcp-header` | Required for annotated, present, non-null tool parameters |
 
-A `Mcp-Method`, `Mcp-Name`, or `Mcp-Param-*` value containing non-ASCII — and any ASCII value that
+For modern upstream tool calls, the gateway passes the latest authorized probe snapshot's
+`inputSchema` to the transport. The transport follows only `properties` paths and mirrors declared
+string, safe-integer, and boolean values. It omits missing or null values and refuses malformed header
+names, case-insensitive duplicates, and mismatched primitive values before dispatch. These headers
+are not generated for legacy calls. A `HeaderMismatch` does not automatically replay a tool call;
+reconcile the outcome and re-probe when a remote schema changes.
+
+The modern gateway catalog validates annotation names, primitive types, uniqueness and placement
+before publishing tools. An annotation at the root, in a reference definition, or behind any keyword
+other than a static `properties` chain excludes that tool from both listing and call resolution,
+with a note explaining the exclusion. Valid siblings remain available. The same check applies to
+already-stored snapshots on read, so a re-probe is not needed to remove an invalid tool. Literal
+schema data such as defaults and examples are not annotations. Legacy mounts keep their existing
+tool catalog and ignore this modern extension.
+
+A `Mcp-Method`, `Mcp-Name`, or `Mcp-Param-*` value containing non-ASCII, control characters, or
+leading/trailing whitespace — and any ASCII value that
 merely *looks like* the Base64 sentinel — must be encoded as `=?base64?<base64>?=`. Both halves
 matter: without the second, a value that happens to start with the sentinel would be decoded as if it
 were an encoding.
@@ -112,6 +219,26 @@ Every request body carries `_meta` with `io.modelcontextprotocol/protocolVersion
 `io.modelcontextprotocol/clientCapabilities` (required) and `io.modelcontextprotocol/clientInfo`
 (should). A response is a single JSON object or a request-scoped SSE stream; a notification is
 `202` with no body; an unknown method is `404` with `-32601`.
+
+**A 2xx status alone is not an answer.** A successful response is a JSON-RPC response or a bare
+result object; a request-scoped SSE stream must carry the response for the request that opened it. An
+unreadable successful body — an HTML error page from a proxy, an empty body, a truncated object, a
+JSON value that is not an object, or an envelope with no `result` — and a stream that ends without
+that answer are protocol failures reported as `MCP_UPSTREAM_ERROR`, never as an empty result. The
+probe would otherwise record a Server that answered nothing as a healthy one with zero tools, and a
+gateway `tools/call` would answer with an envelope that carries no `result`. A `202` or `204` answers
+a notification only: `tools/call`, `tools/list`, and `initialize` each require a result, so an
+acknowledgement of one is `MCP_UPSTREAM_ERROR` as well. A present but unreadable `error` member —
+`null`, a scalar, an array, or a wrong-typed `code` or `message` — on a 2xx response is also
+`MCP_UPSTREAM_ERROR`, with the real HTTP status and a fixed message, never a raw type error.
+On non-2xx responses, an unreadable error member keeps the HTTP failure classification. In JSON
+and SSE, OAuth-shaped `401` and `403` errors such as `{"error":"invalid_token"}` and
+`{"error":"insufficient_scope"}` therefore use `MCP_AUTH_REJECTION_SUMMARY`, so Web offers
+authorization recovery. Upstream error descriptions are not exposed. Readable JSON-RPC errors
+retain their code, message, and data at any status, including version-negotiation refusals.
+Valid answers still pass: an
+explicit `"result": null`, a `202`/`204` notification acknowledgement, and a JSON-RPC error whose
+`code` the caller branches on.
 
 Because there is no session, **a Server must not rely on prior requests**. This is also why the probe
 snapshot is per authorization row rather than per Server: two credentials are two independent clients.
@@ -129,17 +256,50 @@ The MCP-registered codes `-32020`, `-32021`, and `-32022` are the modern signals
 `-32601` is deliberately *not* one: an older Server also answers `-32601` for a method it does not
 know, so treating it as a modern signal would retry forever instead of falling back once.
 
+The handshake's `notifications/initialized` speaks the revision that `initialize` negotiated,
+exactly as the request after it does. `2025-06-18` and `2025-11-25` expect `MCP-Protocol-Version` on
+every request after the handshake, so the notification carries the negotiated value. `2025-03-26`
+predates that header, so its notification omits it. Omission is not a neutral default: the
+specification reads a missing header as `2025-03-26`, so a strict `2025-06-18` or `2025-11-25`
+Server refuses a notification that a permissive Server accepted.
+
 The same `-32601` decides the era **at any status**, not only on `400`, `404`, or `405`. Zoom's MCP
 Server rejects `server/discover` with `-32601` at HTTP `200` while listing the method as valid; a
 status-only gate read that as a modern peer and failed the probe with `MCP_UPSTREAM_ERROR` before
 `initialize` was ever tried. This applies to the probe's `server/discover` only. The gateway never
 replays on `-32601`, because a `tools/call` can raise it from inside the tool.
 
+A legacy handshake is three requests: `initialize`, `notifications/initialized`, then whatever the
+caller actually wanted. The notification is sent **unconditionally**: it is the message that closes
+the handshake, not a message scoped to a session. A Server may answer `initialize` without issuing
+`Mcp-Session-Id`, and such a peer still waits for `notifications/initialized` before it accepts
+anything else, so sending it only when a session came back left a session-less Server talking to a
+client that had never introduced itself. `Mcp-Session-Id` is attached to the notification only when
+the handshake issued one. A failure of either handshake request fails the operation before anything
+is dispatched: a gateway `tools/call` is never sent, and a probe records `probe_state = failed` with
+no `tools/list`. The notification carries no `id` and returns no result, so its HTTP status is checked
+on its own: a non-2xx answer is the transport's bounded failure — `The MCP Server returned HTTP
+<status>`, or the shared `MCP_AUTH_REJECTION_SUMMARY` for `401` and `403`. That summary is built from
+the status alone; the notification's response body is never interpreted or exposed, so an upstream
+message cannot reach a probe error, a log line, or a model. The outbound fetcher reads and bounds the
+body before it returns, so a redirect or an oversized body fails inside the fetcher first, as its own
+bounded error, rather than as one of these status summaries.
+
 The probe API answers `200` whether or not the probe succeeded and never returns the upstream
 status. A failed probe and a legacy fallback each write one `info` line carrying `upstreamStatus`,
 `rpcCode`, and `errorCode` — never the upstream message — so the status the Server really sent is
 readable in the service log. Every probe log line identifies the Server by `endpoint`, the URL origin only,
 because an endpoint path or query can carry a credential that the logger's key-name redaction does not catch.
+
+A caller's cancellation reaches all three hops. The gateway forwards the `AbortSignal` it was given
+to `initialize`, to `notifications/initialized`, and to the `tools/call`, so a cancelled turn cannot
+leave a legacy peer part-way through a handshake opened for an answer nobody will read. A signal
+that is already aborted sends nothing at all: no `initialize`, so no session is opened and then
+abandoned, and no notification. One that fires during the handshake ends the call at the hop in
+flight, and the hops after it are never sent — in particular the `tools/call`, which is the request
+that can have a side effect. This is the outbound policy's cancellation rule ("a cancelled call is
+not dialed") applied per hop rather than only to the request the caller named. A probe is bounded by
+its own deadline and takes no caller signal, so none of this makes a probe cancellable.
 
 A dual-endpoint HTTP+SSE Server (2024-11-05) is reported as `MCP_TRANSPORT_UNSUPPORTED` rather than
 being half-supported.
@@ -149,7 +309,7 @@ differ per Agent, the cached era lives on the **authorization row**, not the def
 
 ## Data model
 
-Four tables, migration `0045`.
+Four tables. `credential_source_id` is the sole additional column for OAuth reuse.
 
 ```
 mcp_servers                     a shared definition; holds no secret of any kind
@@ -165,7 +325,7 @@ agent_mcp_servers               Agent <-> Server mount, plus that Agent's overri
   PK(agent_id, mcp_server_id)
 
 mcp_server_authorizations       exactly one row per (Server, Agent)
-  id, mcp_server_id, agent_id, kind, status,
+  id, mcp_server_id, agent_id, kind, status, credential_source_id,
   ciphertext, key_id, scopes, access_token_expires_at,
   authorization_server, oauth_resource, flow_oauth_resource, client_registration_id,
   state, state_expires_at, pkce_ciphertext, login_session_hash,
@@ -196,8 +356,8 @@ A few decisions worth stating explicitly:
   column is `agent_id`; ownership is proven through `agents.created_by_user_id` and
   `mcp_servers.account_id`. `mcp_client_registrations` is the one table that stays Account-scoped,
   because a registration is the Account's client at an issuer rather than any Agent's.
-- **`kind='none'` is a real row**, not an absence. Every `(Server, Agent)` pair has exactly one row,
-  so resolution is one step and every credential has a place to keep its own snapshot.
+- **`kind='none'` is a real row**, not an absence. Every authorized `(Server, Agent)` pair has one row,
+  so every mount retains its own probe snapshot even when OAuth authentication is shared.
 - **The tool snapshot lives on the authorization row**, because the tool list genuinely differs per
   credential. The Server-level `lastProbedAt` is a `max(probed_at)` over those rows; there is no
   `mcp_servers.last_probed_at` column.
@@ -214,7 +374,8 @@ A few decisions worth stating explicitly:
 | Delete a definition, with any live mount | **Refused** with `MCP_SERVER_IN_USE` and `boundAgentCount`; detach first |
 | Delete a definition, with no live mount | Cascades its authorization rows; `mcp_client_registrations` is untouched |
 | Delete an Agent | The Agent is **soft-deleted**, so its mounts and authorizations are cleaned up explicitly |
-| Delete a Server from one Agent | Detach drops that Agent's mount and its authorization row |
+| Delete a Server from one Agent | Detach removes that mount; a shared root is handed to a surviving member before removal |
+| Disconnect a shared authentication family | Revalidate the displayed member count and atomically remove its authorizations and mounts |
 
 **Agent deletion is a status change, not a row delete.** `agent-service.ts` sets `status='deleted'`,
 so the `on delete cascade` on the binding and authorization tables is dead code on every real path.
@@ -231,10 +392,10 @@ Two consequences follow, and both are handled:
 Detaching is also what drops a credential: a Server an Agent no longer mounts keeps no usable secret
 for it.
 
-Bearer and anonymous saves validate and write in one short transaction, taking Agent → Server
-definition → binding → authorization locks. Agent ownership/status and definition ownership are
+Graph writes validate and write in one short transaction, taking Account (`users FOR NO KEY UPDATE`) → Agent → Server
+definition → binding → authorization locks. Transfer locks both Accounts in ID order before the Agent. Agent ownership/status and definition ownership are
 rechecked before the locked mount authorizes the write. The Agent and definition use
-`FOR SHARE` so saves on independent mounts and existing child-row FK key shares remain compatible; the mount uses
+`FOR SHARE`; Account admission serializes short graph writes and the mount uses
 the same binding lock as cleanup. If detach wins, save finds no mount and returns
 `MCP_BINDING_NOT_FOUND`; if save wins, detach removes that authorization afterward. A mount cannot
 be deleted and recreated between the save's binding read and its commit. Disabling retains the
@@ -243,17 +404,34 @@ credential. No provider request or browser authorization wait runs inside this s
 Probe settlement matches both the existing authorization row ID and its revision. A recreated
 authorization can start at the same revision, so revision alone does not identify the row probed.
 Late probe success, failure or transport errors leave a replacement authorization unchanged.
-OAuth callback state/row fences and refresh claim fences retain their existing behavior.
+OAuth callbacks and refreshes fence their final writes on the stable root, Account and current flow/claim.
+Credential replacement invalidates member probe versions; access-token rotation alone leaves valid snapshots usable.
 
 ## Authorization resolution
 
-For one Agent and one Server, the chain has exactly one step:
+For one Agent and one Server, read the target mount and optional source root in one SQL snapshot.
+Both Agents must belong to the definition's Account and be nondeleted; both mounts must exist with
+identical effective connection configuration. A source must be an OAuth root, never another reference.
+The credential resource must still match the target endpoint on every runtime and probe read.
+An active, unexpired authentication is usable. Invalid ownership, chains, missing roots or changed
+configuration fail closed. There is no Account GitHub credential fallback.
 
-1. An `active` authorization row → use it, with that row's `kind`.
-2. Otherwise → unauthorized.
+A reference row holds no credential, expiry, refresh claim or OAuth flow. Root authentication fields
+are projected into legacy summaries while probe fields and revisions remain local. The new batch
+`authentications` API supplies shared root identity, expiry, flow progress and member count without
+changing strict legacy response schemas. Shared settings use the same flow-cancel action, fenced by
+the root revision. Cancelling consent preserves a working access credential, refresh claim and tool
+snapshots; a stale cancellation cannot end a newer flow. Summary/detail aggregates use the same resolution and
+readonly snapshots; they do not issue one query per Agent.
 
-There is **no Account-level fallback**. The Server-level views show how many Agents are authorized
-and how many are not; they never show a shared credential, because there is none.
+Legacy credential revoke keeps its Agent scope: it unlinks that Agent from shared authentication
+while leaving the mount ready for authorization. It never silently revokes the other members.
+Removing a holder preserves its authentication row ID: delete the successor's empty reference row,
+assign the root to that successor, and reencrypt credential/PKCE AAD for the new holder. Preserve
+credential generation, refresh claim, creation time and flow identity, but carry the successor's own
+tool snapshot. In-flight network results reread the current holder and encrypt inside final settlement.
+No cleanup waits for refresh or consent. Effective connection changes are rejected while shared;
+names and enable switches can still change.
 
 Mounting does not require authorizing first. A Server that needs a credential can be mounted and
 authorized afterwards, in which case the row's state reads as awaiting authorization. A Server whose
@@ -266,7 +444,7 @@ immediately.
 | --- | --- |
 | `none` | No authorization header. Extra headers still apply |
 | `bearer` | `<auth_header>: <auth_scheme> <key>`, where an **empty scheme sends the key verbatim** (`X-API-Key: <key>`) |
-| `oauth` | `Authorization: Bearer <access token>` — fixed, because the specification requires the token in that header and forbids it in the query string |
+| `oauth` | `Authorization: Bearer <access token>` by default; when `auth_header` is `x-lark-mcp-uat`, `X-Lark-MCP-UAT: <auth_scheme> <access token>` (or `<access token>` when `auth_scheme` is empty) |
 
 `extra_headers` are additional static headers sent for all three kinds, since they are configuration
 rather than credentials.
@@ -467,8 +645,19 @@ the first that can complete discovery, client resolution, and authorization-URL 
 recorded on the authorization row. An issuer that fails is reported and the next one is tried; only
 when all of them fail does the attempt error, naming the issuers it tried.
 
-Once an issuer is recorded it is reused for both refresh and reauthorization. Only a terminal failure
-sends the flow back through discovery to pick another.
+Each start revalidates metadata and prefers the recorded issuer when it is still advertised.
+Advertised issuers are deduplicated, preserving order; more than four distinct candidates fails
+explicitly before any issuer request. Discovery and client resolution share a 30-second outbound
+deadline, budgeted for the normal resource metadata, authorization metadata and registration stages
+at the existing 10-second request bound. Fallbacks share the remaining budget. The same signal
+reaches metadata and registration requests; deadline/cancellation stops candidate fallback and
+prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
+the infrastructure timeouts. A timed-out registration is not automatically replayed.
+Refresh uses the credential's recorded issuer rather than running this selection again.
+Authorization server metadata is cached in memory per `(Account, issuer)` for five minutes and
+coalesced across concurrent lookups during callbacks and refreshes, while each `start` revalidates
+against the live document and refreshes that cache entry, and any token endpoint failure evicts the
+entry so the next attempt re-fetches discovery metadata.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.
@@ -562,7 +751,7 @@ of the entry and continue working through their own client. A new Web installati
 preferred endpoint and creates an independent definition, with name-conflict handling if an older
 installation already holds the catalog name.
 
-#### The deployment HubSpot, Asana, and Zoom clients
+#### The deployment HubSpot, Asana, Zoom, GitHub, and Feishu clients
 
 These providers offer neither dynamic registration nor a client metadata document, so a deployment
 that wants its Agents to use them registers its own OAuth app with each provider and configures
@@ -578,13 +767,53 @@ also derives the variable names; the Canva client above is a row of the same tab
 | HubSpot | `OPENTAG_MCP_HUBSPOT_CLIENT_*` | `https://mcp.hubspot.com` | `https://mcp.hubspot.com` | `client_secret_post` |
 | Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
 | Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
+| GitHub | `OPENTAG_MCP_GITHUB_CLIENT_*` | `https://api.githubcopilot.com` | `https://github.com/login/oauth` | `client_secret_post` |
+| Feishu | `OPENTAG_MCP_FEISHU_CLIENT_*` | `https://mcp.feishu.cn` | `https://open.feishu.cn` | `client_secret_post` |
 
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
-type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assigns scopes at
+type **MCP app**, a Zoom **General app** with user-level OAuth, and a Feishu self-built application
+with OAuth 2.0 redirect URLs and `FEISHU_DEFAULT_OAUTH_SCOPES` (`docx:document:readonly`,
+`drive:drive:readonly`, `wiki:wiki:readonly`, `im:chat:readonly`, `im:message:readonly`,
+`search:message`, and `offline_access`) enabled. HubSpot assigns scopes at
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.
+
+Feishu's hosted MCP endpoint (`https://mcp.feishu.cn/mcp`) requires the user access token in
+`X-Lark-MCP-UAT: <access token>` (`authHeader: "x-lark-mcp-uat"`, `authScheme: ""`) on `kind = "oauth"`.
+When `OPENTAG_MCP_FEISHU_CLIENT_ID` and `OPENTAG_MCP_FEISHU_CLIENT_SECRET` are configured (or when
+refreshing an existing row whose `authorization_server` is `https://open.feishu.cn`), the OAuth service
+resolves Feishu's OAuth v2 metadata directly (`authorization_endpoint`:
+`https://accounts.feishu.cn/open-apis/authen/v1/authorize`, `token_endpoint`:
+`https://open.feishu.cn/open-apis/authen/v2/oauth/token`) instead of failing on
+`https://accounts.feishu.cn/mcp`'s blocked dynamic client registration. When no explicit scopes are
+supplied on start, the Feishu flow requests its default ordinary read-only scope set plus
+`offline_access` (`docx:document:readonly`, `drive:drive:readonly`, `wiki:wiki:readonly`,
+`im:chat:readonly`, `im:message:readonly`, `search:message`, `offline_access`) rather than the hosted
+MCP `mcp-tool:*` scopes advertised in the PRM or challenge. Refresh rotates both the access
+token and refresh token inside `mcp_server_authorizations`, maps invalid or expired Feishu refresh
+tokens to `invalid_grant` (terminal reauthorization required), and clears potentially consumed refresh
+material on unknown transport or 5xx outcomes. Broader application grants are not advertised as read-only credentials; tool restrictions declared in `X-Lark-MCP-Allowed-Tools` are enforced by the gateway at both catalog and call time.
+
+GitHub uses the [official remote MCP server](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
+An existing GitHub OAuth App can supply the MCP client pair: add the MCP callback alongside its
+existing callbacks and keep the same Client ID. The GitHub catalog entry requests `repo offline_access`
+and selects the `context,repos,issues,pull_requests,users` toolsets. Connect reuses the oldest compatible
+OAuth root on the installed definition before starting a new flow. Context Tree resolves that Agent's
+same credential through its restricted command gateway; it does not issue or store another token.
+Ordinary Agent GitHub operations use MCP and receive no native Git/gh credential. GitHub sign-in is
+not introduced.
+
+Existing independent GitHub authorizations for the same user/App share GitHub's token limits.
+Historical Account tokens may continue consuming that bucket even after their local maintenance
+is retired. Reuse avoids issuing additional Context tokens; it does not revoke historical tokens or
+make the limit disappear. Never revoke the entire App grant to clean up those historical credentials.
+
+A dedicated MCP OAuth App isolates this bucket from the Account integration; Agent credentials still
+share the dedicated App's per-user limit. Choose the deployment's App with this constraint in mind;
+there is no automatic App separation, token-budget enforcement, or cross-Agent token sharing. See
+[GitHub's OAuth token limits](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#creating-multiple-tokens-for-oauth-apps).
 
 Each client follows the same rules as the Google and Canva clients: it is resolved from configuration
 and never stored, and it is offered only when the Server's effective origin is one of the provider's
@@ -611,9 +840,14 @@ so those Agents must authorize again.
   have developer B's approval land a credential on A's Agent.
 - Re-starting a flow overwrites `state`, its deadline, the PKCE verifier, and the binding in one
   write, so the previous callback URL is immediately unusable. The callback then validates the
-  browser binding, then existence, then expiry, then pending status, and clears the flow as soon as
-  the code is redeemed.
-- **The client is the one `start` registered.** The flow records `client_registration_id`, and the
+  browser binding, then existence, then expiry. A state CAS admits one code exchange, and final settlement clears the flow.
+  Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
+  Failed discovery marks only its still-unpublished, credentialless pending root as failed. A failed
+  one-time code exchange clears that attempt and records `MCP_OAUTH_FAILED`; an existing usable
+  credential stays usable. Neither failure can overwrite a newer flow, and codes are never replayed.
+- **The client is the one `start` selected.** Shared-format flows seal client ID, registration, scopes,
+  initiating Account/Agent and configuration in the existing PKCE envelope; live credential metadata
+  remains separate. Starting consent preserves an existing access credential and refresh claim. The
   callback and every later refresh look that registration up rather than resolving a client again.
   Registering afresh at callback time produces a second client (DCR) and then presents the first
   client's code under it, which a strict authorization server refuses with `invalid_client`.
@@ -648,6 +882,12 @@ telling the UI that a result is still coming.
 
 ### Refresh
 
+An explicit granted `scope` replaces the recorded scopes, including an explicitly empty scope.
+Changed resource scopes invalidate every member's tool snapshot and probe revision in the same
+transaction as the refresh result, so late probes cannot restore old-permission tools. Scope order,
+duplicates and lifecycle-only `offline_access` changes do not invalidate tools; an omitted scope
+retains the recorded permissions and snapshots.
+
 Refresh happens only for rows whose `kind='oauth'` and whose expiry is near, and it never
 re-discovers: it uses the endpoint the row already recorded, so a peer cannot move this client's
 token endpoint mid-flight.
@@ -661,20 +901,21 @@ reauthorization instead of minting a token for an audience it no longer talks to
 management-plane URL change already revokes origin-bound credentials outright; this is the invariant
 behind that behavior, not a replacement for it.
 
-The deadline is pulled forward by `min(5 minutes, half the lifetime)`, so a refresh never races the
-request that uses the token. A lifetime shorter than ten minutes therefore gets half of it. A missing
+The deadline is pulled forward by `min(5 minutes, half the lifetime)`, providing a renewal window before
+expiry while existing requests continue with a usable access credential. A lifetime shorter than ten minutes therefore gets half of it. A missing
 `expires_in` is treated as a five-minute lifetime.
 
 Two mechanisms keep concurrent workers from spending one refresh token twice: a single-flight claim
-taken with a compare-and-swap (and expiring after two minutes, so a crashed worker cannot wedge a
-row), and a generation fence on the write-back.
+taken with a compare-and-swap, and a generation fence on write-back. A claim left for two minutes
+has an unknown outcome; it fails closed instead of being taken over and replayed.
 
 | Observation | Verdict | Action |
 | --- | --- | --- |
-| Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared, **no re-probe** |
+| Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared; retain snapshots for token rotation alone, invalidate all member snapshots if resource scopes change |
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
-| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, keep the refresh token, require reauthorization, **never** auto-retry |
+| Preparation SQL/transport failure before the exchange | Nothing was sent | Release only the matching claim, preserve the credential, retry on a later pass |
+| Transport failure, timeout, 5xx, unparseable after dispatch | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
 | Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |
@@ -683,7 +924,12 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed.
+renewed. Pending probes and due refreshes within a pass run with bounded concurrency (`4` by
+default, matching the per-Account outbound concurrency budget). The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+waits for that actual pass; an already-issued token exchange still finishes and persists under
+its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
+100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual
+passes after stop return zero and start cannot reopen a stopped worker. A new instance restarts it.
 
 ## Probing
 
@@ -867,45 +1113,93 @@ execution has since been replaced.
 its SHA-256 digest, one live token per execution, revoked from the single point every execution ends
 at — explicit close, connection replacement, owner loss, and the stale sweep alike. That is what
 makes writing a bearer into a provider config file acceptable: a token a prompt-injected Agent reads
-out of `mcp.json` buys no access after the turn.
+out of the temporary MCP configuration buys no access after the turn.
 
 The token is fetched through its own `runtime:mcp:gateway` frame rather than returned with the
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
 the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
 
+### Claude Code native configuration
+
+Local Claude reads its native user, project, local, and plugin MCP configuration. OpenTag supplements
+it through a private temporary `--mcp-config`, without `--strict-mcp-config`. The file supplements
+native discovery; it does not replace user configuration. Each runtime generates private 11-character
+service names, stable across its Runs: `g<10 hex characters>` for the gateway and
+`h<10 hex characters>` for hosted tools.
+Grant rules use those exact names. Keeping the gateway name no longer than its original
+`opentag-mcp` name preserves the model-facing name budget: the 18-character `mcp__<server>__`
+prefix leaves 110 characters within Claude's 128-character tool-name limit. Longer gateway names
+were already outside that native budget; this does not add a general tool aliasing layer.
+Both a user server named `opentag-mcp` and a user plugin named `opentag` keep their own endpoints
+and never inherit the platform's grant rules. If project `.mcp.json` registers a previously observed
+runtime `g<id>` or `h<id>` name before a later Run, the explicit supplementary `--mcp-config` entry
+takes precedence: only the platform server's tools occupy that bare name and receive its grants.
+The native fixture guards this required precedence with project MCP servers enabled. Plugin MCP
+names are qualified by their plugin namespace and do not occupy the bare runtime server name.
+Native plugin code still has the trust boundary described in the Runtime contract.
+The separately loaded private Skill plugin has a
+runtime-scoped explicit `opentag-<random-id>` manifest name, avoiding a fixed plugin-name collision.
+
+Each Run receives a fresh private MCP configuration with that execution's bearer, new loopback
+credentials and ports, and separate temporary paths. Names are not persisted in the Session binding.
+Cleanup removes
+only that temporary configuration and Skill plugin; it never rewrites user MCP files. Upstream credentials and Server-side
+authorization still use the existing gateway. Native local MCP services use their own configuration
+and credentials, without being registered in the platform catalog or sent to the Server.
+Native MCP startup and tool limits remain Claude's responsibility, including the operator's
+`MCP_TIMEOUT` setting. Run deadlines and cancellation continue to bound the owned Provider process.
+
+A separate `claude mcp list` command reads that command's native configuration; it does not inherit
+the running Provider's supplementary `--mcp-config` argument. It cannot establish whether the
+platform gateway reached the current Run. Check the execution grant, the private launch configuration,
+and that process's MCP catalog in sequence. Managed GitHub tools use
+`mcp__g<10 hex characters>__github__<toolName>`, rather than a bare `mcp__github__` prefix.
+An enabled mount and successful probe describe management-plane readiness; they do not prove that
+a particular execution received or initialized its gateway. Native Git and `gh` credentials remain
+independent and are not a fallback source of platform authorization.
+
 ### Codex: rebinding the thread per run
 
-Codex spawns its App Server once per Session runtime from a frozen argument vector, while the bearer
-is minted per execution, so the bearer cannot be written into that argument vector. Codex applies a
-thread's `config` overrides only when it loads the thread, so before each run that carries a gateway
-the Codex runtime reloads the thread with that run's `mcp_servers`:
+Codex spawns one App Server per Session runtime. Native direct and plugin-discovered MCP services
+load from Codex's user/project configuration; OpenTag does not supply `mcp_servers={}` or replace
+the native table. Each runtime chooses a private 11-character `g<random-hex>` gateway name,
+preserving the original tool-name budget and avoiding fixed-name collisions with user services.
 
-- **A persisted thread** is unloaded (`thread/unsubscribe`) and resumed (`thread/resume`) with the
-  gateway as its only MCP server. Codex connects and lists the catalogue during the resume.
-- **A thread that has never started a turn** has no rollout to resume and no history to lose, so it is
-  replaced by a new `thread/start` with the same parameters and hosted tools, and the Session binding
-  moves to the new thread through `binding_changed`. The previous thread stays loaded until the
-  replacement exists.
-- **The bearer only ever travels over the App Server's stdio** and is held in its memory. It never
-  appears in the argument vector, the environment, or a config file, so what a model command can
-  reach is at most the live execution's own bearer, which the Server revokes when the execution ends.
-  The launch arguments keep `mcp_servers={}`, and the override replaces the whole table, so the
-  user's own Codex servers stay excluded.
-- **One deadline** (15 s) covers the whole rebind, attach and restore alike, and a run cancelled
-  before its turn starts ends without waiting for one. The attach may use two thirds of the deadline;
-  the rest is reserved for the restore. An attach that is not confirmed restores the thread with no
-  MCP server — losing the gateway costs the turn its MCP tools, never the turn, and never leaves the
-  run's bearer attached to a catalogue it did not confirm. A later run without a gateway rebinds once
-  so revoked tools disappear. Only a thread Codex cannot reload at all within the deadline fails that
-  run, since no thread is left to start the turn on; the next run rebinds it.
-- **Conversation history survives the rebind.** `excludeTurns` only keeps the turn list out of the
-  `thread/resume` response; Codex reloads the thread's full model context from its rollout.
-- Gateway tools are pre-approved as a server (`default_tools_approval_mode = "approve"`), matching the
-  Claude Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+Before a Run carrying a gateway, OpenTag reloads the thread with a single dot-key override,
+`mcp_servers.<private-name>`, containing that execution's URL, bearer, startup limit, and tool approval
+mode. Native plugin MCP discovery remains Codex's responsibility; OpenTag does not enumerate or
+reconstruct that catalog through `config/read`.
 
-Codex always defers MCP tools behind its built-in `tool_search`, so the model sees the
-`opentag-mcp` server and discovers individual tools on demand rather than in its initial tool list.
+- A persisted thread is unloaded (`thread/unsubscribe`) and resumed (`thread/resume`). An
+  unpersisted thread has no rollout/history to restore and is replaced through `thread/start` with
+  the same parameters and hosted tools. The binding moves only when the replacement exists.
+- The bearer travels only over App Server stdio and remains in memory. It is absent from launch
+  arguments, environment, and configuration files. Server revokes it when the execution ends.
+- The private entry is `required` during native initialization so a rejected handshake is observable.
+  Gateway availability remains optional at the adapter: failed attachment restores native-only
+  configuration without the private entry. A Run without a gateway similarly removes the previous
+  override. Empty `config` reloads native settings; it does not delete user services.
+- One 15-second deadline covers attach and restoration. Attachment gets two thirds of that budget;
+  native gateway startup gets at most half the attach budget (capped at 10 seconds), leaving time
+  for a native failure response before restoration. Only failure to restore a usable thread fails
+  the Run. Cancellation returns promptly; bounded pending RPC slots consume late native replies so
+  a cancelled handshake cannot poison the next Run.
+- An unpersisted replacement's creation stays observable after local cancellation. A successful
+  reply that was not adopted into the binding triggers `thread/unsubscribe`, including replies
+  arriving after a newer Run succeeds. Cleanup uses its own bounded deadline rather than the
+  cancelled Run's signal. Native no-subscriber inactivity cleanup may keep an unsubscribed thread
+  temporarily loaded; continued subscription is not part of that grace period.
+- History survives a persisted rebind: `excludeTurns` omits the response's turn list, while Codex
+  reloads model context from its rollout. App Server processes are not restarted per Turn.
+- Only the private gateway gets `default_tools_approval_mode = "approve"` for `never`, or `"writes"`
+  otherwise. Native user/plugin MCP approval settings are preserved.
+- Execution socket profiles remain mandatory and fail closed. Their dot-key overrides modify only
+  `features.network_proxy` and `permissions.opentag-execution`; rotation/removal rebinds the thread
+  without clobbering native feature choices or other permission profiles.
+
+Use the current native catalog for gateway tool names. Tool discovery and deferral depend on the
+installed Codex version; a fixed `opentag-mcp` service name is not part of the runtime contract.
 
 ### What the gateway speaks
 
@@ -951,7 +1245,11 @@ discover through another call first.
   with a reason beats a tool that silently calls the wrong Server.
 - The catalogue is served from the stored probe snapshots rather than fanned out live. `tools/list`
   runs at the start of every turn; a live fan-out would add a round trip per Server to each one and
-  contend for the same four outbound slots a real tool call needs.
+  contend for outbound capacity needed by real tool calls.
+- When a mount's effective `extra_headers` includes `X-Lark-MCP-Allowed-Tools` (matched
+  case-insensitively), its comma-separated upstream tool names restrict the mount's usable tool
+  snapshot at both `catalog()` and `callTool()` time. Any tool not in the allowed set is omitted from
+  discovery and rejected at call time with `MCP_BINDING_NOT_FOUND`.
 
 ### Failures
 
@@ -988,8 +1286,8 @@ it; the runtime path never re-detects an era on its own.
 ## HTTP API
 
 Server definitions and the aggregate view are Account-scoped; every mount, override, authorization,
-and probe is addressed under the Agent that owns it. That is not cosmetic: authorization is strictly
-per Agent, so a Server-scoped authorization route would have no way to say whose credential it was
+and probe is addressed under the Agent that owns it. That is not cosmetic: authorization is addressed through the current
+Agent mount, which may reference shared OAuth authentication, so a Server-scoped authorization route would have no way to say whose credential it was
 writing.
 
 ```
@@ -1005,7 +1303,9 @@ POST   /api/v1/agents/:agentId/mcp-servers               mount
 PATCH  /api/v1/agents/:agentId/mcp-servers/:mcpServerId  enable/disable and this Agent's overrides
 DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId  unmount (drops this Agent's credential)
 PUT    /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        Bearer key, or `none`
-DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        revoke
+DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        revoke this mount only
+POST   /api/v1/agents/:agentId/mcp-servers/reusable-installation select compatible definition
+POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/connect try reuse
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/oauth  start OAuth
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/probe                re-probe
 
@@ -1138,6 +1438,16 @@ until submission. There is no tool browser, credential-clearing action, advanced
 action, or global save footer in preset Details. Custom Details retains editable connection settings
 and collapsed Advanced settings.
 
+Every connector failure the reader sees is one short line that names the next step, chosen from the
+code the Server reports: an unreachable or blocked address asks to check the connector address, a
+service that explicitly does not support account sign-in suggests an API key (a failed registration is
+retried by authorizing again), a rejected key asks for an update, an
+unfinished authorization asks to try again, and an unreachable service asks to try again later.
+Upstream details stay private. The row's action matches the line: an address the reader typed opens
+**Edit address**, a rejected key offers **Update key**, and **Retry** remains only for transient causes
+and catalog connectors. Why: a bare "failed" gives an admin nothing to act on, while the Server
+already knows which of these happened, and an action that does not fix the stated cause is a dead end.
+
 Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
 reason and wrap together on narrow screens. Controls keep their positions while authorization,
 key editing, saving, and recovery feedback change. Primary form actions use the shared default
@@ -1161,22 +1471,29 @@ save remains a local form error; it does not turn into a tool-probe failure on t
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-An input with localized URL guidance and **Connect**, with dismissal through the header close button
-or Escape. **Connector URL** remains its screen-reader label; opening focuses the input. There is
-no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
-manual configuration, and configuration import remain implementation capabilities rather than entry
-points in this dialog.
+- a **Connector address** (**连接器地址**) field, which is also its accessible name;
+- an **Authentication** (**认证方式**) choice of **Account sign-in** (**账户登录**, the default),
+  **API key or token** (**API 密钥或令牌**), or **No authentication** (**无需认证**); choosing a key reveals
+  its field;
+- collapsed **Advanced settings** (**高级设置**) for headers;
+- **Connect** (**连接**), which becomes **Retry** after a failed attempt.
+It is dismissed through the header close button or Escape. There is no source switch or name field.
+With Account sign-in, Connect first tries the address; when the service refuses it, authorization opens
+in its own window. Discover, manual configuration, and configuration import remain implementation
+capabilities rather than entry points in this dialog.
 
-Web installations are independent per Agent. Add custom offers only a URL; it neither lists the
-Account's definitions nor selects one by URL. Discover creates a new definition from the served
-catalog defaults when this Agent has no installation. Existing installations of this Agent remain
+Web installations retain an explicit mount and independent tool snapshot per Agent. Add custom does
+not list the Account pool. With new OAuth reuse enabled, both Add custom and Discover perform the
+same Server-side compatible-installation lookup before creation; the returned definition is mounted
+through the ordinary flow. No candidate means a new definition and the current Agent's OAuth flow.
+Bearer and anonymous installations still create independent definitions. Existing installations of this Agent remain
 available for connection, retry, and management, including URL overrides and every known endpoint
 of a deployment-replaced catalog entry.
 
 Names are generated automatically from an exact preset or the URL's host. Creation tries the base
 name first; only `MCP_SERVER_NAME_CONFLICT` reads the Account's names and retries with a bounded,
-case-insensitive numeric suffix. A matching URL never selects another definition. Both add entry
-points share this operation. Confirmed definitions are retained within the current journey for
+case-insensitive numeric suffix. A matching name or URL alone never selects another definition;
+only the compatible OAuth lookup can do so. Both add entry points share this operation. Confirmed definitions are retained within the current journey for
 attachment and authorization retries. Account definitions do not gate the ordinary Add button or
 first-use dialog. Reads of overridden definitions and OAuth return state are limited to this Agent's
 installations and the explicitly returned ID.
@@ -1187,7 +1504,7 @@ installed endpoint locates the current Agent's connection instead of creating an
 backend registry and shared configuration semantics remain available through the API and CLI;
 this Web change does not migrate historical shared mounts or change OAuth client registration reuse.
 
-Connect uses the existing create, attach, authorization, OAuth, and probe APIs.
+Connect uses the installation lookup and existing create, attach, authorization, OAuth, and probe APIs.
 Exact preset matches provide new-installation authentication defaults; Bearer defaults reveal an API-key field
 only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
 with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
@@ -1282,9 +1599,11 @@ Add custom opens the custom connector form for empty and populated Agents alike;
 Discover, manual-configuration, or import source switch. Initial focus stays on the dialog title,
 leaving the address field idle until the user selects it. Dismissing the form returns focus to Add custom.
 The standalone directory owns its add state.
-The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
-and concise guidance directly on the page background. Connector choices stay in Discover; there are
-no recommendation cards, example tasks, or duplicate browse actions on the management page.
+The empty state matches Skills and Memory: a centered 32px connection icon, the heading **No connectors
+yet** (尚未添加连接器), and one sentence whose phrases are the first actions, **Discover a connector**
+(opens Discover) **or add a custom one** (opens Add custom), directly on the page background. Connector
+choices stay in Discover; there are no recommendation cards, example tasks, or duplicate browse
+actions on the management page.
 Asana's V2 MCP server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and
@@ -1299,14 +1618,34 @@ Directory cards place the service name and description on the left, with **Add**
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
 On narrow screens, descriptions span the card width.
 
-Adding creates this Agent's independent definition and mounts it to this Agent. The directory closes as
-soon as the mount is confirmed, and the management list highlights the service without waiting for
-authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
-Bearer services open the shared authentication dialog with the known method fixed and no connection
-settings; saving credentials closes it. Closing authentication leaves the mount on the list with
-**Not connected** and **Connect**. Anonymous mounts already authorized by the server trigger an
-immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
-their authorization.
+Discover keeps setup and authorization in its directory dialog. Fixed endpoints use the existing
+create, attach, authorize, and probe operations. OAuth starts immediately; key-based services ask for
+a password-masked key. Successful connection returns to the directory. Fixed endpoint cards then show Added; customer
+endpoint cards keep Add available for connecting another instance.
+Failures preserve the current form or card for retry. Cancelling an unfinished attempt removes only
+its provisional mount; an already authorized mount is retained.
+
+The customer endpoint setup form marks required fields and positive integer IDs, and reports
+validation errors beside the affected field with accessible descriptions. Header validation uses
+the same catalog helper as connection resolution, so a missing or malformed environment ID does
+not incorrectly mark a valid endpoint as invalid. Endpoint recipes currently support bearer
+credentials only; generation rejects `none` or `oauth` defaults for this form.
+
+Customer-hosted services use a catalog `setup.endpoint` recipe rather than a fabricated global URL.
+Dynatrace, Elastic Agent Builder, Snowflake, Databricks, dbt platform, Make, and n8n ask for the actual
+HTTPS MCP address before any write. The recipe constrains its path, optional hostname suffix, and
+allowed non-secret query names. dbt additionally asks for a required production environment ID and
+optional SQL user/development environment IDs. Only declared headers are accepted. All resolved
+settings pass `CreateMCPServerRequestSchema` and use the existing APIs, storage, authorization, and
+outbound policy. Distinct instance URLs, environment headers, or authorization methods do not reuse
+an incompatible mount. These entries remain `installable: false` until a customer supplies the endpoint;
+Discover explicitly offers their setup recipes, while the public catalog returns no runnable config.
+
+PagerDuty's key recipe adds `token=` exactly once to a raw key when the effective header is still
+`Authorization: Token`. Close uses a raw `close-api-key` header and static `close-scope: mcp.read`.
+Similarweb, SE Ranking, LangSmith, and lemlist also retain their documented raw key headers. Fixed
+bearer defaults are derived from `auth.bearer`, including empty schemes and static extra headers.
+Advanced user overrides remain authoritative.
 
 Pending tool probes poll every second for their first 30 seconds, then return to the ordinary
 30-second live cadence. The budget follows each mount in its query cache and uses elapsed time,
@@ -1314,9 +1653,8 @@ so failed reads cannot leave a page polling every second indefinitely. Newly pen
 receive their own fast-poll window; settled or disabled mounts stop using it.
 
 Create and attach errors remain in the directory, preserving its search and category. Confirmed
-definitions are retained for retries. After mounting, connection startup errors and probe retries
-belong to the existing list; credential errors remain in the shared authentication form. There is no
-separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
+definitions are retained for retries. Connection errors remain on the corresponding card or setup
+form; the management list also reflects the mount's current state. There is no separate connection-result view. OAuth uses the existing return context
 handling, including authentication errors returned by the provider. Adding and authorizing a
 connector have no separate success or failure notification. Connection status remains on the card;
 failures remain on the corresponding card or connection form with a retry action. An OAuth error
@@ -1327,10 +1665,9 @@ The catalog aligns rows to the top of its bounded scroll area. Minimum list heig
 below the cards instead of stretching a lone row. The directory omits the redundant Agent
 authorization footer.
 
-Category navigation starts with **All**, then follows the catalog's fixed order:
-Docs & Knowledge, Communication, Projects, Developer Tools, Web Search, Data & Analytics,
-and Design. Categories with fewer than two offered entries are omitted from navigation;
-their entries remain available in All and search. Other catalog categories follow these groups.
+Category navigation starts with **All**, then follows the ten-category order defined below.
+Categories with fewer than two offered entries are omitted from navigation; their entries remain
+available in All and search.
 Desktop filters stay on one line and move a trailing suffix into **More** according to the
 available container width. More retains the same order and marks the selected item. Selecting
 an overflow category replaces the trigger's label with that category's name without reordering
@@ -1341,8 +1678,8 @@ full directory and clears the category highlight; choosing a category clears sea
 the shared Kumo Select with the same order and selection. Buttons and the More trigger use the shared neutral-grey filter
 selection recipe, preserving the application's typography, control size, and focus behavior.
 
-The current management layout is preserved: service identity opens settings, the list shows connection
-status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+Connector identity opens Details, and recovery actions follow the current [Web UI contract](#web-ui).
+Preset Details omits a tool browser and advanced settings; Custom Details retains its editable settings.
 The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
 use their user-supplied description, with the effective URL as the fallback when the description is blank.
 Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
@@ -1374,8 +1711,9 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 uploads it explicitly, and the Presets catalog never offers it.
 
 The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
-and a suggested name. Each Web installation creates its own definition; the Account registry is consulted only to resolve
-a creation-name conflict.
+and a suggested name. OAuth installations may select an existing compatible definition through the
+Account-authenticated installation lookup; other new installations create a definition. Name conflicts
+use bounded numeric suffixes and never select a credential source.
 `auth.default_kind` remains a prefill for the new authorization, never a statement about the Server.
 
 An entry's `auth.oauth.scopes`, when present, travel as the OAuth start request's explicit scopes, so the
@@ -1400,6 +1738,13 @@ known limitation: its authorization server advertises `client_secret_post` and `
 `client_secret_basic` the dynamic-registration path presents, so its authorization stays unverified
 until token-endpoint authentication-method support exists (issue #814 tracks the follow-up).
 
+Discover uses ten categories in fixed order: Docs & Content, Communication & Meetings, Work
+Management, Search & Extraction, Data & Analytics, Design & Creative, Customers & Growth,
+Automation, Finance & Payments, and Development & Ops. All precedes them as the default view.
+The YAML source owns this order in both locales, including desktop overflow menus and mobile
+selectors. A category with fewer than two offered entries is omitted from navigation while its
+entries remain reachable in All and search. Search does not reorder the categories.
+
 Discover lists only `active` entries. A `deprecated` or `archived` entry is compiled but hidden, and
 a `removed` entry is not emitted. Discover search also matches an entry's `keywords`, `aliases`,
 `tags`, `capabilities`, and `when_to_use` text. The compiled module keeps the flat card fields the
@@ -1410,8 +1755,8 @@ Web App reads (`id` as the slug, `title`, `description`, `url`, `defaultAuthKind
 The generator refuses, at build time, at minimum:
 
 - an entry that does not validate against the entry schema: an unknown key, a non-HTTPS remote, an
-  unknown package registry type, an unknown `status`, a missing locale, or neither `packages` nor
-  `remotes`;
+  unknown package registry type, an unknown `status`, a missing locale, or none of `packages`,
+  `remotes`, and an endpoint setup recipe;
 - a package whose named argument has no name, whose secret carries a value or default, whose
   credential-looking variable is not marked secret, or whose value looks like a credential;
 - an `auth.default_kind` that is not in `auth.methods`, or an `oauth` method without an `auth.oauth`
@@ -1430,11 +1775,12 @@ The generator refuses, at build time, at minimum:
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.
 
-Only a Server with a remote Streamable HTTP endpoint is **installable**. An entry may also record
+Only a Server with a fixed remote Streamable HTTP endpoint is immediately **installable**. An entry may also record
 self-hosted `packages` (stdio and similar) as catalog data: the deployment has sandboxes, but the
 Server create contract and runtime do not run packages yet, so such an entry is emitted with
 `installable: false`, carries no flat connection fields, is withheld from Discover and URL matching,
-and is exposed read-only in the public catalog (with package values and defaults omitted). An SSE
+and is exposed read-only in the public catalog (with package values and defaults omitted). Customer
+endpoint recipes are the explicit Discover exception described above. An SSE
 remote is data only as well. This document's Server-create contract is unchanged.
 
 **Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
@@ -1465,8 +1811,8 @@ meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
 provider's product or establish successful openTag authorization.
 
-The description review on 2026-10-10 used the following provider documentation. These references
-record provenance for maintainers without adding links or explanatory copy to the cards.
+The following provider documentation records capability provenance for maintainers without adding
+links or explanatory copy to the cards.
 
 | Entries | Official capability reference |
 | --- | --- |
@@ -1496,3 +1842,5 @@ record provenance for maintainers without adding links or explanatory copy to th
 | Supabase | [Supabase MCP tools](https://supabase.com/docs/guides/ai-tools/mcp) |
 | Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
 | Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
+
+GitHub business operations in ordinary Agents use this MCP path. Context Tree reuses the current Agent’s OAuth credential through its restricted Server Git path; it has no independent Account token and supplies no native Git/gh credential to the Agent.

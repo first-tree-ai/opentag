@@ -10,6 +10,40 @@ registration SDK returns App credentials, the Server saves them before checking 
 requirements. An enterprise administrator may approve later: a page refresh, closed browser,
 or Server restart must not discard that saved authorization.
 
+## Setup QR link
+
+The launcher URL the registration SDK returns is over a thousand characters, and a QR symbol that
+encodes it is too dense for many phone cameras. When `OPENTAG_PUBLIC_URL` is public HTTPS, the
+attempt's `qrUrl` is instead a short link, `<public URL>/q/<token>`, which answers with a 302 to the
+launcher. Everything that reads `qrUrl` gets it: the QR code, the open-link button, and the CLI.
+
+- **Not a new DTO field.** The attempt DTO is strict, so an installed CLI would reject an unknown
+  field. Replacing the value keeps every existing client working.
+- **No storage.** The token is the attempt ID followed by a truncated HMAC of it, under a subkey
+  derived from the application key. Any Server instance can verify it and no column or table is
+  added. It is a MAC rather than the bare attempt ID because attempt IDs appear in authenticated API
+  paths and logs.
+- **Lives with the attempt.** A link redirects only while its attempt is `awaiting_user`, unexpired,
+  and has a live registration owner: the same conditions under which the attempt itself shows a QR
+  code. It keeps working across repeat scans, because link previews and a second scan must not use it
+  up. Authorization, cancellation, expiry and owner loss all end it.
+- **Anonymous and bare.** A phone has no openTag session, so `GET /q/:token` takes no authentication.
+  It returns the redirect or a fixed page. A forged, unknown, expired or finished token gets one 410
+  page that says the same thing for all of them. A read failure gets a 503 page that says to try again,
+  and that includes a saved context this instance cannot decrypt, because key-ring skew between
+  instances is temporary and another instance may be able to answer. A forged
+  token is refused before any database read. Responses are `no-store` and send no referrer.
+- **Kept out of logs.** `sanitizeRequestUrl` redacts the token from request logs and trace attributes.
+  A reverse proxy or platform access log in front of the Server can still record the path; what that
+  exposes is limited to a setup code that lasts as long as the attempt.
+- **Falls back when a phone cannot reach it.** A public URL that is not HTTPS, or whose host is
+  loopback, a private or reserved address, a single-label name, or a private-network suffix such as
+  `.local`, keeps the full launcher URL in `qrUrl`.
+
+The avatars and `addons` in the launcher URL stay as they are. Feishu's picker needs all six avatar
+addresses, and `addons` already holds the 66 scopes, events and callbacks gzipped by the SDK, so
+neither can shrink without losing function, and the short link removes the need.
+
 ## Bot avatars
 
 Registration offers six cat presets in Feishu's native picker: developer, engineer, architect,
@@ -26,6 +60,17 @@ avatar in the binding. Optional profile failures do not block activation. Previo
 metadata survives a failed lookup only for the same App, workspace, and Bot identity.
 Existing connections acquire avatars on their next connection or reauthorization; provider-side
 changes remain cached until then. openTag displays initials when the image is absent or fails to load.
+
+The authenticated Agent avatar endpoint rechecks Account ownership, Agent status, and the current
+non-disabled binding on every request. Each resource-service instance keeps a 30-minute LRU cache
+of fully validated image bytes, limited to 128 entries and 16 MiB of cached image data. Each response
+owns a separate copy of at most 5 MiB while it is being sent. Cache identities
+include the Account, Agent, binding ID, credential generation, and exact provider URL; changing any
+of them requires a new fetch. Entries expire from insertion time and are reclaimed lazily on reads
+and inserts. Concurrent cold reads remain independent; errors and empty, partial, or oversized bodies never
+enter the cache. Every miss retains the HTTPS destination checks, connection-time public-address
+filter, redirect rejection, allowed image types, and 5 MiB response limit. Browser responses retain
+their private cache policy. The cache is lost on restart and is not shared across service instances.
 
 ## User experience
 
@@ -57,15 +102,18 @@ preserve its working credential and generation.
 | Account / Agent | Authorization to manage a binding; Computer and Runtime prerequisites |
 | `im_bindings` status and active identity | Current message route; pending credentials do not overwrite it |
 | Active encrypted credential / generation | Existing credential delivery and message connection fencing |
-| Setup attempt ID / intent | One current `create`, `reauthorize`, or `replace` attempt on a binding |
+| Setup attempt ID / intent | One current `create` or same-App `reauthorize` attempt on a binding |
 | Encrypted setup context | Legacy QR payload or versioned candidate credential and latest observation |
 | Setup expiry | QR deadline before issuance; fixed candidate retention deadline after saving |
 | Setup owner / heartbeat | QR instance ownership or a fresh, per-check candidate claim token |
 | Feishu registration and platform APIs | Issue credentials and observe effective scopes / bot identity |
 
 No approval record, administrator role, connection-flow table, retry table, candidate route,
-or extra credential generation is introduced. `replace` uses the existing replacement
-transaction and history.
+or extra credential generation is introduced. Configured Provider, App and Bot identities cannot
+be replaced. Creation requires empty configuration; an edited empty Agent can still finish it.
+Same-App reauthorization preserves identity. Disconnecting an activated binding retains its
+identity history and requires a new Agent to connect a different identity. A never-activated slot
+can still be cleared and creation resumed.
 
 ## State and data contract
 
@@ -110,6 +158,44 @@ The existing credential cipher supports both v1 ciphertext and v2 with context A
 candidate's embedded identity checks remain necessary with v1. This feature does not change
 the global encryption write version or re-encrypt existing credentials.
 
+### Setup observations and recovery
+
+Agent setup reads the current binding and its setup fields from one captured binding-row snapshot.
+The IM-binding/Feishu services produce the public binding, credential generation, attempt and
+handoff view together; the Agent setup layer does not combine a binding read with an independent
+attempt read or decode credential material. Existing Account authorization, current-binding
+selection, and final Agent revalidation still apply. Public attempt reads recheck Account authority
+after a confirmation read; public Agent-scoped attempt reads also recheck before returning.
+
+An inferred terminal projection, such as QR owner loss or expiry, is confirmed by at most one
+fresh complete read. Confirmation compares the binding, generation, attempt, state, owner,
+heartbeat, deadline and saved context. An advanced row is projected as it now stands. If it needs
+another unconfirmed terminal decision, the read is temporarily unavailable instead of reporting
+a fabricated authorization failure. This adds no write, row lock, or long-running transaction.
+Stored terminal outcomes remain explicit, and a healthy active route remains ready even if its
+reauthorization context is temporarily unreadable.
+
+An unexplained provisioning observation is recoverable; it does not authorize retrying registration
+or disconnecting a binding. Agent setup exposes the existing observation-failed state with a
+read-only refresh action. On an online Computer, the page observes that state with the existing
+2-second GET cadence, bounded by 45 attempts and 90 seconds. A failed background GET keeps the
+last trustworthy snapshot. At exhaustion, Check again starts a fresh read window without preparing
+a Computer, checking an upstream candidate, creating another authorization, or disconnecting.
+Actual authorizing, waiting-handoff and offline observations retain their existing waiting behavior.
+
+### Paused settings reads
+
+The current Account owner can read binding summaries, configuration, handoff observations, diagnostics, and
+saved setup attempts for active or paused Agents. Deleted Agents and other Accounts are rejected. Authorization
+and stored details share a read-only Repeatable Read snapshot; attempt confirmation reads repeat that check,
+and public attempt reads recheck current ownership before returning. Read DTOs keep secrets, encrypted setup
+context, and ownership tokens private.
+
+Paused handoff and diagnostic reads inspect existing runtime observations without scheduling Provider CLI
+preparation or credential validation. Reads do not activate or cancel a candidate, extend its retention, resume an
+Agent, or call Feishu. Setup creation, explicit activation checks, cancellation, and asynchronous completion keep
+their active-only admission, final mutation guards, and attempt/generation fences.
+
 ### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.
@@ -142,7 +228,11 @@ next-check time, uses bounded concurrency and jitter, and respects provider `Ret
 Manual POST checks use the same admission. GET requests remain read-only.
 Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
 This uses the existing attempt DTO and Account ownership checks, independently of the active
-binding: a working old connection must not hide a saved replacement. No open attempt returns 204.
+binding: a working connection must not hide its saved same-App reauthorization. No open attempt
+returns 204.
+The setup binding read captures Account authority, current Agent status and either its current
+binding or retained configured identity in one read-only Repeatable Read snapshot. A disconnected
+identity does not require a second authorization transaction or a discarded activity read.
 
 An instance that cannot authenticate a saved context preserves its ciphertext and fixed deadline,
 reports a bounded diagnostic, and continues scanning other rows. A later instance with the correct
@@ -154,6 +244,9 @@ Admission compares the binding, attempt, state, original ciphertext and deadline
 check writes a new random claim token into the existing owner field. Heartbeats, observations,
 release and activation must match that token. A stale process cannot commit over a new owner,
 a canceled attempt or a disabled binding. Shutdown retains saved credentials for a successor.
+The connection manager stop port joins its maintenance pass, admitted probes/activation,
+inbound handlers and detached observation/enrichment work before clearing the final lease.
+It rejects new work and stale probe results, and cannot restart while stop is in progress.
 
 All 66 scopes are checked before a candidate opens a message channel. Only a ready candidate
 enters existing atomic activation. Ambiguous upstream failures preserve it; a provider's
@@ -164,7 +257,66 @@ transaction with Feishu. A crash between external credential issuance and the fi
 commit can still lose the new secret. Large candidate populations also incur scan/decryption
 cost because this change intentionally adds no scheduling index.
 
-## Release and rollback boundary
+## Keeping active bindings connected
+
+Channel startup observes WebSocket readiness failures throughout its lifetime, including while
+outbound Bot identity is pending and after a failed or canceled call returns. Startup awaits outbound
+identity before readiness, preserving outbound error precedence when both fail. Gateway errors and
+rejected SDK startup retain their original cause for
+connection-failure classification. A failed or canceled startup closes the WebSocket and clears
+the channel identity; a late outbound success is disconnected as well. Disconnect settles pending
+readiness, and late SDK errors remain handled after the caller returns. Failed channels stay closed;
+the connection manager creates a fresh channel for its next attempt. Once startup succeeds, SDK
+reconnecting, error and reconnected callbacks continue to report connection transitions.
+
+Every 10 seconds each Server instance scans `active` Feishu bindings that no instance holds a
+connection lease for, claims one, and opens its long connection. A failed attempt releases the
+lease and waits before the next attempt on that binding: 0.5 seconds, doubling to at most 5 minutes.
+The wait is kept in memory per binding and credential generation, so a reauthorized binding starts
+over.
+
+Each failure is classified (`connection-failure.ts`) by what Feishu itself answered, read only from
+numeric codes, never from provider text:
+
+- **Refused by Feishu.** The tenant token is refused for dead credentials (10015, 20002) or because
+  the App is disabled or not installed (the app-unavailable codes the setup check already uses), the
+  long-connection gateway rejects the App (403, 514), or a different Bot answers.
+- **Not attempted.** The call's circuit is open, so Feishu was never asked.
+- **Transient.** Everything else: network failures, timeouts, rate limits, and the SDK's ambiguous
+  `not_connected`.
+
+Ten consecutive refusals stop the binding. The update moves it from `active` to `error`, stores the
+reason in
+`last_error_code` (`FEISHU_CREDENTIAL_INVALID`, `FEISHU_APP_UNAVAILABLE`,
+`FEISHU_CONNECTION_REJECTED`, or `FEISHU_BOT_IDENTITY_MISMATCH`), clears the lease, and advances the
+credential generation, as a Slack reauthorization requirement does. The scan reads only `active` rows,
+so nothing probes the binding again. The binding summary carries the reason as
+`connectionFailure` (`credentials_rejected`, `app_unavailable`, `connection_rejected`, or
+`bot_mismatch`). The Agent list and Agent page show the connection failure with one action,
+**Reconnect channel**, which opens messaging settings. There one line says why the connection stopped
+and what fixes it, and **Reconnect** runs the same-App reauthorization. Successful activation with
+the original identity makes the binding `active` again, clears `last_error_code`, and resumes the
+scan. A bot mismatch requires restoring the original Bot or creating a new Agent for another Bot.
+
+A transient failure breaks a run of refusals, and an attempt the open circuit kept from Feishu leaves
+the run as it was. Transient failures alone never stop a binding; they keep retrying at the capped
+pace. Why: only Feishu's own refusal says that retrying cannot work until someone changes the App,
+while an outage on the path to Feishu resolves without anyone. Stopping still waits for ten refusals,
+so a short-lived refusal, for example while an administrator republishes the App, does not stop a
+working Bot.
+
+The count lives in each instance's memory, so a restart starts it over and delays the stop rather
+than causing a wrong one. No column was added for it. Each attempt records the fencing epoch of its
+claim; when the next claim's epoch is not the one after it, another instance claimed the binding in
+between and may have connected it, so the run starts over.
+
+Every write a maintenance attempt makes, the stop and the stored reason alike, is conditional on the
+claim that made it: the binding is still `active` at the attempt's credential generation, and this
+instance still holds the lease at that epoch. A result that outlived its lease or a reauthorization
+updates no row and is dropped, so it cannot stop a binding another instance now holds, clear that
+instance's lease, or restore a reason that reauthorization cleared.
+
+
 
 Inbound event recovery is separate from setup recovery. Receipts persist bounded
 normalized input before Inbox processing and recover it only through the current

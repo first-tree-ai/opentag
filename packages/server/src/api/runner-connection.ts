@@ -2,6 +2,7 @@ import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
+  RUNNER_SESSION_COLLABORATION_V3,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
@@ -18,6 +19,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import type { CloudConnectionRecord } from "../services/sandboxes/cloud-runtime-fence.js";
 import type {
@@ -62,14 +64,15 @@ export interface RunnerWebSocketRouteOptions {
   /** Override the token-service derived renewal cadence (tests only). */
   credentialRenewalIntervalMs?: number;
   now?: () => number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** The narrow collaboration surface RunnerConnection routes inbound frames and teardown to. */
 export interface RunnerCloudSessionPort {
   handleReceived(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageReceivedFrame): Promise<void>;
   handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void>;
-  /** Synchronously fails pending dispatches; async durable cleanup is handled internally. */
-  detachConnection(connectionId: string): void;
+  /** Synchronously fails pending dispatches and returns any durable cleanup. */
+  detachConnection(connectionId: string): void | Promise<void>;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -158,6 +161,9 @@ export class RunnerConnection {
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
   #chain: Promise<void> = Promise.resolve();
+  #renewal: Promise<void> | undefined;
+  #cleanup: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(input: {
     socket: WebSocket;
@@ -175,6 +181,13 @@ export class RunnerConnection {
     this.#heartbeatTimeoutMs = input.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.#credentialRenewalIntervalMs =
       input.options.credentialRenewalIntervalMs ?? Math.max(1_000, Math.floor(input.options.tokens.ttlMs / 2));
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closeWith(1001, "Server shutting down");
+    this.#closing = Promise.allSettled([this.#chain, this.#renewal, this.#cleanup]).then(() => undefined);
+    return this.#closing;
   }
 
   start(): void {
@@ -238,13 +251,15 @@ export class RunnerConnection {
    * Teardown order is significant: Cloud delivery first closes the credential executions (the
    * registry close synchronously invalidates every Session proof correlated with them), then the
    * collaboration owner synchronously fails its pending dispatches and schedules its durable
-   * revocation cleanup. Both are idempotent, so either close path is safe.
+   * revocation cleanup. Clearing the retained connection makes both close paths share one cleanup.
    */
   #detachCloudConnection(): void {
     const connection = this.#cloudConnection;
     if (!connection) return;
+    this.#cloudConnection = undefined;
     this.#options.cloudDelivery?.detachConnection(connection.connectionId);
-    this.#options.cloudSession?.detachConnection(connection.connectionId);
+    this.#cleanup = Promise.resolve(this.#options.cloudSession?.detachConnection(connection.connectionId));
+    void this.#cleanup.catch(() => undefined);
   }
 
   #sendAuthResult(ok: boolean, requestId: string | undefined): void {
@@ -261,7 +276,9 @@ export class RunnerConnection {
    * ---------------------------------------------------------------------------------------- */
 
   #wantsTurnActivity = false;
+  #wantsImInput = false;
   #wantsGithubUserTask = false;
+  #wantsContextTreeExecution = false;
 
   async #handleAuth(
     token: string,
@@ -271,7 +288,7 @@ export class RunnerConnection {
     renewExpired: boolean,
     controlToken: string | undefined,
     reuseVersion: number | undefined,
-    requestedSessionCollaborationVersion: 1 | 2 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
@@ -318,7 +335,7 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     renewExpired: boolean,
-    requestedSessionCollaborationVersion: 1 | 2 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
   ): Promise<void> {
     let controlClaims: RunnerBootstrapClaims;
     try {
@@ -469,7 +486,7 @@ export class RunnerConnection {
     wantsWorkspace: boolean,
     reportOnly: boolean,
     control: { reuseCapable: boolean } | undefined,
-    requestedSessionCollaborationVersion: 1 | 2 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
     // E5 capability negotiation is independent of delivery: echo only when the Runner requested
@@ -513,6 +530,12 @@ export class RunnerConnection {
     this.#reportOnly = reportOnly;
     this.#cloudNegotiated = cloudNegotiated;
     this.#workspaceNegotiated = workspaceNegotiated;
+    updateCurrentPerformanceContext({
+      sandboxId: validated.sandboxId,
+      sessionId: validated.sessionId,
+      environmentGeneration: validated.environmentGeneration,
+      computerId: fence?.computerId,
+    });
     if (this.#authTimer) clearTimeout(this.#authTimer);
     this.#authTimer = undefined;
     if (fence) {
@@ -528,7 +551,9 @@ export class RunnerConnection {
         // receives a Session-CLI proof field or a session:message frame.
         sessionCollaborationVersion: sessionCollaborationVersion || undefined,
         githubUserTaskVersion: this.#githubUserTaskVersion(),
+        contextTreeExecutionVersion: this.#contextTreeExecutionVersion(),
         turnActivityVersion: this.#wantsTurnActivity ? 1 : undefined,
+        imInputVersion: this.#wantsImInput ? 1 : undefined,
       });
     }
     this.#sendAuthResult(true, requestId);
@@ -539,6 +564,7 @@ export class RunnerConnection {
         fence,
         sessionCollaborationVersion,
         githubUserTaskVersion: this.#githubUserTaskVersion(),
+        contextTreeExecutionVersion: this.#contextTreeExecutionVersion(),
         validated,
         workspaceNegotiated,
       }),
@@ -557,11 +583,12 @@ export class RunnerConnection {
   /** Negotiate E8 only when the Runner asks for it, the E4 Cloud channel exists, and this Server
    * actually composed a collaboration owner. */
   #negotiateSessionCollaboration(
-    requestedVersion: 1 | 2 | undefined,
+    requestedVersion: 1 | 2 | 3 | undefined,
     cloudNegotiated: boolean,
     ownerPresent: boolean,
-  ): 0 | 1 | 2 {
+  ): 0 | 1 | 2 | 3 {
     if (!cloudNegotiated || !ownerPresent) return 0;
+    if (requestedVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
     if (requestedVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
     if (requestedVersion === RUNNER_SESSION_COLLABORATION_VERSION) return RUNNER_SESSION_COLLABORATION_VERSION;
     return 0;
@@ -571,6 +598,10 @@ export class RunnerConnection {
    * The exact legacy E3 welcome shape for a connection that did not opt into a capability: only
    * negotiated capabilities and the verified allocation UID are additive fields.
    */
+  #contextTreeExecutionVersion(): 1 | undefined {
+    return this.#wantsContextTreeExecution ? 1 : undefined;
+  }
+
   #githubUserTaskVersion(): 1 | undefined {
     return this.#wantsGithubUserTask ? 1 : undefined;
   }
@@ -579,8 +610,9 @@ export class RunnerConnection {
     cloudNegotiated: boolean;
     control: { reuseCapable: boolean } | undefined;
     fence: { resourceUid: string | null } | undefined;
-    sessionCollaborationVersion: 0 | 1 | 2;
+    sessionCollaborationVersion: 0 | 1 | 2 | 3;
     githubUserTaskVersion?: 1;
+    contextTreeExecutionVersion?: 1;
     validated: RunnerScope;
     workspaceNegotiated: boolean;
   }): RunnerServerFrame {
@@ -592,11 +624,13 @@ export class RunnerConnection {
       environmentGeneration: input.validated.environmentGeneration,
       resourceName: input.validated.resourceName,
       ...(input.cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
+      ...(input.cloudNegotiated && this.#wantsImInput ? { imInputVersion: 1 as const } : {}),
       ...(input.cloudNegotiated && this.#wantsTurnActivity ? { turnActivityVersion: 1 as const } : {}),
       ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
       ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       ...(input.control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
       ...(input.githubUserTaskVersion ? { githubUserTaskVersion: input.githubUserTaskVersion } : {}),
+      ...(input.contextTreeExecutionVersion ? { contextTreeExecutionVersion: input.contextTreeExecutionVersion } : {}),
       ...(input.sessionCollaborationVersion ? { sessionCollaborationVersion: input.sessionCollaborationVersion } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
@@ -666,7 +700,15 @@ export class RunnerConnection {
     });
   }
 
-  async #renewCredential(): Promise<void> {
+  #renewCredential(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    this.#renewal ??= this.#performCredentialRenewal().finally(() => {
+      this.#renewal = undefined;
+    });
+    return this.#renewal;
+  }
+
+  async #performCredentialRenewal(): Promise<void> {
     const current = this.#scope;
     if (!current || this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     // Revalidate the database allocation before minting anything; a stale connection must never
@@ -1057,6 +1099,19 @@ export class RunnerConnection {
     return frame.data;
   }
 
+  async #handleSteerResult(current: RunnerScope, data: Extract<RunnerClientFrame, { type: "delivery:steer:result" }>) {
+    const cloud = this.#cloudConnection;
+    if (
+      !this.#cloudNegotiated ||
+      !cloud ||
+      cloud.imInputVersion !== 1 ||
+      !this.#options.cloudDelivery ||
+      !(await this.#channelHolds(current))
+    )
+      return;
+    await this.#options.cloudDelivery.handleSteerResult(cloud, data);
+  }
+
   async #dispatchAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
     if (data.type === "heartbeat") {
       // The heartbeat cadence also re-evaluates a report-only latch: a restored authority chain
@@ -1068,6 +1123,7 @@ export class RunnerConnection {
     if (data.type === "runner:ready")
       return this.#handleReady(current, data.readiness, data.workspaceRestored === true);
     if (data.type === "acceptance:result") return this.#handleResult(current, data);
+    if (data.type === "delivery:steer:result") return this.#handleSteerResult(current, data);
     if (data.type === "delivery:received") return this.#handleDeliveryReceived(current, data);
     if (data.type === "turn:activity") return this.#handleTurnActivity(current, data);
     if (data.type === "delivery:report") return this.#handleDeliveryReport(current, data);
@@ -1087,17 +1143,39 @@ export class RunnerConnection {
     // capability and keeps the exact legacy welcome/behavior, and an E7 Runner that does not send
     // the E8 request never receives a Session-collaboration field or frame.
     this.#wantsTurnActivity = data.turnActivityVersion === 1;
+    this.#wantsImInput = data.imInputVersion === 1;
     this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
-    await this.#handleAuth(
-      data.token,
-      data.requestId,
-      data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
-      data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
-      data.renewExpired === true,
-      data.controlToken,
-      data.reuseVersion,
-      data.sessionCollaborationVersion,
-    );
+    this.#wantsContextTreeExecution = data.contextTreeExecutionVersion === 1;
+    const runAuth = () =>
+      this.#handleAuth(
+        data.token,
+        data.requestId,
+        data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
+        data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
+        data.renewExpired === true,
+        data.controlToken,
+        data.reuseVersion,
+        data.sessionCollaborationVersion,
+      );
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger) {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: "ws.runner.frame.auth",
+          ...(data.requestId ? { requestId: data.requestId } : {}),
+        },
+        runAuth,
+        {
+          resultAttributes: () => ({
+            authOutcome: this.#scope ? (this.#reportOnly ? "report_only" : "authenticated") : "rejected_or_closed",
+          }),
+        },
+      );
+      return;
+    }
+    await runAuth();
   }
 
   async #handleAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
@@ -1107,6 +1185,25 @@ export class RunnerConnection {
     }
     if (!this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) {
       this.#closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
+      return;
+    }
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger && data.type !== "heartbeat") {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: `ws.runner.frame.${data.type}`,
+          sandboxId: current.sandboxId,
+          sessionId: current.sessionId,
+          environmentGeneration: current.environmentGeneration,
+          ...(this.#cloudConnection ? { computerId: this.#cloudConnection.computerId } : {}),
+          ...("deliveryId" in data && typeof data.deliveryId === "string" ? { deliveryId: data.deliveryId } : {}),
+          ...receiptPerformanceIds(data),
+          ...("requestId" in data && typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
+        },
+        () => this.#dispatchAuthenticatedFrame(current, data),
+      );
       return;
     }
     await this.#dispatchAuthenticatedFrame(current, data);
@@ -1150,4 +1247,14 @@ export class RunnerConnection {
         this.#queued -= 1;
       });
   }
+}
+
+function receiptPerformanceIds(frame: RunnerClientFrame) {
+  if (frame.type === "delivery:received") return { dispatchRequestId: frame.requestId, turnId: frame.turnId };
+  if (frame.type !== "session:message:received") return {};
+  return {
+    dispatchRequestId: frame.requestId,
+    messageId: frame.messageId,
+    ...(frame.status === "accepted" ? { turnId: frame.turnId } : {}),
+  };
 }

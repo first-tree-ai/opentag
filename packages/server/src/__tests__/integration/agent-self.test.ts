@@ -1,11 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { agents, users } from "../../db/schema/index.js";
+import { agents, mcpServerAuthorizations, mcpServers, users } from "../../db/schema/index.js";
 import { AgentSelfService, AgentService, DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
-import { McpServerService } from "../../services/mcp/index.js";
+import { ApplicationCipher } from "../../services/crypto.js";
+import {
+  McpAuthorizationService,
+  McpCredentialCipher,
+  McpOAuthClient,
+  McpOAuthFlowService,
+  McpOutboundFetcher,
+  McpProbe,
+  McpServerService,
+} from "../../services/mcp/index.js";
+import { McpFixtureServer } from "../fixtures/mcp-fixture-server.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -18,11 +28,35 @@ afterAll(async () => testDatabase.stop());
 
 beforeEach(async () => testDatabase.reset());
 
-async function fixture() {
-  const client = createDatabaseClient(testDatabase.databaseUrl);
+async function fixture(discoveryTimeoutMs?: number) {
+  const client = createDatabaseClient(
+    testDatabase.databaseUrl,
+    discoveryTimeoutMs === undefined
+      ? undefined
+      : {
+          max: 1,
+          statementTimeoutMs: 500,
+          queryTimeoutMs: 2000,
+        },
+  );
   const bootstrap = await bootstrapInitialAdmin(client.database, { displayName: "Admin", email: "admin@example.com" });
   const agentService = new AgentService(client.database);
   const mcp = new McpServerService({ database: client.database });
+  const fetcher = new McpOutboundFetcher({ allowLoopback: true });
+  const cipher = new McpCredentialCipher(new ApplicationCipher(randomBytes(32)));
+  const authorization = new McpAuthorizationService({
+    database: client.database,
+    cipher,
+    probe: new McpProbe({ fetcher }),
+    servers: mcp,
+  });
+  const flows = new McpOAuthFlowService({
+    database: client.database,
+    discoveryTimeoutMs,
+    cipher,
+    oauth: new McpOAuthClient({ fetcher, publicUrl: "https://opentag.example.com" }),
+    servers: mcp,
+  });
   const agent = await agentService.createForAccount(bootstrap.userId, {
     displayName: "Helper",
     name: "helper",
@@ -30,12 +64,16 @@ async function fixture() {
   });
   const self = new AgentSelfService({
     agents: agentService,
+    authorization,
+    flows,
     mcp,
     owners: new DatabaseAgentOwnerResolver(client.database),
+    publicOrigin: "https://opentag.example.com",
     proofs: {
       authenticate: async (proof) => {
         if (proof !== "valid-proof") throw new Error("invalid proof");
         return {
+          proofId: crypto.randomUUID(),
           agentId: agent.id,
           computerId: randomUUID(),
           connectionInstanceId: randomUUID(),
@@ -47,13 +85,22 @@ async function fixture() {
       },
     },
   });
-  return { ...client, accountId: bootstrap.userId, agent, agentService, mcp, self };
+  return { ...client, accountId: bootstrap.userId, agent, agentService, authorization, flows, mcp, self };
 }
 
 async function createUser(database: DatabaseClient, email: string) {
   const [user] = await database.insert(users).values({ displayName: email, email }).returning();
   if (!user) throw new Error("User fixture was not created");
   return user;
+}
+
+async function setSelfConfiguration(value: Awaited<ReturnType<typeof fixture>>, enabled: boolean) {
+  const updated = await value.agentService.updateById(value.accountId, value.agent.id, {
+    expectedRevision: value.agent.revision,
+    selfConfigurationEnabled: enabled,
+  });
+  value.agent = updated;
+  return updated;
 }
 
 async function enableSelfConfiguration(value: Awaited<ReturnType<typeof fixture>>) {
@@ -69,6 +116,7 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("rolls back the owner toggle if the runtime revision write fails", async () => {
     const value = await fixture();
     try {
+      await setSelfConfiguration(value, false);
       await value.sql.unsafe(`
         CREATE FUNCTION reject_runtime_revision() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'simulated runtime revision write failure'; END $$;
@@ -87,7 +135,8 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("resolves the owning Account from the Agent and updates its runtime config", async () => {
     const value = await fixture();
     try {
-      expect(value.agent.selfConfigurationEnabled).toBe(false);
+      expect(value.agent.selfConfigurationEnabled).toBe(true);
+      await setSelfConfiguration(value, false);
       await expect(value.self.authenticate("valid-proof")).rejects.toMatchObject({
         code: "AGENT_SELF_CONFIGURATION_DISABLED",
         statusCode: 403,
@@ -175,6 +224,437 @@ describe("Agent self-configuration against PostgreSQL", () => {
     }
   });
 
+  it("registers and mounts a Server the Agent defines, then drops the definition with it", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      const created = await value.self.createMcpServer(scope, {
+        name: "hubspot",
+        url: "https://mcp.hubspot.example/mcp",
+        defaultAuthKind: "oauth",
+      });
+      expect(created).toMatchObject({ name: "hubspot", enabled: true, authorization: null });
+      expect((await value.self.listMcpServers(scope)).map((entry) => entry.name)).toEqual(["hubspot"]);
+
+      const { definitionRemoved } = await value.self.deleteMcpServer(scope, created.mcpServerId);
+      expect(definitionRemoved).toBe(false);
+      expect(await value.self.listMcpServers(scope)).toEqual([]);
+      const [row] = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, created.mcpServerId));
+      expect(row).toBeDefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps a definition another Agent still mounts", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      const created = await value.self.createMcpServer(scope, {
+        name: "shared",
+        url: "https://mcp.example.com/mcp",
+        defaultAuthKind: "oauth",
+      });
+      const sibling = await value.agentService.createForAccount(value.accountId, {
+        displayName: "Sibling",
+        name: "sibling",
+        runtimeProvider: "codex",
+      });
+      await value.mcp.attachServer(value.accountId, sibling.id, created.mcpServerId, true);
+
+      await expect(value.self.deleteMcpServer(scope, created.mcpServerId)).resolves.toEqual({
+        definitionRemoved: false,
+      });
+      expect(await value.self.listMcpServers(scope)).toEqual([]);
+      const [row] = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, created.mcpServerId));
+      expect(row?.id).toBe(created.mcpServerId);
+      expect((await value.mcp.listAgentServers(value.accountId, sibling.id)).map((entry) => entry.name)).toEqual([
+        "shared",
+      ]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("writes the Agent's own Bearer key and reports a failed probe rather than throwing", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      /*
+       * Port 1 is never bound, so the probe fails deterministically on this host without reaching
+       * the public network: the point of the test is that a failed probe is recorded, not that a
+       * Server is reachable.
+       */
+      const created = await value.self.createMcpServer(scope, {
+        name: "internal",
+        url: "http://127.0.0.1:1/mcp",
+        defaultAuthKind: "bearer",
+        apiKey: "secret-key-value",
+      });
+      expect(created.authorization).toMatchObject({ kind: "bearer", status: "active", hasCredential: true });
+      expect(created.authorization?.probeState).toBe("failed");
+
+      const status = await value.self.getMcpOAuthStatus(scope, created.mcpServerId);
+      expect(status).toMatchObject({
+        name: "internal",
+        authKind: "bearer",
+        authStatus: "active",
+        probeState: "failed",
+        tools: null,
+      });
+      expect(JSON.stringify(status)).not.toContain("secret-key-value");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rolls back the definition atomically if mounting fails (P2 regression)", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // Inject a database failure on the mount table inside the transaction
+      await value.sql.unsafe(`
+        CREATE FUNCTION reject_agent_mcp_mount() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'simulated mount failure'; END $$;
+        CREATE TRIGGER reject_agent_mcp_mount BEFORE INSERT ON agent_mcp_servers
+        FOR EACH ROW EXECUTE FUNCTION reject_agent_mcp_mount();
+      `);
+
+      await expect(
+        value.self.createMcpServer(scope, {
+          name: "fail-mount",
+          url: "https://mcp.fail.example/mcp",
+          defaultAuthKind: "oauth",
+        }),
+      ).rejects.toThrow();
+
+      // Verify that no orphan definition exists in mcp_servers
+      const rows = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.name, "fail-mount"));
+      expect(rows).toEqual([]);
+    } finally {
+      await value.sql.unsafe(`DROP TRIGGER IF EXISTS reject_agent_mcp_mount ON agent_mcp_servers;`);
+      await value.sql.unsafe(`DROP FUNCTION IF EXISTS reject_agent_mcp_mount();`);
+      await value.sql.end();
+    }
+  });
+
+  it("preserves Account-level definitions regardless of description when unmounted by an Agent (Option 1 pure detach)", async () => {
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // Definition with edited description containing arbitrary text
+      const definition = await value.mcp.createServer(value.accountId, {
+        name: "human-global",
+        url: "https://mcp.global.example/mcp",
+        defaultAuthKind: "oauth",
+      });
+      await value.database
+        .update(mcpServers)
+        .set({ description: "Human-maintained Agent self-service documentation" })
+        .where(eq(mcpServers.id, definition.id));
+
+      // Mount to Agent
+      await value.self.attachMcpServer(scope, definition.id, true);
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).toContain(definition.id);
+
+      // Agent deletes it: under Option 1 pure detach, definition is NEVER cascaded
+      const { definitionRemoved } = await value.self.deleteMcpServer(scope, definition.id);
+      expect(definitionRemoved).toBe(false);
+
+      // Unmounted from Agent
+      expect((await value.self.listMcpServers(scope)).map((s) => s.mcpServerId)).not.toContain(definition.id);
+
+      // But definition still exists in Account pool intact!
+      const [remaining] = await value.database
+        .select({ id: mcpServers.id, description: mcpServers.description })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, definition.id));
+      expect(remaining).toBeDefined();
+      expect(remaining?.description).toBe("Human-maintained Agent self-service documentation");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it.each(["transfer", "opt-out"] as const)("serializes MCP create before an independent %s", async (change) => {
+    const value = await fixture();
+    const control = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+    const writer = createDatabaseClient(testDatabase.databaseUrl);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const locked = new Promise<void>((r) => {
+      entered = r;
+    });
+    let holder = Promise.resolve();
+    let creation: Promise<unknown> = Promise.resolve();
+    let changing: Promise<unknown> = Promise.resolve();
+    try {
+      await enableSelfConfiguration(value);
+      const other = await createUser(value.database, "other-owner@example.com");
+      if (change === "transfer") value.agent = await value.agentService.suspendById(value.accountId, value.agent.id);
+      await value.sql.unsafe(`
+        CREATE FUNCTION pause_mcp_definition() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(64016); RETURN NEW; END $$;
+        CREATE TRIGGER pause_mcp_definition AFTER INSERT ON mcp_servers
+        FOR EACH ROW EXECUTE FUNCTION pause_mcp_definition();
+      `);
+      holder = control.sql
+        .begin(async (tx) => {
+          await tx`select pg_advisory_xact_lock(64016)`;
+          entered();
+          await gate;
+        })
+        .then(() => undefined);
+      await locked;
+      creation = value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        { name: "serialized-create", url: "https://mcp.race.example/mcp", defaultAuthKind: "bearer" },
+        true,
+        "agent-self",
+      );
+      await expect
+        .poll(
+          async () =>
+            (
+              await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event='advisory'`
+            )[0]?.n,
+        )
+        .toBe(1);
+      let changed = false;
+      changing = (
+        change === "transfer"
+          ? new AgentService(writer.database).transferToAccount({
+              agentId: value.agent.id,
+              targetAccountId: other.id,
+              slack: "disable",
+            })
+          : new AgentService(writer.database).updateById(value.accountId, value.agent.id, {
+              expectedRevision: value.agent.revision,
+              selfConfigurationEnabled: false,
+            })
+      ).then((v) => {
+        changed = true;
+        return v;
+      });
+      await expect
+        .poll(
+          async () =>
+            (
+              await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`
+            )[0]?.n,
+        )
+        .toBeGreaterThanOrEqual(2);
+      expect(changed).toBe(false);
+      release();
+      await holder;
+      expect(await creation).toMatchObject({ name: "serialized-create", enabled: true });
+      await changing;
+      const current = await writer.database.select().from(agents).where(eq(agents.id, value.agent.id));
+      expect(current[0]).toMatchObject(
+        change === "transfer" ? { createdByUserId: other.id } : { selfConfigurationEnabled: false },
+      );
+      await expect(
+        value.mcp.createAndAttachServer(
+          value.accountId,
+          value.agent.id,
+          { name: "after-change", url: "https://mcp.race.example/mcp", defaultAuthKind: "bearer" },
+          true,
+          "agent-self",
+        ),
+      ).rejects.toMatchObject({
+        code: change === "transfer" ? "MCP_SERVER_NOT_FOUND" : "AGENT_SELF_CONFIGURATION_DISABLED",
+      });
+    } finally {
+      release?.();
+      await holder;
+      await Promise.allSettled([creation, changing]);
+      await value.sql.unsafe(
+        "DROP TRIGGER IF EXISTS pause_mcp_definition ON mcp_servers; DROP FUNCTION IF EXISTS pause_mcp_definition()",
+      );
+      await writer.sql.end();
+      await control.sql.end();
+      await value.sql.end();
+    }
+  });
+
+  it("aborts self-configuration create if selfConfigurationEnabled is revoked concurrently (P2, DB1)", async () => {
+    const value = await fixture();
+    const secondClient = createDatabaseClient(testDatabase.databaseUrl);
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      // In a second PostgreSQL connection, revoke selfConfigurationEnabled
+      const secondAgentService = new AgentService(secondClient.database);
+      await secondAgentService.updateById(value.accountId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        selfConfigurationEnabled: false,
+      });
+
+      // Self-create under previously authenticated scope must reject and roll back
+      await expect(
+        value.self.createMcpServer(scope, {
+          name: "race-revoked-mcp",
+          url: "https://mcp.revoked.example/mcp",
+          defaultAuthKind: "bearer",
+          apiKey: "test-key",
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+
+      const rows = await value.database
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.name, "race-revoked-mcp"));
+      expect(rows).toEqual([]);
+
+      // Normal Account operations succeed when flag is false
+      const accountCreated = await value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        {
+          name: "account-created-mcp",
+          url: "https://mcp.account.example/mcp",
+          defaultAuthKind: "bearer",
+        },
+        true,
+        "account",
+      );
+      expect(accountCreated.mcpServerId).toBeTruthy();
+
+      // But agent-self attach fails when flag is false
+      await expect(
+        value.mcp.attachServer(value.accountId, value.agent.id, accountCreated.mcpServerId, true, "agent-self"),
+      ).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+    } finally {
+      await secondClient.sql.end();
+      await value.sql.end();
+    }
+  });
+
+  it("generates a safe browser handoff URL that redeems the flow secret (P1)", async () => {
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+
+      const created = await value.self.createMcpServer(scope, {
+        name: "handoff-test",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+
+      const started = await value.self.startMcpOAuth(scope, created.mcpServerId, {});
+      expect(started.authorizationUrl).toContain("https://opentag.example.com/api/v1/mcp-servers/oauth/handoff?token=");
+
+      const parsedUrl = new URL(started.authorizationUrl);
+      const token = parsedUrl.searchParams.get("token");
+      expect(token).toBeTruthy();
+      if (!token) throw new Error("Expected token parameter in handoff URL");
+
+      // Redeem the handoff token as the Account that owns the Agent.
+      const redeemed = await value.flows.redeemHandoffToken(token, value.accountId);
+      expect(redeemed.flowSecret).toBeTruthy();
+      expect(redeemed.targetUrl).toContain("/authorize");
+      // Single use: the same link cannot bind a second browser.
+      await expect(value.flows.redeemHandoffToken(token, value.accountId)).rejects.toMatchObject({
+        code: "MCP_OAUTH_FLOW_INVALID",
+      });
+    } finally {
+      await fixtureServer.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("refuses a handoff redemption from another Account as a missing Server (P1)", async () => {
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    const stranger = await createUser(value.database, "stranger-handoff@example.com");
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      const created = await value.self.createMcpServer(scope, {
+        name: "handoff-owner-only",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      const started = await value.self.startMcpOAuth(scope, created.mcpServerId, {});
+      const token = new URL(started.authorizationUrl).searchParams.get("token") ?? "";
+
+      // A stranger's session cannot bind this flow, and learns nothing about whether it exists.
+      await expect(value.flows.redeemHandoffToken(token, stranger.id)).rejects.toMatchObject({
+        code: "MCP_SERVER_NOT_FOUND",
+        statusCode: 404,
+      });
+      // The refusal must not burn the link for the Account it belongs to.
+      const redeemed = await value.flows.redeemHandoffToken(token, value.accountId);
+      expect(redeemed.targetUrl).toContain("/authorize");
+    } finally {
+      await fixtureServer.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("refuses every self-service write path once the opt-in is withdrawn (DB1)", async () => {
+    // The flow's discovery has to reach a real endpoint, so the fixture serves both roles here.
+    const fixtureServer = await McpFixtureServer.start();
+    const value = await fixture();
+    try {
+      await enableSelfConfiguration(value);
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.mcp.createServer(value.accountId, {
+        name: "revoked-writes",
+        url: fixtureServer.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await value.mcp.attachServer(value.accountId, value.agent.id, server.id, true);
+
+      // The owner revokes while the Agent's authenticated scope is still valid.
+      await value.agentService.updateById(value.accountId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        selfConfigurationEnabled: false,
+      });
+
+      for (const write of [
+        () => value.self.setMcpBearerKey(scope, server.id, "sk-late"),
+        () => value.self.startMcpOAuth(scope, server.id, {}),
+        () => value.self.deleteMcpServer(scope, server.id),
+        () => value.self.detachMcpServer(scope, server.id),
+        () => value.self.updateMcpBinding(scope, server.id, { enabled: false }),
+      ]) {
+        await expect(write()).rejects.toMatchObject({ code: "AGENT_SELF_CONFIGURATION_DISABLED" });
+      }
+
+      // Nothing was written: the mount is intact and carries no credential.
+      expect(await value.mcp.listAgentServers(value.accountId, value.agent.id)).toMatchObject([
+        { mcpServerId: server.id, enabled: true, authorization: null },
+      ]);
+    } finally {
+      await fixtureServer.stop();
+      await value.sql.end();
+    }
+  });
+
   it("refuses a deleted Agent", async () => {
     const value = await fixture();
     try {
@@ -185,4 +665,136 @@ describe("Agent self-configuration against PostgreSQL", () => {
       await value.sql.end();
     }
   });
+});
+
+describe("Agent self OAuth discovery limits on PostgreSQL", () => {
+  it.each(["duplicates", "oversized", "fourth-valid"] as const)("bounds actual metadata work for %s", async (mode) => {
+    const endpoint = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        resource: `${self}/mcp`,
+        authorization_servers:
+          mode === "duplicates"
+            ? Array(16).fill(self)
+            : mode === "oversized"
+              ? Array.from({ length: 16 }, (_, i) => `${self}/issuer${i}`)
+              : [1, 2, 3].map((i) => `${self}/issuer${i}`).concat(self),
+      }),
+      ...(mode === "duplicates"
+        ? { authorizationServerMetadata: (self: string) => ({ issuer: `${self}/wrong` }) }
+        : {}),
+    });
+    const value = await fixture();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "bounded",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      const running = value.self.startMcpOAuth(scope, server.mcpServerId, {});
+      if (mode === "fourth-valid") {
+        const result = await running;
+        const token = new URL(result.authorizationUrl).searchParams.get("token");
+        expect(token).toBeTruthy();
+        const handoff = await value.flows.redeemHandoffToken(token as string, value.accountId);
+        expect(new URL(handoff.targetUrl).pathname).toBe("/authorize");
+      } else
+        await expect(running).rejects.toMatchObject({
+          code: "MCP_OAUTH_FAILED",
+          ...(mode === "oversized" ? { detail: { maxCandidates: 4 } } : {}),
+        });
+      const metadataRequests = endpoint.requests.filter(
+        (r) => r.url.startsWith("/.well-known/") && !r.url.startsWith("/.well-known/oauth-protected-resource"),
+      );
+      expect(metadataRequests).toHaveLength(mode === "duplicates" ? 1 : mode === "oversized" ? 0 : 4);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(endpoint.registrations).toBe(0);
+    } finally {
+      await endpoint.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("never registers or publishes after preparation SQL outlives the discovery deadline", async () => {
+    const endpoint = await McpFixtureServer.start({ dynamicRegistrationOnly: true });
+    const value = await fixture(80);
+    const observer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered!: () => void;
+    const locked = new Promise<void>((r) => {
+      entered = r;
+    });
+    let lock = Promise.resolve();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "late-preparation",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await value.database
+        .insert(mcpServerAuthorizations)
+        .values({ agentId: value.agent.id, mcpServerId: server.mcpServerId, kind: "oauth", status: "pending" });
+      lock = observer.sql
+        .begin(async (tx) => {
+          await tx`lock table mcp_client_registrations in access exclusive mode`;
+          entered();
+          await gate;
+        })
+        .then(() => undefined);
+      await locked;
+      await expect(value.self.startMcpOAuth(scope, server.mcpServerId, {})).rejects.toMatchObject({
+        code: "MCP_UPSTREAM_UNAVAILABLE",
+      });
+      release();
+      await lock;
+      const [row] = await value.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.mcpServerId));
+      expect(row).toMatchObject({ status: "error", state: null, ciphertext: null });
+      expect(endpoint.registrations).toBe(0);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(
+        await observer.sql`select pid from pg_stat_activity where datname=current_database() and state='idle in transaction'`,
+      ).toHaveLength(0);
+    } finally {
+      release();
+      await lock;
+      await observer.sql.end();
+      await endpoint.stop();
+      await value.sql.end();
+    }
+  });
+});
+
+it("authenticates self with one owner/opt-in SELECT and creates MCP with three SELECTs", async () => {
+  const value = await fixture();
+  const queries: string[] = [];
+  const original = value.sql.options.debug;
+  value.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    const scope = await value.self.authenticate("valid-proof");
+    expect(scope).toMatchObject({ accountId: value.accountId, agentId: value.agent.id });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(1);
+    queries.length = 0;
+    expect(
+      await value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        { name: "sql-count", url: "https://mcp.example/mcp", defaultAuthKind: "oauth" },
+        true,
+        "agent-self",
+      ),
+    ).toMatchObject({ name: "sql-count", enabled: true });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(3);
+  } finally {
+    value.sql.options.debug = original;
+    await value.sql.end();
+  }
 });

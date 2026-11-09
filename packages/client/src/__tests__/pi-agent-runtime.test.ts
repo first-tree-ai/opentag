@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import type { PiDiagnosticEvent, PiDiagnosticSink } from "../observability/pi-diagnostics.js";
-import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
+import {
+  PiAgentRuntime,
+  PiAgentRuntimeFactory,
+  piAgentRuntimeEnvironment,
+  piCloudAgentRuntimeEnvironment,
+} from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError, type PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -31,6 +36,168 @@ describe("PiAgentRuntime", () => {
     client.emit({ type: "agent_end", messages: [message], willRetry: false });
     client.emit({ type: "agent_settled" });
     await expect(run).resolves.toMatchObject({ status: "failed", error: { code } });
+    await runtime.close();
+  });
+
+  it("preserves Local plugin environment while Cloud keeps its controlled filter", () => {
+    const source = { HOME: "/native", PLUGIN_SECRET: "local", PATH: undefined };
+    expect(piAgentRuntimeEnvironment(source)).toEqual(source);
+    expect(piAgentRuntimeEnvironment(source)).not.toBe(source);
+  });
+
+  it("enables native resources only for Local runs and tolerates headless notifications", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const factory = new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: (_cwd, args) => {
+        client.args = args;
+        return client;
+      },
+      createSessionId: () => SESSION_ID,
+    });
+    const runtime = await factory.create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "native", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
+      client.emit({ type: "extension_ui_request", method, message: "native notice" });
+    }
+    client.emit({ type: "message_start", message: { role: "custom", customType: "native", content: "custom" } });
+    client.emit({ type: "message_end", message: { role: "custom", customType: "native", content: "custom" } });
+    client.complete();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    expect(client.args).toContain("--approve");
+    for (const flag of [
+      "--offline",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--no-approve",
+    ])
+      expect(client.args).not.toContain(flag);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "provider_event" && (event.payload as { type?: string }).type === "extension_ui_request",
+      ),
+    ).toHaveLength(5);
+    await runtime.close();
+  });
+
+  it("rejects native interactive UI with a headless compatibility error", async () => {
+    const client = new ScriptedPiClient("hold");
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "native-ui", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    client.emit({ type: "extension_ui_request", method: "select" });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("interactive UI") },
+    });
+    await runtime.close();
+  });
+
+  it("does not guess command completion from an idle legacy prompt acknowledgement", async () => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "command", input: input("/native-command") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_request_rejected", message: expect.stringContaining("side effects") },
+    });
+    expect(client.closed).toBe(true);
+    await runtime.close();
+  });
+
+  it("waits for agent_settled when a native model run is idle during extension cleanup", async () => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const request = client.request.bind(client);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      return request(command, signal, options);
+    };
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: () => client,
+      createSessionId: () => SESSION_ID,
+    }).create(createRequest(() => undefined));
+    let settled = false;
+    const run = runtime.prompt({ runId: "cleanup", input: input("hello") }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+    expect(settled).toBe(false);
+    client.complete();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    await runtime.close();
+  });
+
+  it.each(["compacting", "event-failure", "gateway"])("handles native prompt fencing: %s", async (scenario) => {
+    const client = new ScriptedPiClient("hold");
+    client.nativeStreaming = false;
+    const request = client.request.bind(client);
+    client.request = async (command, signal, options) => {
+      if (command.type === "prompt" && scenario === "compacting") {
+        options?.onResponse?.();
+        client.emit({ type: "agent_start" });
+      }
+      if (command.type === "prompt" && scenario === "event-failure") {
+        options?.onResponse?.();
+        client.emit({ type: "turn_end" });
+      }
+      const result = await request(command, signal, options);
+      return command.type === "get_state" &&
+        client.commands.some((entry) => entry.type === "prompt") &&
+        scenario === "compacting"
+        ? { ...(result as object), isCompacting: true }
+        : result;
+    };
+    let environment: Readonly<Record<string, string>> | undefined;
+    const runtime = await new PiAgentRuntimeFactory({
+      nativeResources: true,
+      createClient: (_cwd, _args, extra) => {
+        environment = extra;
+        return client;
+      },
+      createSessionId: () => SESSION_ID,
+    }).create(
+      createRequest(
+        () => undefined,
+        scenario === "gateway"
+          ? { provider: { mcpGateway: { url: "https://opentag.example/api/v1/mcp", token: "otmg_fixture" } } }
+          : undefined,
+      ),
+    );
+    const run = runtime.prompt({ runId: scenario, input: input("hello") });
+    if (scenario === "event-failure")
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_protocol_error" } });
+    else if (scenario === "gateway") {
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_request_rejected" } });
+      expect(environment).toMatchObject({ OPENTAG_PI_NATIVE_RESOURCES: "1" });
+    } else {
+      await vi.waitFor(() => expect(client.commands).toHaveLength(3));
+      client.complete();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+    }
     await runtime.close();
   });
 
@@ -286,6 +453,108 @@ describe("PiAgentRuntime", () => {
       ]),
     );
     await runtime.close();
+  });
+
+  describe("compactContext", () => {
+    function compacting(outcome: "complete" | "refused" | "failed") {
+      const client = new ScriptedPiClient("complete");
+      client.messageCount = 2;
+      client.compactOutcome = outcome;
+      const events: AgentRuntimeEvent[] = [];
+      const open = piFactory(client).resume({
+        ...createRequest((event) => {
+          events.push(event);
+        }),
+        binding: materializedBinding(),
+      });
+      return { client, events, open };
+    }
+
+    it("compacts the same Session before the prompt and counts the summary's usage", async () => {
+      const { client, events, open } = compacting("complete");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      const types = client.commands.map((command) => command.type);
+      expect(types.filter((type) => type === "compact")).toHaveLength(1);
+      expect(types.indexOf("compact")).toBeLessThan(types.indexOf("prompt"));
+      expect(client.args[client.args.indexOf("--session-id") + 1]).toBe(SESSION_ID);
+      expect(events.some((event) => event.type === "provider_warning")).toBe(false);
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "usage_updated", usage: expect.objectContaining({ inputTokens: 500 }) }),
+      );
+      await runtime.close();
+    });
+
+    it("does not compact without the request", async () => {
+      const { client, open } = compacting("complete");
+      const runtime = await open;
+      await runtime.prompt({ runId: "run", input: input("work") });
+      expect(client.commands.some((command) => command.type === "compact")).toBe(false);
+      await runtime.close();
+    });
+
+    it("prompts without a warning when the Session is too small to compact", async () => {
+      const { client, events, open } = compacting("refused");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(true);
+      expect(events.some((event) => event.type === "provider_warning")).toBe(false);
+      await runtime.close();
+    });
+
+    it("warns through compaction_end and still prompts when compaction fails", async () => {
+      const { client, events, open } = compacting("failed");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(true);
+      expect(events).toContainEqual(
+        expect.objectContaining({ code: "pi_compaction_failed", message: "Compaction failed: model unavailable" }),
+      );
+      await runtime.close();
+    });
+
+    it("surfaces a dead process instead of prompting", async () => {
+      const { client, open } = compacting("complete");
+      client.compactError = new PiRpcError("exited", "Pi exited");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "failed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
+
+    it("fails on an error that is not a Pi RPC error", async () => {
+      const { client, open } = compacting("complete");
+      client.compactError = new Error("unexpected");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "failed", error: { message: "unexpected" } },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
+
+    it("settles as aborted when an interrupt closes Pi during compaction", async () => {
+      const { client, open } = compacting("complete");
+      client.compactHold = true;
+      const runtime = await open;
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      await vi.waitFor(() => expect(client.commands.some((command) => command.type === "compact")).toBe(true));
+      client.emit({ type: "compaction_start", reason: "manual" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runtime.abort({ expectedRunId: "run" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.closed).toBe(true);
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
   });
 
   it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
@@ -710,15 +979,39 @@ describe("PiAgentRuntime", () => {
     );
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0]?.[0]).toEqual({ type: "get_state" });
+    expect(request.mock.calls[0]?.[2]).toEqual({ timeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS });
     const failure = diagnostics.find((event) => event.event === "failure");
     expect(failure).toMatchObject({
       phase: "get_state",
+      timeoutMs: PROMPT_ACCEPTANCE_TIMEOUT_MS,
       error: { name: "PiRpcError", errorCode: "timeout", message: "Pi RPC request timed out: get_state" },
     });
     expect(failure?.durationMs).toBeGreaterThanOrEqual(8);
     expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
     expect(JSON.stringify(diagnostics)).not.toContain("private prompt");
     await runtime.close();
+
+    const defaultDiagnostics: PiDiagnosticEvent[] = [];
+    const defaultClient = new ScriptedPiClient("complete");
+    const defaultRequest = vi.spyOn(defaultClient, "request");
+    const defaultRuntime = await new PiAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createClient: () => defaultClient,
+      probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+      onDiagnostic: (event) => defaultDiagnostics.push(event),
+    }).create(createRequest(() => undefined));
+    await expect(
+      defaultRuntime.prompt({ runId: "default-get-state-timeout", input: input("ok") }),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(defaultRequest.mock.calls[0]?.[0]).toEqual({ type: "get_state" });
+    expect(defaultRequest.mock.calls[0]?.[2]).toEqual({ timeoutMs: 180_000 });
+    expect(defaultDiagnostics).toContainEqual(
+      expect.objectContaining({ phase: "get_state", event: "start", timeoutMs: 180_000 }),
+    );
+    expect(defaultDiagnostics).toContainEqual(
+      expect.objectContaining({ phase: "prompt_acceptance", event: "start", timeoutMs: 60_000 }),
+    );
+    await defaultRuntime.close();
   });
 
   it("keeps execution unchanged when the diagnostic callback throws", async () => {
@@ -1074,7 +1367,7 @@ describe("PiAgentRuntime", () => {
     controller.abort(new Error("stop Pi probe"));
     await expect(hanging).rejects.toThrow("stop Pi probe");
     expect(
-      piAgentRuntimeEnvironment({
+      piCloudAgentRuntimeEnvironment({
         HOME: "/home/provider",
         PATH: "/bin",
         DEEPSEEK_API_KEY: "provider-key",
@@ -1139,20 +1432,30 @@ class ScriptedPiClient implements PiRpcClient {
   readonly #sessionId: string;
   closed = false;
   messageCount = 0;
+  nativeStreaming = true;
   persistSession = false;
   historyBeforeError?: string;
   promptError?: Error;
   sessionFile = SESSION_FILE;
+  compactError?: Error;
+  compactHold = false;
+  compactOutcome: "complete" | "refused" | "failed" = "complete";
+  #compactHeld?: (error: Error) => void;
 
   constructor(scenario: Scenario, sessionId = SESSION_ID) {
     this.#scenario = scenario;
     this.#sessionId = sessionId;
   }
 
-  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+  async request(
+    command: Readonly<Record<string, unknown>>,
+    _signal?: AbortSignal,
+    options?: PiRpcRequestOptions,
+  ): Promise<unknown> {
     this.commands.push(command);
     if (command.type === "get_state") {
       return {
+        isStreaming: this.commands.some((entry) => entry.type === "prompt") && this.nativeStreaming,
         sessionId: this.#sessionId,
         sessionFile: this.sessionFile,
         messageCount: this.messageCount,
@@ -1160,11 +1463,13 @@ class ScriptedPiClient implements PiRpcClient {
       };
     }
     if (command.type === "steer") return undefined;
+    if (command.type === "compact") return this.#compact();
     if (command.type === "abort") {
       this.#emitRun("aborted");
       return undefined;
     }
     if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
+    options?.onResponse?.();
     if (this.promptError) {
       if (this.persistSession) {
         writeFileSync(
@@ -1188,6 +1493,7 @@ class ScriptedPiClient implements PiRpcClient {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.#compactHeld?.(new PiRpcError("aborted", "Pi RPC is closing"));
   }
 
   complete(): void {
@@ -1197,6 +1503,33 @@ class ScriptedPiClient implements PiRpcClient {
   /** Emit one raw Pi event, for scenarios the canned sequences do not cover (e.g. compaction). */
   emit(message: Readonly<Record<string, unknown>>): void {
     this.#emit(message);
+  }
+
+  #compact(): Promise<unknown> {
+    return (async () => {
+      if (this.compactError) throw this.compactError;
+      if (this.compactHold) {
+        return new Promise((_resolve, reject) => {
+          this.#compactHeld = reject;
+        });
+      }
+      this.#emit({ type: "compaction_start", reason: "manual" });
+      if (this.compactOutcome !== "complete") {
+        const errorMessage =
+          this.compactOutcome === "refused"
+            ? "Compaction failed: Nothing to compact (session too small)"
+            : "Compaction failed: model unavailable";
+        this.#emit({ type: "compaction_end", reason: "manual", aborted: false, errorMessage });
+        throw new PiRpcError("command", errorMessage);
+      }
+      this.#emit({
+        type: "compaction_end",
+        reason: "manual",
+        aborted: false,
+        result: { summary: "summary", usage: { input: 500, output: 10 } },
+      });
+      return { summary: "summary" };
+    })();
   }
 
   #emitRun(stopReason: "aborted" | "error" | "stop", includeTool = false): void {

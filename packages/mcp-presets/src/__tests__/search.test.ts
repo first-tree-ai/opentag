@@ -59,13 +59,17 @@ describe("searchMcpCatalog against the shipped catalog", () => {
     expect(findMcpCatalogEntry("not-a-server")).toBeUndefined();
   });
 
-  it("lists the whole catalog in catalog order when the query is empty", () => {
+  it("lists the bounded first page in catalog order when the query is empty", () => {
     const all = searchMcpCatalog({ limit: 50 });
     expect(all.total).toBe(MCP_CATALOG_ENTRIES.length);
     const categoryOrder = new Map(MCP_CATALOG_CATEGORIES.map((category) => [category.id, category.order]));
     const key = (entry: McpCatalogEntry) => (categoryOrder.get(entry.category) ?? 0) * 1000 + entry.order;
     expect(ids(all.entries)).toEqual(
-      ids([...MCP_CATALOG_ENTRIES].sort((left, right) => key(left) - key(right) || left.id.localeCompare(right.id))),
+      ids(
+        [...MCP_CATALOG_ENTRIES]
+          .sort((left, right) => key(left) - key(right) || left.id.localeCompare(right.id))
+          .slice(0, MCP_CATALOG_SEARCH_MAX_LIMIT),
+      ),
     );
   });
 

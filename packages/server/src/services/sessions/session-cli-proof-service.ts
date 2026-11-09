@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, exists, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -15,7 +15,38 @@ import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { PreparedSessionReconcile } from "../../runtime/runtime-domain-owner.js";
 import { cloudInstanceIdFor } from "../sandboxes/cloud-runtime-fence.js";
 
+function proofSourceQuery(executor: DatabaseClient | DatabaseTransaction) {
+  return executor
+    .select({
+      agentId: imBindings.agentId,
+      agentComputerId: agents.computerId,
+      agentStatus: agents.status,
+      bindingStatus: imBindings.status,
+      computerKind: computers.kind,
+      installationId: computers.currentInstallationId,
+      connectionInstanceId: sessionCliProofs.connectionInstanceId,
+      creatorSessionId: sessions.createdBySessionId,
+      currentInstanceId: computers.currentInstanceId,
+      placementGeneration: sessionCliProofs.placementGeneration,
+      placementGenerationCurrent: sessionPlacements.generation,
+      proofComputerId: sessionCliProofs.computerId,
+      proofId: sessionCliProofs.proofId,
+      sessionId: sessions.id,
+      sessionKind: sessions.kind,
+      computerId: sessionPlacements.computerId,
+    })
+    .from(sessionCliProofs)
+    .innerJoin(sessions, eq(sessions.id, sessionCliProofs.sessionId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId));
+}
+
+type ProofSourceRow = Awaited<ReturnType<typeof proofSourceQuery>>[number];
+
 export interface SessionCliSourceContext {
+  proofId: string;
   userTaskSource?: RuntimeUserTaskSource;
   agentId: string;
   computerId: string;
@@ -157,7 +188,7 @@ export class SessionCliProofService {
     executionId: string;
   }): Promise<{ proofId: string; token: string }> {
     this.#assertCloudBinding(input);
-    return this.#database.transaction(async (transaction) => {
+    const proof = await this.#database.transaction(async (transaction) => {
       await this.#lockCurrentPlacement(transaction, input);
       const [sandbox] = await transaction
         .select({
@@ -191,7 +222,6 @@ export class SessionCliProofService {
       ) {
         throw new SessionCliProofError("runtime_unavailable", "The Session Sandbox allocation is unavailable");
       }
-      this.#assertCloudBinding(input);
       const proof = await this.#upsertProof(
         transaction,
         { ...input, connectionInstanceId: input.connectionId },
@@ -202,6 +232,7 @@ export class SessionCliProofService {
             sessionId: input.sessionId,
           }) === true,
       );
+      this.#assertCloudBinding(input);
       this.#cloud?.registerExecution({
         connectionId: input.connectionId,
         executionId: input.executionId,
@@ -210,11 +241,19 @@ export class SessionCliProofService {
       });
       return proof;
     });
+    try {
+      this.#assertCloudBinding(input);
+    } catch (error) {
+      await this.revokeForConnection(input.connectionId);
+      throw error;
+    }
+    return proof;
   }
 
   async #lockCurrentPlacement(
     transaction: DatabaseTransaction,
     input: { sessionId: string; computerId: string; placementGeneration: number },
+    mismatch: "runtime_unavailable" | "invalid_proof" = "runtime_unavailable",
   ): Promise<void> {
     const [placement] = await transaction
       .select({
@@ -227,7 +266,9 @@ export class SessionCliProofService {
       .limit(1)
       .for("update", { of: sessionPlacements });
     if (placement?.computerId !== input.computerId || placement.generation !== input.placementGeneration) {
-      throw new SessionCliProofError("runtime_unavailable", "The Session placement is unavailable");
+      throw mismatch === "invalid_proof"
+        ? invalidProof()
+        : new SessionCliProofError("runtime_unavailable", "The Session placement is unavailable");
     }
   }
 
@@ -353,6 +394,36 @@ export class SessionCliProofService {
     connectionInstanceId: string;
     expectedProof?: { proofId: string; updatedAt: Date };
   }): Promise<void> {
+    if (input.expectedProof) {
+      const placement = this.#database.$with("revoke_placement").as(
+        this.#database
+          .select({ sessionId: sessionPlacements.sessionId })
+          .from(sessionPlacements)
+          .where(
+            and(
+              eq(sessionPlacements.sessionId, input.sessionId),
+              eq(sessionPlacements.computerId, input.computerId),
+              eq(sessionPlacements.generation, input.placementGeneration),
+            ),
+          )
+          .for("update"),
+      );
+      await this.#database
+        .with(placement)
+        .delete(sessionCliProofs)
+        .where(
+          and(
+            exists(this.#database.select().from(placement)),
+            eq(sessionCliProofs.sessionId, input.sessionId),
+            eq(sessionCliProofs.computerId, input.computerId),
+            eq(sessionCliProofs.placementGeneration, input.placementGeneration),
+            eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
+            eq(sessionCliProofs.proofId, input.expectedProof.proofId),
+            eq(sessionCliProofs.updatedAt, input.expectedProof.updatedAt),
+          ),
+        );
+      return;
+    }
     await this.#database.transaction(async (transaction) => {
       const [placement] = await transaction
         .select({
@@ -374,26 +445,32 @@ export class SessionCliProofService {
             eq(sessionCliProofs.computerId, input.computerId),
             eq(sessionCliProofs.placementGeneration, input.placementGeneration),
             eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
-            ...(input.expectedProof
-              ? [
-                  eq(sessionCliProofs.proofId, input.expectedProof.proofId),
-                  eq(sessionCliProofs.updatedAt, input.expectedProof.updatedAt),
-                ]
-              : []),
           ),
         );
     });
   }
 
-  /**
-   * Session-scoped revocation for the Cloud stop path: a proof row is single per Session and a
-   * fresh one can only be minted against a live allocation, so deleting by Session is exact. The
-   * in-memory execution correlation is dropped synchronously; live credential executions keep
-   * running but can no longer authenticate the revoked token.
-   */
-  async revokeForSession(sessionId: string): Promise<void> {
-    await this.#database.delete(sessionCliProofs).where(eq(sessionCliProofs.sessionId, sessionId));
-    this.#cloud?.dropExecution({ sessionId });
+  async revokeForSession(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<void> {
+    const [proof] = await executor
+      .select({ proofId: sessionCliProofs.proofId, updatedAt: sessionCliProofs.updatedAt })
+      .from(sessionCliProofs)
+      .where(eq(sessionCliProofs.sessionId, sessionId))
+      .limit(1);
+    if (!proof) return;
+    const [deleted] = await executor
+      .delete(sessionCliProofs)
+      .where(
+        and(
+          eq(sessionCliProofs.sessionId, sessionId),
+          eq(sessionCliProofs.proofId, proof.proofId),
+          eq(sessionCliProofs.updatedAt, proof.updatedAt),
+        ),
+      )
+      .returning({ proofId: sessionCliProofs.proofId });
+    if (deleted) this.#cloud?.dropExecution({ sessionId, proofId: proof.proofId });
   }
 
   /**
@@ -406,53 +483,10 @@ export class SessionCliProofService {
 
   async authenticate(token: string, executionId?: string): Promise<SessionCliSourceContext> {
     if (!token || token.length > 4096) throw invalidProof();
-    const [row] = await this.#database
-      .select({
-        agentId: imBindings.agentId,
-        agentStatus: agents.status,
-        bindingStatus: imBindings.status,
-        computerKind: computers.kind,
-        installationId: computers.currentInstallationId,
-        connectionInstanceId: sessionCliProofs.connectionInstanceId,
-        creatorSessionId: sessions.createdBySessionId,
-        currentInstanceId: computers.currentInstanceId,
-        placementGeneration: sessionCliProofs.placementGeneration,
-        placementGenerationCurrent: sessionPlacements.generation,
-        proofComputerId: sessionCliProofs.computerId,
-        proofId: sessionCliProofs.proofId,
-        sessionId: sessions.id,
-        sessionKind: sessions.kind,
-        computerId: sessionPlacements.computerId,
-      })
-      .from(sessionCliProofs)
-      .innerJoin(sessions, eq(sessions.id, sessionCliProofs.sessionId))
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+    const [selected] = await proofSourceQuery(this.#database)
       .where(and(eq(sessionCliProofs.tokenHash, hashToken(token)), isNull(sessions.endedAt)))
       .limit(1);
-    const sharedAuthorityInvalid =
-      row?.agentStatus !== "active" ||
-      row.bindingStatus !== "active" ||
-      row.proofComputerId !== row.computerId ||
-      row.placementGeneration !== row.placementGenerationCurrent;
-    if (!row || sharedAuthorityInvalid) {
-      throw invalidProof();
-    }
-    if (row.computerKind === "cloud") {
-      await this.#authenticateCloudBinding(row);
-    } else if (
-      row.currentInstanceId !== row.connectionInstanceId ||
-      this.#registry.currentInstanceId(row.computerId) !== row.connectionInstanceId ||
-      !this.#registry.supportsCapability(
-        row.computerId,
-        row.connectionInstanceId,
-        RUNTIME_CAPABILITY.sessionCollaboration,
-      )
-    ) {
-      throw invalidProof();
-    }
+    const row = await this.#requireLiveSource(selected, this.#database);
     const execution = executionId ? this.#executions?.get(executionId) : undefined;
     const userTaskSource =
       execution &&
@@ -469,6 +503,7 @@ export class SessionCliProofService {
         ? { sessionId: execution.sessionId, source: execution.source }
         : undefined;
     return {
+      proofId: row.proofId,
       agentId: row.agentId,
       ...(userTaskSource ? { userTaskSource } : {}),
       computerId: row.computerId,
@@ -481,21 +516,117 @@ export class SessionCliProofService {
     };
   }
 
+  async assertCurrentSource(
+    executor: DatabaseClient | DatabaseTransaction,
+    source: SessionCliSourceContext,
+  ): Promise<void> {
+    if (!source.proofId) throw invalidProof();
+    const [selected] = await proofSourceQuery(executor)
+      .where(
+        and(
+          eq(sessionCliProofs.sessionId, source.sessionId),
+          eq(sessionCliProofs.proofId, source.proofId),
+          isNull(sessions.endedAt),
+        ),
+      )
+      .limit(1);
+    const row = await this.#requireLiveSource(selected, executor);
+    if (
+      row.agentId !== source.agentId ||
+      row.agentComputerId !== source.computerId ||
+      row.computerId !== source.computerId ||
+      row.connectionInstanceId !== source.connectionInstanceId ||
+      row.installationId !== source.installationId ||
+      row.placementGeneration !== source.placementGeneration
+    )
+      throw invalidProof();
+  }
+
+  /** The caller holds the owned Agent guard; source locks precede Skill/Schedule mutation locks. */
+  async lockCurrentSource(transaction: DatabaseTransaction, source: SessionCliSourceContext): Promise<void> {
+    if (!source.proofId) throw invalidProof();
+    const [binding] = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .innerJoin(sessions, eq(sessions.imBindingId, imBindings.id))
+      .where(
+        and(eq(sessions.id, source.sessionId), eq(imBindings.agentId, source.agentId), eq(imBindings.status, "active")),
+      )
+      .limit(1)
+      .for("no key update", { of: imBindings });
+    if (!binding) throw invalidProof();
+    const [session] = await transaction
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(and(eq(sessions.id, source.sessionId), isNull(sessions.endedAt)))
+      .limit(1)
+      .for("no key update");
+    if (!session) throw invalidProof();
+    await this.#lockCurrentPlacement(transaction, source, "invalid_proof");
+    const [computer] = await transaction
+      .select({ id: computers.id })
+      .from(computers)
+      .where(eq(computers.id, source.computerId))
+      .limit(1)
+      .for("no key update");
+    if (!computer) throw invalidProof();
+    const [proof] = await transaction
+      .select({ id: sessionCliProofs.proofId })
+      .from(sessionCliProofs)
+      .where(and(eq(sessionCliProofs.sessionId, source.sessionId), eq(sessionCliProofs.proofId, source.proofId)))
+      .limit(1)
+      .for("update");
+    if (!proof) throw invalidProof();
+    await this.assertCurrentSource(transaction, source);
+  }
+
+  async #requireLiveSource(
+    row: ProofSourceRow | undefined,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<ProofSourceRow> {
+    if (
+      !row ||
+      row.agentStatus !== "active" ||
+      row.bindingStatus !== "active" ||
+      row.proofComputerId !== row.computerId ||
+      row.placementGeneration !== row.placementGenerationCurrent
+    ) {
+      throw invalidProof();
+    }
+    if (row.computerKind === "cloud") {
+      await this.#authenticateCloudBinding(row, executor);
+    } else if (
+      row.currentInstanceId !== row.connectionInstanceId ||
+      this.#registry.currentInstanceId(row.computerId) !== row.connectionInstanceId ||
+      !this.#registry.supportsCapability(
+        row.computerId,
+        row.connectionInstanceId,
+        RUNTIME_CAPABILITY.sessionCollaboration,
+      )
+    ) {
+      throw invalidProof();
+    }
+    return row;
+  }
+
   /**
    * Cloud proof authentication: the proof's exact attach connection must still be the live
    * execution-eligible, collaboration-capable connection for the current allocation of exactly
    * this Session, and the live-execution index must still name this exact proof. The logical
    * Cloud Computer's own liveness columns are never consulted as execution evidence.
    */
-  async #authenticateCloudBinding(row: {
-    computerId: string;
-    connectionInstanceId: string;
-    proofId: string;
-    sessionId: string;
-  }): Promise<void> {
+  async #authenticateCloudBinding(
+    row: {
+      computerId: string;
+      connectionInstanceId: string;
+      proofId: string;
+      sessionId: string;
+    },
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<void> {
     const cloud = this.#cloud;
     if (!cloud) throw invalidProof();
-    const [sandbox] = await this.#database
+    const [sandbox] = await executor
       .select({
         id: sandboxes.id,
         lifecycle: sandboxes.lifecycle,

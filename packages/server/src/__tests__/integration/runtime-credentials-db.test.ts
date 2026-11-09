@@ -9,10 +9,11 @@ import {
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computerCredentials,
   computers,
@@ -46,6 +47,8 @@ import {
   UnavailableRuntimeGitHubAdmission,
 } from "../../runtime-credentials/github-admission.js";
 import { ImProviderMaterialResolver } from "../../runtime-credentials/im-material.js";
+import { McpGatewayExecutionAuthorizer } from "../../runtime-credentials/mcp-gateway-execution.js";
+import type { RuntimeMcpServicePolicy } from "../../runtime-credentials/mcp-policy.js";
 import { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
 import { RuntimeScopeResolver } from "../../runtime-credentials/scope-resolver.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "../../runtime-credentials/task-policy.js";
@@ -65,6 +68,7 @@ import { type CloudConnectionRecord, CloudRuntimeFence } from "../../services/sa
 import { createSessionCliCloudProofAuthority } from "../../services/sandboxes/cloud-session-collaboration-owner.js";
 import { RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
@@ -283,6 +287,23 @@ describe("PostgresRuntimeScopeResolver", () => {
     expect(disabled && resolver.assertExecutionFence(updated, disabled)).toBe("binding_inactive");
   });
 
+  it("reads only the current Agent Context Tree selection and tolerates missing runtime configuration", async () => {
+    const state = await fixture();
+    const resolver = new RuntimeScopeResolver(state.database);
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([]);
+    const target = { kind: "git" as const, repository: "team/memory", path: "docs", ref: "main" };
+    await state.database
+      .insert(agentRuntimeConfigs)
+      .values({ agentId: state.agent.id, instructions: "", contextTrees: [target] })
+      .onConflictDoUpdate({ target: agentRuntimeConfigs.agentId, set: { contextTrees: [target] } });
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([target]);
+    await state.database
+      .update(agentRuntimeConfigs)
+      .set({ contextTrees: [] })
+      .where(eq(agentRuntimeConfigs.agentId, state.agent.id));
+    expect((await resolver.load(state.session.id))?.contextTrees).toEqual([]);
+  });
+
   it("loads a validation fence without requiring a Session", async () => {
     const state = await fixture();
     const resolver = new RuntimeScopeResolver(state.database);
@@ -371,6 +392,22 @@ describe("PostgresRuntimeExecutionAuthority", () => {
     await expect(
       authority.authorize({ kind: "delivery", deliveryId: rejectedId, turnId: "turn-1" }, context),
     ).resolves.toEqual({ status: "invalid" });
+  });
+
+  it("admits committed acceptance after a stale pending custody read", async () => {
+    const { state, context } = await authorityFixture();
+    const deliveryId = await seedDelivery(state.database, state, "accepted", "turn-1");
+    const custody = new PostgresRuntimeCustodyStore(state.database);
+    vi.spyOn(custody, "getDelivery").mockResolvedValueOnce(undefined);
+    const authority = new PostgresRuntimeExecutionAuthority({
+      database: state.database,
+      custody,
+      validationRuns: new RuntimeValidationRunRegistry(),
+    });
+
+    await expect(authority.authorize({ kind: "delivery", deliveryId, turnId: "turn-1" }, context)).resolves.toEqual({
+      status: "authorized",
+    });
   });
 
   it("authorizes and revalidates an accepted Session collaboration message", async () => {
@@ -825,6 +862,7 @@ interface CredentialOwnerStackOptions {
   gitHubAdmission?: RuntimeGitHubAdmission;
   taskPolicy?: RuntimeTaskPolicy;
   webPolicy?: RuntimeWebServicePolicy;
+  mcpPolicy?: RuntimeMcpServicePolicy;
 }
 
 /** The real credential owner/broker/authority/resolver chain over the test database. */
@@ -867,10 +905,117 @@ function credentialOwnerStack(state: Awaited<ReturnType<typeof fixture>>, option
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
     ...(options.webPolicy ? { webPolicy: options.webPolicy } : {}),
+    ...(options.mcpPolicy ? { mcpPolicy: options.mcpPolicy } : {}),
     sweepIntervalMs: 60_000,
   });
   return { owner, broker, executions, capabilities, tickets, validationRuns, resolver, authority };
 }
+
+describe("Local internal collaboration MCP execution", () => {
+  it("checks accepted message authority and live revision without inheriting IM credentials", async () => {
+    const state = await fixture();
+    const [internal] = await state.database
+      .insert(sessions)
+      .values({
+        imBindingId: state.imBindingId,
+        channelId: state.session.channelId,
+        conversationKind: state.session.conversationKind,
+        kind: "internal",
+        createdBySessionId: state.session.id,
+      })
+      .returning();
+    if (!internal) throw new Error("Expected an internal Session");
+    await state.database
+      .insert(sessionPlacements)
+      .values({ sessionId: internal.id, computerId: state.computer.id, generation: 1 });
+    const messageId = randomUUID();
+    await state.database.insert(sessionMessages).values({
+      id: messageId,
+      sourceSessionId: state.session.id,
+      targetSessionId: internal.id,
+      content: "local MCP fixture",
+      contentHash: "c".repeat(64),
+      lastOutcome: "unknown",
+    });
+    const connectionFence: RuntimeConnectionFence = { isCurrent: () => true };
+    const stack = credentialOwnerStack(state, {
+      controlAuthority: { isCurrentConnection: () => true },
+      connectionFence,
+      mcpPolicy: { authorizeMcp: async ({ agentId }) => (agentId === state.agent.id ? ["mcp:tools"] : undefined) },
+    });
+    const context: RuntimeBusinessContext = {
+      computerId: state.computer.id,
+      installationId: state.computer.currentInstallationId,
+      instanceId: INSTANCE_ID,
+      connectionId: "connection-1",
+      signal: new AbortController().signal,
+      negotiatedCapabilities: {
+        [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        [RUNTIME_CAPABILITY.providerProxy]: 1,
+        [RUNTIME_CAPABILITY.sessionCollaboration]: 3,
+        [RUNTIME_CAPABILITY.mcpGateway]: 1,
+      },
+    };
+    const frame = {
+      type: "runtime:execution:open",
+      requestId: randomUUID(),
+      runId: randomUUID(),
+      agentId: state.agent.id,
+      sessionId: internal.id,
+      placementGeneration: 1,
+      source: { kind: "session-message", messageId },
+      services: ["mcp"],
+    } satisfies RuntimeCredentialClientFrame;
+    try {
+      await expect(stack.owner.handle(frame, context)).resolves.toMatchObject({
+        status: "rejected",
+        code: "execution_not_ready",
+      });
+      await state.database
+        .update(sessionMessages)
+        .set({ lastOutcome: "accepted" })
+        .where(eq(sessionMessages.id, messageId));
+      const opened = await stack.owner.handle(frame, context);
+      expect(opened).toMatchObject({
+        status: "succeeded",
+        providers: [],
+        services: [{ service: "mcp", scopes: ["mcp:tools"] }],
+      });
+      if (opened?.type !== "runtime:execution:result" || opened.status !== "succeeded")
+        throw new Error("Expected an execution");
+      const record = stack.executions.get(opened.executionId);
+      const snapshot = await stack.resolver.load(internal.id);
+      if (!record || !snapshot) throw new Error("Expected a live scope");
+      expect(stack.resolver.assertExecutionFence(record, snapshot)).toBeUndefined();
+      expect(stack.resolver.assertExecutionFence({ ...record, internalAuthority: undefined }, snapshot)).toBe(
+        "session_internal",
+      );
+      expect(
+        stack.resolver.assertExecutionFence({ ...record, internalAuthority: "cloud-session-collaboration" }, snapshot),
+      ).toBe("session_internal");
+      const authorizer = new McpGatewayExecutionAuthorizer({
+        executions: stack.executions,
+        scopeResolver: stack.resolver,
+        authority: stack.authority,
+        connectionFence,
+      });
+      await expect(authorizer.authorize({ executionId: record.executionId })).resolves.toMatchObject({
+        agentId: state.agent.id,
+        accountId: state.bootstrap.userId,
+      });
+      await state.database
+        .update(agents)
+        .set({ revision: state.agent.revision + 1 })
+        .where(eq(agents.id, state.agent.id));
+      await expect(authorizer.authorize({ executionId: record.executionId })).rejects.toMatchObject({
+        code: "execution_closed",
+      });
+    } finally {
+      await stack.owner.close();
+      await state.sql.end({ timeout: 1 });
+    }
+  });
+});
 
 interface CloudCredentialStack {
   connection: CloudConnectionRecord;
@@ -1042,7 +1187,7 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 
-  it("uses explicitly authorized GitHub and web scope while still denying IM, then stops on settlement", async () => {
+  it("uses granted web scope without native GitHub or IM credentials, then stops on settlement", async () => {
     const state = await internalCloudFixture();
     const admission: RuntimeGitHubAdmission = {
       admit: async (): Promise<RuntimeGitHubAdmissionResult> => ({
@@ -1067,14 +1212,13 @@ describe("Cloud internal collaboration execution at the production credential bo
     if (opened?.type !== "runtime:execution:result" || opened.status !== "succeeded") {
       throw new Error(`internal Cloud open was rejected: ${JSON.stringify(opened)}`);
     }
-    expect(opened.providers).toHaveLength(1);
-    expect(opened.providers[0]).toMatchObject({ provider: "github", bindingId: "connection-github" });
+    expect(opened.providers).toHaveLength(0);
     expect(opened.providers.some((provider) => provider.provider === "slack" || provider.provider === "feishu")).toBe(
       false,
     );
     expect(opened.services).toEqual([{ service: "web", scopes: ["web:fetch"] }]);
 
-    // The real broker fence issues the GitHub capability for the internal execution...
+    // Account admission cannot give an ordinary collaboration execution a GitHub capability.
     const acquire = await ownerHandle(
       stack,
       {
@@ -1086,9 +1230,9 @@ describe("Cloud internal collaboration execution at the production credential bo
       },
       webContext,
     );
-    expect(acquire).toMatchObject({ status: "succeeded", provider: "github", cli: { provider: "github" } });
+    expect(acquire).toMatchObject({ status: "rejected", code: "provider_mismatch" });
 
-    // ...and the real web authorizer accepts its granted scope.
+    // The independent web authorizer still accepts its granted scope.
     const webAuthorizer = new RuntimeWebExecutionAuthorizer({
       executions: stack.executions,
       scopeResolver: new RuntimeScopeResolver(state.database),
@@ -1121,7 +1265,7 @@ describe("Cloud internal collaboration execution at the production credential bo
       },
       webContext,
     );
-    expect(afterSettlement).toMatchObject({ status: "rejected", code: "execution_closed" });
+    expect(afterSettlement).toMatchObject({ status: "rejected", code: "provider_mismatch" });
     await expect(
       webAuthorizer.authorize({
         executionId: opened.executionId,
@@ -1255,7 +1399,7 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 
-  it("keeps Local internal Sessions denied even with collaboration negotiated", async () => {
+  it("keeps Local internal Sessions denied without collaboration negotiation", async () => {
     const state = await fixture();
     const [internal] = await state.database
       .insert(sessions)
@@ -1306,7 +1450,6 @@ describe("Cloud internal collaboration execution at the production credential bo
           [RUNTIME_CAPABILITY.runtimeCredential]: 1,
           [RUNTIME_CAPABILITY.githubUserTask]: 1,
           [RUNTIME_CAPABILITY.providerProxy]: 1,
-          [RUNTIME_CAPABILITY.sessionCollaboration]: CLOUD_SESSION_COLLABORATION_VERSION,
         },
         signal: new AbortController().signal,
       },
@@ -1315,3 +1458,130 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 });
+
+it.each(["local", "cloud"] as const)("loads a complete %s scope without unrelated reads", async (computerKind) => {
+  const state = await fixture({ computerKind });
+  const queries: string[] = [];
+  const original = state.sql.options.debug;
+  state.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    const snapshot = await new RuntimeScopeResolver(state.database).load(state.session.id);
+    expect(snapshot).toMatchObject({
+      sessionId: state.session.id,
+      sessionKind: "channel",
+      computer: { id: state.computer.id, kind: computerKind },
+      sandbox: null,
+    });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(
+      computerKind === "local" ? 1 : 2,
+    );
+  } finally {
+    state.sql.options.debug = original;
+    await state.sql.end();
+  }
+});
+
+it.each(["open", "live", "acquire", "validation"] as const)(
+  "joins actual credential %s SQL and fences the next stage on close",
+  async (phase) => {
+    const state = await fixture();
+    const stack = credentialOwnerStack(state, {
+      controlAuthority: { isCurrentConnection: () => true },
+      connectionFence: { isCurrent: () => true },
+    });
+    const context: RuntimeBusinessContext = {
+      computerId: state.computer.id,
+      installationId: state.computer.currentInstallationId as string,
+      instanceId: INSTANCE_ID,
+      connectionId: "connection-1",
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.runtimeCredential]: 1 },
+      signal: new AbortController().signal,
+    };
+    const turnId = randomUUID();
+    const deliveryId = await seedDelivery(state.database, state, "accepted", turnId);
+    const frame: RuntimeCredentialClientFrame = {
+      type: "runtime:execution:open",
+      requestId: randomUUID(),
+      sessionId: state.session.id,
+      agentId: state.agent.id,
+      placementGeneration: 1,
+      runId: randomUUID(),
+      source: { kind: "delivery", deliveryId, turnId },
+    };
+    let executionId = "";
+    if (phase === "live" || phase === "acquire") {
+      const opened = await stack.owner.handle(frame, context);
+      expect(opened).toMatchObject({ status: "succeeded" });
+      if (!opened || !("executionId" in opened)) throw new Error("Missing execution");
+      executionId = opened.executionId;
+    }
+    const entered = deferred(),
+      resume = deferred();
+    const hold = async <T>(result: T): Promise<T> => {
+      entered.resolve();
+      await resume.promise;
+      return result;
+    };
+    const originalLoad = stack.resolver.load.bind(stack.resolver);
+    const originalValidation = stack.resolver.loadValidationScope.bind(stack.resolver);
+    const spy =
+      phase === "validation"
+        ? vi
+            .spyOn(stack.resolver, "loadValidationScope")
+            .mockImplementation(async (...args) => hold(await originalValidation(...args)))
+        : vi.spyOn(stack.resolver, "load").mockImplementation(async (...args) => hold(await originalLoad(...args)));
+    let drained = false;
+    try {
+      const operations = {
+        validation: () =>
+          stack.owner.issueValidationRun({
+            provider: "slack",
+            bindingId: state.imBindingId,
+            agentId: state.agent.id,
+            computerId: state.computer.id,
+            instanceId: INSTANCE_ID,
+            connectionId: "connection-1",
+          }),
+        live: () => stack.owner.isExecutionLive(executionId),
+        open: () => stack.owner.handle(frame, context),
+        acquire: () =>
+          stack.owner.handle(
+            {
+              type: "runtime:credential:acquire",
+              requestId: randomUUID(),
+              executionId,
+              provider: "slack",
+              bindingId: state.imBindingId,
+            },
+            context,
+          ),
+      };
+      const operation = operations[phase]();
+      await entered.promise;
+      const closing = stack.owner.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(await stack.owner.handle(frame, context)).toMatchObject({ status: "rejected", code: "owner_unavailable" });
+      resume.resolve();
+      const result = await operation;
+      await closing;
+      if (phase === "validation") expect(result).toBeUndefined();
+      else if (phase === "live") expect(result).toBe(false);
+      else expect(result).toMatchObject({ status: "rejected" });
+      expect(stack.executions.executions()).toHaveLength(0);
+      expect(stack.capabilities.size).toBe(0);
+      expect(stack.tickets.size).toBe(0);
+      expect(stack.validationRuns.size).toBe(0);
+      expect((await state.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+    } finally {
+      resume.resolve();
+      await stack.owner.close();
+      spy.mockRestore();
+      await state.sql.end({ timeout: 1 });
+    }
+  },
+);

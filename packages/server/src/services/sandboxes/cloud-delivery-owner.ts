@@ -15,7 +15,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   imBindings,
@@ -25,16 +25,51 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
+import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  updateCurrentPerformanceContext,
+} from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
+import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
+import type { AgentSessionStopTarget } from "../agents/agent-service.js";
+import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
+import { CloudImSteering } from "./cloud-im-steering.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
+import {
+  cloudConnectionSocket,
+  isExactCloudConnection,
+  recordCloudActivity,
+  resolveCloudRuntimeModel,
+  revokeCloudModelGrant,
+  sendToCloudConnection,
+} from "./cloud-runner-helpers.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 import type { RunnerControlSocket, RunnerHub, RunnerScope } from "./runner-hub.js";
 import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.js";
+
+function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
+  if (status === "dispatched" || status === "already_dispatched") return;
+  if (status === "batch_changed") throw new RuntimeDispatchDeferredError(status);
+  if (status === "inbound_pending") throw new InboundReceiptPendingError();
+  if (status === "stale_generation") {
+    throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
+  }
+  if (status === "claimed") {
+    throw new CloudDeliveryDispatchError(
+      "environment_not_ready",
+      "The Sandbox environment is being reclaimed; the input stays pending",
+    );
+  }
+  throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
+}
 
 /**
  * E4 Session-scoped Cloud IM delivery owner. Routes claimed IM deliveries to the exact Sandbox
@@ -93,6 +128,7 @@ export interface CloudModelGrantPort {
   isModelAllowed(model: string): Promise<boolean>;
   issue(input: {
     executionId: string;
+    deliveryId?: string;
     sandboxId: string;
     sessionId: string;
     model: string;
@@ -130,6 +166,7 @@ export interface CloudDeliveryOwnerOptions {
    * connection, delivered on verified frames so every Cloud Session can create/send/list.
    */
   sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
+  performanceLogger?: PerformanceLogger;
 }
 
 /**
@@ -158,13 +195,18 @@ const CLOUD_MODEL_GRANT_TRANSPORT_MS = 30_000;
  * outcome, so a report written exactly as the window closes still counts.
  */
 const ACCEPTED_REPORT_GRACE_MS = 60 * 60 * 1_000;
+const REPORT_REPLAY_WARNING_INTERVAL_MS = 60 * 60 * 1_000;
+const MAX_REPORT_REPLAY_WARNINGS = 1_024;
 
 export type CloudSessionCancelOutcome = {
   deliveryId: string;
   status: "cancelled" | "no_connection" | "send_failed";
 };
 
+type CloudDeliveryRecoveryOutcome = "pending" | "running" | "reporting" | "resolved" | "noop";
+
 export class CloudDeliveryOwner {
+  readonly #steering: CloudImSteering;
   readonly #credentials?: CloudDeliveryOwnerCredentialDeps;
   readonly #custody: RuntimeCustodyStore;
   readonly #database: DatabaseClient;
@@ -176,6 +218,8 @@ export class CloudDeliveryOwner {
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   readonly #sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
+  readonly #perfLogger?: PerformanceLogger;
+  readonly #reportReplayWarnings = new Map<string, { connectionId: string; warnedAt: number }>();
   /**
    * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
    * turn's permission. `generation` distinguishes concurrent mint attempts on the same connection
@@ -195,6 +239,16 @@ export class CloudDeliveryOwner {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  readonly #pendingDeliveryRunHandles = new Map<
+    string,
+    {
+      connectionId: string;
+      deliveryId: string;
+      attemptCount: number;
+      timer: ReturnType<typeof setTimeout>;
+      handle: PerformanceOperationHandle;
+    }
+  >();
 
   readonly #onTurnActivity: CloudDeliveryOwnerOptions["onTurnActivity"];
 
@@ -211,6 +265,36 @@ export class CloudDeliveryOwner {
     this.#allocationStatus = options.allocationStatus;
     this.#noteActivity = options.noteActivity;
     this.#sessionProofs = options.sessionProofs;
+    this.#perfLogger = options.performanceLogger;
+    this.#steering = new CloudImSteering({
+      database: this.#database,
+      custody: this.#custody,
+      ...(this.#perfLogger ? { performanceLogger: this.#perfLogger } : {}),
+      connection: async (id) => {
+        const record = this.#fence.connectionForSession(id);
+        if (
+          !record ||
+          !this.canSteer(id, record.instanceId) ||
+          !(await this.#loadCurrentAllocation(record)) ||
+          !this.#isExactConnection(record)
+        )
+          return undefined;
+        const socket = this.#socketFor(record);
+        if (!socket) return undefined;
+        return {
+          record,
+          context: this.#context(record),
+          send: (frame) => this.#hub.sendToCurrent(record.scope.sandboxId, socket, frame),
+        };
+      },
+      current: (record) => this.#isExactConnection(record),
+      validAllocation: async (record) => !!(await this.#loadCurrentAllocation(record, { allowReleasing: true })),
+      context: (record) => this.#context(record),
+      send: (record, frame) => {
+        const socket = this.#socketFor(record);
+        return !!socket && this.#hub.sendToCurrent(record.scope.sandboxId, socket, frame);
+      },
+    });
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -224,12 +308,41 @@ export class CloudDeliveryOwner {
    * validated Router model); a model the Router does not currently offer —
    * or a catalog that cannot be refreshed — never reaches a Sandbox.
    */
-  async resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
-    const grants = this.#modelGrants;
-    if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
-    const fallback = await grants.defaultModel();
-    return fallback ? { ...runtime, model: fallback } : undefined;
+  resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
+    return resolveCloudRuntimeModel(runtime, this.#modelGrants, this.#modelBaseUrl);
+  }
+
+  inputInstance(sessionId: string): string | undefined {
+    const record = this.#fence.connectionForSession(sessionId);
+    return record && this.canSteer(sessionId, record.instanceId) ? record.instanceId : undefined;
+  }
+
+  canBatch(sessionId: string): boolean {
+    return this.#fence.connectionForSession(sessionId)?.imInputVersion === 1;
+  }
+
+  canSteer(sessionId: string, instanceId: string | null): boolean {
+    const record = this.#fence.connectionForSession(sessionId);
+    return (
+      !!record &&
+      record.instanceId === instanceId &&
+      record.executionEligible &&
+      record.imInputVersion === 1 &&
+      this.#hub.describe(record.scope.sandboxId).ready &&
+      this.#isExactConnection(record)
+    );
+  }
+
+  requestSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    onDispatched: () => void,
+    signal?: AbortSignal,
+  ) {
+    return this.#steering.request(request, onDispatched, signal);
+  }
+
+  handleSteerResult(record: CloudConnectionRecord, frame: import("@opentag/shared").RunnerCloudSteerResultFrame) {
+    return this.#steering.handle(record, frame);
   }
 
   /** True when the deployment has a usable model path; allocation must not run without it. */
@@ -247,11 +360,29 @@ export class CloudDeliveryOwner {
     inputHash: string;
     installationId: string;
     request: DirectImMessageDeliveryRequest;
+    signal?: AbortSignal;
   }): Promise<void> {
+    input.signal?.throwIfAborted();
     const request = input.request;
+    updateCurrentPerformanceContext({
+      agentId: request.agentId,
+      computerId: input.computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+    });
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
+    input.signal?.throwIfAborted();
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
+    updateCurrentPerformanceContext({
+      agentId: request.agentId,
+      computerId: input.computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+      sandboxId: row.id,
+      environmentGeneration: row.environmentGeneration,
+      dispatchRequestId: request.requestId,
+    });
     if (row.lifecycle !== "ready" || row.currentResourceName === null || row.idleReclaimAt !== null) {
       throw new CloudDeliveryDispatchError("environment_not_ready", "The Sandbox environment is not ready");
     }
@@ -273,33 +404,172 @@ export class CloudDeliveryOwner {
     if (!(await this.#modelGrants.isModelAllowed(request.runtime.model ?? ""))) {
       throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not offered by the Router");
     }
+    input.signal?.throwIfAborted();
     const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
+    if (!supportsBatchRequest(request, connection))
+      throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner does not support batched input");
     const socket = this.#socketFor(connection);
     if (!socket) throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection was replaced");
     const dispatch = await this.#custody.beginDeliveryDispatch(request, input.inputHash, {
       computerId: input.computerId,
       instanceId: connection.instanceId,
     });
-    if (dispatch === "stale_generation") {
-      throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
-    }
-    if (dispatch === "conflict") {
-      throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
-    }
-    if (dispatch === "claimed") {
-      throw new CloudDeliveryDispatchError(
-        "environment_not_ready",
-        "The Sandbox environment is being reclaimed; the input stays pending",
-      );
-    }
+    input.signal?.throwIfAborted();
+    assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
-    const sent = this.#hub.sendToCurrent(row.id, socket, {
-      type: "delivery:run",
-      requestId: request.requestId,
-      delivery: request,
-    });
-    if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
+    input.signal?.throwIfAborted();
+    await this.#sendDeliveryRunFrame(row.id, connection.connectionId, socket, request, input.computerId);
     await this.#recordActivity(row.id);
+  }
+
+  async #sendDeliveryRunFrame(
+    sandboxId: string,
+    connectionId: string,
+    socket: RunnerControlSocket,
+    request: DirectImMessageDeliveryRequest,
+    computerId: string,
+  ): Promise<void> {
+    let attempts = 0;
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.deliveryDispatch",
+        agentId: request.agentId,
+        computerId,
+        sessionId: request.sessionId,
+        deliveryId: request.deliveryId,
+        sandboxId,
+        attributes: { dispatchRequestId: request.requestId },
+      },
+      async () => {
+        const sent = this.#hub.sendToCurrent(
+          sandboxId,
+          socket,
+          {
+            type: "delivery:run",
+            requestId: request.requestId,
+            delivery: request,
+          },
+          {
+            onAttempt: () => {
+              attempts += 1;
+            },
+          },
+        );
+        if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
+      },
+      {
+        resultAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED",
+      },
+    );
+    this.#startPendingDeliveryRunHandle(connectionId, sandboxId, computerId, request);
+  }
+
+  #armDeliveryRunTimeout(requestId: string, deadlineAt?: string): ReturnType<typeof setTimeout> {
+    const parsedDeadline = deadlineAt === undefined ? Number.NaN : Date.parse(deadlineAt);
+    const timeoutMs = Number.isFinite(parsedDeadline) ? Math.max(0, parsedDeadline - Date.now()) : 30_000;
+    const timer = setTimeout(() => {
+      const pending = this.#pendingDeliveryRunHandles.get(requestId);
+      if (!pending) return;
+      this.#pendingDeliveryRunHandles.delete(requestId);
+      pending.handle.fail(
+        markExternalCallTimedOut(
+          Object.assign(new Error("Runner delivery run receipt timed out"), {
+            code: "RUNNER_DELIVERY_RUN_TIMEOUT",
+          }),
+        ),
+        {
+          timedOut: true,
+          attemptCount: pending.attemptCount,
+          retryCount: Math.max(0, pending.attemptCount - 1),
+        },
+        "RUNNER_DELIVERY_RUN_TIMEOUT",
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  #startPendingDeliveryRunHandle(
+    connectionId: string,
+    sandboxId: string,
+    computerId: string,
+    request: DirectImMessageDeliveryRequest,
+  ): void {
+    const perfLogger = this.#perfLogger;
+    if (!perfLogger?.config.enabled) return;
+    const existing = this.#pendingDeliveryRunHandles.get(request.requestId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.connectionId = connectionId;
+      existing.deliveryId = request.deliveryId;
+      existing.attemptCount += 1;
+      existing.timer = this.#armDeliveryRunTimeout(request.requestId, request.deadlineAt);
+      return;
+    }
+    while (this.#pendingDeliveryRunHandles.size >= 512) {
+      const oldestKey = this.#pendingDeliveryRunHandles.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.#pendingDeliveryRunHandles.get(oldestKey);
+      this.#pendingDeliveryRunHandles.delete(oldestKey);
+      if (oldest) {
+        clearTimeout(oldest.timer);
+        oldest.handle.fail(
+          Object.assign(new Error("Delivery run telemetry evicted"), { code: "RUNNER_DELIVERY_RUN_EVICTED" }),
+          {
+            attemptCount: oldest.attemptCount,
+            retryCount: Math.max(0, oldest.attemptCount - 1),
+          },
+          "RUNNER_DELIVERY_RUN_EVICTED",
+        );
+      }
+    }
+    const handle = perfLogger.startOperation({
+      module: "external",
+      category: "external",
+      operation: "external.sandbox-runner.deliveryRun",
+      agentId: request.agentId,
+      computerId,
+      sessionId: request.sessionId,
+      deliveryId: request.deliveryId,
+      sandboxId,
+      attributes: {
+        provider: "sandbox-runner",
+        externalService: "sandbox-runner",
+      },
+    });
+    const timer = this.#armDeliveryRunTimeout(request.requestId, request.deadlineAt);
+    this.#pendingDeliveryRunHandles.set(request.requestId, {
+      connectionId,
+      deliveryId: request.deliveryId,
+      attemptCount: 1,
+      timer,
+      handle,
+    });
+  }
+
+  #settlePendingDeliveryRunHandle(
+    connection: CloudConnectionRecord,
+    frame: { deliveryId: string; requestId: string; turnId: string },
+  ): void {
+    const pending = this.#pendingDeliveryRunHandles.get(frame.requestId);
+    if (!pending || pending.connectionId !== connection.connectionId || pending.deliveryId !== frame.deliveryId) return;
+    clearTimeout(pending.timer);
+    this.#pendingDeliveryRunHandles.delete(frame.requestId);
+    pending.handle.complete({
+      turnId: frame.turnId,
+      attemptCount: pending.attemptCount,
+      retryCount: Math.max(0, pending.attemptCount - 1),
+    });
   }
 
   /**
@@ -336,12 +606,22 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: { deliveryId: string; requestId: string; turnId: string },
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: frame.deliveryId,
+      dispatchRequestId: frame.requestId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
+    this.#settlePendingDeliveryRunHandle(connection, frame);
     const scopeCheck = await this.#loadDispatchForScope(connection, frame.deliveryId, frame.requestId);
     if (!scopeCheck) {
       this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
       return;
     }
+    updateCurrentPerformanceContext({ agentId: scopeCheck.request.agentId });
     // After the awaited read: the connection must still be the exact current one, and the
     // Session's PERSISTED allocation must still be the scope this connection attached with. A
     // Session placement can lag behind a new environment generation; the dispatch columns alone
@@ -401,7 +681,15 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: { deliveryId: string; requestId: string; turnId: string },
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: frame.deliveryId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
+    this.#settlePendingDeliveryRunHandle(connection, frame);
     const allocation = await this.#loadCurrentAllocation(connection, { allowReleasing: true });
     if (!allocation) {
       this.#sendVerified(connection, frame.requestId, "rejected", "stale_generation");
@@ -601,6 +889,7 @@ export class CloudDeliveryOwner {
     this.#grantOwnershipByTurn.set(turnId, ownership);
     const issued = await grants.issue({
       executionId: turnId,
+      deliveryId: request.deliveryId,
       model,
       sandboxId: connection.scope.sandboxId,
       sessionId: connection.scope.sessionId,
@@ -708,6 +997,14 @@ export class CloudDeliveryOwner {
     frame: { requestId: string; report: TurnReportRequest },
   ) {
     const { report } = frame;
+    updateCurrentPerformanceContext({
+      agentId: report.agentId,
+      computerId: connection.computerId,
+      sessionId: report.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      deliveryId: report.deliveryId,
+      turnId: report.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     // The accepted turn's report stays recordable after an explicit Session end (durable custody
     // plus the exact prior allocation identity is the authority), but it must still belong to the
@@ -722,6 +1019,7 @@ export class CloudDeliveryOwner {
     const mapped: "recorded" | "already_recorded" | "conflict" | "stale_generation" =
       status === "recorded" || status === "already_recorded" || status === "stale_generation" ? status : "conflict";
     if (mapped === "recorded" || mapped === "already_recorded") {
+      this.#reportReplayWarnings.delete(report.deliveryId);
       this.#revokeTurnGrants(report.turnId);
       await this.#recordActivity(connection.scope.sandboxId);
     }
@@ -759,9 +1057,29 @@ export class CloudDeliveryOwner {
    * and credential executions) and best-effort cancel the owning turn on the exact allocation that
    * accepted it. Returns one meaningful outcome per delivery; a lost socket is `no_connection` and
    * stays reconcilable through `recoverAccepted`'s durable stopped-state route, never silent.
+   * Two statements regardless of the backlog: the eligible deliveries, then (only when the list is
+   * nonempty) the one Sandbox row `sandboxes_session_id_unique` guarantees for the Session.
    */
-  async cancelSessionDeliveries(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
-    const rows = await this.#database
+  async cancelSessionDeliveries(
+    sessionId: string,
+    target?: AgentSessionStopTarget,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    if (target) {
+      if (target.sessionId !== sessionId) return [];
+      return (
+        (await withAgentSessionStopAuthority(this.#database, target, (executor) =>
+          this.#cancelSessionDeliveries(sessionId, executor),
+        )) ?? []
+      );
+    }
+    return this.#cancelSessionDeliveries(sessionId, this.#database);
+  }
+
+  async #cancelSessionDeliveries(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    const rows = await executor
       .select({
         id: imMessageDeliveries.id,
         turnId: imMessageDeliveries.turnId,
@@ -775,13 +1093,18 @@ export class CloudDeliveryOwner {
           isNull(imMessageDeliveries.reportedAt),
         ),
       );
-    for (const row of rows) {
-      if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    const closeExecutions = this.#credentials?.owner.prepareSessionExecutionClose(sessionId, "execution_closed");
+    if (rows.length === 0) {
+      closeExecutions?.();
+      return [];
     }
-    this.#credentials?.owner.closeSessionExecutions(sessionId, "execution_closed");
+    // The Session's single Sandbox row is read once for the whole backlog. The connection fence
+    // itself stays a per-delivery read, so a replacement attached mid-loop is still observed.
+    const sandbox = await loadSandboxRecordBySessionId(executor, sessionId);
+    for (const row of rows) if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    closeExecutions?.();
     const outcomes: CloudSessionCancelOutcome[] = [];
     for (const row of rows) {
-      const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
       const record = sandbox ? this.#fence.connectionForSandbox(sandbox.id) : undefined;
       if (!record || record.instanceId !== row.reportOwnerInstanceId || !this.#isExactConnection(record)) {
         outcomes.push({ deliveryId: row.id, status: "no_connection" });
@@ -803,8 +1126,8 @@ export class CloudDeliveryOwner {
    * - a superseded generation or a durably stopped/released allocation settles exactly once as
    *   unknown/turn_state_unknown and is never replayed;
    * - a live allocation with a live exact connection queries the Runner's journal (`received`
-   *   re-verifies, `started` stays pending — it is a live phase, not a crash — and `reported` stays
-   *   pending because the Runner replays that report on the same socket; only an explicit `none`
+   *   re-verifies, `started` identifies running work, and `reported` identifies report replay on
+   *   the same socket; only an explicit `none`
    *   settles unknown);
    * - a live allocation with no connection stays pending while the allocation is physically
    *   present or its create outcome is still unverified, so a Server restart or transient
@@ -816,7 +1139,8 @@ export class CloudDeliveryOwner {
    *   cutoff, not proof that no authentic report exists: the late report is answered `conflict` and
    *   cannot replace the terminal hash.
    */
-  async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
+  async recoverAccepted(deliveryId: string): Promise<CloudDeliveryRecoveryOutcome> {
+    updateCurrentPerformanceContext({ deliveryId });
     const [row] = await this.#database
       .select()
       .from(imMessageDeliveries)
@@ -825,10 +1149,16 @@ export class CloudDeliveryOwner {
     const delivery = row;
     if (delivery?.state !== "accepted" || delivery.reportedAt !== null) return "noop";
     if (!delivery.turnId || !delivery.reportOwnerInstanceId) return "noop";
+    updateCurrentPerformanceContext({
+      sessionId: delivery.sessionId,
+      deliveryId: delivery.id,
+      turnId: delivery.turnId,
+    });
 
     const allocation = await this.#resolveAcceptedAllocation(delivery);
     if (allocation.kind === "settle") return this.#settleUnknown(deliveryId);
     if (allocation.kind === "pending") return "pending";
+    updateCurrentPerformanceContext({ sandboxId: allocation.sandboxId });
 
     const live = this.#exactLiveOwner(allocation.sandboxId, delivery);
     if (live) return this.#recoverLive(live, delivery);
@@ -872,6 +1202,13 @@ export class CloudDeliveryOwner {
     return Number.isFinite(acceptedAtMs)
       ? (acceptedAtMs as number) + RUNTIME_MAX_DURATION_MS + ACCEPTED_REPORT_GRACE_MS
       : Number.POSITIVE_INFINITY;
+  }
+
+  #activeRecoveryOutcome(
+    delivery: typeof imMessageDeliveries.$inferSelect,
+    phase: "received" | "started",
+  ): "running" | "pending" {
+    return phase === "started" && Date.now() < this.#acceptedReportDeadlineMs(delivery) ? "running" : "pending";
   }
 
   /**
@@ -921,7 +1258,7 @@ export class CloudDeliveryOwner {
   async #recoverLive(
     record: CloudConnectionRecord,
     delivery: typeof imMessageDeliveries.$inferSelect,
-  ): Promise<"pending" | "resolved" | "noop"> {
+  ): Promise<CloudDeliveryRecoveryOutcome> {
     const answer = await this.#queryRunner(record, {
       deliveryId: delivery.id,
       turnId: delivery.turnId as string,
@@ -945,7 +1282,7 @@ export class CloudDeliveryOwner {
     if (authority === "paused" && lifecycle === "active") return "pending";
     if (authority === "active" && lifecycle === "active") {
       if (answer === "received") await this.#reverifyReceived(record, delivery);
-      return "pending";
+      return this.#activeRecoveryOutcome(delivery, answer);
     }
     // Stopped authority or retiring allocation: reuse the explicit-stop cancellation so the
     // authenticated current Runner settles the turn truthfully (its report lands through the
@@ -967,20 +1304,33 @@ export class CloudDeliveryOwner {
     record: CloudConnectionRecord,
     delivery: typeof imMessageDeliveries.$inferSelect,
     answer: "none" | "received" | "started" | "reported" | undefined,
-  ): "pending" {
-    if (Date.now() >= this.#acceptedReportDeadlineMs(delivery)) {
+  ): "pending" | "reporting" {
+    if (!this.#isExactConnection(record)) return "pending";
+    const now = Date.now();
+    if (now >= this.#acceptedReportDeadlineMs(delivery)) {
+      const previous = this.#reportReplayWarnings.get(delivery.id);
+      if (previous?.connectionId === record.connectionId && now - previous.warnedAt < REPORT_REPLAY_WARNING_INTERVAL_MS)
+        return "pending";
+      this.#reportReplayWarnings.delete(delivery.id);
+      if (this.#reportReplayWarnings.size >= MAX_REPORT_REPLAY_WARNINGS) {
+        const oldest = this.#reportReplayWarnings.keys().next().value;
+        if (oldest !== undefined) this.#reportReplayWarnings.delete(oldest);
+      }
+      this.#reportReplayWarnings.set(delivery.id, { connectionId: record.connectionId, warnedAt: now });
       this.#logger?.warn(
         {
           code: "CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE",
           computerId: record.computerId,
+          connectionId: record.connectionId,
           deliveryId: delivery.id,
           phase: answer ?? "no_answer",
           turnId: delivery.turnId,
         },
         "Cloud Runner still holds a report the Server has not recorded past the acceptance cutoff",
       );
+      return "pending";
     }
-    return "pending";
+    return answer === "reported" ? "reporting" : "pending";
   }
 
   /** Exact current allocation lifecycle: preparing/ready is `active`, releasing is `retiring`. */
@@ -1001,6 +1351,7 @@ export class CloudDeliveryOwner {
       signal: new AbortController().signal,
     });
     if (recorded !== "recorded" && recorded !== "already_recorded") return "noop";
+    this.#reportReplayWarnings.delete(deliveryId);
     // A turn settled as unknown must lose its execution permission immediately, even when the
     // granting Server already restarted (revocation is by execution/turn id).
     if (scope.delivery.turnId) this.#revokeTurnGrants(scope.delivery.turnId);
@@ -1063,17 +1414,82 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     input: { deliveryId: string; turnId: string },
   ): Promise<"none" | "received" | "started" | "reported" | undefined> {
+    let attempts = 0;
+    try {
+      return await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "sandbox-runner",
+          operation: "external.sandbox-runner.deliveryQuery",
+          computerId: connection.computerId,
+          sessionId: connection.scope.sessionId,
+          sandboxId: connection.scope.sandboxId,
+          deliveryId: input.deliveryId,
+          turnId: input.turnId,
+        },
+        () =>
+          this.#executeQueryRunner(connection, input, () => {
+            attempts += 1;
+          }),
+        {
+          resultAttributes: (phase) => ({
+            phase,
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
+          errorAttributes: () => ({
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
+          fallbackErrorCode: "CLOUD_DELIVERY_QUERY_FAILED",
+        },
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #executeQueryRunner(
+    connection: CloudConnectionRecord,
+    input: { deliveryId: string; turnId: string },
+    onAttempt: () => void,
+  ): Promise<"none" | "received" | "started" | "reported"> {
     const socket = this.#socketFor(connection);
-    if (!socket) return undefined;
+    if (!socket) {
+      throw Object.assign(new Error("Runner socket unavailable"), {
+        code: "RUNNER_QUERY_SOCKET_UNAVAILABLE",
+      });
+    }
     const requestId = randomUUID();
-    return new Promise((resolve) => {
+    return new Promise<"none" | "received" | "started" | "reported">((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pendingQueries.delete(requestId);
-        resolve(undefined);
+        reject(
+          markExternalCallTimedOut(
+            Object.assign(new Error("Runner delivery query timed out"), {
+              code: "RUNNER_QUERY_TIMEOUT",
+            }),
+          ),
+        );
       }, 10_000);
       timer.unref?.();
-      this.#pendingQueries.set(requestId, { connectionId: connection.connectionId, resolve, timer });
+      this.#pendingQueries.set(requestId, {
+        connectionId: connection.connectionId,
+        resolve: (phase) => {
+          if (phase === undefined) {
+            reject(
+              Object.assign(new Error("Runner connection detached"), {
+                code: "RUNNER_QUERY_CONNECTION_DETACHED",
+              }),
+            );
+            return;
+          }
+          resolve(phase);
+        },
+        timer,
+      });
       try {
+        onAttempt();
         socket.send({
           type: "delivery:query",
           deliveryId: input.deliveryId,
@@ -1083,7 +1499,11 @@ export class CloudDeliveryOwner {
       } catch {
         clearTimeout(timer);
         this.#pendingQueries.delete(requestId);
-        resolve(undefined);
+        reject(
+          Object.assign(new Error("Runner query send failed"), {
+            code: "RUNNER_QUERY_SEND_FAILED",
+          }),
+        );
       }
     });
   }
@@ -1096,6 +1516,19 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     frame: RuntimeCredentialClientFrame,
   ): Promise<RuntimeCredentialServerFrame | undefined> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      ...(frame.type === "runtime:execution:open"
+        ? {
+            agentId: frame.agentId,
+            ...(frame.source.kind === "delivery"
+              ? { deliveryId: frame.source.deliveryId, turnId: frame.source.turnId }
+              : {}),
+          }
+        : {}),
+    });
     const deps = this.#credentials;
     if (!deps) return credentialFailure(frame, "owner_unavailable");
     const result = await deps.owner.handle(frame, this.#context(connection));
@@ -1125,11 +1558,13 @@ export class CloudDeliveryOwner {
     /** False for a report-only reconnect: settle/report only, never mint execution permission. */
     executionEligible?: boolean;
     turnActivityVersion?: 1;
+    imInputVersion?: 1;
     githubUserTaskVersion?: 1;
+    contextTreeExecutionVersion?: 1;
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
     sessionCollaborationEligible?: boolean;
     /** Exact E8 collaboration version; required to authorize a scheduled-origin frame. */
-    sessionCollaborationVersion?: 1 | 2;
+    sessionCollaborationVersion?: 1 | 2 | 3;
   }): CloudConnectionRecord {
     // A same-Sandbox replacement (reconnect or newer generation) must tear down the superseded
     // connection's privileges even when the fence entry is replaced inside attach.
@@ -1147,6 +1582,10 @@ export class CloudDeliveryOwner {
   }
 
   #teardownConnection(connectionId: string): void {
+    this.#steering.detach(connectionId);
+    for (const [deliveryId, warning] of this.#reportReplayWarnings) {
+      if (warning.connectionId === connectionId) this.#reportReplayWarnings.delete(deliveryId);
+    }
     this.#signals.get(connectionId)?.abort();
     this.#signals.delete(connectionId);
     for (const [requestId, pending] of [...this.#pendingQueries.entries()]) {
@@ -1156,6 +1595,21 @@ export class CloudDeliveryOwner {
       // An unanswered query is unknown, not "none": never settle unknown-offline here; the
       // Runner's journal re-sends its report on reconnect and recovery retries later.
       pending.resolve(undefined);
+    }
+    for (const [requestId, pending] of [...this.#pendingDeliveryRunHandles.entries()]) {
+      if (pending.connectionId !== connectionId) continue;
+      clearTimeout(pending.timer);
+      this.#pendingDeliveryRunHandles.delete(requestId);
+      pending.handle.fail(
+        Object.assign(new Error("Runner connection detached before delivery receipt"), {
+          code: "RUNNER_CONNECTION_DETACHED",
+        }),
+        {
+          attemptCount: pending.attemptCount,
+          retryCount: Math.max(0, pending.attemptCount - 1),
+        },
+        "RUNNER_CONNECTION_DETACHED",
+      );
     }
     this.#credentials?.owner.closeConnection(connectionId, "connection_replaced");
     for (const [turnId, ownership] of [...this.#grantOwnershipByTurn.entries()]) {
@@ -1172,7 +1626,7 @@ export class CloudDeliveryOwner {
     const ownership = this.#grantOwnershipByTurn.get(turnId);
     if (ownership?.connectionId !== connectionId) return;
     this.#grantOwnershipByTurn.delete(turnId);
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
   /**
@@ -1181,7 +1635,7 @@ export class CloudDeliveryOwner {
    */
   #revokeTurnGrants(turnId: string): void {
     this.#grantOwnershipByTurn.delete(turnId);
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -1192,17 +1646,8 @@ export class CloudDeliveryOwner {
    * E7 business-activity clock. A failed touch must never fail a durable dispatch/report, but it
    * is surfaced as a sanitized operational signal; heartbeats deliberately do not call this.
    */
-  async #recordActivity(sandboxId: string): Promise<void> {
-    const note = this.#noteActivity;
-    if (!note) return;
-    try {
-      await note(sandboxId);
-    } catch {
-      this.#logger?.warn(
-        { code: "CLOUD_DELIVERY_ACTIVITY_TOUCH_FAILED", sandboxId },
-        "Sandbox business-activity clock update failed",
-      );
-    }
+  #recordActivity(sandboxId: string): Promise<void> {
+    return recordCloudActivity(sandboxId, this.#noteActivity, this.#logger, "CLOUD_DELIVERY_ACTIVITY_TOUCH_FAILED");
   }
 
   #context(connection: CloudConnectionRecord): RuntimeBusinessContext {
@@ -1216,6 +1661,7 @@ export class CloudDeliveryOwner {
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
         ...(connection.githubUserTaskVersion === 1 ? { [RUNTIME_CAPABILITY.githubUserTask]: 1 } : {}),
+        ...(connection.contextTreeExecutionVersion === 1 ? { [RUNTIME_CAPABILITY.contextTreeExecution]: 1 } : {}),
         /*
          * Platform web tools are a default Cloud capability on the Runner channel, exactly like the
          * controlled model path: the execution still only receives the `web` service when the
@@ -1247,25 +1693,15 @@ export class CloudDeliveryOwner {
    * Sandbox. Never "whichever socket now owns the sandbox id".
    */
   #socketFor(connection: CloudConnectionRecord): RunnerControlSocket | undefined {
-    if (this.#fence.connectionForSandbox(connection.scope.sandboxId)?.connectionId !== connection.connectionId) {
-      return undefined;
-    }
-    if (connection.socket) {
-      return this.#hub.isCurrent(connection.scope.sandboxId, connection.socket) ? connection.socket : undefined;
-    }
-    // Fence-only fixtures (tests/recovery snapshots) carry no socket; the hub's current socket is
-    // only acceptable while this exact connection is still the fence's current one (checked above).
-    return this.#hub.currentSocket(connection.scope.sandboxId);
+    return cloudConnectionSocket(this.#fence, this.#hub, connection);
   }
 
   #isExactConnection(connection: CloudConnectionRecord): boolean {
-    return this.#fence.isCurrent(connection.computerId, connection.instanceId, connection.connectionId);
+    return isExactCloudConnection(this.#fence, connection);
   }
 
   #sendToConnection(connection: CloudConnectionRecord, frame: Parameters<RunnerHub["sendToCurrent"]>[2]): boolean {
-    const socket = this.#socketFor(connection);
-    if (!socket) return false;
-    return this.#hub.sendToCurrent(connection.scope.sandboxId, socket, frame);
+    return sendToCloudConnection(this.#fence, this.#hub, connection, frame);
   }
 
   /**
@@ -1505,4 +1941,8 @@ function credentialFailure(
     return { type: "runtime:proxy:ticket:result", code: code as never, requestId: frame.requestId, status: "rejected" };
   }
   return { type: "runtime:credential:result", code: code as never, requestId: frame.requestId, status: "rejected" };
+}
+
+function supportsBatchRequest(request: DirectImMessageDeliveryRequest, connection: CloudConnectionRecord): boolean {
+  return !request.batch || connection.imInputVersion === 1;
 }

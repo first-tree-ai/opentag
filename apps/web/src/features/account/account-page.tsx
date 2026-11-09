@@ -8,7 +8,6 @@ import { Button, Field, KumoInputControl, Select, SettingsList, SettingsRow, Tex
 import { Page } from "../layout/page.js";
 import { useAccount } from "../session/session-context.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
-import { GitHubIntegrationSettings } from "./github-integration-settings.js";
 import {
   clearProfileNavigationDraft,
   preserveProfileNavigationDraft,
@@ -26,10 +25,9 @@ export function AccountPage({ slackProvision = false }: { slackProvision?: boole
       </Page>
     );
   return (
-    <Page title={m.account_page_title()} description={m.account_page_description()}>
+    <Page title={m.account_page_title()}>
       <AccountSettings key={me.user.id} navigationGuardRef={profileNavigation} refreshMe={refreshMe} user={me.user} />
-      <GitHubIntegrationSettings beforeAuthorize={() => profileNavigation.current?.()} />
-      <CloudBillingSettings />
+      <CloudBillingSettings key={me.user.id} accountId={me.user.id} />
     </Page>
   );
 }
@@ -136,12 +134,11 @@ export function AccountSettings({
         {m.account_profile_title()}
       </Text>
       <SettingsList>
-        <SettingsRow label={m.account_email()} description={m.account_email_description()}>
-          <Field hideLabel htmlFor="account-email" label={m.account_email()}>
-            <KumoInputControl id="account-email" name="email" readOnly type="email" value={user.email} />
-          </Field>
+        {/* The sign-in email can't be edited here, so it is shown as text rather than a locked field. */}
+        <SettingsRow label={m.account_email()}>
+          <span className="wrap-anywhere text-sm text-kumo-default">{user.email}</span>
         </SettingsRow>
-        <SettingsRow label={m.account_display_name()} description={m.account_display_name_description()}>
+        <SettingsRow label={m.account_display_name()}>
           <Field hideLabel htmlFor="account-display-name" label={m.account_display_name()}>
             <KumoInputControl
               autoComplete="name"
@@ -160,7 +157,7 @@ export function AccountSettings({
             />
           </Field>
         </SettingsRow>
-        <SettingsRow label={m.account_language_label()} description={m.account_language_description()}>
+        <SettingsRow label={m.account_language_label()}>
           <Field hideLabel htmlFor="account-language" label={m.account_language_label()}>
             <Select
               className="w-full"

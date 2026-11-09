@@ -1,7 +1,6 @@
 /**
- * The Agent home for a Cloud-bound Agent: the existing status, usage, and Task list, and nothing
- * about runtime environments. Existing diagnostics only supply user-impacting progress failures;
- * the page never renders environment boards or resource actions.
+ * Cloud Agent home retains status, usage and Tasks; workspace tools require an explicit
+ * diagnostics destination. Opening the page never releases or discards an environment.
  */
 
 import type { AccountComputerSummary, AgentDetail, CloudAvailability, MeResponse } from "@opentag/shared/browser";
@@ -98,7 +97,7 @@ async function renderAgentHome() {
 describe("Agent home for a Cloud-bound Agent", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps status, usage, and Tasks, with no environment board or resource actions", async () => {
+  it("keeps status, usage, and Tasks without a workspace recovery entry", async () => {
     stubCloudAgent();
     const overview = vi.spyOn(browserApi, "agentCloudOverview");
 
@@ -110,14 +109,14 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(await screen.findByRole("region", { name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("region", { name: "Tasks" })).toBeTruthy();
 
-    // No environment board, no counts or capacity, and no Runner/Sandbox lifecycle controls.
+    expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button", { name: /release/ })).toBeNull();
     expect(screen.queryByText(/Agent environments/)).toBeNull();
     await waitFor(() => expect(overview).toHaveBeenCalledWith(AGENT_ID, { limit: 100 }));
   });
 
-  it("keeps the existing Task list alongside a save failure warning without repair actions", async () => {
+  it("keeps Tasks and actionable failure guidance without workspace controls", async () => {
     stubCloudAgent();
     vi.mocked(browserApi.agentCloudOverview).mockResolvedValue({
       ...progressDiagnostics,
@@ -148,5 +147,39 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(screen.getByRole("region", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button", { name: /release|discard|retry save/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Recover workspace" })).toBeNull();
+    expect(screen.getByText(/Contact your administrator for help/)).toBeTruthy();
+  });
+});
+
+describe("Agent home status card", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function stubActivity(activity: AgentDetail["activity"]) {
+    stubCloudAgent();
+    vi.mocked(browserApi.agent).mockResolvedValue({ ...agent, activity });
+    vi.mocked(browserApi.agents).mockResolvedValue({
+      agents: [{ ...agent, activity, usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 } }],
+    });
+  }
+
+  it("shows the running-Task line the Agent list shows, as its own first row", async () => {
+    stubActivity({ state: "working", startedAt: TIME, runningTaskCount: 2 });
+    await renderAgentHome();
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    await waitFor(() =>
+      expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
+    );
+    const rows = [...status.querySelectorAll("li")].map((row) => row.getAttribute("data-ui"));
+    expect(rows[0]).toBe("agent-status-work");
+    expect(status.querySelector('[data-ui="agent-status-work"]')?.textContent).toContain("Work");
+  });
+
+  it("adds no row for an idle Agent that is not ready, as the list row says nothing then", async () => {
+    stubActivity({ state: "idle" });
+    await renderAgentHome();
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    expect(status.querySelector('[data-ui="agent-status-work"]')).toBeNull();
   });
 });

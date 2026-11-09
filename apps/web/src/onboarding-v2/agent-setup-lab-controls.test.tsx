@@ -4,8 +4,9 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
 import { AgentSetupLabPage } from "./agent-setup-lab-page.js";
 import { deferred } from "./agent-setup-test-fixtures.js";
@@ -17,11 +18,12 @@ function mockBrowserApi(): void {
 
 function renderLabPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const subject = (
     <QueryClientProvider client={queryClient}>
       <AgentSetupLabPage />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  return renderInRouter(subject);
 }
 
 async function openControls(): Promise<void> {
@@ -97,7 +99,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("agent setup lab controls", () => {
   it("names the runtime state the preparation screen is actually showing", async () => {
-    renderLabPage();
+    await renderLabPage();
 
     await chooseOption("Screen state", "Runtime report missing");
     expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
@@ -114,7 +116,7 @@ describe("agent setup lab controls", () => {
   });
 
   it("recognises a Computer that belongs to another Account as the replace checkpoint", async () => {
-    renderLabPage();
+    await renderLabPage();
     await chooseOption("Screen state", "Replace computer");
     await openFineTuning();
     // With several owned Computers the choice stays open, so the rebind state is what is on screen.
@@ -122,14 +124,14 @@ describe("agent setup lab controls", () => {
 
     expect(
       await screen.findByText(
-        "Previous Mac belongs to another account. Choose a computer from this account for Reviewer.",
+        "Previous Mac belongs to another account. Its binding to Reviewer cannot be replaced. Create a new Agent to use a different computer.",
       ),
     ).toBeTruthy();
     expect(screenState()).toBe("Replace computer");
   });
 
   it("injects one observation failure at a time and clears it on Reset", async () => {
-    renderLabPage();
+    await renderLabPage();
     await chooseOption("Screen state", "Install Runtime");
     await openFineTuning();
 
@@ -161,7 +163,7 @@ describe("agent setup lab controls", () => {
   });
 
   it("counts an inventory override only while it differs from the scenario default", async () => {
-    renderLabPage();
+    await renderLabPage();
     await chooseOption("Screen state", "Connect computer");
     await openFineTuning();
     expect(screen.getByRole("combobox", { name: "Computers on the account" }).textContent?.trim()).toBe(
@@ -177,7 +179,7 @@ describe("agent setup lab controls", () => {
   });
 
   it("runs the pending events on its own once automation is switched on", async () => {
-    renderLabPage();
+    await renderLabPage();
     await chooseOption("Screen state", "Connect messaging");
     fireEvent.click(await screen.findByRole("button", { name: /Lark/ }));
     await openControls();
@@ -191,7 +193,7 @@ describe("agent setup lab controls", () => {
   }, 15_000);
 
   it("simulates a refused authorization from the pending event controls", async () => {
-    renderLabPage();
+    await renderLabPage();
     await chooseOption("Screen state", "Connect messaging");
     fireEvent.click(await screen.findByRole("button", { name: /Lark/ }));
     await openControls();
@@ -200,18 +202,22 @@ describe("agent setup lab controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Simulate authorization failure" }));
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Simulate authorization failure" })).toBeNull();
     expect(screenState()).toBe("Needs recovery");
   });
 
-  it("falls back to the new-computer journey when Back leaves a creation-only scenario", async () => {
-    renderLabPage();
+  it("falls back to the new-computer journey when Screen leaves a creation-only scenario", async () => {
+    await renderLabPage();
     await openControls();
     await chooseOption("Screen", "Name & Runtime");
     expect(await screen.findByRole("heading", { name: "Create your agent" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await chooseOption("Screen", "Choose location");
 
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     await waitFor(() =>
@@ -221,7 +227,7 @@ describe("agent setup lab controls", () => {
   });
 
   it("skips account admission for an additional Agent created in the Lab", async () => {
-    renderLabPage();
+    await renderLabPage();
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));

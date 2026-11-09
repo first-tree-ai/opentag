@@ -24,26 +24,42 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { RuntimeDispatchAdmission } from "../../runtime/runtime-domain-owner.js";
 import {
   type CloudSessionWorkEnvelope,
   type CloudWorkAllocation,
   parseCloudSessionWorkEnvelope,
+  runtimeDurableRecordFromRow,
 } from "../../runtime/runtime-durable-work-store.js";
+import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
-import type {
-  RuntimeExecutionRegistryPort,
-  SessionCliCloudProofAuthority,
-  SessionCliCloudProofConnection,
-  SessionCliProofService,
+import {
+  type RuntimeExecutionRegistryPort,
+  type SessionCliCloudProofAuthority,
+  type SessionCliCloudProofConnection,
+  SessionCliProofError,
+  type SessionCliProofService,
 } from "../sessions/session-cli-proof-service.js";
 import type {
   CloudSessionMessageDeliveryInput,
   CloudSessionMessageOutcome,
+  RunOutcomeNoticeInput,
+  RunOutcomeNotifier,
 } from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
+import {
+  cloudConnectionSocket,
+  isExactCloudConnection,
+  recordCloudActivity,
+  resolveCloudRuntimeModel,
+  revokeCloudModelGrant,
+  sendToCloudConnection,
+} from "./cloud-runner-helpers.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { CloudCapacityExceededError } from "./errors.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
@@ -89,6 +105,13 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_ENSURE_TIMEOUT_MS = 20_000;
 /** Grant transport allowance on top of the Turn budget (mirrors the IM delivery owner). */
 const CLOUD_SESSION_GRANT_TRANSPORT_MS = 30_000;
+/**
+ * Bounded Server-side redelivery of one creator Run outcome notice. The settlement ack waits for
+ * these attempts, so the Runner's journaled settlement stays the replay owner until the notice
+ * has a final answer; every attempt reuses the same deterministic notice row.
+ */
+const RUN_OUTCOME_NOTICE_ATTEMPTS = 3;
+const RUN_OUTCOME_NOTICE_RETRY_MS = 30_000;
 /** Non-terminal durable work statuses: every one of them keeps the reclaim/save barrier. */
 const UNSETTLED_DURABLE_STATUSES = ["accepted", "running", "retryable"] as const;
 
@@ -111,12 +134,7 @@ export interface CloudSessionDurableWorkPort {
     kind: RuntimeDurableWorkRecord["kind"],
     key: string,
   ): Promise<RuntimeDurableWorkRecord | undefined>;
-  /**
-   * Compare-and-set custody replacement for a superseded Session-message record: replaces the row
-   * with the fresh attempt's record only while the stored row still equals the exact record the
-   * owner validated before its transaction. Absent only in degraded/test fixtures: custody
-   * replacement then fails closed instead of borrowing a stale record.
-   */
+  /** Exact-record CAS for custody replacement and settlement; absent ports fail closed. */
   replaceSessionMessageRecord?(
     computerId: string,
     expected: RuntimeDurableWorkRecord,
@@ -170,6 +188,10 @@ export function createSessionCliCloudProofAuthority(input: {
       return false;
     },
     registerExecution: ({ connectionId, executionId, proofId, sessionId }) => {
+      const execution = input.registry.get(executionId);
+      if (!execution || execution.connectionId !== connectionId || execution.sessionId !== sessionId) {
+        throw new SessionCliProofError("runtime_unavailable", "The Session Cloud execution is unavailable");
+      }
       const existing = bySession.get(sessionId);
       const entry: ProofExecutionEntry =
         existing && existing.proofId === proofId
@@ -211,6 +233,9 @@ export function createCloudSourceConnectionVerifier(
 /** The exact allocation identity a tracked entry belongs to; reuses the durable envelope shape. */
 type TrackedAllocation = CloudWorkAllocation;
 
+/** One settlement handler's own custody hold; see `CloudSessionWorkTracker.holdSettlement`. */
+export type SettlementCustodyToken = symbol;
+
 function trackedAllocationKey(allocation: TrackedAllocation): string {
   return `${allocation.sandboxId}:${allocation.environmentGeneration}:${allocation.resourceName}`;
 }
@@ -226,6 +251,105 @@ function trackedAllocationKey(allocation: TrackedAllocation): string {
  */
 export class CloudSessionWorkTracker {
   readonly #byAllocation = new Map<string, Map<string, { turnId?: string }>>();
+  /**
+   * Settlement custody: terminal Turns whose `session:message:settled:ack` is still withheld while
+   * the creator notice runs (or after the settling connection left before the ack). The Runner
+   * settlement journal on that exact allocation is then the only replay owner, so the allocation
+   * must stay unclaimable until the ack has been handed to its exact connection. Keyed like
+   * `#byAllocation`, so a replacement allocation is never pinned.
+   *
+   * Custody is handler-owned: every settlement handler (the original connection's and each
+   * replay's) holds its own token on the shared `messageId:turnId` entry. A handler whose
+   * terminal commit lost releases only its own token, so a stale CAS loser can never drop the
+   * custody a concurrent replay established for its own still-pending notice and ack.
+   */
+  readonly #settling = new Map<string, Map<string, { sessionId: string; holders: Set<SettlementCustodyToken> }>>();
+
+  /** Hold one exact settlement's custody for the calling handler; the token releases only this hold. */
+  holdSettlement(
+    allocation: TrackedAllocation,
+    sessionId: string,
+    messageId: string,
+    turnId: string,
+  ): SettlementCustodyToken {
+    const key = trackedAllocationKey(allocation);
+    let entries = this.#settling.get(key);
+    if (!entries) {
+      entries = new Map();
+      this.#settling.set(key, entries);
+    }
+    const entryKey = `${messageId}:${turnId}`;
+    let entry = entries.get(entryKey);
+    if (!entry) {
+      entry = { sessionId, holders: new Set() };
+      entries.set(entryKey, entry);
+    }
+    const token: SettlementCustodyToken = Symbol(entryKey);
+    entry.holders.add(token);
+    return token;
+  }
+
+  /**
+   * Release one handler's hold (its terminal commit lost, so it never owned an ack). Other
+   * handlers' holds on the same settlement stay in force.
+   */
+  releaseSettlementHold(
+    allocation: TrackedAllocation,
+    messageId: string,
+    turnId: string,
+    token: SettlementCustodyToken,
+  ): void {
+    const key = trackedAllocationKey(allocation);
+    const entries = this.#settling.get(key);
+    const entryKey = `${messageId}:${turnId}`;
+    const entry = entries?.get(entryKey);
+    if (!entries || !entry) return;
+    entry.holders.delete(token);
+    if (entry.holders.size === 0) entries.delete(entryKey);
+    if (entries.size === 0) this.#settling.delete(key);
+  }
+
+  /**
+   * The settlement's ack reached its exact Runner connection: the Runner deletes its journaled
+   * settlement, so no handler has a replay left to protect and every hold on it ends.
+   */
+  releaseSettlement(allocation: TrackedAllocation, messageId: string, turnId: string): void {
+    const key = trackedAllocationKey(allocation);
+    const entries = this.#settling.get(key);
+    if (!entries) return;
+    entries.delete(`${messageId}:${turnId}`);
+    if (entries.size === 0) this.#settling.delete(key);
+  }
+
+  /** Any settlement custody at all (lets allocation-loss recovery skip pruning cheaply). */
+  get hasAnySettlementCustody(): boolean {
+    return this.#settling.size > 0;
+  }
+
+  /** Settlement custody on this exact allocation (part of the reclaim barrier). */
+  hasSettlementCustody(allocation: TrackedAllocation): boolean {
+    return (this.#settling.get(trackedAllocationKey(allocation))?.size ?? 0) > 0;
+  }
+
+  /** Settlement custody of one Session on any allocation (the Session-wide barrier view). */
+  hasSessionSettlementCustody(sessionId: string): boolean {
+    for (const entries of this.#settling.values()) {
+      for (const entry of entries.values()) if (entry.sessionId === sessionId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Drop custody held on any other generation/resource of this Sandbox: that allocation was
+   * retired with its Runner journal, so its withheld ack can never be delivered or replayed.
+   */
+  pruneRetiredSettlements(current: TrackedAllocation): void {
+    const prefix = `${current.sandboxId}:`;
+    const currentKey = trackedAllocationKey(current);
+    for (const key of [...this.#settling.keys()]) {
+      if (key.startsWith(prefix) && key !== currentKey) this.#settling.delete(key);
+    }
+  }
 
   register(allocation: TrackedAllocation, messageId: string, turnId?: string): void {
     const key = trackedAllocationKey(allocation);
@@ -279,14 +403,21 @@ export class CloudSessionWorkTracker {
 
   /** Clear every generation of one Sandbox (test/restart simulation only). */
   clearSandbox(sandboxId: string): void {
-    for (const key of [...this.#byAllocation.keys()]) {
-      if (key.startsWith(`${sandboxId}:`)) this.#byAllocation.delete(key);
+    for (const map of [this.#byAllocation, this.#settling]) {
+      for (const key of [...map.keys()]) {
+        if (key.startsWith(`${sandboxId}:`)) map.delete(key);
+      }
     }
   }
 
-  /** Approximate liveness for the fast pre-filter: exact allocation identity only. */
+  /**
+   * Approximate liveness for the fast pre-filter: exact allocation identity only. Withheld
+   * settlement custody counts as busy: the Runner journal on this allocation still owns replay.
+   */
   isBusy(allocation: TrackedAllocation): boolean {
-    return (this.#byAllocation.get(trackedAllocationKey(allocation))?.size ?? 0) > 0;
+    return (
+      (this.#byAllocation.get(trackedAllocationKey(allocation))?.size ?? 0) > 0 || this.hasSettlementCustody(allocation)
+    );
   }
 
   /** Any tracked work on any generation of one Sandbox (diagnostics/tests). */
@@ -340,9 +471,12 @@ export interface CloudSessionCollaborationOwnerOptions {
   /** E7 business-activity clock; best-effort, never on heartbeats. */
   noteActivity?: (sandboxId: string) => Promise<void>;
   logger?: Pick<ServiceLogger, "error" | "warn">;
+  performanceLogger?: PerformanceLogger;
   now?: () => number;
   requestTimeoutMs?: number;
   ensureTimeoutMs?: number;
+  /** Test seam for the delay between creator Run outcome notice attempts. */
+  runOutcomeRetryMs?: number;
 }
 
 export type CloudSessionCancelOutcome = {
@@ -381,6 +515,7 @@ class CloudSessionDispatchTimeoutError extends Error {
   constructor() {
     super("The Session message dispatch timed out");
     this.name = "CloudSessionDispatchTimeoutError";
+    markExternalCallTimedOut(this);
   }
 }
 
@@ -399,6 +534,25 @@ function isScheduledCloudDelivery(
   return "scheduledOrigin" in input.message;
 }
 
+function sessionMessageTraceAttributes(
+  outcome: { admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame },
+  attempts: number,
+): Record<string, unknown> {
+  if (!outcome.admitted) {
+    return {
+      status: "not_admitted",
+      attemptCount: attempts,
+      retryCount: Math.max(0, attempts - 1),
+    };
+  }
+  return {
+    status: outcome.receipt.status,
+    ...(outcome.receipt.status === "accepted" ? { turnId: outcome.receipt.turnId } : {}),
+    attemptCount: attempts,
+    retryCount: Math.max(0, attempts - 1),
+  };
+}
+
 export class CloudSessionCollaborationOwner {
   readonly #database: DatabaseClient;
   readonly #fence: CloudRuntimeFence;
@@ -413,6 +567,7 @@ export class CloudSessionCollaborationOwner {
   readonly #allocation?: CloudSessionCollaborationAllocationPort;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   readonly #logger?: Pick<ServiceLogger, "error" | "warn">;
+  readonly #perfLogger?: PerformanceLogger;
   readonly #now: () => number;
   readonly #requestTimeoutMs: number;
   readonly #ensureTimeoutMs: number;
@@ -428,6 +583,13 @@ export class CloudSessionCollaborationOwner {
   >();
   /** Per-target-Session dispatch serialization: one in-flight dispatch keeps same-Session FIFO order. */
   readonly #tails = new Map<string, Promise<unknown>>();
+  readonly #tasks = new Set<Promise<unknown>>();
+  readonly #stop = new AbortController();
+  #runOutcomeNotifier: RunOutcomeNotifier | undefined;
+  readonly #runOutcomeRetryMs: number;
+  /** `${connectionId}:${messageId}` of notices whose settlement ack is still withheld. */
+  readonly #noticesInFlight = new Set<string>();
+  #closing: Promise<void> | undefined;
 
   constructor(options: CloudSessionCollaborationOwnerOptions) {
     this.#database = options.database;
@@ -443,9 +605,43 @@ export class CloudSessionCollaborationOwner {
     this.#allocation = options.allocation;
     this.#noteActivity = options.noteActivity;
     this.#logger = options.logger;
+    this.#perfLogger = options.performanceLogger;
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+    this.#runOutcomeRetryMs = options.runOutcomeRetryMs ?? RUN_OUTCOME_NOTICE_RETRY_MS;
+  }
+
+  /**
+   * Late-bound creator notifier: the collaboration service depends on this owner for Cloud
+   * transport, so composition binds the reverse edge after both exist. Without it, settlement
+   * behaves exactly as before and no notice is sent.
+   */
+  setRunOutcomeNotifier(notifier: RunOutcomeNotifier): void {
+    this.#runOutcomeNotifier = notifier;
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#stop.abort();
+    for (const requestId of this.#pending.keys()) {
+      this.#failPending(requestId, new CloudSessionDispatchUnavailableError());
+    }
+    this.#closing = (async () => {
+      while (this.#tasks.size || this.#tails.size) {
+        await Promise.allSettled([...this.#tasks, ...this.#tails.values()]);
+      }
+    })();
+    return this.#closing;
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#tasks.add(operation);
+    void operation.then(
+      () => this.#tasks.delete(operation),
+      () => this.#tasks.delete(operation),
+    );
+    return operation;
   }
 
   /**
@@ -457,7 +653,7 @@ export class CloudSessionCollaborationOwner {
     return this.#work.isBusy(allocation);
   }
 
-  /** Number of serialized per-Session dispatch tails; bounded by the caller-awaiting HTTP requests. */
+  /** Number of Sessions with a serialized dispatch tail. */
   get activeDispatchTargets(): number {
     return this.#tails.size;
   }
@@ -469,11 +665,21 @@ export class CloudSessionCollaborationOwner {
   async deliver(
     input: CloudSessionDeliveryInput,
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome> {
+    if (this.#stop.signal.aborted) return { status: "unreachable", code: "runtime_not_ready" };
+    signal = signal ? AbortSignal.any([signal, this.#stop.signal]) : this.#stop.signal;
     const { route } = input;
     // Same-Session dispatches are serialized so the Runner journals them in call order (FIFO).
     const tail = this.#tails.get(route.targetSessionId) ?? Promise.resolve();
-    const run: Promise<CloudSessionMessageOutcome> = tail.then(() => this.#deliverSerialized(input, admission));
+    const run: Promise<CloudSessionMessageOutcome> = tail
+      .then(() => this.#deliverSerialized(input, admission, signal))
+      .catch((error: unknown) => {
+        if (signal?.aborted && error === signal.reason) {
+          return { status: "unreachable", code: "delivery_timeout" };
+        }
+        throw error;
+      });
     const next = run.then(
       () => undefined,
       () => undefined,
@@ -488,17 +694,50 @@ export class CloudSessionCollaborationOwner {
   async #deliverSerialized(
     input: CloudSessionDeliveryInput,
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal?: AbortSignal,
   ): Promise<CloudSessionMessageOutcome> {
     const { route, message } = input;
+    signal?.throwIfAborted();
     const runtime = await this.#resolveRuntimeModel(input.runtime);
     if (!runtime) return { status: "unreachable", code: "model_unavailable" };
+    signal?.throwIfAborted();
     const envelope = await this.#loadTargetEnvelope(route.targetSessionId);
     if (!envelope) return { status: "unreachable", code: "outbox_unavailable" };
+    signal?.throwIfAborted();
     // Authoritative retirement runs before placement: accepted work whose Instance is gone can
     // never execute, so it is retired here instead of blocking a replacement allocation forever.
-    await this.reconcileSessionWork(route.targetSessionId);
+    await this.#reconcileSessionWork(route.targetSessionId, signal);
 
-    const ready = await this.#ensureReady(route.targetSessionId);
+    signal?.throwIfAborted();
+    const dispatchRequestId = randomUUID();
+    const ensureReady = () => this.#ensureReady(route.targetSessionId, signal);
+    const ready = await (this.#perfLogger
+      ? this.#perfLogger.traceAsync(
+          {
+            module: "sandboxes",
+            category: "service",
+            operation: "sandbox.allocation.session_message",
+            sessionId: route.targetSessionId,
+            messageId: message.id,
+            dispatchRequestId,
+          },
+          ensureReady,
+          {
+            resultAttributes: (result) =>
+              result.kind === "ready"
+                ? {
+                    allocationOutcome: "ready",
+                    sandboxId: result.sandbox.id,
+                    environmentGeneration: result.sandbox.environmentGeneration,
+                  }
+                : {
+                    allocationOutcome: result.outcome.status,
+                    allocationCode: "code" in result.outcome ? result.outcome.code : undefined,
+                  },
+          },
+        )
+      : ensureReady());
+    signal?.throwIfAborted();
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
@@ -508,7 +747,7 @@ export class CloudSessionCollaborationOwner {
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
       // while its journal and execution dedup stay on the logical messageId. A retry with a stale
       // journaled entry can then be told apart from this attempt instead of timing out silently.
-      requestId: randomUUID(),
+      requestId: dispatchRequestId,
       messageId: message.id,
       ...(scheduled
         ? {
@@ -533,40 +772,49 @@ export class CloudSessionCollaborationOwner {
       resourceName: sandbox.currentResourceName as string,
     };
     this.#work.register(workAllocation, message.id);
+    updateCurrentPerformanceContext({
+      agentId: route.agentId,
+      sessionId: route.targetSessionId,
+      sandboxId: sandbox.id,
+      environmentGeneration: sandbox.environmentGeneration,
+      messageId: message.id,
+      dispatchRequestId,
+    });
     let receipt: RunnerCloudSessionMessageReceivedFrame;
     try {
-      const admitted = await admission(async (onDispatched) => {
-        // Resolved INSIDE the authority admission: the freshest exact fenced connection is the
-        // only legal dispatch target, and the admission's row locks prove the route's authority.
-        const connection = this.#dispatchableConnection(sandbox);
-        if (!connection) throw new CloudSessionDispatchUnavailableError();
-        if (scheduled && connection.sessionCollaborationVersion !== 2) {
-          throw new CloudScheduledOriginUnsupportedError();
-        }
-        const socket = this.#socketFor(connection);
-        if (!socket) throw new CloudSessionDispatchUnavailableError();
-        const receiptPromise = this.#registerPending(connection, request.requestId);
-        if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
-        const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
-          type: "session:message:run",
-          requestId: request.requestId,
-          message: request,
-          sessionKind: envelope.sessionKind,
-          ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
-        });
-        if (!sent) {
-          this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
-          throw new CloudSessionDispatchUnavailableError();
-        }
-        onDispatched();
-        await this.#recordActivity(sandbox.id);
-        return receiptPromise;
-      });
+      let attempts = 0;
+      const admitted = await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "sandbox-runner",
+          operation: "external.sandbox-runner.sessionMessage",
+          agentId: route.agentId,
+          sessionId: route.targetSessionId,
+          sandboxId: sandbox.id,
+          attributes: {
+            environmentGeneration: sandbox.environmentGeneration,
+            messageId: message.id,
+            dispatchRequestId,
+          },
+        },
+        () =>
+          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal, () => {
+            attempts += 1;
+          }),
+        {
+          resultAttributes: (outcome) => sessionMessageTraceAttributes(outcome, attempts),
+          errorAttributes: () => ({
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
+          fallbackErrorCode: "CLOUD_SESSION_DISPATCH_FAILED",
+        },
+      );
       if (!admitted.admitted) {
         this.#work.settleUnassigned(workAllocation, message.id);
         return { status: "unreachable", code: "runtime_unavailable" };
       }
-      receipt = await admitted.result;
+      receipt = admitted.receipt;
     } catch (error) {
       this.#work.settleUnassigned(workAllocation, message.id);
       if (error instanceof CloudSessionDispatchUnavailableError) {
@@ -585,6 +833,75 @@ export class CloudSessionCollaborationOwner {
     return result;
   }
 
+  async #dispatchToRunnerForReceipt(
+    sandbox: typeof sandboxes.$inferSelect,
+    request: SessionMessageDeliveryRequestV3,
+    envelope: CloudSessionTargetEnvelope,
+    scheduled: boolean,
+    admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
+    signal: AbortSignal | undefined,
+    onAttempt: () => void,
+  ): Promise<{ admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame }> {
+    const outcome = await admission((onDispatched) =>
+      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal, onAttempt),
+    );
+    if (!outcome.admitted) return { admitted: false };
+    return { admitted: true, receipt: await outcome.result };
+  }
+
+  async #sendSessionMessageToRunner(
+    sandbox: typeof sandboxes.$inferSelect,
+    request: SessionMessageDeliveryRequestV3,
+    envelope: CloudSessionTargetEnvelope,
+    scheduled: boolean,
+    onDispatched: () => void,
+    signal: AbortSignal | undefined,
+    onAttempt: () => void,
+  ): Promise<RunnerCloudSessionMessageReceivedFrame> {
+    signal?.throwIfAborted();
+    const connection = this.#dispatchableConnection(sandbox);
+    if (!connection) throw new CloudSessionDispatchUnavailableError();
+    if (scheduled && connection.sessionCollaborationVersion < 2) {
+      throw new CloudScheduledOriginUnsupportedError();
+    }
+    const socket = this.#socketFor(connection);
+    if (!socket) throw new CloudSessionDispatchUnavailableError();
+    const receiptPromise = this.#registerPending(connection, request.requestId);
+    if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
+    onAttempt();
+    const send = () =>
+      this.#hub.sendToCurrent(sandbox.id, socket, {
+        type: "session:message:run",
+        requestId: request.requestId,
+        message: request,
+        sessionKind: envelope.sessionKind,
+        ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
+      });
+    const sent = this.#perfLogger
+      ? this.#perfLogger.traceOperation(
+          {
+            module: "sandboxes",
+            category: "service",
+            operation: "sandbox.session_message.send",
+            sandboxId: sandbox.id,
+            sessionId: request.targetSessionId,
+            environmentGeneration: sandbox.environmentGeneration,
+            messageId: request.messageId,
+            dispatchRequestId: request.requestId,
+          },
+          send,
+          { resultAttributes: (sent) => ({ sent }) },
+        )
+      : send();
+    if (!sent) {
+      this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
+      throw new CloudSessionDispatchUnavailableError();
+    }
+    onDispatched();
+    await this.#recordActivity(sandbox.id);
+    return receiptPromise;
+  }
+
   /**
    * The Runner's journaled answer. The receipt is a durable custody claim: the accepted outcome is
    * persisted and the durable work record written only now, BEFORE any permission frame leaves,
@@ -601,7 +918,7 @@ export class CloudSessionCollaborationOwner {
   ): Promise<CloudSessionMessageOutcome> {
     if (receipt.status === "rejected") {
       return receipt.reason === "client_busy"
-        ? { status: "unreachable", code: "capacity" }
+        ? { status: "unreachable", code: "client_busy" }
         : { status: "rejected", code: receipt.reason };
     }
     const connection = this.#fence.connectionForSandbox(sandbox.id);
@@ -883,6 +1200,7 @@ export class CloudSessionCollaborationOwner {
    */
   async #ensureReady(
     targetSessionId: string,
+    signal?: AbortSignal,
   ): Promise<
     | { kind: "ready"; sandbox: typeof sandboxes.$inferSelect }
     | { kind: "unreachable"; outcome: CloudSessionMessageOutcome }
@@ -893,19 +1211,24 @@ export class CloudSessionCollaborationOwner {
     };
     const allocation = this.#allocation;
     let owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+    signal?.throwIfAborted();
     if (!owned) {
       if (!allocation) return notReady;
       const ensured = await allocation.ensureSandbox(targetSessionId).catch(() => undefined);
+      signal?.throwIfAborted();
       if (!ensured) return notReady;
       owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      signal?.throwIfAborted();
       if (!owned) return notReady;
     }
     const row = owned.sandbox;
     if (this.#isRunnerReady(row)) return { kind: "ready", sandbox: row };
     if (!allocation) return notReady;
     const accountId = await this.#accountForSession(targetSessionId);
+    signal?.throwIfAborted();
     if (!accountId) return notReady;
-    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId);
+    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId, signal);
+    signal?.throwIfAborted();
     if (outcome === "restore_required") {
       // Previously used storage with no persistence: allocating would be a blank replacement.
       return { kind: "unreachable", outcome: { status: "rejected", code: "restore_required" } };
@@ -917,6 +1240,7 @@ export class CloudSessionCollaborationOwner {
     }
     if (outcome !== "ready") return notReady;
     const converged = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+    signal?.throwIfAborted();
     if (!converged || !isDispatchReadySandbox(converged.sandbox)) return notReady;
     return { kind: "ready", sandbox: converged.sandbox };
   }
@@ -958,28 +1282,33 @@ export class CloudSessionCollaborationOwner {
     accountId: string,
     sandboxId: string,
     targetSessionId: string,
+    signal?: AbortSignal,
   ): Promise<IngressAllocationOutcome | "timeout" | "failed" | "capacity"> {
     const controller = new AbortController();
+    const preparationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const convergence = allocation
       .ensureEnvironmentAllocated({ accountId, sandboxId })
-      .then((outcome) =>
-        outcome === "pending" || outcome === "ready"
-          ? this.#waitForRunnerReady(targetSessionId, controller.signal)
-          : outcome,
-      );
-    // A rejected convergence is transient here: the durable reservation stays retryable.
-    void convergence.catch(() => {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_ALLOCATION_FAILED", sandboxId },
-        "Cloud Session Sandbox allocation convergence failed; the input stays retryable",
-      );
-    });
+      .then((outcome) => {
+        preparationSignal.throwIfAborted();
+        return outcome === "pending" || outcome === "ready"
+          ? this.#waitForRunnerReady(targetSessionId, preparationSignal)
+          : outcome;
+      })
+      .catch((error: unknown): "failed" | "capacity" => {
+        if (!preparationSignal.aborted || error !== preparationSignal.reason) {
+          this.#logger?.warn(
+            { code: "CLOUD_SESSION_ALLOCATION_FAILED", sandboxId },
+            "Cloud Session Sandbox allocation convergence failed; the input stays retryable",
+          );
+        }
+        signal?.throwIfAborted();
+        return error instanceof CloudCapacityExceededError ? "capacity" : "failed";
+      });
+    this.#track(convergence);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        convergence.catch((error): "failed" | "capacity" =>
-          error instanceof CloudCapacityExceededError ? "capacity" : "failed",
-        ),
+        convergence,
         new Promise<"timeout">((resolve) => {
           timer = setTimeout(() => resolve("timeout"), this.#ensureTimeoutMs);
           timer.unref?.();
@@ -995,6 +1324,7 @@ export class CloudSessionCollaborationOwner {
   async #waitForRunnerReady(targetSessionId: string, signal: AbortSignal): Promise<IngressAllocationOutcome> {
     while (!signal.aborted) {
       const owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      if (signal.aborted) return "stopped";
       if (!owned || owned.sandbox.lifecycle === "releasing") return "stopped";
       if (this.#isRunnerReady(owned.sandbox)) return "ready";
       try {
@@ -1126,6 +1456,12 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     frame: RunnerCloudSessionMessageReceivedFrame,
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      ...(frame.status === "accepted" ? { turnId: frame.turnId } : {}),
+    });
     if (!this.#isExactConnection(connection)) return;
     // The pending dispatch correlates by its unique request-attempt identity; a receipt for any
     // older attempt (or a reconnect re-announcement) falls through to the re-announcement path.
@@ -1144,6 +1480,12 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     frame: Extract<RunnerCloudSessionMessageReceivedFrame, { status: "accepted" }>,
   ): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      turnId: frame.turnId,
+    });
     const row = await this.#loadMessageAuthority(frame.messageId);
     if (!this.#isExactConnection(connection)) return;
     if (!row || row.targetSessionId !== connection.scope.sessionId) {
@@ -1249,7 +1591,7 @@ export class CloudSessionCollaborationOwner {
     if (frame.phase === "started") return;
     // A downgraded Runner retains accepted custody, but receives no execution grant for a
     // scheduled entry until a v2 reconnect can understand its journal and managed input.
-    if (scheduled && connection.sessionCollaborationVersion !== 2) return;
+    if (scheduled && connection.sessionCollaborationVersion < 2) return;
     if (row.bindingStatus !== "active") {
       // A transient IM reauthorization pauses new grants but never erases accepted custody: keep
       // the entry pending; the restored authority re-handshakes the Runner and re-announces.
@@ -1295,6 +1637,12 @@ export class CloudSessionCollaborationOwner {
    * falsely acked, so the Runner keeps its immutable result and replays it on reconnect.
    */
   async handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void> {
+    updateCurrentPerformanceContext({
+      computerId: connection.computerId,
+      sessionId: connection.scope.sessionId,
+      sandboxId: connection.scope.sandboxId,
+      turnId: frame.turnId,
+    });
     if (!this.#isExactConnection(connection)) return;
     // The request id is per-attempt correlation, not evidence: the durable fence is the exact
     // record keyed by message id plus the envelope's Turn and allocation identity.
@@ -1310,24 +1658,110 @@ export class CloudSessionCollaborationOwner {
     ) {
       return;
     }
-    const removed = this.#work.settle(connection.scope, frame.messageId);
-    if (removed?.turnId) this.#revokeGrant(removed.turnId);
+    // Both a new and a replayed identical commit may notify: the notice id is deterministic, so a
+    // replay after a lost notice repairs it and a replay after a delivered notice is a no-op.
+    const notice = this.#runOutcomeNotifier ? runOutcomeNotice(frame, envelope, connection) : undefined;
+    // Settlement custody is held BEFORE the durable row turns terminal: from that commit until the
+    // withheld ack reaches the exact Runner, the Runner journal on this allocation is the only
+    // replay owner, and no claim may observe a gap between the two barriers.
+    const hold = notice
+      ? this.#work.holdSettlement(connection.scope, connection.scope.sessionId, frame.messageId, frame.turnId)
+      : undefined;
     const outcome = settledOutcome(frame.outcome);
-    const committed = await this.#terminalizeDurable({
-      ...outcome,
-      computerId: connection.computerId,
-      messageId: frame.messageId,
-      sessionId: connection.scope.sessionId,
-    });
-    if (!committed) return;
-    this.#sendToConnection(connection, {
+    const committed = await this.#terminalizeDurable(
+      {
+        ...outcome,
+        computerId: connection.computerId,
+        messageId: frame.messageId,
+      },
+      existing,
+    );
+    if (!committed) {
+      // Only this handler's own hold: a concurrent replay that won the commit keeps its custody
+      // until its own exact ack is handed off.
+      if (hold) this.#work.releaseSettlementHold(connection.scope, frame.messageId, frame.turnId, hold);
+      return;
+    }
+    this.#work.settleTurn(connection.scope, frame.messageId, frame.turnId);
+    this.#revokeGrant(frame.turnId);
+    const ack = {
       type: "session:message:settled:ack",
       messageId: frame.messageId,
       requestId: frame.requestId,
       status: committed,
       turnId: frame.turnId,
-    });
+    } as const;
+    if (notice) {
+      /*
+       * The ack lets the Runner delete its only durable copy of this settlement, and the notice's
+       * source authority is this exact live connection. So the ack waits until the notice has a
+       * final answer (or its bounded attempts are spent) and is sent only on the still-current
+       * connection; a detach, supersession, or Server stop before then leaves the settlement
+       * journaled, and the Runner replays it to the next connection, which notifies again under
+       * the same notice id. The wait runs off the frame loop. Until the ack is handed to the exact
+       * connection, the settlement custody above keeps this allocation out of idle/borrow claims;
+       * a withheld ack keeps it held for the replay.
+       */
+      const inFlight = `${connection.connectionId}:${frame.messageId}`;
+      if (!this.#noticesInFlight.has(inFlight)) {
+        this.#noticesInFlight.add(inFlight);
+        void this.#track(
+          this.#notifyThenAcknowledge(connection, notice, ack).finally(() => this.#noticesInFlight.delete(inFlight)),
+        );
+      }
+    } else {
+      this.#sendToConnection(connection, ack);
+    }
     await this.#recordActivity(connection.scope.sandboxId);
+  }
+
+  async #notifyThenAcknowledge(
+    connection: CloudConnectionRecord,
+    notice: RunOutcomeNoticeInput,
+    ack: Extract<Parameters<RunnerHub["sendToCurrent"]>[2], { type: "session:message:settled:ack" }>,
+  ): Promise<void> {
+    if ((await this.#notifyRunOutcome(notice)) === "aborted") return;
+    if (!this.#isExactConnection(connection) || !this.#sendToConnection(connection, ack)) {
+      // Custody stays held on this allocation: the replayed settlement's own final ack releases
+      // it, and allocation retirement drops it with the journal.
+      this.#logger?.warn(
+        { code: "CLOUD_SESSION_RUN_OUTCOME_ACK_WITHHELD", messageId: notice.messageId },
+        "The settling Runner connection changed before the Run outcome notice finished; the settlement stays journaled for replay",
+      );
+      return;
+    }
+    this.#work.releaseSettlement(connection.scope, ack.messageId, ack.turnId);
+  }
+
+  /** `final` once the notice has a final answer or its bounded attempts are spent. */
+  async #notifyRunOutcome(notice: RunOutcomeNoticeInput): Promise<"final" | "aborted"> {
+    const notifier = this.#runOutcomeNotifier;
+    if (!notifier) return "final";
+    for (let attempt = 1; attempt <= RUN_OUTCOME_NOTICE_ATTEMPTS; attempt += 1) {
+      if (this.#stop.signal.aborted) return "aborted";
+      let status: Awaited<ReturnType<RunOutcomeNotifier["notifyRunOutcome"]>>;
+      try {
+        status = await notifier.notifyRunOutcome(notice);
+      } catch (error) {
+        this.#logger?.warn(
+          { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_FAILED", messageId: notice.messageId, err: error },
+          "The internal Session Run outcome notice could not be processed",
+        );
+        status = "retry";
+      }
+      if (status !== "retry") return "final";
+      if (attempt === RUN_OUTCOME_NOTICE_ATTEMPTS) break;
+      try {
+        await delay(this.#runOutcomeRetryMs, undefined, { signal: this.#stop.signal });
+      } catch {
+        return "aborted";
+      }
+    }
+    this.#logger?.warn(
+      { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: notice.messageId },
+      "The internal Session Run outcome notice was not accepted by its creator",
+    );
+    return "final";
   }
 
   #rejectReceipt(
@@ -1352,7 +1786,9 @@ export class CloudSessionCollaborationOwner {
    * Evaluated inside the Sandbox claim transaction. A record whose allocation was retired or
    * replaced is not a barrier: its Runner journal is gone, so it can never execute and must not
    * pin a replacement environment. Records without the Cloud envelope (legacy Local shape) stay
-   * conservative.
+   * conservative. A terminal record whose settlement ack is still withheld (creator notice in
+   * flight, or the settling connection left before the ack) also blocks its exact allocation:
+   * the Runner journal there is the notice's only replay owner until that ack is delivered.
    */
   async hasUnsettledSessionWork(input: {
     allocation?: CloudWorkAllocation;
@@ -1360,10 +1796,24 @@ export class CloudSessionCollaborationOwner {
     transaction?: DatabaseTransaction;
   }): Promise<boolean> {
     const executor = input.transaction ?? this.#database;
+    /*
+     * A withheld settlement ack: the durable row is already terminal, but the Runner journal on
+     * this exact allocation is still the creator notice's only replay owner. A settlement handler
+     * acquires custody BEFORE its terminal commit, so the durable read below and this custody
+     * check together leave no gap only when custody is (re)checked AFTER the read: a row the read
+     * saw as terminal was terminalized after its custody was held, and only the exact ack (which
+     * lets the Runner delete its journal) or allocation retirement releases that custody. The
+     * early check is just a fast path; every negative answer re-checks custody after the awaits.
+     */
+    const hasCustody = () =>
+      input.allocation
+        ? this.#work.hasSettlementCustody(input.allocation)
+        : this.#work.hasSessionSettlementCustody(input.sessionId);
+    if (hasCustody()) return true;
     // Only records written under the Session's own placement Computer are authoritative: a Local
     // runtime HTTP writer must never be able to inject work into a Cloud Session's barrier scope.
     const computerId = await this.#sessionComputerId(input.sessionId, executor);
-    if (!computerId) return false;
+    if (!computerId) return hasCustody();
     const rows = await executor
       .select({ payload: runtimeDurableWork.payload })
       .from(runtimeDurableWork)
@@ -1376,12 +1826,14 @@ export class CloudSessionCollaborationOwner {
         ),
       );
     const allocation = input.allocation;
-    if (!allocation) return rows.length > 0;
-    return rows.some(({ payload }) => {
-      const envelope = parseCloudSessionWorkEnvelope(payload);
-      if (!envelope) return true;
-      return allocationMatches(envelope.allocation, allocation);
-    });
+    const unsettled = allocation
+      ? rows.some(({ payload }) => {
+          const envelope = parseCloudSessionWorkEnvelope(payload);
+          if (!envelope) return true;
+          return allocationMatches(envelope.allocation, allocation);
+        })
+      : rows.length > 0;
+    return unsettled || hasCustody();
   }
 
   /**
@@ -1390,17 +1842,21 @@ export class CloudSessionCollaborationOwner {
    * journal lived in that Instance), so it is terminalized conservatively as failed. Timeout is
    * never used as evidence, and terminal work is never replayed. Returns the retired count.
    */
-  async reconcileSessionWork(sessionId: string): Promise<number> {
+  reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
+    if (this.#stop.signal.aborted) return Promise.resolve(0);
+    const activeSignal = signal ? AbortSignal.any([signal, this.#stop.signal]) : this.#stop.signal;
+    return this.#track(this.#reconcileSessionWork(sessionId, activeSignal));
+  }
+
+  async #reconcileSessionWork(sessionId: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     const store = this.#durableWork;
     if (!store) return 0;
     const computerId = await this.#sessionComputerId(sessionId);
+    signal?.throwIfAborted();
     if (!computerId) return 0;
     const rows = await this.#database
-      .select({
-        computerId: runtimeDurableWork.computerId,
-        payload: runtimeDurableWork.payload,
-        recordKey: runtimeDurableWork.recordKey,
-      })
+      .select()
       .from(runtimeDurableWork)
       .where(
         and(
@@ -1410,10 +1866,20 @@ export class CloudSessionCollaborationOwner {
           like(runtimeDurableWork.recordKey, `${sessionId}:%`),
         ),
       );
-    if (rows.length === 0) return 0;
+    if (rows.length === 0 && !this.#work.hasAnySettlementCustody) return 0;
+    signal?.throwIfAborted();
     const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    if (sandbox?.currentResourceName) {
+      this.#work.pruneRetiredSettlements({
+        sandboxId: sandbox.id,
+        environmentGeneration: sandbox.environmentGeneration,
+        resourceName: sandbox.currentResourceName,
+      });
+    }
+    if (rows.length === 0) return 0;
     let retired = 0;
     for (const row of rows) {
+      signal?.throwIfAborted();
       const envelope = parseCloudSessionWorkEnvelope(row.payload);
       if (!envelope) continue;
       const allocation = envelope.allocation;
@@ -1424,13 +1890,16 @@ export class CloudSessionCollaborationOwner {
         sandbox.currentResourceName === allocation.resourceName;
       if (current) continue;
       const messageId = row.recordKey.slice(sessionId.length + 1);
-      const committed = await this.#terminalizeDurable({
-        code: "allocation_retired",
-        computerId: row.computerId,
-        messageId,
-        sessionId,
-        status: "failed",
-      });
+      const committed = await this.#terminalizeDurable(
+        {
+          code: "allocation_retired",
+          computerId: row.computerId,
+          messageId,
+          status: "failed",
+        },
+        runtimeDurableRecordFromRow(row),
+        signal,
+      );
       if (committed) {
         retired += 1;
         // Clear the in-memory picture for the exact retired Turn only: a newer attempt of the
@@ -1457,24 +1926,21 @@ export class CloudSessionCollaborationOwner {
     return store.read(computerId, "session-message", durableKey(sessionId, messageId));
   }
 
-  /**
-   * Terminalize one durable record after a verified fact. Only monotonic transitions are written;
-   * a missing record or an identical already-terminal record is reported, while a conflicting
-   * terminal state is never overwritten and never acked.
-   */
-  async #terminalizeDurable(input: {
-    computerId: string;
-    sessionId: string;
-    messageId: string;
-    status: "succeeded" | "failed";
-    code?: string;
-  }): Promise<"recorded" | "already_recorded" | undefined> {
+  /** Commit against the validated record; identical terminal results remain replayable. */
+  async #terminalizeDurable(
+    input: {
+      computerId: string;
+      messageId: string;
+      status: "succeeded" | "failed";
+      code?: string;
+    },
+    existing: RuntimeDurableWorkRecord,
+    signal?: AbortSignal,
+  ): Promise<"recorded" | "already_recorded" | undefined> {
     const store = this.#durableWork;
     if (!store) return undefined;
-    const key = durableKey(input.sessionId, input.messageId);
     try {
-      const existing = await store.read(input.computerId, "session-message", key);
-      if (!existing) return undefined;
+      signal?.throwIfAborted();
       if (isTerminalDurable(existing.status)) {
         return existing.status === input.status && existing.lastError?.code === input.code
           ? "already_recorded"
@@ -1497,9 +1963,10 @@ export class CloudSessionCollaborationOwner {
       } else {
         delete next.lastError;
       }
-      await store.write(input.computerId, next);
-      return "recorded";
+      const written = await store.replaceSessionMessageRecord?.(input.computerId, existing, next);
+      return written ? "recorded" : undefined;
     } catch (error) {
+      signal?.throwIfAborted();
       this.#logger?.warn(
         { code: "CLOUD_SESSION_DURABLE_SETTLE_FAILED", messageId: input.messageId, err: error },
         "Durable Session work could not be terminalized; the reclaim barrier stays conservative",
@@ -1520,20 +1987,40 @@ export class CloudSessionCollaborationOwner {
    * Durable-only work (for example after a Server restart) is cancelled too, not just the tracked
    * in-memory messages.
    */
-  async cancelSessionMessages(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
+  cancelSessionMessages(sessionId: string, target?: AgentSessionStopTarget): Promise<CloudSessionCancelOutcome[]> {
+    if (this.#stop.signal.aborted) return Promise.resolve([]);
+    return this.#track(this.#cancelAdmittedSessionMessages(sessionId, target));
+  }
+
+  async #cancelAdmittedSessionMessages(
+    sessionId: string,
+    target?: AgentSessionStopTarget,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    if (target && target.sessionId !== sessionId) return [];
+    const outcomes = target
+      ? await withAgentSessionStopAuthority(this.#database, target, (executor) =>
+          this.#cancelSessionMessages(sessionId, executor),
+        )
+      : await this.#cancelSessionMessages(sessionId, this.#database);
+    if (!outcomes) return [];
+    await this.#reconcileSessionWork(sessionId);
+    return outcomes;
+  }
+
+  async #cancelSessionMessages(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<CloudSessionCancelOutcome[]> {
     const outcomes: CloudSessionCancelOutcome[] = [];
-    const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    const sandbox = await loadSandboxRecordBySessionId(executor, sessionId);
     if (sandbox) {
       const record = this.#fence.connectionForSandbox(sandbox.id);
-      for (const entry of await this.#pendingSessionMessages(sessionId, sandbox.id)) {
+      for (const entry of await this.#pendingSessionMessages(sessionId, sandbox.id, executor)) {
         outcomes.push(this.#requestCancellation(record, entry));
       }
-      // Only work whose allocation is already authoritatively gone is retired here; every other
-      // record keeps blocking until its exact Runner terminal evidence arrives.
-      await this.reconcileSessionWork(sessionId);
     }
     await this.#proofs
-      ?.revokeForSession(sessionId)
+      ?.revokeForSession(sessionId, executor)
       .catch(() =>
         this.#logger?.warn({ code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", sessionId }, "Session CLI proof revoke failed"),
       );
@@ -1548,10 +2035,11 @@ export class CloudSessionCollaborationOwner {
   async #pendingSessionMessages(
     sessionId: string,
     sandboxId: string,
+    executor: DatabaseClient | DatabaseTransaction,
   ): Promise<{ messageId: string; turnId?: string }[]> {
     const pending = new Map<string, { messageId: string; turnId?: string }>();
     for (const entry of this.#work.trackedMessages(sandboxId)) pending.set(entry.messageId, entry);
-    for (const row of await this.#durableWorkRows(sessionId)) {
+    for (const row of await this.#durableWorkRows(sessionId, executor)) {
       const messageId = row.recordKey.slice(sessionId.length + 1);
       if (pending.has(messageId)) continue;
       const envelope = parseCloudSessionWorkEnvelope(row.payload);
@@ -1580,20 +2068,21 @@ export class CloudSessionCollaborationOwner {
   /**
    * Connection loss. Pending dispatches fail synchronously and the Session proof stops
    * authenticating synchronously through the credential registry close that precedes this call
-   * (CloudDeliveryOwner teardown). The durable proof-row cleanup is asynchronous and its failures
-   * are handled here, never at the teardown boundary.
+   * (CloudDeliveryOwner teardown). RunnerConnection retains the returned durable cleanup.
    */
-  detachConnection(connectionId: string): void {
+  detachConnection(connectionId: string): Promise<void> {
     for (const [messageId, pending] of [...this.#pending.entries()]) {
       if (pending.connectionId !== connectionId) continue;
       this.#failPending(messageId, new CloudSessionDispatchUnavailableError());
     }
-    void this.#proofs?.revokeForConnection(connectionId).catch(() => {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", connectionId },
-        "Session CLI proof connection revoke failed",
-      );
-    });
+    return (
+      this.#proofs?.revokeForConnection(connectionId).catch(() => {
+        this.#logger?.warn(
+          { code: "CLOUD_SESSION_PROOF_REVOKE_FAILED", connectionId },
+          "Session CLI proof connection revoke failed",
+        );
+      }) ?? Promise.resolve()
+    );
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -1618,10 +2107,13 @@ export class CloudSessionCollaborationOwner {
   }
 
   /** Non-terminal durable rows for one Session under its own placement Computer. */
-  async #durableWorkRows(sessionId: string): Promise<{ computerId: string; recordKey: string; payload: unknown }[]> {
-    const computerId = await this.#sessionComputerId(sessionId);
+  async #durableWorkRows(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<{ computerId: string; recordKey: string; payload: unknown }[]> {
+    const computerId = await this.#sessionComputerId(sessionId, executor);
     if (!computerId) return [];
-    return this.#database
+    return executor
       .select({
         computerId: runtimeDurableWork.computerId,
         payload: runtimeDurableWork.payload,
@@ -1638,12 +2130,8 @@ export class CloudSessionCollaborationOwner {
       );
   }
 
-  async #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
-    const grants = this.#modelGrants;
-    if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
-    const fallback = await grants.defaultModel();
-    return fallback ? { ...runtime, model: fallback } : undefined;
+  #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
+    return resolveCloudRuntimeModel(runtime, this.#modelGrants, this.#modelBaseUrl);
   }
 
   async #assembleRuntime(sessionId: string): Promise<EffectiveRuntimeSnapshot | undefined> {
@@ -1656,42 +2144,24 @@ export class CloudSessionCollaborationOwner {
   }
 
   #revokeGrant(turnId: string): void {
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
-  async #recordActivity(sandboxId: string): Promise<void> {
-    const note = this.#noteActivity;
-    if (!note) return;
-    try {
-      await note(sandboxId);
-    } catch {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_ACTIVITY_TOUCH_FAILED", sandboxId },
-        "Sandbox business-activity clock update failed",
-      );
-    }
+  #recordActivity(sandboxId: string): Promise<void> {
+    return recordCloudActivity(sandboxId, this.#noteActivity, this.#logger, "CLOUD_SESSION_ACTIVITY_TOUCH_FAILED");
   }
 
   #isExactConnection(connection: CloudConnectionRecord): boolean {
-    return this.#fence.isCurrent(connection.computerId, connection.instanceId, connection.connectionId);
+    return isExactCloudConnection(this.#fence, connection);
   }
 
   #socketFor(connection: CloudConnectionRecord): RunnerControlSocket | undefined {
-    if (this.#fence.connectionForSandbox(connection.scope.sandboxId)?.connectionId !== connection.connectionId) {
-      return undefined;
-    }
-    if (connection.socket) {
-      return this.#hub.isCurrent(connection.scope.sandboxId, connection.socket) ? connection.socket : undefined;
-    }
-    // Fence-only fixtures (tests/recovery snapshots) carry no socket; the hub's current socket is
-    // only acceptable while this exact connection is still the fence's current one (checked above).
-    return this.#hub.currentSocket(connection.scope.sandboxId);
+    return cloudConnectionSocket(this.#fence, this.#hub, connection);
   }
 
   #sendToConnection(connection: CloudConnectionRecord, frame: Parameters<RunnerHub["sendToCurrent"]>[2]): boolean {
-    const socket = this.#socketFor(connection);
-    if (!socket) return false;
-    return this.#hub.sendToCurrent(connection.scope.sandboxId, socket, frame);
+    if (this.#stop.signal.aborted) return false;
+    return sendToCloudConnection(this.#fence, this.#hub, connection, frame);
   }
 }
 
@@ -1763,6 +2233,34 @@ function allocationMatches(left: CloudWorkAllocation, right: CloudWorkAllocation
 }
 
 /** The durable outcome for one acknowledged Runner terminal result; outcomes stay distinguishable. */
+/** The creator notice for one non-completed settlement, or undefined for a completed Run. */
+function runOutcomeNotice(
+  frame: RunnerCloudSessionMessageSettledFrame,
+  envelope: CloudSessionWorkEnvelope,
+  connection: CloudConnectionRecord,
+): RunOutcomeNoticeInput | undefined {
+  if (frame.outcome === "completed") return undefined;
+  const outcome = frame.reason === "turn_timeout" ? "timed_out" : frame.outcome === "failed" ? "failed" : frame.outcome;
+  const reason =
+    frame.reason ??
+    (frame.outcome === "cancelled"
+      ? "turn_cancelled"
+      : frame.outcome === "unknown"
+        ? "turn_state_unknown"
+        : "turn_failed");
+  return {
+    childSessionId: connection.scope.sessionId,
+    messageId: frame.messageId,
+    outcome,
+    reason,
+    source: {
+      computerId: connection.computerId,
+      connectionInstanceId: connection.connectionId,
+      placementGeneration: envelope.request.placementGeneration,
+    },
+  };
+}
+
 function settledOutcome(outcome: RunnerCloudSessionMessageSettledFrame["outcome"]): {
   status: "succeeded" | "failed";
   code?: string;

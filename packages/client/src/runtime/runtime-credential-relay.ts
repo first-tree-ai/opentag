@@ -72,6 +72,7 @@ export interface RuntimeCredentialExecutionSubject {
    * service's own capability was negotiated; the Server grants per its own policy.
    */
   readonly services?: readonly RuntimeExecutionServiceRequest[];
+  readonly contextTree?: import("@opentag/shared").RuntimeContextTreeExecution;
 }
 
 /** Structural data-connection surface so the parent harness can drive the real Relay. */
@@ -189,6 +190,8 @@ export class RuntimeCredentialRelay {
   readonly #serverUrl: string;
   readonly #unsubscribeBusiness: () => void;
   readonly #unsubscribeState: () => void;
+  readonly #options: RuntimeCredentialRelayOptions;
+  #subject?: RuntimeCredentialExecutionSubject;
   #closed = false;
   #data?: RuntimeProxyDataConnectionLike;
   #executionId = "";
@@ -197,6 +200,7 @@ export class RuntimeCredentialRelay {
   #services: readonly RuntimeExecutionService[] = [];
 
   private constructor(options: RuntimeCredentialRelayOptions) {
+    this.#options = options;
     this.#connection = options.connection;
     this.#controlResultTimeoutMs = options.controlResultTimeoutMs ?? DEFAULT_CONTROL_RESULT_TIMEOUT_MS;
     this.#dataFactory = options.dataConnectionFactory ?? defaultRuntimeProxyDataConnectionFactory;
@@ -225,6 +229,14 @@ export class RuntimeCredentialRelay {
     return this.#executionId;
   }
 
+  get agentId(): string {
+    return this.#subject?.agentId ?? "";
+  }
+
+  get contextTreeExecution(): boolean {
+    return this.#subject?.contextTree !== undefined;
+  }
+
   get providers(): readonly RuntimeExecutionProvider[] {
     return this.#providers;
   }
@@ -248,6 +260,24 @@ export class RuntimeCredentialRelay {
     return this.#abort.signal;
   }
 
+  async openContextTree(
+    source: import("@opentag/shared").ContextTreeConnection,
+    signal?: AbortSignal,
+  ): Promise<RuntimeCredentialRelay> {
+    if (!this.#subject || this.#subject.contextTree || this.closed)
+      throw new RuntimeCredentialRelayError("execution_rejected", "A live parent execution is required");
+    return RuntimeCredentialRelay.open(
+      this.#options,
+      {
+        ...this.#subject,
+        runId: randomUUID(),
+        services: [],
+        contextTree: { ...source, parentExecutionId: this.executionId },
+      },
+      AbortSignal.any([this.signal, ...(signal ? [signal] : [])]),
+    );
+  }
+
   /**
    * Open a trusted execution: bounded `execution_not_ready` retry until Server custody
    * accepts, acquire every granted provider, then establish the data channel with a
@@ -260,6 +290,7 @@ export class RuntimeCredentialRelay {
   ): Promise<RuntimeCredentialRelay> {
     const relay = new RuntimeCredentialRelay(options);
     try {
+      relay.#subject = subject;
       await relay.#openExecution(subject, signal);
       await relay.#acquireProviders(signal);
       await relay.#connectData(signal);
@@ -354,6 +385,7 @@ export class RuntimeCredentialRelay {
           runId: subject.runId,
           source: subject.source,
           ...(subject.sandbox ? { sandbox: subject.sandbox } : {}),
+          ...(subject.contextTree ? { contextTree: subject.contextTree } : {}),
           ...(subject.services && subject.services.length > 0 ? { services: [...subject.services] } : {}),
         },
         "runtime:execution:result",

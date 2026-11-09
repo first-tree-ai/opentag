@@ -32,6 +32,7 @@ import { DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import { ScheduleScheduler, ScheduleService, scheduledMessageId } from "../../services/schedules/index.js";
 import { SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
 import { SessionCliProofService } from "../../services/sessions/session-cli-proof-service.js";
+import { stubScheduleScope } from "../support/schedule-scope.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /*
@@ -418,16 +419,20 @@ describe("scheduled reconcile with real Session CLI proof preparation", () => {
         const management = new ScheduleService({
           database: clientB.database,
           owners: new DatabaseAgentOwnerResolver(clientB.database),
-          proofs: { authenticate: () => Promise.reject(new Error("no external proofs")) },
+          proofs: {
+            assertCurrentSource: async () => undefined,
+            lockCurrentSource: async () => undefined,
+            authenticate: () => Promise.reject(new Error("no external proofs")),
+          },
           publicUrl: PUBLIC_URL,
         });
         const mutate = async () => {
-          const scope = {
+          const scope = stubScheduleScope({
             accountId: seedValue.accountId,
             agentId: seedValue.agentId,
             sessionId: seedValue.targetSessionId,
             sessionKind: "channel" as const,
-          };
+          });
           if (mutation === "pause") await management.pauseForAgent(scope, stack.snapshot.scheduleId, 1);
           else if (mutation === "delete") await management.deleteForAgent(scope, stack.snapshot.scheduleId, 1);
           else
@@ -609,7 +614,7 @@ describe("schedule claim against the real database clock", () => {
       })
       .returning();
     if (!staleRow) throw new Error("schedule fixture missing");
-    await expect(scheduler.claimOccurrence(staleRow.id, { allowDispatch: true })).resolves.toEqual({
+    await expect(scheduler.claimOccurrence(staleRow.id, { allowDispatch: true })).resolves.toMatchObject({
       kind: "skipped",
       code: "late",
     });
@@ -670,7 +675,11 @@ describe("dispatch admission races against management mutations", () => {
     const management = new ScheduleService({
       database: clientA.database,
       owners: new DatabaseAgentOwnerResolver(clientA.database),
-      proofs: { authenticate: () => Promise.reject(new Error("no proofs in this suite")) },
+      proofs: {
+        assertCurrentSource: async () => undefined,
+        lockCurrentSource: async () => undefined,
+        authenticate: () => Promise.reject(new Error("no proofs in this suite")),
+      },
       publicUrl: PUBLIC_URL,
     });
     const scheduler = new ScheduleScheduler({
@@ -707,12 +716,12 @@ describe("dispatch admission races against management mutations", () => {
     // queue behind the send mark, never prevent it.
     await sendMarked;
     let pauseSettled = false;
-    const scope = {
+    const scope = stubScheduleScope({
       accountId: seedValue.accountId,
       agentId: seedValue.agentId,
       sessionId: seedValue.targetSessionId,
       sessionKind: "channel" as const,
-    };
+    });
     const pausing = management.pauseForAgent(scope, row.id, 1).then(() => {
       pauseSettled = true;
     });
@@ -754,7 +763,11 @@ describe("dispatch admission races against management mutations", () => {
     const management = new ScheduleService({
       database: clientA.database,
       owners: new DatabaseAgentOwnerResolver(clientA.database),
-      proofs: { authenticate: () => Promise.reject(new Error("no proofs in this suite")) },
+      proofs: {
+        assertCurrentSource: async () => undefined,
+        lockCurrentSource: async () => undefined,
+        authenticate: () => Promise.reject(new Error("no proofs in this suite")),
+      },
       publicUrl: PUBLIC_URL,
     });
     const scheduler = new ScheduleScheduler({
@@ -793,12 +806,12 @@ describe("dispatch admission races against management mutations", () => {
     const sendMarked = stack.nextSendMarked();
     const dispatching = stack.collaboration.dispatchScheduledMessage(claimed.snapshot);
     await sendMarked;
-    const scope = {
+    const scope = stubScheduleScope({
       accountId: seedValue.accountId,
       agentId: seedValue.agentId,
       sessionId: seedValue.targetSessionId,
       sessionKind: "channel" as const,
-    };
+    });
     // Every party runs at once: the dispatch holds its admission until the send mark, the pause
     // and the placement move queue behind the shared lock order, and an unrelated claim proceeds.
     const pausing = management.pauseForAgent(scope, first.id, 1);
@@ -914,7 +927,11 @@ describe("execution authority for scheduled messages (P13, P14)", () => {
     const management = new ScheduleService({
       database: clientA.database,
       owners: new DatabaseAgentOwnerResolver(clientA.database),
-      proofs: { authenticate: () => Promise.reject(new Error("no proofs in this suite")) },
+      proofs: {
+        assertCurrentSource: async () => undefined,
+        lockCurrentSource: async () => undefined,
+        authenticate: () => Promise.reject(new Error("no proofs in this suite")),
+      },
       publicUrl: PUBLIC_URL,
     });
     const scheduler = new ScheduleScheduler({
@@ -961,12 +978,12 @@ describe("execution authority for scheduled messages (P13, P14)", () => {
 
     // Deleting the schedule never revokes the already-accepted message.
     await management.deleteForAgent(
-      {
+      stubScheduleScope({
         accountId: seedValue.accountId,
         agentId: seedValue.agentId,
         sessionId: seedValue.targetSessionId,
         sessionKind: "channel",
-      },
+      }),
       row.id,
       1,
     );

@@ -9,21 +9,12 @@ import { createDiagnosticEnvelope, normalizeError } from "../../observability/di
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { fetchSharedResource } from "../../query/session-cache.js";
-import {
-  CommandBlock,
-  formatRemaining,
-  InstructionBlock,
-  readConnectCodeVerdict,
-  useRemaining,
-} from "../../setup/index.js";
-import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
+import { readConnectCodeVerdict } from "../../setup/index.js";
+import { ConnectCommandWindow } from "./connect-command-window.js";
+
+export { COMPUTER_CONNECT_COMMAND_PLACEHOLDER } from "./connect-command-window.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
-/**
- * A non-command placeholder shown while the Server-derived bootstrap command is being issued.
- * Keeping this channel-neutral prevents a loading state from implying a production package or URL.
- */
-export const COMPUTER_CONNECT_COMMAND_PLACEHOLDER = "[connection command pending]";
 
 export type ComputerConnectIntent =
   | { readonly mode: "create" }
@@ -118,12 +109,17 @@ function logComputerConnectFailure(operation: ComputerConnectOperation, cause: u
   console.warn("[OpenTag] Computer connect failure", diagnostic);
 }
 
-/** The redeemed Computer counts only once the connection bought by that redemption is online. */
+/**
+ * The redeemed Computer counts only once it is online with evidence from after the redemption: a
+ * connection made after it, or a heartbeat after it. Redemption that rotates credentials clears
+ * presence and the old credential's heartbeats are refused, so a later heartbeat comes from a valid
+ * credential; a computer that was already connected (credential kept) proves itself the same way.
+ */
 function isFreshlyConnected(computer: AccountComputerSummary, redeemedAt: string): boolean {
-  return (
-    computer.connectionStatus === "online" &&
-    computer.connectedAt !== null &&
-    Date.parse(computer.connectedAt) >= Date.parse(redeemedAt)
+  if (computer.connectionStatus !== "online") return false;
+  const redeemed = Date.parse(redeemedAt);
+  return [computer.connectedAt, computer.lastSeenAt].some(
+    (observed) => observed !== null && Date.parse(observed) >= redeemed,
   );
 }
 
@@ -537,179 +533,11 @@ export function ComputerConnectPresentation({
   readonly intent: ComputerConnectIntent;
   readonly lifecycle: ComputerConnectLifecycle;
 }) {
-  const { error, issue, state } = lifecycle;
-  const targetName = intent.mode === "repair" ? intent.target.displayName : undefined;
-
-  const comment = targetName
-    ? m.computer_connect_repair_command_comment({ computerName: targetName })
-    : m.computer_connect_create_command_comment();
   const intro =
-    state.kind === "issued" || state.kind === "issuing"
-      ? targetName
-        ? m.computer_connect_repair_command_intro({ computerName: targetName })
-        : executionLocation === "another"
-          ? m.computer_connect_another_intro()
-          : m.computer_connect_create_command_intro()
-      : undefined;
-  return (
-    <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-      {/* Reserved while preparing or displaying the command, so the block does not jump when the
-          countdown arrives. Idle has neither half of the row, and holding 20px of nothing there
-          detached the command block from whatever heading a caller puts above it. */}
-      {intro ? (
-        <div
-          className="ots-command-lead flex items-center justify-between gap-3"
-          data-ui="computer-connect-command-lead"
-        >
-          <p className="text-sm text-kumo-subtle m-0">{intro}</p>
-          <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
-            {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
-          </div>
-        </div>
-      ) : null}
-      <AttemptStatus
-        error={state.kind === "issue-failed" || state.kind === "expired" ? undefined : error}
-        state={state}
-        targetName={targetName}
-      />
-      <ConnectCommandSurface comment={comment} error={error} intent={intent} issue={issue} state={state} />
-    </div>
-  );
-}
-
-function ConnectCommandSurface({
-  comment,
-  error,
-  intent,
-  issue,
-  state,
-}: {
-  readonly comment: string;
-  readonly error?: string;
-  readonly intent: ComputerConnectIntent;
-  readonly issue: () => void;
-  readonly state: ComputerConnectState;
-}) {
-  const labels = {
-    copiedLabel: m.computer_connect_copied(),
-    copyLabel: m.computer_connect_copy(),
-    fallbackHint: m.computer_connect_copy_fallback(),
-  };
-  if (state.kind === "idle") {
-    return (
-      <Button className="w-fit" size="compact" variant="secondary" onClick={issue}>
-        {m.computer_connect_repair_action()}
-      </Button>
-    );
-  }
-  if (state.kind === "issue-failed" || state.kind === "expired") {
-    return (
-      <div className="grid gap-3 text-sm">
-        {error ? (
-          <p role="alert" className="text-kumo-danger">
-            {error}
-          </p>
-        ) : null}
-        <Button className="w-fit" size="compact" variant="secondary" onClick={issue}>
-          {state.kind === "issue-failed" || error ? m.computer_connect_retry_issue() : m.computer_connect_reissue()}
-        </Button>
-      </div>
-    );
-  }
-  if (state.kind === "redeemed") {
-    return <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_connect_registered_help()}</p>;
-  }
-  if (state.kind === "connected") return null;
-  if (state.kind === "issuing") {
-    return (
-      <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
-        <CommandBlock {...labels} command={COMPUTER_CONNECT_COMMAND_PLACEHOLDER} comment={comment} inert />
-      </div>
-    );
-  }
-  const instructions =
     intent.mode === "repair"
-      ? m.computer_connect_recovery_instructions({
-          computerName: intent.target.displayName,
-          computerId: intent.target.computerId,
-          command: state.issued.command,
-        })
-      : m.computer_connect_create_instructions({ command: state.issued.command });
-  return (
-    <InstructionBlock
-      {...labels}
-      key={instructions}
-      instructions={instructions}
-      preview={intent.mode === "repair" ? m.computer_connect_recovery_preview() : m.computer_connect_create_preview()}
-      expansion={{ show: m.computer_instructions_show(), hide: m.computer_instructions_hide() }}
-      label={intent.mode === "repair" ? m.computer_connect_recovery_title() : m.computer_connect_create_title()}
-    />
-  );
-}
-
-function AttemptStatus({
-  error,
-  state,
-  targetName,
-}: {
-  readonly error?: string;
-  readonly state: ComputerConnectState;
-  readonly targetName?: string;
-}) {
-  let content = null;
-  if (error) {
-    content = (
-      <span className="text-kumo-danger" role="alert">
-        {error}
-      </span>
-    );
-  } else if (state.kind === "issuing") {
-    content = (
-      <p className="flex items-center gap-2 text-kumo-subtle">
-        <span aria-hidden="true">
-          <Loader aria-label={m.computer_connect_issuing()} size="sm" />
-        </span>
-        {m.computer_connect_issuing()}
-      </p>
-    );
-  } else if (state.kind === "issued" || state.kind === "redeemed") {
-    content = (
-      <p className="flex items-center gap-2 text-kumo-subtle">
-        <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {state.kind === "redeemed"
-          ? m.computer_connect_registered()
-          : targetName
-            ? m.computer_connect_waiting_repair({ computerName: targetName })
-            : m.computer_connect_waiting_create()}
-      </p>
-    );
-  } else if (state.kind === "connected") {
-    content = (
-      <StatusIndicator
-        label={m.computer_connect_connected({ computerName: state.computer.displayName })}
-        tone="success"
-      />
-    );
-  } else if (state.kind === "expired") {
-    content = <span className="text-kumo-subtle">{m.computer_connect_expired_status()}</span>;
-  }
-  return (
-    <div
-      className={`ots-slot--status flex min-w-0 flex-wrap items-center justify-between gap-2 text-sm ${
-        state.kind === "expired" || state.kind === "redeemed" ? "" : "order-last"
-      }`}
-    >
-      <div aria-live="polite" role="status">
-        {content}
-      </div>
-    </div>
-  );
-}
-
-function Remaining({ expiresAt }: { readonly expiresAt: number }) {
-  return (
-    <span className="text-kumo-subtle">
-      {m.computer_connect_expires_in({ time: formatRemaining(useRemaining(expiresAt)) })}
-    </span>
-  );
+      ? m.computer_connect_repair_command_intro({ computerName: intent.target.displayName })
+      : executionLocation === "another"
+        ? m.computer_connect_another_intro()
+        : m.computer_connect_create_command_intro();
+  return <ConnectCommandWindow intent={intent} intro={intro} lifecycle={lifecycle} />;
 }

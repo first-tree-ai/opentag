@@ -27,7 +27,7 @@ The Client also renders bounded resource metadata from the existing wire field, 
 requests still expose their attachments without downloading them or changing their persisted payload/hash. openTag
 ordinals are labeled separately from provider-native resource IDs and direct the Agent to source-message readback.
 
-- Slack: `slack api files.info --json '{"file":"F..."}'` returns metadata. Download the returned private URL through the
+- Slack: `slack api files.info --data 'file=F...'` returns metadata. Download the returned private URL through the
   configured proxy using literal arguments and the existing scoped `curl` command. The CLI launcher loads credentials
   automatically; do not source the environment file. Re-query once if the execution-scoped
   download handle has expired. Public URLs use existing HTTP tools without adding Slack credentials.
@@ -52,3 +52,33 @@ with bounded diagnostic codes and field paths. They do not produce a two-second 
 keeps its existing retry policy. Aggregate frame overflow is terminal only when the message envelope independently
 exceeds the limit without the mutable Runtime snapshot. Already frozen dispatch payloads, hashes, accepted Turns and
 report replay are unchanged.
+
+## Ordered pending input batches
+
+Local peers negotiate IM delivery/steer version 3; Cloud peers negotiate `imInputVersion: 1` on their
+existing authenticated Runner connection. Older peers receive individual inputs. Both Local and Cloud
+select pending input in provider order (`occurred_at`, revision key, source ID). Consecutive inputs in
+the same Session, thread, attention and reply role merge up to 32 original messages. Text remains at
+most 16 KiB UTF-8, resources at most 16, and the Runtime request at most 64 KiB. Crossing a budget
+starts another batch at an original message boundary. Aggregation adds no truncation; the individual
+message projection and native readback rules still apply.
+
+Each member retains its source and delivery IDs, author, timestamp and native provider reference.
+The dispatch snapshot freezes the ordered member list and hashes before sending. Existing delivery
+rows reserve members in the same transaction, and an exact receipt acknowledges the entire batch
+atomically. A known no-effect release frees the reservation. A timeout keeps the original snapshot
+and cannot authorize repackaging or another native injection. Initial batch members follow their
+Root Turn outcome; later steer batches use the existing failed-Root recovery path. Recovery keeps
+a frozen batch intact when its head or any member cannot be locked. A claim defers to that recovery
+when the Root already has a non-completed report instead of marking the input unknown. Delivery
+reasons may change after a provider edit; frozen member IDs, source IDs, Session and target linkage
+remain the recovery authority.
+
+The first batch starts a Turn. Further batches steer that same running Turn as soon as its active
+connection can accept input, preserving order without waiting for Turn completion. Claude Code
+receives steered input as a stream-json user message on the running process: it joins at the next
+tool boundary, or runs right after the current `result` when no tool call is left, and the Turn
+reports once after the last steered input has started and produced a result. A new request
+requires fresh authority after a known starting/not-running response. An unconfirmed native result
+remains correlated through reconnect. If its Root ends before a receipt proves delivery, it becomes
+an explicit `steer_state_unknown` failure; an exact late successful receipt can still settle it. A steer the runtime refuses before sending anything (`steer_not_sent`) never reached the provider, so it answers `turn_not_running` and runs after the Turn. Any other steer failure stays unknown, since the provider may have taken the input.

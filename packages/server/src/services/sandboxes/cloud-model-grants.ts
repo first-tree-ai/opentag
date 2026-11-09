@@ -73,6 +73,7 @@ const MAX_ISSUED_AT_SKEW_SECONDS = 5;
 const grantScopeShape = {
   jti: z.string().uuid(),
   executionId: z.string().min(1).max(256),
+  deliveryId: z.string().min(1).max(256).optional(),
   sandboxId: z.string().uuid(),
   sessionId: z.string().uuid(),
   model: z.string().min(1).max(128),
@@ -107,6 +108,7 @@ export interface CloudModelGrantIssue {
 
 export interface CloudModelGrantIssueInput {
   executionId: string;
+  deliveryId?: string;
   sandboxId: string;
   sessionId: string;
   model: string;
@@ -225,6 +227,7 @@ export class CloudModelGrantService {
     if (expiresAtMs === undefined) return undefined;
     const scope = CloudModelGrantScopeSchema.safeParse({
       executionId: input.executionId,
+      ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
       jti: randomUUID(),
       model: input.model,
       sandboxId: input.sandboxId,
@@ -348,7 +351,8 @@ export class CloudModelGrantService {
     const sameScope =
       existing.scope.model === input.model &&
       existing.scope.sandboxId === input.sandboxId &&
-      existing.scope.sessionId === input.sessionId;
+      existing.scope.sessionId === input.sessionId &&
+      existing.scope.deliveryId === input.deliveryId;
     if (existing.revoked) {
       // The execution was revoked (connection loss, stop, report, or retirement). Only an
       // explicit recovery rotation may supersede it, and only for the identical execution scope;
@@ -381,6 +385,7 @@ export class CloudModelGrantService {
       if (exp - iat > CLOUD_MODEL_GRANT_MAX_TTL_MS / 1_000) return undefined;
       const claims = CloudModelGrantClaimsSchema.safeParse({
         executionId: verified.payload.executionId,
+        ...(verified.payload.deliveryId !== undefined ? { deliveryId: verified.payload.deliveryId } : {}),
         jti,
         model: verified.payload.model,
         sandboxId: verified.payload.sandboxId,
@@ -394,6 +399,7 @@ export class CloudModelGrantService {
       if (
         !state.claims ||
         state.claims.executionId !== claims.data.executionId ||
+        state.claims.deliveryId !== claims.data.deliveryId ||
         state.claims.model !== claims.data.model ||
         state.claims.sandboxId !== claims.data.sandboxId ||
         state.claims.sessionId !== claims.data.sessionId ||

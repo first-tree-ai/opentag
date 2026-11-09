@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +13,7 @@ const require = createRequire(resolve(root, "e2e/package.json"));
 const { chromium, expect } = require("@playwright/test");
 // biome-ignore lint/correctness/noUndeclaredDependencies: Resolved from the E2E workspace, which declares this dependency.
 const { AxeBuilder } = require("@axe-core/playwright");
-const output = resolve(root, "testing/web-ui/agent-status/output");
+const output = resolve(process.env.OPENTAG_STATUS_REVIEW_OUTPUT ?? resolve(tmpdir(), "opentag-agent-status"));
 const baselineFile = resolve(root, "apps/web/src/features/agents/status-validation-baseline.tsx");
 const entryFile = resolve(root, "apps/web/status-validation.tsx");
 const htmlFile = resolve(root, "apps/web/status-validation.html");

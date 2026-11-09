@@ -1,6 +1,24 @@
 import { z } from "zod";
 import { ContextTreeBranchSchema, ContextTreeConnectionSchema, ContextTreeRepositorySchema } from "./context-tree.js";
 
+export const ContextTreeAvailabilityResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ready"), readOnly: z.boolean() }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: z.enum([
+        "computer_unavailable",
+        "capability_missing",
+        "authentication_required",
+        "github_not_configured",
+        "github_connector_disabled",
+        "github_connector_unsupported",
+      ]),
+    })
+    .strict(),
+]);
+export type ContextTreeAvailabilityResponse = z.infer<typeof ContextTreeAvailabilityResponseSchema>;
+
 export const ContextTreeOperationRequestSchema = z
   .object({
     ...ContextTreeConnectionSchema.shape,
@@ -27,9 +45,10 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
         "computer_unavailable",
         "capability_missing",
         "busy",
-        "pause_required",
         "authentication_required",
         "github_not_configured",
+        "github_connector_disabled",
+        "github_connector_unsupported",
         "permission_denied",
         "invalid_tree",
         "publication_uncertain",

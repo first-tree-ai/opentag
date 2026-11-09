@@ -15,7 +15,12 @@ import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-regi
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
-import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
+import type {
+  LocalSessionBinding,
+  SessionBindingStore,
+  SessionPreparationOptions,
+  SessionPreparationResult,
+} from "./session-binding-store.js";
 import type { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
@@ -65,6 +70,7 @@ export class SessionRuntimeNotPreparedError extends Error {
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
+  readonly cliInvocation?: readonly string[];
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly contextTree?: Pick<ContextTreeManager, "ensureAgent" | "skillPaths">;
   /** Managed CLI directory applied after Provider discovery and execution environment overrides. */
@@ -88,7 +94,10 @@ export interface SessionRuntimeManagerOptions {
    * Optional. Managed Context Tree environment for the trusted CLI child. `undefined` entries
    * unset inherited variables; legacy mode leaves it undefined and keeps ambient Local behavior.
    */
-  readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
+  readonly contextTreeEnvironment?: (
+    sessionId: string,
+    configuration: { cwd: string; sources: EffectiveRuntimeSnapshot["contextTrees"] },
+  ) => Readonly<Record<string, string | undefined>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -105,6 +114,7 @@ export interface SessionRuntimeManagerOptions {
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
   readonly #bindingStore: SessionBindingStore;
   readonly #cliCommand: string;
+  readonly #cliInvocation?: readonly string[];
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #contextTreeBin?: string;
@@ -131,6 +141,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   constructor(options: SessionRuntimeManagerOptions) {
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
+    this.#cliInvocation = options.cliInvocation;
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
@@ -184,9 +195,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return current.proofId !== request.sessionCliProof?.proofId;
   }
 
-  prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
+  prepareSession(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions = {},
+  ): Promise<SessionPreparationResult> {
     this.#assertOpen();
-    const operation = this.#prepareSession(request, hashes);
+    const operation = this.#prepareSession(request, hashes, options);
     this.#prepares.add(operation);
     void operation
       .finally(() => this.#prepares.delete(operation))
@@ -199,10 +214,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   async #prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions,
   ): Promise<SessionPreparationResult> {
-    const prepared = await this.#workspace.prepareSession(request, hashes);
+    const prepared = await this.#workspace.prepareSession(request, hashes, options);
     this.#assertOpen();
-    if (prepared.unresolvedTurn) return prepared;
+    // An unresolved Turn fences preparation unless this preparation resumes exactly that Turn.
+    if (fencedByUnresolvedTurn(prepared, options)) return prepared;
     const snapshot = request.runtime;
     if (!snapshot) throw new Error("A ready Session requires a runtime snapshot");
     if (!this.#providers.registration(snapshot.provider)) {
@@ -266,10 +283,14 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (!managed) throw new SessionRuntimeNotPreparedError();
     await this.#ensureProviderReady(managed.providerId, signal);
     this.#assertOpen();
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(sessionId, {
+      cwd: managed.cwd,
+      sources: managed.snapshot.contextTrees,
+    });
     if (managed.runtime && managed.runtime.state.phase !== "closed") return managed.runtime;
     if (managed.start) return waitForStart(managed.start, signal);
 
-    const start = this.#startRuntime(managed).finally(() => {
+    const start = this.#startRuntime(managed, contextTreeEnvironment).finally(() => {
       /* v8 ignore else -- only the owning start clears its own slot. */
       if (managed.start === start) managed.start = undefined;
       this.#starts.delete(start);
@@ -280,6 +301,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       logger.debug({ code: "runtime_start_failed", error: String(error) }, "Session Runtime start failed");
     });
     return waitForStart(start, signal);
+  }
+
+  /** Whether the Session has a prepared runtime entry on this process. */
+  isPrepared(sessionId: string): boolean {
+    return this.#sessions.has(sessionId);
   }
 
   sessionKind(sessionId: string): "visible" | "internal" {
@@ -293,7 +319,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return this.#sessions.get(sessionId)?.providerId;
   }
 
-  async #startRuntime(managed: ManagedSessionRuntime): Promise<AgentRuntime> {
+  async #startRuntime(
+    managed: ManagedSessionRuntime,
+    contextTreeEnvironment: Readonly<Record<string, string | undefined>> | undefined,
+  ): Promise<AgentRuntime> {
     const provider = this.#providers.registration(managed.providerId);
     /* v8 ignore next -- registrations are immutable for the lifetime of a managed Session. */
     if (!provider) throw new Error(`Agent Runtime provider is not registered: ${managed.providerId}`);
@@ -315,10 +344,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       await managed.eventSink?.(event);
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
-    // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
-    // caches connections per workspace, configured tree set, and Provider while rechecking grants
-    // and attachments. It never throws, so a failure only changes what the prompt reports.
-    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
+    // runs on every Turn admission, and this runs once per Provider Runtime start. Preparation is
+    // local and never syncs; the Agent syncs at task boundaries. It never throws, so a failure only
+    // changes what the prompt reports.
     const contextTree = await prepareContextTree(
       this.#contextTree,
       managed.cwd,
@@ -372,7 +400,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...configurationRoots,
         ],
       },
-      policy: provider.policy(managed.snapshot),
+      policy: { ...provider.policy(managed.snapshot), managedCli: this.#cliInvocation },
       configuration: {
         ...(managed.snapshot.model ? { model: managed.snapshot.model } : {}),
         ...(managed.snapshot.reasoningEffort ? { reasoningEffort: managed.snapshot.reasoningEffort } : {}),
@@ -649,4 +677,8 @@ async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promis
     );
     return [];
   }
+}
+
+function fencedByUnresolvedTurn(prepared: SessionPreparationResult, options: SessionPreparationOptions): boolean {
+  return prepared.unresolvedTurn !== undefined && prepared.unresolvedTurn.turnId !== options.resumeTurnId;
 }

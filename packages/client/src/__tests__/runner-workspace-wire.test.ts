@@ -1,18 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DirectImMessageDeliveryRequest, RunnerWorkspaceObject } from "@opentag/shared";
+import { contextTreeSelector, type DirectImMessageDeliveryRequest, type RunnerWorkspaceObject } from "@opentag/shared";
 import { expect, it, type Mock, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
+import type { RunnerShutdownRecord } from "../runner/shutdown-observer.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
-import { createWorkspaceArchive } from "../runner/workspace-archive.js";
+import { createWorkspaceArchive, restoreWorkspaceArchive } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
+import { cloudContextTreeGatewayFixture } from "./support/cloud-context-tree-gateway.js";
 
 const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
 const sessionId = "5f9a1c3e-2d4b-4e6f-8a1b-9c0d1e2f3a4b";
@@ -38,17 +40,25 @@ interface ProtocolPeerOptions {
   readonly sessionId?: string;
   /** Deterministic save failure: reject the Nth and every later archive upload without storing it. */
   readonly rejectUploadsFrom?: number;
+  readonly rejectUpload?: (sealed: boolean) => boolean;
   readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
+async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const instancePrefix = options.instancePrefix ?? "ots-test";
   const peerSandboxId = options.sandboxId ?? sandboxId;
   const peerSessionId = options.sessionId ?? sessionId;
   let generation = 1;
   let uploads = 0;
+  let writeId: string | undefined;
   let authAttempts = 0;
   let bytes = Buffer.alloc(0);
   let object: RunnerWorkspaceObject = {
@@ -66,7 +76,10 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const readyObjects: RunnerWorkspaceObject[] = [];
   const upload = async (request: IncomingMessage, response: ServerResponse) => {
     uploads += 1;
-    if (options.rejectUploadsFrom !== undefined && uploads >= options.rejectUploadsFrom) {
+    if (
+      (options.rejectUploadsFrom !== undefined && uploads >= options.rejectUploadsFrom) ||
+      options.rejectUpload?.(request.headers["x-opentag-workspace-sealed"] === "true")
+    ) {
       response.writeHead(412).end();
       return;
     }
@@ -90,6 +103,44 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       saved: true,
       sealed: request.headers["x-opentag-workspace-sealed"] === "true",
     };
+    writeId = request.headers["x-opentag-workspace-write-id"] as string | undefined;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const claim = async (request: IncomingMessage, response: ServerResponse) => {
+    const body = await jsonBody(request);
+    const inspection = body.upload as { id: string; generation: string; metageneration: string } | undefined;
+    if (inspection) {
+      const unchanged =
+        inspection.generation === object.generation && inspection.metageneration === object.metageneration;
+      const committed = inspection.id === writeId && object.metageneration === "1";
+      response
+        .writeHead(unchanged || committed ? 200 : 409, { "content-type": "application/json" })
+        .end(JSON.stringify(object));
+      return;
+    }
+    if (object.ownerGeneration < generation || (body.fence && !object.sealed)) {
+      object = {
+        ...object,
+        ownerGeneration: generation,
+        sealed: false,
+        metageneration: String(Number(object.metageneration) + 1),
+      };
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const seal = async (request: IncomingMessage, response: ServerResponse) => {
+    const pins = await jsonBody(request);
+    if (options.rejectUpload?.(true)) {
+      response.writeHead(503).end();
+      return;
+    }
+    if (pins.generation !== object.generation || pins.metageneration !== object.metageneration || object.sealed) {
+      response.writeHead(409).end();
+      return;
+    }
+    object = { ...object, sealed: true, metageneration: String(BigInt(object.metageneration) + 1n) };
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(object));
   };
@@ -101,24 +152,16 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       response.writeHead(403).end();
       return;
     }
-    if (request.url?.endsWith("/claim")) {
-      if (object.ownerGeneration < generation) {
-        object = {
-          ...object,
-          ownerGeneration: generation,
-          sealed: false,
-          metageneration: String(Number(object.metageneration) + 1),
-        };
-      }
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify(object));
-    } else if (request.method === "PUT") {
+    if (request.url?.endsWith("/claim")) await claim(request, response);
+    else if (request.url?.endsWith("/seal")) await seal(request, response);
+    else if (request.method === "PUT") {
       await upload(request, response);
     } else {
       response.setHeader("content-type", "application/octet-stream");
       response.end(bytes);
     }
   };
+
   const http = createServer((request, response) => {
     void serve(request, response).catch(() => response.destroy());
   });
@@ -306,6 +349,104 @@ it("retains unsaved files through rejected auth and renews before saving on a fr
     expect(Number(peer.object().generation)).toBeGreaterThan(Number(saved));
   } finally {
     allowRetry.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("executes new Cloud input after a rejected seal and same-assignment reconnect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-rejected-seal-"));
+  let rejectSeal = true;
+  const peer = await protocolPeer({ rejectUpload: (sealed) => sealed && rejectSeal });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async () => mkdir(workspace, { recursive: true })),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const runWorker = vi.fn(async () => ({
+    code: 0,
+    stderr: "",
+    stdout: `${JSON.stringify({
+      kind: "result",
+      completion: {
+        outcome: "completed",
+        executionEffects: "completed",
+        finalText: "recovered",
+      },
+    })}\n`,
+  }));
+  const stop = new AbortController();
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: "fixture-1",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      cloudTurnSeams: {
+        openExecution: async () => ({ close: async () => undefined, executionDir: "/run/test" }),
+        runWorker,
+      },
+      sleep: async () => undefined,
+    },
+  );
+  try {
+    await peer.wait("runner:ready");
+    await writeFile(join(workspace, "unpublished.txt"), "keep local progress");
+    const baseline = peer.object();
+    const failedSeal = randomUUID();
+    peer.send({ type: "workspace:seal", requestId: failedSeal });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId: failedSeal, ok: false });
+    expect(peer.object()).toEqual(baseline);
+    expect(await readFile(join(workspace, "unpublished.txt"), "utf8")).toBe("keep local progress");
+    rejectSeal = false;
+    peer.disconnect();
+    await peer.wait("auth", 1);
+    expect(await peer.wait("runner:ready", 1)).toMatchObject({ workspaceRestored: true });
+    expect(peer.object().ownerGeneration).toBe(1);
+    const delivery = cloudDeliveryFixture({ sessionId });
+    peer.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    expect(await peer.wait("delivery:received")).toMatchObject({ deliveryId: delivery.deliveryId });
+    peer.send({
+      type: "delivery:verified",
+      requestId: delivery.requestId,
+      status: "verified",
+      model: {
+        baseUrl: "https://server.example.com/api/v1/cloud-model",
+        token: "fixture-model-token-1234567890123456",
+        model: delivery.runtime.model,
+        contextWindow: 64_000,
+        maxTokens: 8_192,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    const frame = await peer.wait("delivery:report");
+    expect(frame.report).toMatchObject({ outcome: "completed", finalText: "recovered" });
+    expect(runWorker).toHaveBeenCalledOnce();
+    const report = frame.report as { turnId: string; resultHash: string };
+    peer.send({
+      type: "delivery:report:ack",
+      requestId: randomUUID(),
+      turnId: report.turnId,
+      resultHash: report.resultHash,
+      status: "recorded",
+    });
+    const seal = randomUUID();
+    peer.send({ type: "workspace:seal", requestId: seal });
+    expect(await peer.wait("workspace:seal:result", 1)).toMatchObject({ requestId: seal, ok: true });
+    expect(peer.object().sealed).toBe(true);
+    expect(await readFile(join(workspace, "unpublished.txt"), "utf8")).toBe("keep local progress");
+  } finally {
     stop.abort();
     await running;
     await peer.close();
@@ -957,6 +1098,7 @@ async function runRebindScenario(input: {
   destroy?: () => Promise<void>;
   /** Test seam replacing the reconnect backoff so reconnects are observable, not timed. */
   sleep?: (ms: number) => Promise<void>;
+  diagnosticSessions?: readonly string[];
 }) {
   const workspace = join(input.root, "workspace");
   const stderr: string[] = [];
@@ -985,6 +1127,15 @@ async function runRebindScenario(input: {
       installSignalHandlers: false,
       signal: input.stop.signal,
       stderr: { write: (chunk: string) => stderr.push(chunk) },
+      ...(input.diagnosticSessions
+        ? {
+            env: {
+              OPENTAG_ENV: "staging",
+              OPENTAG_CLOUD_LATENCY_DIAGNOSTICS: "true",
+              OPENTAG_CLOUD_LATENCY_SESSION_IDS: input.diagnosticSessions.join(","),
+            },
+          }
+        : {}),
       sandboxFactory: () => native as unknown as NativeSandbox,
       ...(input.sleep ? { sleep: input.sleep } : {}),
       ...(input.web
@@ -1461,41 +1612,67 @@ it("fails fatally and stops reconnecting when rebind cleanup cannot delete the n
   }
 });
 
-it("fails closed when a new assignment arrives without a sealed workspace", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-e7-unsealed-"));
-  let httpToken = "fixture-a";
-  const peer = await protocolPeer({
-    httpToken: () => httpToken,
-    authReply: (frame, attempt) => {
-      if (attempt === 1) return undefined;
-      httpToken = "fixture-b";
-      return rebindWelcomeReply(frame);
-    },
-  });
-  const stop = new AbortController();
-  const state = { destroyed: 0, launched: 0 };
-  const { running, stderr } = await runRebindScenario({ root, peer, stop, state });
-  try {
-    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
-    // No seal: the old assignment may still hold unsaved work, so B must never execute. The
-    // refusal is observed on the Runner's own log, with no sleep-based timing assumption.
-    peer.advance();
-    peer.disconnect();
-    await vi.waitFor(
-      () => {
-        expect(stderr.join("")).toContain("refusing a new assignment: the previous workspace was not sealed");
+it.each([
+  { selection: "disabled", diagnosticSessions: [], recordsExpected: false },
+  { selection: "held Session only", diagnosticSessions: [sessionId], recordsExpected: true },
+  { selection: "both Sessions", diagnosticSessions: [sessionId, REBIND_SESSION_B], recordsExpected: true },
+  { selection: "refused Session only", diagnosticSessions: [REBIND_SESSION_B], recordsExpected: false },
+])(
+  "fails closed on unsealed rebind and attributes shutdown to the held Session: $selection",
+  async ({ diagnosticSessions, recordsExpected }) => {
+    const root = await mkdtemp(join(tmpdir(), "opentag-e7-unsealed-"));
+    let httpToken = "fixture-a";
+    const peer = await protocolPeer({
+      httpToken: () => httpToken,
+      authReply: (frame, attempt) => {
+        if (attempt === 1) return undefined;
+        httpToken = "fixture-b";
+        return rebindWelcomeReply(frame);
       },
-      { timeout: 5_000, interval: 50 },
-    );
-    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
-    expect(peer.count("runner:ready")).toBe(0);
-  } finally {
-    stop.abort();
-    await running;
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+    });
+    const stop = new AbortController();
+    const state = { destroyed: 0, launched: 0 };
+    const { running, stderr } = await runRebindScenario({ root, peer, stop, state, diagnosticSessions });
+    try {
+      expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+      // No seal: the old assignment may still hold unsaved work, so B must never execute. The
+      // refusal is observed on the Runner's own log, with no sleep-based timing assumption.
+      peer.advance();
+      peer.disconnect();
+      await vi.waitFor(
+        () => {
+          expect(stderr.join("")).toContain("refusing a new assignment: the previous workspace was not sealed");
+        },
+        { timeout: 5_000, interval: 50 },
+      );
+      expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+      expect(peer.count("runner:ready")).toBe(0);
+    } finally {
+      stop.abort();
+      await running;
+      await peer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+    const records = stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line) as RunnerShutdownRecord)
+      .filter((record) => record.operation === "shutdown.diagnostic");
+    if (!recordsExpected) {
+      expect(records).toEqual([]);
+      return;
+    }
+    expect(records.map((record) => record.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(
+      records.every(
+        (record) =>
+          record.sessionId === sessionId && record.sandboxId === sandboxId && record.environmentGeneration === 1,
+      ),
+    ).toBe(true);
+    expect(records.at(-1)).toMatchObject({ outcome: "completed", diagnosticIncomplete: false });
+  },
+);
 
 it("fails closed when rebind cleanup cannot close the previous web execution", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-e7-cleanup-fail-"));
@@ -1551,3 +1728,68 @@ it("fails closed when rebind cleanup cannot close the previous web execution", {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("restores and finishes a gateway write through actual Runner rebind without host routing state", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "ot-gateway-runner-rebind-")));
+  let token = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => token,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      token = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController(),
+    state = { destroyed: 0, launched: 0 };
+  const { workspace, running } = await runRebindScenario({ root, peer, stop, state });
+  let tree: Awaited<ReturnType<typeof cloudContextTreeGatewayFixture>> | undefined;
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    await writeFile(join(workspace, "session-a.txt"), "A private workspace");
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    const archiveA = join(root, "a.tar.gz"),
+      infoA = await createWorkspaceArchive(workspace, archiveA);
+    await rm(workspace, { recursive: true, force: true });
+    tree = await cloudContextTreeGatewayFixture(join(root, "gateway-fixture"), workspace);
+    const before = tree.gateway();
+    await before.run(["sync", "--tree", contextTreeSelector(tree.sources[0])]);
+    const prepared = JSON.parse(
+      (await before.run(["write", "prepare", "--tree", contextTreeSelector(tree.sources[0])])).stdout,
+    );
+    await writeFile(join(prepared.treeRoot, "b-memory.md"), "---\ntitle: B memory\n---\nRetain Session B.\n");
+    await writeFile(join(workspace, "session-b.txt"), "B assignment");
+    await before.close();
+    const archiveB = join(root, "b.tar.gz");
+    await createWorkspaceArchive(workspace, archiveB);
+    await rm(workspace, { recursive: true, force: true });
+    await restoreWorkspaceArchive(archiveA, workspace, infoA);
+    await mkdir(join(root, "private", "turn-material"), { recursive: true });
+    await writeFile(join(root, "private", "turn-material", "stale-host-routing"), "dispensable A state");
+    peer.seedObject(await readFile(archiveB));
+    peer.advance();
+    peer.disconnect();
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(state.destroyed).toBeGreaterThanOrEqual(1);
+    expect(await readFile(join(workspace, "session-b.txt"), "utf8")).toBe("B assignment");
+    await expect(readFile(join(workspace, "session-a.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(root, "private", "turn-material"))).toEqual([]);
+    const after = tree.gateway({ stateDirectory: join(root, "private", "turn-material", "fresh-routing") });
+    expect(
+      JSON.parse(
+        (await after.run(["write", "finish", prepared.id, "--message", "docs: recovered B", "--publish"])).stdout,
+      ).outcome,
+    ).toBe("published");
+    expect(await tree.git("--git-dir", tree.remote, "show", "main:docs/b-memory.md")).toContain("Retain Session B.");
+    await expect(readFile(tree.hintPath(prepared.id))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(root, "private", "turn-material"))).toEqual([]);
+  } finally {
+    await tree?.close();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60000);

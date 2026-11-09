@@ -39,6 +39,8 @@ export const ErrorReportRequestSchema = z
     environment: shortField.optional(),
     /** Correlates the forwarded tracker event with the server log line that holds the full context. */
     reportId: shortField.optional(),
+    requestId: z.string().min(1).max(256).optional(),
+    traceId: z.string().min(1).max(64).optional(),
     /** The Account this client believed it was signed in as; absent before sign-in. */
     userId: shortField.optional(),
     /** Web only: the matched route template, such as `/agents/:agentId`, which `url` cannot give. */
@@ -157,8 +159,10 @@ const SHORT_METADATA_FIELD_SET: Record<ShortMetadataField, true> = {
   platform: true,
   provider: true,
   reportId: true,
+  requestId: true,
   route: true,
   sessionId: true,
+  traceId: true,
   turnId: true,
   userAgent: true,
   userId: true,

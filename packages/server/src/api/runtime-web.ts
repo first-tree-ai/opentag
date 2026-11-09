@@ -12,7 +12,7 @@ import {
   WebToolErrorEnvelopeSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { createServiceLoggerPort } from "../observability/index.js";
+import { type createServiceLoggerPort, updateCurrentPerformanceContext } from "../observability/index.js";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import { RuntimeWebError } from "../runtime-credentials/web-execution.js";
 import type { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
@@ -111,6 +111,10 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
       const body = parseRequest(WebSearchExecutionRequestSchema, request.body);
       const mismatch = matchBearerExecution(request, reply, body.executionId);
       if (mismatch) return mismatch;
+      updateCurrentPerformanceContext({
+        computerId: gate.computerId,
+        ...options.service.executionContext?.(body.executionId),
+      });
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.search({
           computerId: gate.computerId,
@@ -139,6 +143,10 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
       const body = parseRequest(WebFetchExecutionRequestSchema, request.body);
       const mismatch = matchBearerExecution(request, reply, body.executionId);
       if (mismatch) return mismatch;
+      updateCurrentPerformanceContext({
+        computerId: gate.computerId,
+        ...options.service.executionContext?.(body.executionId),
+      });
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.fetch({
           computerId: gate.computerId,
@@ -247,7 +255,7 @@ function createRuntimeWebAuthPreHandler(
   };
 }
 
-/** Races the auth preHandler against the ingress deadline instead of awaiting it blindly. */
+/** The response timer enforces ingress budget while this hook retains the actual verifier. */
 function boundedAuthPreHandler(
   preHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
 ): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
@@ -258,23 +266,9 @@ function boundedAuthPreHandler(
       sendWebError(reply, abortError(budget));
       return;
     }
-    const auth = preHandler(request, reply);
-    // A blocked verifier may still settle after the deadline; keep its rejection handled.
-    auth.catch(() => undefined);
-    await Promise.race([auth, waitForAbort(budget.controller.signal)]);
+    await preHandler(request, reply);
     if (budget.controller.signal.aborted) sendWebError(reply, abortError(budget));
   };
-}
-
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**

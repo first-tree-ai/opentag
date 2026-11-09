@@ -46,6 +46,7 @@ import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootst
 import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
+import { deferred } from "./support/deferred.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -693,6 +694,60 @@ describe("runner readiness gating", () => {
 });
 
 describe("runner control channel liveness and credential renewal", () => {
+  it.each(["authentication", "renewal"])("joins disconnected Runner %s before route close completes", async (phase) => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, { credentialRenewalIntervalMs: 50 });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const entered = deferred(),
+      resume = deferred();
+    const original = ctx.service.validateRunnerScope.bind(ctx.service);
+    const client = await connectRunner(ctx.address);
+    if (phase === "renewal") {
+      client.send({ type: "auth", requestId: randomUUID(), token });
+      await client.waitFor("server:credential");
+    }
+    const spy = vi.spyOn(ctx.service, "validateRunnerScope").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+    let closed = false;
+    let closing: Promise<void> | undefined;
+    try {
+      if (phase === "authentication") client.send({ type: "auth", requestId: randomUUID(), token });
+      await entered.promise;
+      if (phase === "renewal") {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        expect(spy).toHaveBeenCalledTimes(1);
+      }
+      client.socket.close();
+      await client.closed;
+      const frames = client.frames.length;
+      closing = ctx.app.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(closed).toBe(false);
+      resume.resolve();
+      await closing;
+      expect(client.frames).toHaveLength(frames);
+      expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+    } finally {
+      resume.resolve();
+      client.socket.close();
+      await closing;
+      spy.mockRestore();
+    }
+  });
   it("keeps a healthy idle connection open across more than two heartbeat periods and stays responsive", async () => {
     const accountId = await account();
     const sandbox = await ownedSandbox(accountId);
@@ -1153,8 +1208,59 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     });
     bareApps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    return { ...context, address, owner, fence, grants };
+    return { ...context, app, address, owner, fence, grants };
   }
+
+  it("retains one proof cleanup after a Runner peer disconnects", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const entered = deferred();
+    const release = deferred();
+    const detachConnection = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const stack = await cloudDeliveryStack(accountId, {
+      cloudSession: { detachConnection, handleReceived: async () => undefined, handleSettled: async () => undefined },
+    });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const client = await connectRunner(stack.address);
+    let closing: Promise<void> | undefined;
+    let closed = false;
+    try {
+      client.send({
+        type: "auth",
+        requestId: randomUUID(),
+        token: await stack.tokens.issue({
+          sandboxId: sandbox.sandboxId,
+          sessionId: sandbox.sessionId,
+          environmentGeneration: 1,
+          resourceName: row?.currentResourceName as string,
+        }),
+        cloudDeliveryVersion: 1,
+        sessionCollaborationVersion: 1,
+      });
+      expect((await client.waitFor("auth:result")).ok).toBe(true);
+      await client.waitFor("server:welcome");
+      client.socket.close();
+      await client.closed;
+      await entered.promise;
+      closing = stack.app.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(closed).toBe(false);
+      expect(detachConnection).toHaveBeenCalledOnce();
+      release.resolve();
+      await closing;
+      expect(detachConnection).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      client.socket.close();
+      await closing;
+    }
+  });
 
   async function pendingDelivery(sessionId: string, placementGeneration: number) {
     const messageId = randomUUID();
@@ -1186,6 +1292,34 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     });
     return { deliveryId, messageId };
   }
+
+  it.each([false, true])("negotiates Cloud IM input only with Cloud delivery enabled: %s", async (cloudEnabled) => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId);
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const token = await stack.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    });
+    const client = await connectRunner(stack.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token,
+      imInputVersion: 1,
+      ...(cloudEnabled ? { cloudDeliveryVersion: 1 } : {}),
+    });
+    expect((await client.waitFor("auth:result")).ok).toBe(true);
+    expect((await client.waitFor("server:welcome")).imInputVersion).toBe(cloudEnabled ? 1 : undefined);
+    expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.imInputVersion).toBe(cloudEnabled ? 1 : undefined);
+    client.socket.close();
+    await client.closed;
+    stack.grants.close();
+  });
 
   it("keeps the exact legacy E3 welcome shape and rejects E4 frames without negotiation", async () => {
     const accountId = await account();

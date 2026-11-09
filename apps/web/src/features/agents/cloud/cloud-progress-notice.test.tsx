@@ -10,7 +10,8 @@ import { CloudProgressNotice } from "./cloud-progress-notice.js";
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const OTHER_AGENT = "22222222-2222-4222-8222-222222222222";
 const SESSION = "33333333-3333-4333-8333-333333333333";
-const SAVE_FAILURE = "Some execution progress could not be saved. Your latest changes may be unavailable next time.";
+const SAVE_FAILURE =
+  "Some execution progress could not be saved. Affected conversations may be paused. Contact your administrator for help. Do not resend completed requests.";
 
 function overview(errors: (string | null)[] = [], nextCursor: string | null = null): AgentCloudOverview {
   return {
@@ -60,6 +61,7 @@ it("finds save failures on later pages and gives no resource actions or identifi
   expect(await screen.findByText(SAVE_FAILURE)).toBeTruthy();
   expect(read).toHaveBeenNthCalledWith(1, AGENT, { limit: 100 });
   expect(read).toHaveBeenNthCalledWith(2, AGENT, { limit: 100, cursor: SESSION });
+  expect(screen.queryByRole("link")).toBeNull();
   expect(screen.queryByRole("button")).toBeNull();
   expect(document.body.textContent).not.toMatch(/workspace_save_failed|Runner|Sandbox|33333333|Save and release/);
 });

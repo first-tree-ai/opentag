@@ -1,4 +1,4 @@
-import { type GitHubConnectionStatus, type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
+import { type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
@@ -11,7 +11,8 @@ import {
 } from "../../db/schema/index.js";
 import type { RuntimeGitHubAdmission } from "../../runtime-credentials/github-admission.js";
 import type { RuntimeTaskPolicy, RuntimeTaskPolicyInput } from "../../runtime-credentials/task-policy.js";
-import type { GitHubManagementService } from "../github/github-management-service.js";
+import type { AgentGitHubConnection, AgentGitHubCredentialService } from "../github/agent-github-credential-service.js";
+import { AgentGitHubAuthorizationError } from "../github/agent-github-credential-service.js";
 
 interface AdmissionInput {
   accountId: string;
@@ -26,13 +27,13 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
   constructor(
     readonly options: {
       database: DatabaseClient;
-      management: GitHubManagementService;
+      management: Pick<AgentGitHubCredentialService, "getOverview">;
     },
   ) {}
 
   async authorize(input: RuntimeTaskPolicyInput): Promise<"permit" | "deny"> {
     if (input.provider !== "github") return input.bindingId === input.sessionBindingId ? "permit" : "deny";
-    if (input.purpose !== "execution") return "deny";
+    if (input.purpose !== "context-tree") return "deny";
     return (await this.#load(input))?.id === input.bindingId ? "permit" : "deny";
   }
 
@@ -47,17 +48,17 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
       : undefined;
   }
 
-  async #load(input: AdmissionInput): Promise<GitHubConnectionStatus | undefined> {
+  async #load(input: AdmissionInput): Promise<AgentGitHubConnection | undefined> {
     input.signal?.throwIfAborted();
-    if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId)))
+    if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId, input.signal)))
       return undefined;
-    const { connection } = await this.options.management.getOverview(input.accountId);
-    return connection?.accountId === input.accountId &&
-      connection.status === "active" &&
-      connection.accessExpiresAt &&
-      Date.parse(connection.accessExpiresAt) > Date.now()
-      ? connection
-      : undefined;
+    input.signal?.throwIfAborted();
+    const { connection } = await this.options.management.getOverview(input.accountId, input.agentId).catch((error) => {
+      if (error instanceof AgentGitHubAuthorizationError) return { connection: null };
+      throw error;
+    });
+    input.signal?.throwIfAborted();
+    return connection?.accountId === input.accountId ? connection : undefined;
   }
 
   /** Follow immutable, Server-recorded collaboration provenance; never infer it from Session text. */
@@ -67,7 +68,9 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
     source: RuntimeExecutionSource | undefined,
     visited: Set<string>,
     expectedAgentId?: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
+    signal?.throwIfAborted();
     if (!source || source.kind === "validation" || visited.size >= 32) return false;
     const key = source.kind === "delivery" ? source.deliveryId : source.messageId;
     if (visited.has(key)) return false;
@@ -123,6 +126,6 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
     if (!provenance.success) return false;
     if (row.scheduledOrigin ? row.sourceSessionId !== null : row.sourceSessionId !== provenance.data.sessionId)
       return false;
-    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited);
+    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited, undefined, signal);
   }
 }

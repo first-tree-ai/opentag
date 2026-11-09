@@ -3,12 +3,12 @@
  *
  * What is pinned here is the contract the route will rely on: the page renders only what the
  * canonical snapshot says (stage, identities, blockers, permitted actions), it never invents a
- * Provider or a stage, a stale read can never overwrite a newer one, and the only way across
- * Providers is an explicit unbind followed by the fresh choice.
+ * Provider or a stage, a stale read can never overwrite a newer one, and configured identities cannot be replaced, and a disconnected identity requires a new Agent.
  */
 
 import type { AccountComputerSummary, AgentSetupSnapshot } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
@@ -72,6 +72,7 @@ function renderSetup(
   props: {
     agentId?: string;
     computerAdapter?: AgentSetupPageProps["computerAdapter"];
+    onBackToAgents?: () => void;
     onExternalNavigation?: (url: string) => void;
     onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
@@ -80,20 +81,26 @@ function renderSetup(
   } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const subject = (
     <QueryClientProvider client={queryClient}>
       <AgentSetupPage
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
         computerAdapter={props.computerAdapter}
+        onBackToAgents={props.onBackToAgents}
         onExternalNavigation={props.onExternalNavigation}
         onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
         reviewMode={props.reviewMode}
         slackOAuthError={props.slackOAuthError}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: createRootRoute({ component: () => subject }),
+  });
+  return render(<RouterProvider router={router as never} />);
 }
 
 function mockComputerInventory() {
@@ -135,11 +142,11 @@ function expectCompactReadinessRows(): void {
 
 function expectComputerStepLayoutState(state: string): HTMLElement {
   const computerStep = document.querySelector('[data-ui="agent-setup-computer"]');
-  const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
+  const body = computerStep?.querySelector(".otv2-computer-step__body");
   expect(computerStep?.getAttribute("data-state")).toBe(state);
   expect(computerStep?.classList).toContain("otv2-computer-step");
-  expect(summary?.parentElement?.classList).toContain("otv2-computer-step__body");
-  return summary?.parentElement as HTMLElement;
+  expect(body).toBeTruthy();
+  return body as HTMLElement;
 }
 
 function continueFromPreparation(): void {
@@ -231,7 +238,7 @@ describe("AgentSetupPage stages", () => {
       const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
       renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
       await settle(12);
-      expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
       expect(issue).toHaveBeenCalledOnce();
       expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { computerId: SETUP_COMPUTER_ID } });
@@ -245,9 +252,24 @@ describe("AgentSetupPage stages", () => {
       });
       expect((await memory.computerAdapter.inventory.computers()).computers).toHaveLength(1);
       expect(issue).toHaveBeenCalledOnce();
-      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     },
   );
+
+  it("offers a new Agent after a configured messaging identity is disconnected", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "feishu", reachable: true },
+    });
+    const current = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (current.messaging.kind !== "ready") throw new Error("Missing binding fixture");
+    await memory.adapter.unbindMessaging(SETUP_AGENT_ID, "feishu", current.messaging.bindingId);
+    renderSetup(memory.adapter);
+    await settle();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Lark" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+  });
 
   it("describes multiple existing Computers as an Agent choice without offering a new connection", async () => {
     const inventory = createMemorySetupAdapter({ agent: setupAgent() });
@@ -266,8 +288,9 @@ describe("AgentSetupPage stages", () => {
     await settle();
     expect(screen.getByRole("heading", { name: "Choose a computer for this Agent", level: 1 })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
-    expect(screen.getByText("No computer selected for this Agent")).toBeTruthy();
-    expect(screen.getByText("Not selected")).toBeTruthy();
+    // The heading already says a choice is needed; no "not selected" summary pill repeats it.
+    expect(screen.queryByText("No computer selected for this Agent")).toBeNull();
+    expect(screen.queryByText("Not selected")).toBeNull();
     expect(screen.queryByText("No computer connected")).toBeNull();
     expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
     expect(bind).not.toHaveBeenCalled();
@@ -286,28 +309,30 @@ describe("AgentSetupPage stages", () => {
     await advance(1);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
-    const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
-    expect(summary?.textContent).toContain("No computer connected");
-    expect(summary?.textContent).toContain("Not connected");
-    expect(summary?.classList).not.toContain("border-y");
+    expect(screen.queryByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeNull();
+    // One status on the page: the connect flow's own line. No "not connected" summary row, no
+    // footer hint, and no disabled Continue (the step advances once the computer is online).
+    expect(document.querySelector('[data-ui="agent-setup-computer-summary"]')).toBeNull();
+    expect(screen.queryByText("Not connected")).toBeNull();
     expectComputerStepLayoutState("not-bound");
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(screen.queryByText("You can continue when this computer is ready.")).toBeNull();
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
 
-  it("offers an owned Computer choice when a cross-Account rebind is required", async () => {
+  it("directs an inaccessible bound Computer to a new Agent without offering replacement", async () => {
     mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ requiresComputerRebind: true }) });
     renderSetup(memory.adapter);
     await settle();
 
     expect(
-      screen.getByText("Review Mac belongs to another account. Choose a computer from this account for Reviewer."),
+      screen.getByText(
+        "Review Mac belongs to another account. Its binding to Reviewer cannot be replaced. Create a new Agent to use a different computer.",
+      ),
     ).toBeTruthy();
     expectComputerStepLayoutState("requires-rebind");
-    expect(screen.getByText("Connect your computer")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
@@ -320,15 +345,18 @@ describe("AgentSetupPage stages", () => {
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("Review Mac");
     expect(summary?.textContent).toContain("macOS");
-    expect(summary?.textContent).toContain("Offline");
+    // The repair command window owns the status; the summary row names the computer only.
+    expect(summary?.textContent).not.toContain("Offline");
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
     expectComputerStepLayoutState("bound");
-    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    // The window polls the computer itself, so there is no manual Check again beside it.
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    expect(screen.getByText("Preparing recovery instructions…")).toBeTruthy();
+    expect(screen.getByText("Preparing connection command…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
+    expect(screen.queryByText("You can continue when this computer is ready.")).toBeNull();
     expect(screen.queryByText("Complete the action above, then check again.")).toBeNull();
 
     // An offline Computer is expected to come back without the page being touched, so it is polled.
@@ -354,12 +382,13 @@ describe("AgentSetupPage stages", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.queryByText(/Waiting for|Expires in/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
+    // The code-expiry hint stays beside the recovery command (C5).
+    expect(screen.getByText(/^Expires in /)).toBeTruthy();
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",
@@ -403,7 +432,8 @@ describe("AgentSetupPage stages", () => {
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("runtime")).toContain("Checking");
     expect(rowDetail("runtime")).toContain("Checking the version and sign-in on Review Mac");
-    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    // The checking row says so; the footer adds no second line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
@@ -418,16 +448,17 @@ describe("AgentSetupPage stages", () => {
     expectCompactReadinessRows();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
-    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    // Every row ready says so; the footer adds no summary line.
+    expect(screen.getByRole("status").textContent).toBe("");
     const railBeforeContinue = document.querySelector('[data-ui="onboarding-v2-rail"]') as HTMLElement;
     expect(railBeforeContinue.querySelector('li[data-status="current"]')?.textContent).toContain("Prepare computer");
 
     const continueButton = screen.getByRole("button", { name: "Continue" });
     continueButton.focus();
     fireEvent.click(continueButton);
-    const messagingHeading = screen.getByRole("heading", { name: "Set up Reviewer" });
+    const messagingHeading = screen.getByRole("heading", { name: "Connect your messaging app", level: 1 });
     expect(document.activeElement).toBe(messagingHeading);
-    expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Set up Reviewer" })).toBeNull();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
     // Slack leads here for the same reason it leads in Messaging settings: neither channel is the
@@ -473,7 +504,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your coding assistant on Review Mac");
+    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your Agent on Review Mac");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
@@ -549,12 +580,21 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle(10);
 
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
+    // The wait is pending, not done: the neutral spinner, never a success dot.
+    expect(screen.getAllByRole("status")[0]?.querySelector(".otv2-pending-spinner")).toBeTruthy();
     const qr = screen.getByAltText("Scan this QR code in Lark");
     expect(qr.parentElement?.getAttribute("data-ui")).toBe("setup-qr");
     expect(qr.classList.contains("ots-qr__image")).toBe(true);
-    expect(screen.getByText(/QR code expires/)).toBeTruthy();
+    expect(screen.getByText(/^Expires in \d+ min$/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // Below 768px the QR code (for a second device) gives way to the same link opened in Lark.
+    // (CSS hides the QR block below 768px; jsdom does not apply media queries.)
+    expect(qr.closest('[data-ui="agent-setup-feishu-qr"]')).toBeTruthy();
+    const open = document.querySelector<HTMLAnchorElement>('[data-ui="agent-setup-feishu-open"]');
+    expect(open?.textContent).toBe("Open in Lark");
+    expect(open?.className).toContain("md:hidden");
+    expect(open?.getAttribute("href")).toBeTruthy();
   });
 
   it("models the browser-away Slack install wait for Review Lab", async () => {
@@ -590,7 +630,7 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
   });
 
   it("renders a blocked binding with its identity and recovery actions, and no direct switch", async () => {
@@ -604,7 +644,7 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
     expect(screen.getByText("Lark needs updated permissions.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change bot" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
     const recoveryActions = document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]');
     const destructiveAction = document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]');
@@ -612,11 +652,42 @@ describe("AgentSetupPage stages", () => {
     expect(identity?.contains(screen.getByText("Lark"))).toBe(true);
     expect(identity?.contains(screen.getByText("Needs attention"))).toBe(true);
     expect(recoveryActions?.contains(screen.getByRole("button", { name: "Update permissions" }))).toBe(true);
-    expect(recoveryActions?.contains(screen.getByRole("button", { name: "Change bot" }))).toBe(true);
+
     expect(destructiveAction?.contains(screen.getByRole("button", { name: "Disconnect Lark" }))).toBe(true);
     // No direct switch: the other Provider's start is not offered while a binding is current.
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
+  });
+
+  it.each([
+    ["feishu", "FEISHU_SETUP_EXPIRED", "This QR code expired. Generate a new one and try again."],
+    ["feishu", "FEISHU_UPSTREAM_UNAVAILABLE", "Lark is unavailable right now. Check the connection and try again."],
+    ["slack", "SLACK_SCOPE_REAUTH_REQUIRED", "Slack permissions are incomplete. Update permissions and try again."],
+    [
+      "feishu",
+      "UNRECOGNIZED_PROVIDER_FAILURE",
+      "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+    ],
+  ] as const)("shows the reported %s cause %s before a generic failure", async (provider, errorCode, message) => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider, reachable: true, attention: "provider-error" },
+    });
+    const adapter: AgentSetupAdapter = {
+      ...memory.adapter,
+      readSnapshot: async (id) => {
+        const snapshot = await memory.adapter.readSnapshot(id);
+        if (snapshot.messaging.kind !== "blocked") throw new Error("Expected blocked fixture");
+        return { ...snapshot, messaging: { ...snapshot.messaging, errorCode } };
+      },
+    };
+    renderSetup(adapter);
+    await settle();
+    expect(screen.getByRole("alert").textContent).toContain(message);
+    expect(screen.getByText("Next step")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Error details" }));
+    await settle();
+    expect(screen.getByText(`Error code: ${errorCode}`)).toBeTruthy();
   });
 
   it("reports readiness once the snapshot's stage is ready", async () => {
@@ -630,7 +701,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
     // Provider identity reaches the done screen from the snapshot, not from page state.
-    expect(screen.getByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
+    expect(screen.getByText("Open the Bot’s chat in Slack, send “Hello” and confirm its reply.")).toBeTruthy();
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
     expect(onReady).toHaveBeenCalledTimes(1);
   });
@@ -781,7 +852,9 @@ describe("preparation review regressions", () => {
     await settle();
 
     expect(
-      screen.getByText("In Slack, open a direct message with this app and send “Hi” to finish the connection check."),
+      screen.getByText(
+        "Open the Bot’s DM in Slack and send “Hello”, or add it to a channel and @mention it. Confirm its reply to verify actual message delivery.",
+      ),
     ).toBeTruthy();
   });
 });
@@ -856,6 +929,72 @@ describe("AgentSetupPage blockers", () => {
 });
 
 describe("AgentSetupPage transitions", () => {
+  it.each([false, true])(
+    "bounds messaging observation recovery and manual retry to GET requests (runtime missing: %s)",
+    async (runtimeMissing) => {
+      const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeMissing });
+      const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+      const unavailable: AgentSetupSnapshot = {
+        ...snapshot,
+        stage: runtimeMissing ? "needs-runtime" : "needs-messaging",
+        messaging: { kind: "observation-failed" },
+        blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+        actions: [{ kind: "refresh" }],
+      };
+      const adapter = scriptedAdapter(async () => unavailable);
+      renderSetup(adapter);
+      await settle();
+      await advance(BOUNDED_POLL_WINDOW_MS + 10);
+      const stopped = vi.mocked(adapter.readSnapshot).mock.calls.length;
+      expect(stopped).toBeGreaterThan(1);
+      expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+      await advance(POLL_MS * 4);
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped);
+      expect(screen.queryByRole("button", { name: "Disconnect Lark" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+      await settle();
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped + 1);
+      await advance(POLL_MS + 10);
+      expect(adapter.readSnapshot).toHaveBeenCalledTimes(stopped + 2);
+      for (const method of [
+        adapter.refreshPreparation,
+        adapter.startFeishuAttempt,
+        adapter.cancelFeishuAttempt,
+        adapter.checkFeishuAttempt,
+        adapter.unbindMessaging,
+        adapter.startSlackInstall,
+      ]) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("recovers a messaging observation without hiding the last good view on a failed GET", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    const unavailable: AgentSetupSnapshot = {
+      ...snapshot,
+      stage: "needs-messaging",
+      messaging: { kind: "observation-failed" },
+      blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+      actions: [{ kind: "refresh" }],
+    };
+    const adapter = scriptedAdapter(async () => unavailable);
+    vi.mocked(adapter.readSnapshot)
+      .mockResolvedValueOnce(unavailable)
+      .mockRejectedValueOnce(new Error("temporary read failure"))
+      .mockResolvedValue(snapshot);
+    renderSetup(adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(screen.getByText("We couldn't read the latest state from the server. Check again.")).toBeTruthy();
+    await advance(POLL_MS + 10);
+    expect(adapter.readSnapshot).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("We couldn't read the latest state from the server. Check again.")).toBeNull();
+    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    expect(adapter.startFeishuAttempt).not.toHaveBeenCalled();
+  });
+
   it("polls needs-provider-clis within a finite budget and then stops", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
@@ -979,11 +1118,11 @@ describe("AgentSetupPage transitions", () => {
     continueFromPreparation();
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await settle(10);
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
     memory.controls.scanFeishuCode();
     await advance(POLL_MS + 10);
-    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
 
     memory.controls.completeHandoff();
@@ -1008,12 +1147,16 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(cancel).toHaveBeenCalledWith(attemptId);
-    expect(screen.getByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
     await settle();
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
     const retried = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
     expect(retried.messaging.kind).toBe("authorizing");
     if (retried.messaging.kind === "authorizing" && retried.messaging.provider === "feishu") {
@@ -1031,10 +1174,15 @@ describe("AgentSetupPage transitions", () => {
     await settle();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    expect(screen.getByRole("dialog", { name: "Connect Slack" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByLabelText("Code")).toBeTruthy();
     expect(oauth).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Connect Slack" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(screen.queryByRole("region", { name: "Connect Slack" })).toBeNull();
+    expect(document.activeElement).toBe(messagingChoice(/Slack/));
   });
 
   it("reauthorizes the current Slack binding rather than starting fresh", async () => {
@@ -1071,28 +1219,21 @@ describe("AgentSetupPage transitions", () => {
     }
   });
 
-  it("replaces the current Feishu bot through a same-Provider attempt", async () => {
+  it("keeps Feishu reauthorization available and rejects the legacy replace command", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "reauthorization-required" },
     });
-    const start = vi.spyOn(memory.adapter, "startFeishuAttempt");
     renderSetup(memory.adapter);
     await settle();
-
-    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
-    await settle(10);
-
-    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace", {
-      kind: "bound",
-      provider: "feishu",
-      bindingId: expect.any(String),
-      credentialGeneration: 1,
-    });
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
+    await expect(memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "replace", { kind: "unbound" })).rejects.toThrow(
+      /cannot be replaced/,
+    );
   });
 
-  it("moves across Providers only through an explicit unbind, then offers the fresh choice", async () => {
+  it("requires a new Agent after disconnecting a configured Provider", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true, attention: "provider-error" },
@@ -1113,9 +1254,10 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(unbind).toHaveBeenCalledWith(SETUP_AGENT_ID, "slack", bindingId);
-    // The binding is gone, and only now is a fresh Provider choice offered.
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    expect(dialog.textContent).toContain("This Agent cannot reconnect");
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Lark/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Slack/ })).toBeNull();
   });
 
   it("keeps a failed action's feedback beside it and the snapshot on screen", async () => {
@@ -1202,24 +1344,19 @@ describe("AgentSetupPage transitions", () => {
     expect(adapter.startSlackInstall).not.toHaveBeenCalled();
     gate.resolve();
     await settle(10);
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
   });
 
-  it("checks again on demand and shows the new state", async () => {
+  it("advances on its own when the offline computer comes back", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(document.querySelector('[data-ui="agent-setup-computer-summary"]')?.textContent).toContain("Offline");
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
 
     memory.controls.setComputerOnline(true);
-    const reads = vi.spyOn(memory.adapter, "readSnapshot");
-    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await settle();
+    await advance(POLL_MS + 10);
 
-    expect(refreshes).toHaveBeenCalledWith(SETUP_AGENT_ID);
-    expect(refreshes.mock.invocationCallOrder[0]).toBeLessThan(reads.mock.invocationCallOrder.at(-1) ?? 0);
-    expect(reads).toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
     continueFromPreparation();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
@@ -1252,7 +1389,7 @@ describe("AgentSetupPage messaging choice loading", () => {
     const adapter = await renderMessagingStartChoice();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    expect(screen.getByRole("button", { name: "Close Connect Slack" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: "Manual setup" })).toHaveProperty("disabled", true);
     expect(adapter.startSlackInstall).not.toHaveBeenCalled();
     gate.resolve({ status: "authorization_required", ticket: "ticket" });
@@ -1278,7 +1415,7 @@ describe("AgentSetupPage messaging choice loading", () => {
     const adapter = await renderMessagingStartChoice();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await settle();
     expectIdleMessagingChoices();
     expect(adapter.startSlackInstall).not.toHaveBeenCalled();
@@ -1441,7 +1578,8 @@ describe("AgentSetupPage preparation rows across stages", () => {
     const allReady = expected.every(([, , status]) => status === "ready");
     if (!computerReady) {
       expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-      expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+      // Until the computer is ready the connect step owns the page: no (disabled) Continue.
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
       return;
     }
 
@@ -1490,7 +1628,21 @@ describe("AgentSetupPage preparation rows across stages", () => {
     // An unselected Provider's later reports must never regress started Messaging: the rows leave
     // the page and only the Messaging surface remains.
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
+  });
+});
+
+describe("AgentSetupPage runtime sign-in", () => {
+  it("offers Sign in with the terminal steps on the runtime row", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "sign-in" });
+    renderSetup(memory.adapter);
+    await settle();
+
+    const row = document.querySelector('[data-component="runtime"]') as HTMLElement;
+    const toggle = within(row).getByRole("button", { name: "Sign in" });
+    fireEvent.click(toggle);
+    expect(within(row).getByText("codex login")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 });
 
@@ -1508,7 +1660,8 @@ describe("AgentSetupPage preparation polling", () => {
     const t0 = Date.now();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("waiting");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("waiting");
-    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    // The checking row says so; the footer adds no second line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
 
@@ -1540,7 +1693,8 @@ describe("AgentSetupPage preparation polling", () => {
     await advance(POLL_MS + 10);
     await settle();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    // Every row ready says so; the footer adds no summary line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(refreshes).not.toHaveBeenCalled();
   });
 
@@ -1929,7 +2083,7 @@ describe("AgentSetupPage hung-read recovery", () => {
     await settle();
     await advance(POLL_MS + 10);
     expect(calls).toBe(3);
-    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
   });
 
   it("does not apply a late error after a hung read has been superseded", async () => {
@@ -2009,8 +2163,8 @@ describe("AgentSetupPage hung-read recovery", () => {
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
     renderSetup(adapter);
     await settle();
-    expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
 
     phase = "checking";
     await advance(POLL_MS + 10);
@@ -2187,7 +2341,7 @@ describe("AgentSetupPage request fencing", () => {
     });
     renderSetup(memory.adapter);
     await settle(10);
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
     // The poll starts, and while it is in flight the reader cancels: the cancel's own re-read wins.
     await advance(POLL_MS + 10);
@@ -2200,7 +2354,7 @@ describe("AgentSetupPage request fencing", () => {
     stale.resolve(await modelRead(SETUP_AGENT_ID));
     await settle();
     expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
-    expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+    expect(screen.queryByText("Waiting for scan and authorization…")).toBeNull();
   });
 
   it("waits for a slow poll before scheduling the next one", async () => {
@@ -2247,19 +2401,49 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
-  it("replaces the return action with View agent when setup becomes ready", async () => {
+  it("keeps Back to Agents in the header and adds View agent once setup is ready", async () => {
+    const onBackToAgents = vi.fn();
     const onOpenAgent = vi.fn();
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true },
     });
-    renderSetup(memory.adapter, { onOpenAgent });
+    renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
     await settle();
 
-    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(onOpenAgent).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+    expect(onBackToAgents).toHaveBeenCalledTimes(1);
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["Connect your computer", { agent: setupAgent({ computer: null }) }, false],
+    ["Prepare this computer", { agent: setupAgent() }, false],
+    ["Connect your messaging app", { agent: setupAgent() }, true],
+  ] as const)(
+    "offers Back to Agents, and no other way back, on the %s step",
+    async (heading, seed, continueToMessaging) => {
+      mockComputerInventory();
+      const onBackToAgents = vi.fn();
+      const onOpenAgent = vi.fn();
+      const memory = createMemorySetupAdapter(seed);
+      renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
+      await settle();
+      await advance(1);
+      if (continueToMessaging) fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+      expect(onBackToAgents).toHaveBeenCalledTimes(1);
+      expect(onOpenAgent).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed on a terminal answer instead of offering any creation path", async () => {
     const adapter = scriptedAdapter(async () => {
@@ -2347,7 +2531,7 @@ describe("AgentSetupSurface integration seam", () => {
 });
 
 describe("AgentSetupPage manual Slack verification", () => {
-  it.each(["local", "cloud"] as const)("keeps verification open after saving on %s", async (kind) => {
+  it.each(["local", "cloud"] as const)("keeps inline verification open after saving on %s", async (kind) => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       ...(kind === "cloud" ? { cloudService: { available: true } } : {}),
@@ -2376,20 +2560,26 @@ describe("AgentSetupPage manual Slack verification", () => {
     await settle();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    if (kind === "local") fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    if (kind === "cloud") {
+      expect(screen.getByRole("link", { name: "View Apps" })).toHaveProperty("href", "https://api.slack.com/apps");
+      fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      await settle();
+    }
+    expect(screen.getByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket test-ticket");
+    fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
     fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
     fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await settle(20);
     expect(save).toHaveBeenCalledTimes(1);
     expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).messaging.kind).toBe("waiting-handoff");
-    const dialog = screen.getByRole("dialog", { name: "Test your Slack connection" });
+    const dialog = screen.getByRole("region", { name: "Connect Slack" });
     expect(
       within(dialog).getByText(
-        "In Event Subscriptions, confirm Verified and select Save Changes, then send a direct message to this app in Slack.",
+        "In Event Subscriptions, confirm Verified and select Save Changes. Then open the Bot’s chat, send “Hello” and check for a reply.",
       ),
     ).toBeTruthy();
-    expect(within(dialog).getByRole("link", { name: "Open event settings in Slack" })).toHaveProperty(
+    expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
       "href",
       "https://api.slack.com/apps/A1/event-subscriptions",
     );
@@ -2397,3 +2587,84 @@ describe("AgentSetupPage manual Slack verification", () => {
     expect(within(dialog).queryByLabelText("Signing Secret")).toBeNull();
   });
 });
+
+describe("messaging authorization lifetime", () => {
+  it("hides an expired QR while retaining the authoritative attempt and never auto-starting a replacement", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
+    const initial = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (initial.messaging.kind !== "authorizing" || initial.messaging.provider !== "feishu")
+      throw new Error("Expected Feishu attempt");
+    const snapshot = {
+      ...initial,
+      messaging: { ...initial.messaging, expiresAt: new Date(Date.now() + 1_000).toISOString() },
+    };
+    const adapter = scriptedAdapter(async () => snapshot);
+    renderSetup(adapter);
+    await settle();
+    expect(document.querySelector('[data-ui="setup-qr"]')).not.toBeNull();
+    await advance(1_001);
+    expect(document.querySelector('[data-ui="setup-qr"]')).toBeNull();
+    expect(screen.getByText(/validity period has ended/)).toBeTruthy();
+    expect(adapter.startFeishuAttempt).not.toHaveBeenCalled();
+    expect(adapter.cancelFeishuAttempt).not.toHaveBeenCalled();
+    expect(screen.queryByText(/is ready\./)).toBeNull();
+  });
+
+  it("keeps a stale messaging snapshot visible and explains a timed-out observation", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot)
+      .mockImplementation(() => new Promise(() => {}));
+    renderSetup(scriptedAdapter(read));
+    await settle();
+    await advance(SETUP_POLL_MS + AGENT_SETUP_READ_TIMEOUT_MS + 1);
+    expect(screen.getByRole("alert").textContent).toContain("last known state");
+    expect(document.querySelector('[data-ui="agent-setup-messaging"]')?.getAttribute("data-state")).toBe("authorizing");
+  });
+});
+
+it.each(["not-configured", "blocked"] as const)(
+  "does not promise polling after a timed-out focus read in %s messaging",
+  async (kind) => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      ...(kind === "blocked"
+        ? {
+            messaging: {
+              kind: "bound",
+              provider: "feishu",
+              reachable: true,
+              attention: "reauthorization-required",
+            } as const,
+          }
+        : {}),
+    });
+    const initial = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    const snapshot = { ...initial, stage: "needs-messaging" as const };
+    expect(snapshot.messaging.kind).toBe(kind);
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot)
+      .mockImplementation(() => new Promise(() => {}));
+    renderSetup(scriptedAdapter(read));
+    await settle();
+    if (kind === "not-configured") {
+      continueFromPreparation();
+      await settle();
+    }
+    act(() => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS + 1);
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toContain(
+      "The status check timed out. The last known state is shown.",
+    );
+    expect(document.querySelector('[data-ui="agent-setup-messaging"]')?.getAttribute("data-state")).toBe(kind);
+    const calls = read.mock.calls.length;
+    await advance(5 * SETUP_POLL_MS);
+    expect(read).toHaveBeenCalledTimes(calls);
+  },
+);

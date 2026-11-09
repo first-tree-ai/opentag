@@ -3,7 +3,8 @@ import { mcpTitle } from "./mcp-title.js";
 
 const locale = vi.hoisted(() => ({ value: "en" }));
 vi.mock("../../i18n/locale.js", () => ({ getLocale: () => locale.value }));
-vi.mock("@opentag/mcp-presets", () => ({
+vi.mock("@opentag/mcp-presets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opentag/mcp-presets")>()),
   MCP_CATALOG_ENTRIES: [
     {
       id: "sample",

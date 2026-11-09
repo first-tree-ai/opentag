@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { parseReleaseArgv, resolveRunnerRelease, writeGithubOutput } from "../runner/release.mjs";
+import {
+  NPM_METADATA_WAIT_DEADLINE_MS,
+  parseReleaseArgv,
+  resolveRunnerRelease,
+  writeGithubOutput,
+} from "../runner/release.mjs";
 import { formatReleaseRecord, writeReleaseRecord } from "../runner/release-record.mjs";
 import {
   commandRecorder,
@@ -219,6 +224,7 @@ test("resolve fails closed when the registry tag is absent (incomplete release)"
 });
 
 test("resolve waits out the npm processing window for an exact-version E404", async () => {
+  assert.equal(NPM_METADATA_WAIT_DEADLINE_MS, 30 * 60 * 1000);
   const base = npmViewFake({ [VERSION]: SHA });
   let lookups = 0;
   const npmView = async (args) => {

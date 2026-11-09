@@ -11,14 +11,24 @@ import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Empty, Field, Select, SkeletonLine, Text } from "../../ui/design-system.js";
 import { OpenTagLogo } from "../../ui/opentag-logo.js";
-import { Redirect } from "../navigation/redirect.js";
 import { toResourceState } from "../resource/resource-state.js";
 import { LoginProviderLink } from "./login-provider-link.js";
 import { PasswordSignInForm, type PasswordSignInMode } from "./password-sign-in-form.js";
+import { SignInLanding } from "./sign-in-landing.js";
 
 export type AuthProvider = AuthProvidersResponse["providers"][number];
 
-export function LoginPage({ next: requested }: { next?: string }) {
+export function LoginPage({
+  next: requested,
+  navigate,
+}: {
+  next?: string;
+  /**
+   * The document navigation a landing uses, so a test can observe where a signed-in visitor was sent
+   * instead of following it out of the test's document. Nothing in the app passes it.
+   */
+  navigate?: (to: string) => void;
+}) {
   const [signedOut, setSignedOut] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const session = useQuery({
@@ -50,7 +60,9 @@ export function LoginPage({ next: requested }: { next?: string }) {
   const failed = verified && session.isError;
   return (
     <LoginFrame>
-      {verified && session.isSuccess ? <Redirect href={loginDestination(requested)} replace /> : null}
+      {verified && session.isSuccess ? (
+        <SignInLanding destination={loginDestination(requested)} {...(navigate === undefined ? {} : { navigate })} />
+      ) : null}
       <Text as="h1" id="login-title" size="lg" variant="heading">
         {failed ? m.auth_session_check_failed() : m.auth_opening_opentag()}
       </Text>

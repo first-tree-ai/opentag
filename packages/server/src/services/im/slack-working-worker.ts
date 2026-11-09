@@ -48,6 +48,7 @@ export class SlackWorkingWorker {
       token(target: WorkingTarget): Promise<string | undefined>;
       api: Pick<DefaultSlackApiClient, "setThreadStatus">;
       logger?: Pick<ServiceLogger, "warn">;
+      clearOnly?: boolean;
     },
   ) {}
 
@@ -87,15 +88,14 @@ export class SlackWorkingWorker {
   }
 
   async #apply(target: WorkingTarget): Promise<void> {
-    let working = target.working;
+    const token = await this.options.token(target);
+    if (!token) {
+      await this.options.store.settle(target, { working: false, delayMs: 0, disabled: true });
+      return;
+    }
+    const working = this.options.clearOnly ? false : await this.options.store.desired(target);
+    if (!(await this.options.store.ownsClaim(target))) return;
     try {
-      const token = await this.options.token(target);
-      if (!token) {
-        await this.options.store.settle(target, { working: false, delayMs: 0, disabled: true });
-        return;
-      }
-      working = await this.options.store.desired(target);
-      if (!(await this.options.store.ownsClaim(target))) return;
       // Always clear an unknown projection, including a process crash after a successful API call.
       await this.options.api.setThreadStatus({
         token,
@@ -103,10 +103,11 @@ export class SlackWorkingWorker {
         threadTs: target.threadTs,
         status: working ? "is working" : "",
       });
-      await this.options.store.settle(target, { working, delayMs: 45_000, dormant: !working });
     } catch (error) {
       await this.#failed(target, error);
+      return;
     }
+    await this.options.store.settle(target, { working, delayMs: 45_000, dormant: !working });
   }
 
   async #failed(target: WorkingTarget, error: unknown): Promise<void> {

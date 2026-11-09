@@ -1,6 +1,6 @@
 import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, imBindings, sandboxes, sessions } from "../../db/schema/index.js";
+import { computers, sandboxes, sessionPlacements } from "../../db/schema/index.js";
 
 /**
  * E9 resource admission for Cloud Runner allocations: per-Account and platform-wide ceilings on
@@ -70,10 +70,8 @@ export async function countCloudCapacityOccupancy(
   const [accountRow] = await executor
     .select({ used: sql<number>`count(*)::int` })
     .from(sandboxes)
-    .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sandboxes.sessionId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
     .where(and(eq(computers.ownerAccountId, accountId), eq(computers.kind, "cloud"), occupiedSandbox));
   const [platformRow] = await executor
     .select({ used: sql<number>`count(*)::int` })

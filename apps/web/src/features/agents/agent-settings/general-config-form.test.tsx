@@ -1,7 +1,6 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withLocale } from "../../../__tests__/support/with-locale.js";
 import { browserApi } from "../../../api.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 
@@ -34,36 +33,30 @@ describe("GeneralConfigForm", () => {
     vi.restoreAllMocks();
   });
 
-  it.each([false, true])(
-    "saves and discards a name without changing self-configuration=%s",
-    async (selfConfigurationEnabled) => {
-      const initialConfig = { ...config, selfConfigurationEnabled };
-      const updated = { ...initialConfig, displayName: "Reviewer Bot", revision: 5 };
-      const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
-      const onAgentChanged = vi.fn();
-      render(<GeneralConfigForm initialConfig={initialConfig} onAgentChanged={onAgentChanged} />);
+  it("saves and discards a changed display name", async () => {
+    const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
+    const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
+    const onAgentChanged = vi.fn();
+    render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
 
-      expect(screen.queryByRole("switch")).toBeNull();
-      expect(screen.queryByText("Self-configuration")).toBeNull();
-      expect(screen.getByRole("heading", { name: "Name" }).closest("form")).toBeNull();
-      const displayName = screen.getByLabelText("Display name");
-      expect(displayName.parentElement?.className).toContain("[&>input]:w-full");
-      const form = displayName.closest("form") as HTMLFormElement;
-      fireEvent.submit(form);
-      expect(updateAgent).not.toHaveBeenCalled();
-      fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
-      expect(screen.getByText("Unsaved changes")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-      expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer");
+    expect(screen.getByRole("heading", { name: "Name" }).closest("form")).toBeNull();
+    const displayName = screen.getByLabelText("Display name");
+    expect(displayName.parentElement?.className).toContain("[&>input]:w-full");
+    const form = displayName.closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
+    expect(updateAgent).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer");
 
-      fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
-      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-      await waitFor(() => expect(updateAgent).toHaveBeenCalledOnce());
-      expect(updateAgent).toHaveBeenCalledWith(config.id, { expectedRevision: 4, displayName: "Reviewer Bot" });
-      expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
-      expect(onAgentChanged).toHaveBeenCalledOnce();
-    },
-  );
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateAgent).toHaveBeenCalledOnce());
+    expect(updateAgent).toHaveBeenCalledWith(config.id, { expectedRevision: 4, displayName: "Reviewer Bot" });
+    expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
+    expect(onAgentChanged).toHaveBeenCalledOnce();
+  });
 
   it("shows a provider error and fallback for failed saves", async () => {
     const updateAgent = vi
@@ -80,7 +73,12 @@ describe("GeneralConfigForm", () => {
     expect(updateAgent).toHaveBeenCalledTimes(2);
   });
 
-  it("blocks duplicate name updates while saving", async () => {
+  it("keeps the Name page to the name; self-configuration lives with the model and permissions", () => {
+    render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
+    expect(screen.queryByRole("switch", { name: "Self-configuration" })).toBeNull();
+  });
+
+  it("blocks a second save while the name is saving", async () => {
     let release: ((value: AgentAdminConfig) => void) | undefined;
     const pending = new Promise<AgentAdminConfig>((resolve) => {
       release = resolve;
@@ -90,25 +88,29 @@ describe("GeneralConfigForm", () => {
     const displayName = screen.getByLabelText("Display name");
     const form = displayName.closest("form") as HTMLFormElement;
     fireEvent.change(displayName, { target: { value: "Draft name" } });
-    fireEvent.submit(form);
 
-    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(form);
+    const saving = screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement;
+    expect(saving.disabled).toBe(false);
+    expect(saving.getAttribute("aria-busy")).toBe("true");
     fireEvent.submit(form);
     expect(updateAgent).toHaveBeenCalledOnce();
 
     release?.({ ...config, displayName: "Draft name", revision: 5 });
-    expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull());
   });
 
-  it("shows the name settings without self-configuration in Chinese", () => {
-    withLocale("zh", () => {
-      render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
-      expect(screen.getByRole("textbox")).toBeTruthy();
-      expect(screen.queryByRole("switch")).toBeNull();
-      expect(screen.queryByText("自助配置")).toBeNull();
-      expect(
-        screen.queryByText("允许此 Agent 通过 Session CLI 修改自己的指令、模型、推理强度和 MCP 挂载。"),
-      ).toBeNull();
-    });
+  it("keeps keyboard focus in the form after the save bar goes away", async () => {
+    const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
+    vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
+    render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
+    const displayName = screen.getByLabelText("Display name");
+    fireEvent.change(displayName, { target: { value: "Reviewer Bot" } });
+    const save = screen.getByRole("button", { name: "Save changes" });
+    save.focus();
+    fireEvent.click(save);
+
+    await screen.findByText("Name saved.");
+    await waitFor(() => expect(document.activeElement).toBe(displayName));
   });
 });

@@ -1,11 +1,28 @@
 import type { CreateMCPServerRequest, MCPServer } from "@opentag/shared/browser";
 import { ApiError, browserApi } from "../../api.js";
+import { connectionPreset } from "./mcp-connection-model.js";
 
-/** Create this journey's own definition; name collisions never select another installation. */
+/** Select a compatible OAuth installation before creating one; names alone never select a source. */
 export async function createMcpInstallation(
   input: CreateMCPServerRequest,
   create: (input: CreateMCPServerRequest) => Promise<MCPServer>,
+  agentId: string,
 ): Promise<MCPServer> {
+  if (input.defaultAuthKind === "oauth") {
+    const { server } = await browserApi.reusableMcpInstallation(
+      agentId,
+      input,
+      connectionPreset(input.url)?.oauthScopes,
+    );
+    if (server) return server;
+  }
+  return createIndependentInstallation(input, create);
+}
+
+async function createIndependentInstallation(
+  input: CreateMCPServerRequest,
+  create: (input: CreateMCPServerRequest) => Promise<MCPServer>,
+) {
   const attemptedNames = new Set<string>();
   let name = input.name;
   for (let attempt = 0; ; attempt++) {

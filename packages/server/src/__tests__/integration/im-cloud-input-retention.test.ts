@@ -23,7 +23,7 @@ import { ImMessageInbox } from "../../services/im/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const AGED_MS = 10 * 24 * 60 * 60 * 1_000;
-const DIRECT_CAPACITY = 100;
+const DIRECT_CAPACITY = 99;
 let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
 

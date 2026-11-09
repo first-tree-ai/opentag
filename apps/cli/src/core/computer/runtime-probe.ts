@@ -20,7 +20,7 @@ import { redactSecrets } from "../command/policy.js";
 
 /**
  * Probe of one Agent Runtime CLI for targeted Computer preparation. It reuses the same
- * resolved factories and environment filters the daemon runs. This is point-in-time local proof,
+ * resolved factories and environment preparation the daemon runs. This is point-in-time local proof,
  * not daemon readiness: OpenTag does not create Runtime homes here and uses fresh executable discovery,
  * whereas daemon startup creates homes and shares a login-shell discovery cache. No model is ever
  * invoked and OpenTag never installs a Runtime CLI: the operator supplies it. Provider commands
@@ -37,7 +37,7 @@ export interface ResolvedRuntimeProbeEnvironment {
 }
 
 /**
- * Reuse the daemon's selected Runtime home rules and environment filter without creating homes:
+ * Reuse the daemon's selected Runtime home rules and environment preparation without creating homes:
  * Codex under `CODEX_HOME` (default `~/.codex`), Claude Code under `CLAUDE_CONFIG_DIR`
  * (default `~/.claude`), and Pi under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`).
  * `CLAUDE_CONFIG_DIR` is omitted when it resolves to Claude's own default,

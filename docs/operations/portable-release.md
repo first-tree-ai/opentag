@@ -35,8 +35,11 @@ published SHA-256, extracts it, runs the new runtime once, and only then activat
 | `--force` | Reinstall even when the target version is already active |
 | `--no-path-edit` | Never edit shell startup files |
 | `--path-mode auto\|prompt\|off` | How the installer manages the `PATH` block |
-| `--quiet`, `-q` | Only print the final result and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`) |
+| `--quiet`, `-q` | Print one result line (`openTag <version> installed.` or `… is already installed.`) and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`). The Computer connect command runs the installer this way |
 | `--no-color` | Disable colored output; also `NO_COLOR` or `OPENTAG_NO_COLOR` set to any non-empty value (e.g. `1`) |
+
+Before downloading anything, the installer checks that the install root and shim directory can be created, and that
+`curl` or `wget` exists; a failure prints a reason line and a `Next:` line.
 
 **Reinstalling is cheap.** After reading `latest.json`, the installer checks whether the requested version is already
 the live install: the `current` symlink must resolve to a payload whose `INSTALL.json` matches the target version,
@@ -60,6 +63,14 @@ The shim is what makes updates safe. It never names a version directory, so the 
 `OPENTAG_INSTALL_MODE=portable`, `OPENTAG_PORTABLE_ROOT`, and `OPENTAG_PORTABLE_BIN_DIR` before exec'ing the embedded
 runtime.
 
+Service installation, service refresh, and managed Agent command instructions select this installation's absolute stable
+launcher after validating its payload and channel. They do not select another installation from `PATH` or freeze the
+invocation to a version directory. During manual upgrade, the old process can refresh the service after `current`
+advances: both running and current payloads must belong to this prefix's `versions` directory and the same channel.
+Launcher validation checks its installation root and bin-directory assignments, so compatible template changes remain
+valid. An unavailable or inconsistent launcher is reported as a local configuration error with path and version details
+in the daemon log.
+
 Each payload contains:
 
 ~~~text
@@ -68,8 +79,12 @@ INSTALL.json            Release metadata, platform, install mode, and app entry
 node/bin/node           Embedded Node.js runtime, checked against the official SHASUMS256.txt
 app/                    Bundled CLI, its package manifest, LICENSE, README, THIRD_PARTY_NOTICES,
                         dependency-closure.json, and the embedded node_modules/ dependency tree
-bin/<binName>           Artifact-local shim, used before the payload is activated
+bin/<binName>           Artifact-local shim for inspecting an uninstalled payload
 ~~~
+
+The artifact-local shim supports direct CLI inspection before installation. Daemon service installation and managed
+Agent startup require activation through `install.sh`; an uninstalled artifact has no stable `current` launcher and
+fails with an installation diagnostic.
 
 The bundled CLI's Context Tree integration resolves the installed `@first-tree-ai/context-tree` package at runtime —
 its `package.json` through `createRequire`, its bundled CLI, and its packaged skills and templates — so every payload
@@ -84,7 +99,8 @@ channel, no cohorts or canaries. The daemon reads its configured channel's `late
 capability incompatibility, and every five minutes after a successful read. A failed read uses bounded exponential
 backoff, doubling up to thirty minutes. The Server's v2 heartbeat advertisement (`runtime.channelTarget`; see
 [runtime-protocol.md](../system/runtime/runtime-protocol.md)) remains an optimization while the connection is healthy, not the only
-way to discover a release.
+way to discover a release. The Server bounds streamed pointer JSON to 256 KiB and keeps its
+last good target after non-OK, malformed or oversized responses.
 
 An already-stopped old Client cannot run this discovery loop. Run `opentag upgrade` once from that installation (or
 reinstall the portable channel) so that it reaches a version with independent discovery; later releases can then be
@@ -95,15 +111,25 @@ The daemon's updater follows a strict contract:
 - **Exact target identity, monotonic precedence.** Only an exact version-string match is already current, so a target
   that differs only by SemVer build metadata is still installed. SemVer precedence is used only to reject an older
   target; the target must also belong to the Client's own channel, and an automatic downgrade never happens.
-- **Protected work comes first.** Before installing, the updater waits indefinitely until the Session module reports
-  no protected work — no accepted Turn under local custody, no pending Turn completion or report, and no accepted
-  IM delivery could be lost or duplicated by the handoff. The Session module bounds every one of those units (Turn
-  budgets, delivery deadlines, report retries with terminal outcomes), so the updater adds no force timeout of its
-  own. New-work admission is closed before the zero-work snapshot; deliveries accepted before that point continue
-  draining, while later deliveries receive a retryable busy result.
-- **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
-  an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
-  newer target or a manual `opentag upgrade`, which prevents retry and restart storms.
+- **Running Sessions do not hold an upgrade.** The updater installs while Sessions keep running and new work keeps
+  arriving, then closes admission and stops the daemon, which finishes its durable writes first. The restarted daemon
+  recovers interrupted work; see
+  [Automatic retry of accepted work](../system/server-client-boundary.md#automatic-retry-of-accepted-work). A failed
+  install interrupts nothing. Only while the Client is registered with a Server that did not negotiate
+  `runtime.sessionRecovery` does the updater close admission and wait for no protected work, with no force timeout,
+  reporting `awaiting_protected_work`; later deliveries receive a retryable busy result during that wait.
+- **One install attempt per target, with transient download recovery.** The attempt is recorded durably before any
+  install work starts. When downloading `manifest.json` or the platform tarball fails with a transient transport error
+  (`fetch failed`, timeout, socket reset, or response body stream truncation) or a transient HTTP status (`408`, `429`,
+  `5xx`) after the installer's bounded download retries and before any release files are staged on disk, an updater
+  whose running work is recoverable (`runtime.sessionRecovery`) withdraws the attempt, returns to `idle`, and schedules
+  a retry with bounded exponential backoff (`5 s` doubling up to `30 min`). On the fallback path where the connected
+  Server did not negotiate `runtime.sessionRecovery` and the attempt had to pause admission first, only the installer's
+  bounded in-attempt download retries run so admission is not paused repeatedly for the same target. Any deterministic
+  download or verification failure (such as `404`, malformed JSON, manifest identity mismatch, or SHA-256/size
+  mismatch), stage/smoke/activation failure, or interrupted attempt becomes a `blocked` state that is never retried
+  automatically: the updater waits for a newer target or a manual `opentag upgrade`, which prevents retry and restart
+  storms.
 - **Failure classes stay separate.** A missing Server-required capability is a local `upgrade required` diagnosis and
   starts the metadata recovery path; if no newer eligible target is available, the daemon stays alive and rechecks on
   the bounded cadence. Authentication rejection never triggers an upgrade and reports `authentication repair` with a
@@ -237,6 +263,9 @@ Step 7 makes publication monotonic and step 8 makes it single-writer. `install.s
 channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
 as the pointer.
 
+After upload, the channel smoke test installs the advertised version and runs the installer again. The second run
+must succeed and report that the same version is already installed without downloading it again.
+
 ## Channel heads
 
 A release channel has two heads that must agree: the npm dist-tag and the portable `latest.json`. `npm publish --tag
@@ -256,8 +285,10 @@ immutable-prefix compatibility without writing, and `--skip-build` reuses artifa
 ## Release authority
 
 GitHub Actions is the release authority. `publish-npm-package.yml` preflights the portable release before `npm publish`
-so an immutable-prefix conflict fails while the release is still retryable, and publishes it afterwards from the same
-preflighted artifacts. The portable steps are skipped unless the repository is configured for Cloud Storage.
+so an immutable-prefix conflict fails while the release is still retryable, verifies that the published npm coordinate
+is readable from `registry.npmjs.org` after `npm publish`, and only then publishes the portable release from the same
+preflighted artifacts and advances `latest.json`. The portable steps are skipped unless the repository is configured for
+Cloud Storage.
 
 Required repository variables:
 
@@ -293,6 +324,11 @@ channel pointers are deliberately left untouched.
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
+- The connect command never waits for input: it runs unattended in an Agent's shell, where a prompt would hang
+  with no one to answer it. Every choice it needs is decided by flags or defaults.
+- The connect command fetches the installer with `curl`; a machine without `curl` fails at that step with the shell's
+  own error. Supporting a fallback inside a one-line command would make it longer and harder to read for everyone,
+  and machines that can run Agents almost always have `curl`.
 - The installer only installs or upgrades openTag. The onboarding command runs `opentag connect`, which exchanges the
   one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
   Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.

@@ -389,10 +389,14 @@ describe("router-authoritative cloud usage", () => {
       outputTokens: 5,
       cachedInputTokens: 2,
     });
+    expect(detail.points.find(({ date }) => date === "2026-10-06")).toMatchObject({ tokens: 12 });
     expect(detail.points.find(({ date }) => date === "2026-10-07")).toMatchObject({ tokens: 0 });
     expect(detail.points.reduce((total, point) => total + point.tokens, 0)).toBe(
       detail.inputTokens + detail.outputTokens,
     );
+    const shanghaiDetail = await usageService.readDetail(context.accountId, 7, undefined, now, "Asia/Shanghai");
+    expect(shanghaiDetail.points.find(({ date }) => date === "2026-10-06")).toMatchObject({ tokens: 0 });
+    expect(shanghaiDetail.points.find(({ date }) => date === "2026-10-07")).toMatchObject({ tokens: 12 });
     expect(await usageService.readDetail(context.accountId, 7, context.agentId, now)).toMatchObject({
       requests: 2,
       measuredRequests: 2,

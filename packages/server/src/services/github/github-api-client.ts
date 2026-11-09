@@ -323,8 +323,18 @@ export class GitHubApiClient {
   }
 
   /** The GitHub-attested user identity and required repo scope behind a user access token. */
-  async getAuthenticatedUser(input: { accessToken: string; signal?: AbortSignal }): Promise<GitHubAuthenticatedUser> {
-    const payload = await this.#sendApi("GET", "/user", input.accessToken, input.signal, true);
+  async getAuthenticatedUser(input: {
+    accessToken: string;
+    signal?: AbortSignal;
+    requireRepositoryScope?: boolean;
+  }): Promise<GitHubAuthenticatedUser> {
+    const payload = await this.#sendApi(
+      "GET",
+      "/user",
+      input.accessToken,
+      input.signal,
+      input.requireRepositoryScope !== false,
+    );
     if (!isRecord(payload)) throw invalidResponse("The GitHub API user response is malformed");
     const type = payload.type;
     if (type !== "User") throw invalidResponse("The GitHub API user response is not a user");

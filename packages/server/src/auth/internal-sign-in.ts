@@ -24,7 +24,7 @@ export function devSignInPlugin(resolveUserId: () => Promise<string>): BetterAut
     id: "opentag-dev-sign-in",
     endpoints: {
       opentagDevSignIn: createAuthEndpoint(DEV_SIGN_IN_PATH, { method: "POST" }, async (ctx) => {
-        const userId = await resolve(resolveUserId());
+        const userId = await resolveAuthDecision(resolveUserId());
         await establishSession(ctx, userId);
         return ctx.json({ userId });
       }),
@@ -48,7 +48,7 @@ const API_STATUSES = {
  * code the caller should see. Letting it escape would log it as an internal server error, burying it among real ones,
  * and would flatten every decision to the same 500. Anything else is unexpected and propagates untouched.
  */
-function resolve<T>(resolved: Promise<T>): Promise<T> {
+export function resolveAuthDecision<T>(resolved: Promise<T>): Promise<T> {
   return resolved.catch((cause: unknown) => {
     if (!(cause instanceof AuthServiceError)) throw cause;
     const status = API_STATUSES[cause.statusCode as keyof typeof API_STATUSES] ?? "INTERNAL_SERVER_ERROR";

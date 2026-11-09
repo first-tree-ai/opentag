@@ -2,6 +2,7 @@ import { AGENT_SLACK_EVENTS_TEMPLATE, hasRequiredSlackBotScopes, SLACK_EVENTS_PA
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { createServiceLoggerPort } from "../observability/service-logger.js";
 import type { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
+import type { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
 import type { InboundReceiptAttempt } from "../services/im/inbound-receipt-work-store.js";
 
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../services/im/index.js";
@@ -76,7 +77,18 @@ export type SlackWebhookReceiptStoreLike = Pick<SlackWebhookReceiptStore, "claim
 type SlackEventsReceiptOptions = { receipts?: SlackWebhookReceiptStoreLike };
 
 export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
+  maxPendingEvents?: number;
   approvalOwner?: Pick<RuntimeApprovalOwner, "decide">;
+  imFeedback?: Pick<ImFeedbackActionsService, "submitNativeRetry">;
+  feedbackResponse?: (input: {
+    installationId: string;
+    generation: number;
+    token: string;
+    channelId: string;
+    userId: string;
+    threadKey: string;
+    result: "recorded" | "unavailable";
+  }) => Promise<void>;
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(installation: SlackInstallationIngress): SlackAdapter;
@@ -338,6 +350,13 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       logger.info(
         { ...logContext, stage: "receipt", outcome: "ignored", reason: "duplicate_receipt" },
         "Slack inbound ignored",
+      );
+      return reply.code(200).send({ ok: true });
+    }
+    if (closing || pending.size >= (options.maxPendingEvents ?? 8)) {
+      logger.info(
+        { ...logContext, stage: "receipt", outcome: "deferred" },
+        "Slack inbound deferred to durable recovery",
       );
       return reply.code(200).send({ ok: true });
     }

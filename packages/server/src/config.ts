@@ -4,7 +4,6 @@ import {
   type ChannelConfig,
   type ChannelName,
   ChannelNameSchema,
-  GITHUB_OAUTH_CALLBACK_PATH,
   getChannelConfig,
   MCP_STATIC_OAUTH_BRANDS,
   type McpStaticOAuthBrand,
@@ -27,6 +26,7 @@ import {
   ErrorReportingCredentialsJsonSchema,
   resolveErrorReportingConfig,
 } from "./error-reporting-config.js";
+import type { PerformanceLoggingConfig } from "./observability/performance-logger.js";
 import { normalizeSkillObjectPrefix } from "./services/skills/skill-object-prefix.js";
 import { type TrustProxyConfig, TrustProxySchema } from "./trust-proxy-config.js";
 
@@ -221,6 +221,8 @@ const EncryptionKeyRingSchema = z
 
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
+const PerformanceLogLevelValueSchema = z.enum(["debug", "info", "warn"]);
+const PerformanceLogLevelSchema = PerformanceLogLevelValueSchema.default("debug");
 
 function validateMcpGoogleClientPair(
   value: {
@@ -292,41 +294,6 @@ function resolveMcpGoogleOAuth(parsed: {
   };
 }
 
-function validateGitHubOAuthConfiguration(
-  value: {
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID?: string | undefined;
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET?: string | undefined;
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL?: string | undefined;
-    OPENTAG_PUBLIC_URL: string;
-    OPENTAG_ENV: ChannelName;
-  },
-  context: z.RefinementCtx,
-): void {
-  const githubOAuthValues = [value.OPENTAG_GITHUB_OAUTH_CLIENT_ID, value.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET];
-  const githubOAuthConfiguredCount = githubOAuthValues.filter(Boolean).length;
-  if (githubOAuthConfiguredCount > 0 && githubOAuthConfiguredCount < githubOAuthValues.length) {
-    context.addIssue({
-      code: "custom",
-      message: "OPENTAG_GITHUB_OAUTH_CLIENT_ID and OPENTAG_GITHUB_OAUTH_CLIENT_SECRET must be configured together",
-    });
-  }
-  if (value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL) {
-    const redirectUrl = parseGitHubOAuthRedirectUrl(value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL, value.OPENTAG_PUBLIC_URL);
-    if (!redirectUrl) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must be this server's public origin or the exact GitHub OAuth callback URL",
-      });
-    } else if (isHostedEnvironment(value.OPENTAG_ENV) && !redirectUrl.startsWith("https://")) {
-      context.addIssue({
-        code: "custom",
-        message: "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must use HTTPS in hosted environments",
-      });
-    }
-  }
-}
-
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -363,6 +330,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: booleanString("false"),
+    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: booleanString("true"),
     /*
      * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
      * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback
@@ -377,6 +345,7 @@ const ServerEnvironmentSchema = z
      * port scanner.
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
+    OPENTAG_MCP_OAUTH_REUSE: booleanString("false"),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_MCP_CANVA_CLIENT_ID: z.string().min(1).optional(),
@@ -387,21 +356,16 @@ const ServerEnvironmentSchema = z
     OPENTAG_MCP_ASANA_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_MCP_ZOOM_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_ZOOM_CLIENT_SECRET: z.string().min(1).optional(),
+    OPENTAG_MCP_GITHUB_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_MCP_GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+    OPENTAG_MCP_FEISHU_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_MCP_FEISHU_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_SIGNING_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
-    /*
-     * Deployment-level GitHub OAuth App. Both client values are configured together or not at all;
-     * an absent group disables the integration with explicit availability metadata rather than a
-     * half-configured one. The App must issue expiring user access tokens — the management plane
-     * refuses the non-expiring kind instead of silently accepting a credential it cannot maintain.
-     */
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID: z.string().trim().min(1).max(255).optional(),
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).max(255).optional(),
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
     /*
@@ -432,6 +396,11 @@ const ServerEnvironmentSchema = z
     /* Which reverse proxies may set X-Forwarded-*; decides the address rate limits key on. */
     OPENTAG_TRUST_PROXY: TrustProxySchema,
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
+    OPENTAG_PERF_LOG_ENABLED: booleanString("true"),
+    OPENTAG_PERF_LOG_LEVEL: PerformanceLogLevelSchema,
+    OPENTAG_PERF_DB_LOG_LEVEL: PerformanceLogLevelValueSchema.optional(),
+    OPENTAG_PERF_START_LOG_LEVEL: PerformanceLogLevelValueSchema.optional(),
+    OPENTAG_PERF_SLOW_THRESHOLD_MS: z.coerce.number().int().min(1).default(1_000),
     /*
      * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
      * Runner SemVer release coordinate, and it also enables Cloud Runner allocation (with its own
@@ -549,7 +518,6 @@ const ServerEnvironmentSchema = z
         });
       }
     }
-    validateGitHubOAuthConfiguration(value, context);
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
@@ -741,28 +709,6 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-/**
- * The GitHub OAuth callback always lives on this server's public origin; a deployment may spell
- * the setting as the bare origin (the canonical callback path is appended) or as the exact
- * callback URL. Anything else — another origin, credentials, query, fragment — is rejected.
- */
-export function parseGitHubOAuthRedirectUrl(value: string, publicOrigin: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      return undefined;
-    }
-    if (url.origin !== publicOrigin) return undefined;
-    if (url.pathname === "/" || url.pathname === "") {
-      return new URL(GITHUB_OAUTH_CALLBACK_PATH, publicOrigin).toString();
-    }
-    if (url.pathname !== GITHUB_OAUTH_CALLBACK_PATH) return undefined;
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-}
-
 export function parseSlackRedirectUrl(value: string, publicOrigin: string): string | undefined {
   try {
     const url = new URL(value);
@@ -812,12 +758,6 @@ export interface ServerConfig {
   emailPasswordAuth: boolean;
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
-  /**
-   * The deployment-level GitHub OAuth App the management plane connects Accounts to, present only when
-   * coherently configured (all values together). Secrets stay in this object; they are never
-   * logged. `oauthCallbackUrl` is the resolved exact callback on this server's public origin.
-   */
-  githubOAuth?: GitHubOAuthConfig;
   host: string;
   /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
@@ -831,6 +771,8 @@ export interface ServerConfig {
     };
     /** Where relayed Web App and CLI errors are forwarded; `projectId` unset keeps them in the server log only. */
     errorReporting: ErrorReportingConfig;
+    /** Start/end performance logging configuration across services, DB queries, and external calls. */
+    performance?: PerformanceLoggingConfig;
   };
   logLevel: ServerLogLevel;
   /**
@@ -838,6 +780,7 @@ export interface ServerConfig {
    * development environment, regardless of the configured value.
    */
   mcpAllowLoopback: boolean;
+  mcpOAuthReuse: boolean;
   /**
    * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both
    * variables are configured together. The flow offers it only to the Google-hosted MCP endpoints
@@ -934,12 +877,6 @@ export type WebToolsConfig =
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
 
-export interface GitHubOAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  oauthCallbackUrl: string;
-}
-
 export interface DatabaseConfig {
   databaseUrl: string;
   migrationsDirectory: string;
@@ -961,6 +898,15 @@ export function serverEnvironmentSummary(config: ServerConfig) {
     packageName: config.channel.packageName,
     publicUrl: config.publicUrl,
   };
+}
+
+export function parseCredentialEncryptionConfig(environment: NodeJS.ProcessEnv) {
+  const encryptionKey = EncryptionKeySchema.parse(environment.OPENTAG_ENCRYPTION_KEY);
+  const keys = EncryptionKeyRingSchema.parse(emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING));
+  const activeKeyId = emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID);
+  if (Boolean(keys) !== Boolean(activeKeyId))
+    throw new Error("Encryption key ring and active key ID must be configured together");
+  return keys && activeKeyId ? { legacyKey: encryptionKey, keys, activeKeyId } : encryptionKey;
 }
 
 export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseConfig {
@@ -990,8 +936,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
+    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: environment.OPENTAG_IM_FEEDBACK_TEXT_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
+    OPENTAG_MCP_OAUTH_REUSE: environment.OPENTAG_MCP_OAUTH_REUSE,
     OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
     OPENTAG_MCP_CANVA_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_CANVA_CLIENT_ID),
@@ -1002,15 +950,16 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_MCP_ASANA_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_ASANA_CLIENT_SECRET),
     OPENTAG_MCP_ZOOM_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_ZOOM_CLIENT_ID),
     OPENTAG_MCP_ZOOM_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_ZOOM_CLIENT_SECRET),
+    OPENTAG_MCP_GITHUB_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GITHUB_CLIENT_ID),
+    OPENTAG_MCP_GITHUB_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GITHUB_CLIENT_SECRET),
+    OPENTAG_MCP_FEISHU_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_FEISHU_CLIENT_ID),
+    OPENTAG_MCP_FEISHU_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_FEISHU_CLIENT_SECRET),
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
     OPENTAG_SLACK_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_SECRET),
     OPENTAG_SLACK_SIGNING_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_SIGNING_SECRET),
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
-    OPENTAG_GITHUB_OAUTH_CLIENT_ID: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_ID),
-    OPENTAG_GITHUB_OAUTH_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET),
-    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
@@ -1026,6 +975,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: emptyToUndefined(environment.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON),
     OPENTAG_TRUST_PROXY: emptyToUndefined(environment.OPENTAG_TRUST_PROXY),
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
+    OPENTAG_PERF_LOG_ENABLED: environment.OPENTAG_PERF_LOG_ENABLED,
+    OPENTAG_PERF_LOG_LEVEL: environment.OPENTAG_PERF_LOG_LEVEL,
+    OPENTAG_PERF_DB_LOG_LEVEL: emptyToUndefined(environment.OPENTAG_PERF_DB_LOG_LEVEL),
+    OPENTAG_PERF_START_LOG_LEVEL: emptyToUndefined(environment.OPENTAG_PERF_START_LOG_LEVEL),
+    OPENTAG_PERF_SLOW_THRESHOLD_MS: environment.OPENTAG_PERF_SLOW_THRESHOLD_MS,
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
     OPENTAG_CLOUD_RUNNER_VERSION: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_VERSION),
@@ -1096,22 +1050,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
-    ...(parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID && parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET
-      ? {
-          githubOAuth: {
-            clientId: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_ID,
-            clientSecret: parsed.OPENTAG_GITHUB_OAUTH_CLIENT_SECRET,
-            oauthCallbackUrl: parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL
-              ? (parseGitHubOAuthRedirectUrl(
-                  parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL,
-                  parsed.OPENTAG_PUBLIC_URL,
-                ) as string)
-              : new URL(GITHUB_OAUTH_CALLBACK_PATH, parsed.OPENTAG_PUBLIC_URL).toString(),
-          },
-        }
-      : {}),
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
+    mcpOAuthReuse: parsed.OPENTAG_MCP_OAUTH_REUSE,
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
     ...resolveMcpGoogleOAuth(parsed),
     ...resolveMcpStaticOAuth(parsed),
@@ -1126,6 +1067,13 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
         parsed.GOOGLE_CLOUD_PROJECT,
         parsed.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON,
       ),
+      performance: {
+        enabled: parsed.OPENTAG_PERF_LOG_ENABLED,
+        level: parsed.OPENTAG_PERF_LOG_LEVEL,
+        slowThresholdMs: parsed.OPENTAG_PERF_SLOW_THRESHOLD_MS,
+        ...(parsed.OPENTAG_PERF_DB_LOG_LEVEL ? { dbLevel: parsed.OPENTAG_PERF_DB_LOG_LEVEL } : {}),
+        ...(parsed.OPENTAG_PERF_START_LOG_LEVEL ? { startLevel: parsed.OPENTAG_PERF_START_LOG_LEVEL } : {}),
+      },
     },
     port: parsed.OPENTAG_PORT,
     trustProxy: parsed.OPENTAG_TRUST_PROXY,

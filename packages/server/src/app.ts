@@ -1,21 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import type { ChannelName } from "@opentag/shared";
 import {
   ErrorEnvelopeSchema,
   HTTP_PATHS,
+  RUNTIME_PROVIDER_PROXY_PATH,
   redactForLog,
   ServerDeepHealthSchema,
   ServerHealthSchema,
   StructuredErrorCodeSchema,
 } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
-import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
-import {
-  type AccountRoutesOptions,
-  type InternalNavigationVisibilityService,
-  registerAccountRoutes,
-} from "./api/account.js";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyLoggerOptions,
+  type FastifyRequest,
+  type FastifyServerOptions,
+  LogController,
+} from "fastify";
+import { type AccountRoutesOptions, registerAccountRoutes } from "./api/account.js";
 import {
   type AccountAgentScheduleRoutesOptions,
   type RuntimeAgentScheduleRoutesOptions,
@@ -39,8 +43,10 @@ import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/error-reports.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
-import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
+import { registerFeishuQrLinkRoute } from "./api/feishu-qr-link.js";
+import { registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
+import { registerImFeedbackRoutes } from "./api/im-feedback.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
@@ -72,57 +78,63 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { DATABASE_READINESS_TIMEOUT_MS } from "./db/readiness-probe.js";
-import { currentTraceId } from "./observability/index.js";
+import {
+  currentTraceId,
+  type PerformanceLogger,
+  type PerformanceLoggingConfig,
+  prepareAppPerformance,
+  registerHttpPerformanceHooks,
+} from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
-import {
-  type AgentRuntimeTestService,
-  type AgentService,
-  AgentServiceError,
-  type AgentSetupService,
-} from "./services/agents/index.js";
+import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
-import { GitHubConnectionServiceError } from "./services/github/index.js";
+import { DomainServiceError } from "./services/domain-service-error.js";
+import type { ImFeedbackActionsService } from "./services/im/im-feedback-actions.js";
 import type { ImResourceService } from "./services/im/index.js";
-import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import {
-  type ImBindingService,
-  ImBindingServiceError,
-  ImBindingUnbindRequiredError,
-} from "./services/im-bindings/index.js";
-import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+  FEISHU_QR_LINK_PATH_PREFIX,
+  type FeishuSetupService,
+  feishuPublicFailure,
+} from "./services/im-bindings/feishu/index.js";
+import { type ImBindingService, ImBindingUnbindRequiredError } from "./services/im-bindings/index.js";
 import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "./services/mcp/index.js";
-import { McpServiceError } from "./services/mcp/index.js";
-import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
+import type { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import type { CloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
 import { CloudOverviewService } from "./services/sandboxes/cloud-overview-service.js";
 import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
-import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
+import type { SandboxService } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
 import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
 import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
-import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
-import { type SkillPresetService, type SkillService, SkillServiceError } from "./services/skills/index.js";
+import type { AccountSetupService } from "./services/setup/index.js";
+import type { SkillPresetService, SkillService } from "./services/skills/index.js";
 import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
-import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
+import type { TaskService } from "./services/tasks/index.js";
+import { closeServerResources, startClosingServerResources } from "./shutdown.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
+  /** Starts producer shutdown before request/connection drain; cleanup is joined before resource disposal. */
+  beginShutdown?: () => unknown;
+  shutdownSignal?: AbortSignal;
+  /** Final shared-resource cleanup, after request work and child route shutdown. */
+  closeResources?: () => unknown;
   /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
   database?: DatabaseClient;
-  /** Replaces the `select 1` on `database`; production passes a probe on its own connection. */
+  /** Production checks both dedicated connectivity and application-pool availability. */
   databaseReadinessProbe?: () => Promise<void>;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  agentStatusService?: AccountRoutesOptions["agentStatusService"];
   /** Whether this deployment can start the first-party Slack OAuth flow. */
   slackOAuthAvailable?: boolean;
   agentSetupService?: AgentSetupService;
@@ -132,6 +144,7 @@ export interface CreateAppOptions {
   computerService?: ComputerService;
   sandboxService?: SandboxService;
   sandboxRunnerService?: SandboxRunnerService;
+  imFeedback?: ImFeedbackActionsService;
   cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
   /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
   cloudModelCatalog?: CloudModelCatalog;
@@ -218,12 +231,15 @@ export interface CreateAppOptions {
   slackOAuth?: SlackOAuthRouteOptions;
   slackConfiguration?: SlackConfigurationRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
-  githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
+  performanceLogger?: PerformanceLogger;
+  performanceLogging?: Partial<PerformanceLoggingConfig>;
   /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
   trustProxy?: boolean | string[];
   readiness?: BootstrapReadiness;
+  environment?: string;
+  revision?: string;
   /** Non-secret deployment proof from the responding process, independent of control-plane state. */
   deployment?: { revision?: string; runner?: { image: string; version: string } };
   runtime?: RuntimeRoutesOptions;
@@ -252,13 +268,14 @@ export interface CreateAppOptions {
    * deployment outside staging stays indistinguishable from one that never had the capability.
    */
   setupResetService?: OnboardingResetService;
-  internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
-  return url.split("?", 1)[0] ?? "/";
+  const path = url.split("?", 1)[0] ?? "/";
+  // This token sits in the path, and it is all an anonymous phone needs to reach a live setup code.
+  return path.startsWith(FEISHU_QR_LINK_PATH_PREFIX) ? `${FEISHU_QR_LINK_PATH_PREFIX}[redacted]` : path;
 }
 
 function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<string, string> {
@@ -272,38 +289,11 @@ function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<s
   return headers;
 }
 
-type AccountFacingError =
-  | AuthServiceError
-  | AgentServiceError
-  | ImBindingServiceError
-  | OnboardingResetError
-  | TaskQueryError
-  | SlackConfigurationServiceError
-  | AccountSetupServiceError
-  | SandboxServiceError
-  | McpServiceError
-  | GitHubConnectionServiceError
-  | ScheduleServiceError
-  | SkillServiceError;
-
-function isAccountFacingError(error: unknown): error is AccountFacingError {
-  return (
-    error instanceof AuthServiceError ||
-    error instanceof AgentServiceError ||
-    error instanceof ImBindingServiceError ||
-    error instanceof OnboardingResetError ||
-    error instanceof TaskQueryError ||
-    error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError ||
-    error instanceof SandboxServiceError ||
-    error instanceof McpServiceError ||
-    error instanceof GitHubConnectionServiceError ||
-    error instanceof ScheduleServiceError ||
-    error instanceof SkillServiceError
-  );
+function isAccountFacingError(error: unknown): error is DomainServiceError {
+  return error instanceof DomainServiceError;
 }
 
-function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string) {
+function accountFacingErrorEnvelope(error: DomainServiceError, requestId: string) {
   return ErrorEnvelopeSchema.parse({
     error: {
       code: error.code,
@@ -333,9 +323,19 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
-function disableProbeRequestLogging(request: FastifyRequest): boolean {
+function disableProbeRequestLogging(request: { url: string }): boolean {
   const pathname = sanitizeRequestUrl(request.url);
   return pathname === "/healthz" || pathname === "/readyz";
+}
+
+function shouldIgnoreHttpPerformanceRequest(request: { url: string }): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return (
+    disableProbeRequestLogging(request) ||
+    pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
+    pathname === RUNTIME_PROVIDER_PROXY_PATH
+  );
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
@@ -344,7 +344,14 @@ const MAX_ERROR_STACK_LENGTH = 8_192;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
-type SerializedError = { type: string; message: string; stack: string; code?: string; cause?: SerializedError };
+type SerializedError = {
+  type: string;
+  message: string;
+  stack: string;
+  code?: string;
+  errorCode?: string;
+  cause?: SerializedError;
+};
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
 /** Bounds the deserialized cause chain so a cyclic or deep wrap cannot grow one log line without limit. */
 const SERIALIZED_ERROR_CAUSE_DEPTH = 3;
@@ -364,19 +371,51 @@ function redactLogString(value: string): string {
   return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
 }
 
+function isPlainObjectError(error: unknown): error is Record<string, unknown> {
+  return typeof error === "object" && error !== null && ("message" in error || "stack" in error);
+}
+
+function serializeDrizzleQueryError(error: DrizzleQueryError | (Error & DrizzleQueryErrorLike)): SerializedError {
+  const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
+  const summary = redactLogString(
+    `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
+  );
+  return {
+    type: "DrizzleQueryError",
+    message: summary,
+    stack: redactLogString(`DrizzleQueryError: ${summary}`),
+  };
+}
+
+function serializePlainObjectError(candidate: Record<string, unknown>, depth: number): SerializedError {
+  const name = typeof candidate.name === "string" ? candidate.name : "Error";
+  const message = typeof candidate.message === "string" ? redactLogString(candidate.message) : "";
+  const stack = typeof candidate.stack === "string" ? redactLogString(candidate.stack) : `${name}: ${message}`;
+  const code =
+    typeof candidate.code === "string" &&
+    StructuredErrorCodeSchema.safeParse(candidate.code).success &&
+    redactLogString(candidate.code) === candidate.code
+      ? candidate.code
+      : undefined;
+  const cause =
+    candidate.cause !== undefined && depth < SERIALIZED_ERROR_CAUSE_DEPTH
+      ? serializeError(candidate.cause, depth + 1)
+      : undefined;
+  return {
+    type: name,
+    message: message || name,
+    stack,
+    ...(code ? { code, errorCode: code } : {}),
+    ...(cause ? { cause } : {}),
+  };
+}
+
 function serializeError(error: unknown, depth = 0): SerializedError {
-  if (isDrizzleQueryError(error)) {
-    const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
-    const summary = redactLogString(
-      `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
-    );
-    return {
-      type: "DrizzleQueryError",
-      message: summary,
-      stack: redactLogString(`DrizzleQueryError: ${summary}`),
-    };
-  }
+  if (isDrizzleQueryError(error)) return serializeDrizzleQueryError(error);
   if (!(error instanceof Error)) {
+    if (isPlainObjectError(error)) {
+      return serializePlainObjectError(error, depth);
+    }
     const summary = redactLogString(String(error));
     return { type: typeof error, message: summary, stack: summary };
   }
@@ -389,7 +428,7 @@ function serializeError(error: unknown, depth = 0): SerializedError {
     type: error.name,
     message: redactLogString(error.message),
     stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
-    ...(code ? { code } : {}),
+    ...(code ? { code, errorCode: code } : {}),
     ...(cause ? { cause } : {}),
   };
 }
@@ -484,9 +523,47 @@ function createDatabaseReadinessProbe(run: (() => Promise<unknown>) | undefined)
   };
 }
 
-function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
+function truncateClientIp(ip: string | undefined): string | undefined {
+  if (!ip || typeof ip !== "string") return ip;
+  if (ip.startsWith("::ffff:") && ip.includes(".")) {
+    return `::ffff:${ip.slice(7).replace(/\.\d+$/, ".0")}`;
+  }
+  if (ip.includes(".")) {
+    return ip.replace(/\.\d+$/, ".0");
+  }
+  if (ip.includes(":")) {
+    const parts = ip.split("::");
+    let hextets: string[];
+    if (parts.length === 2) {
+      const left = parts[0] ? parts[0].split(":") : [];
+      const right = parts[1] ? parts[1].split(":") : [];
+      const missing = 8 - (left.length + right.length);
+      hextets = [...left, ...Array(missing).fill("0"), ...right];
+    } else {
+      hextets = ip.split(":");
+    }
+    const prefix = hextets.slice(0, 3).map((h) => h || "0");
+    return `${prefix.join(":")}::`;
+  }
+  return ip;
+}
+
+function createFastifyLoggerOptions(options: CreateAppOptions): NonNullable<FastifyServerOptions["logger"]> & object {
   return {
     level: options.loggerLevel ?? "info",
+    base: {
+      pid: process.pid,
+      hostname: os.hostname(),
+      service: "opentag-server",
+      ...(options.environment !== undefined ? { environment: options.environment } : {}),
+      ...((options.revision ?? options.deployment?.revision)
+        ? { revision: options.revision ?? options.deployment?.revision }
+        : {}),
+    },
+    mixin: () => {
+      const traceId = currentTraceId();
+      return traceId ? { traceId } : {};
+    },
     ...(options.loggerStream ? { stream: options.loggerStream } : {}),
     serializers: {
       err: serializeError,
@@ -494,7 +571,7 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
         method: request.method,
         url: sanitizeRequestUrl(request.url),
         host: request.hostname,
-        remoteAddress: request.ip,
+        remoteAddress: truncateClientIp(request.ip),
         remotePort: request.socket.remotePort,
       }),
     },
@@ -529,6 +606,7 @@ function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailur
     {
       category: failure.category,
       code: failure.code,
+      errorCode: failure.code,
       err: error,
       requestId: request.id,
       statusCode: failure.statusCode,
@@ -617,11 +695,63 @@ export function createApp(options: CreateAppOptions = {}) {
     logger: createFastifyLoggerOptions(options),
     trustProxy: options.trustProxy ?? false,
   });
+  const requestWork = new Set<Promise<unknown>>();
+  let closing = false;
+  let stopping: Promise<void> | undefined;
+  const beginShutdown = () => {
+    closing = true;
+    stopping ??= startClosingServerResources([["server producers", () => options.beginShutdown?.()]]);
+    void stopping.catch(() => undefined);
+    return stopping;
+  };
+  app.addHook("preClose", async () => {
+    void beginShutdown();
+  });
+  // First registered onClose runs last, including hooks registered by asynchronous child plugins.
+  app.addHook("onClose", () =>
+    closeServerResources([
+      ["server producers", () => beginShutdown()],
+      [
+        "HTTP request work",
+        async () => {
+          while (requestWork.size) await Promise.allSettled([...requestWork]);
+        },
+      ],
+      ["cloud billing", () => options.cloudBilling?.close()],
+      ["shared resources", () => options.closeResources?.()],
+    ]),
+  );
+  const retain = (handle: (...args: never[]) => unknown) =>
+    function (this: FastifyInstance, ...args: unknown[]) {
+      const reply = args[1] as import("fastify").FastifyReply;
+      if (closing || options.shutdownSignal?.aborted) return reply.code(503).send({ error: "server_closing" });
+      const result = Reflect.apply(handle, this, args);
+      if (result !== reply && result && typeof (result as PromiseLike<unknown>).then === "function") {
+        const operation = Promise.resolve(result);
+        requestWork.add(operation);
+        void operation.then(
+          () => requestWork.delete(operation),
+          () => requestWork.delete(operation),
+        );
+      }
+      return result;
+    };
+  app.addHook("onRoute", (route) => {
+    if (route.websocket || route.wsHandler) return;
+    for (const phase of ["onRequest", "preParsing", "preValidation", "preHandler", "handler"] as const) {
+      const handle = route[phase];
+      if (typeof handle === "function") Reflect.set(route, phase, retain(handle));
+      else if (Array.isArray(handle)) Reflect.set(route, phase, handle.map(retain));
+    }
+  });
+
   const readiness = options.readiness ?? new BootstrapReadiness();
   const healthDatabase = options.database ?? options.taskService?.database;
   const databaseReadinessProbe = createDatabaseReadinessProbe(
     options.databaseReadinessProbe ?? (healthDatabase ? () => healthDatabase.execute(sql`select 1`) : undefined),
   );
+  const preparedPerformance = prepareAppPerformance(app, options);
+  options = preparedPerformance.options;
 
   registerSessionProofRoutes(app, options);
   registerPublicCatalog(app, options);
@@ -657,6 +787,10 @@ export function createApp(options: CreateAppOptions = {}) {
     reply.header("x-request-id", _request.id);
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
+  });
+  registerHttpPerformanceHooks(app, preparedPerformance.perfLogger, {
+    shouldIgnore: shouldIgnoreHttpPerformanceRequest,
+    sanitizeUrl: sanitizeRequestUrl,
   });
 
   // Anonymous by design: a failure before sign-in is still a failure worth seeing.
@@ -789,13 +923,13 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    registerSlackSetupRoutes(app, authService, options, authOptions);
-    if (options.githubIntegrations) {
-      registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
-    }
+    registerImAccountRoutes(app, authService, options, authOptions);
+    registerGitHubIntegrationsRoutes(app);
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
       registerMcpOAuthRoutes(app, {
+        authOptions,
+        authService,
         flows: options.mcp.flows,
         /*
          * The callback cannot probe cheaply itself, so the probe is fired here and not awaited. The
@@ -846,6 +980,7 @@ export function createApp(options: CreateAppOptions = {}) {
     registerRunnerWorkspaceRoutes(app, options.runnerWorkspace);
   }
 
+  if (options.feishuSetupService) registerFeishuQrLinkRoute(app, options.feishuSetupService);
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);
 
   app.setNotFoundHandler((request, reply) =>
@@ -946,12 +1081,13 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
-function registerSlackSetupRoutes(
+function registerImAccountRoutes(
   app: Parameters<typeof registerAccountRoutes>[0],
   authService: UserAuthService,
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
+  if (options.imFeedback) registerImFeedbackRoutes(app, authService, options.imFeedback, authOptions);
   if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
   if (options.slackConfiguration)
     registerSlackConfigurationRoutes(app, authService, options.slackConfiguration, authOptions);
@@ -989,6 +1125,7 @@ function registerAvailableAccountRoutes(
     ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
     ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
     ...(options.agentService ? { agentService: options.agentService } : {}),
+    agentStatusService: options.agentStatusService,
     slackOAuthAvailable: options.slackOAuthAvailable,
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),
@@ -998,7 +1135,6 @@ function registerAvailableAccountRoutes(
     ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
     ...(options.taskService ? { taskService: options.taskService } : {}),
     ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
-    internalNavigationService: options.internalNavigationService,
     authOptions,
   });
 }

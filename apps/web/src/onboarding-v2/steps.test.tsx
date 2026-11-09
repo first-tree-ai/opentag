@@ -29,51 +29,130 @@ describe("creation step navigation", () => {
     expect(onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("enables Back on the second step, then locks both navigation actions while creating", () => {
-    const onBack = vi.fn();
+  it("offers no in-flow Back on the second step and locks Create while creating", () => {
     const onSubmit = vi.fn();
     const readyDraft: AgentDraft = { destination: "local", name: "opentag", runtime: "codex" };
     const { rerender } = render(
-      <AgentStep
-        draft={readyDraft}
-        onBack={onBack}
-        onChange={() => undefined}
-        onSubmit={onSubmit}
-        submitLabel="Create Agent"
-      />,
+      <AgentStep draft={readyDraft} onChange={() => undefined} onSubmit={onSubmit} submitLabel="Create Agent" />,
     );
 
-    const back = screen.getByRole("button", { name: "Back" });
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     const create = screen.getByRole("button", { name: "Create Agent" });
-    expect(back.hasAttribute("disabled")).toBe(false);
     expect(create.hasAttribute("disabled")).toBe(false);
 
     rerender(
       <AgentStep
         draft={readyDraft}
-        onBack={onBack}
         onChange={() => undefined}
         onSubmit={onSubmit}
         submitLabel="Creating agent…"
         submitting
       />,
     );
-    expect(back.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Creating agent…" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("keeps Create Agent disabled until a Runtime is selected", () => {
+  it("names the runtime choice an Agent and never says Runtime", () => {
     render(
       <AgentStep
         draft={{ destination: "local", name: "opentag", runtime: undefined }}
-        onBack={() => undefined}
         onChange={() => undefined}
         onSubmit={() => undefined}
         submitLabel="Create Agent"
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Back" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("group", { name: "Agent to use" })).toBeTruthy();
+    expect(screen.queryByText(/coming soon/)).toBeNull();
+    expect(screen.getByText("Works with many model providers")).toBeTruthy();
+    expect(screen.queryByText(/runtime/i)).toBeNull();
+  });
+
+  it("states the allowed name characters before anything is typed", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: undefined }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
+    expect(screen.getByText(rule)).toBeTruthy();
+    const input = screen.getByLabelText("Agent name");
+    const describedBy = input.getAttribute("aria-describedby")?.split(" ") ?? [];
+    expect(describedBy.map((id) => document.getElementById(id)?.textContent)).toContain(rule);
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(input.getAttribute("placeholder")).toBe("opentag");
+  });
+
+  it("names a refused name briefly instead of repeating the character rule", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "研发助理!", runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    const input = screen.getByLabelText("Agent name");
+    fireEvent.blur(input);
+
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
+    expect(screen.getByText("The name has characters that aren't allowed.")).toBeTruthy();
+    expect(screen.getAllByText(rule)).toHaveLength(1);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("says a name is too long while typing, before blur or Create", () => {
+    const tooLong = "中".repeat(22);
+    const { rerender } = render(
+      <AgentStep
+        draft={{ destination: "local", name: "中".repeat(21), runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    const error = "The name is too long: up to 64 letters or 21 Chinese characters.";
+    expect(screen.queryByText(error)).toBeNull();
+
+    rerender(
+      <AgentStep
+        draft={{ destination: "local", name: tooLong, runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByText(error)).toBeTruthy();
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("waits for blur before flagging other name problems", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("keeps Create Agent disabled until a Runtime is selected", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "opentag", runtime: undefined }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
   });
 
@@ -142,7 +221,6 @@ describe("creation step navigation", () => {
     render(
       <AgentStep
         draft={{ destination: "cloud", name: "opentag", runtime: undefined }}
-        onBack={() => undefined}
         onChange={() => undefined}
         onSubmit={onSubmit}
         submitLabel="Create Agent"

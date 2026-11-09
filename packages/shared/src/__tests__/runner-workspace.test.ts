@@ -64,7 +64,7 @@ describe("workspace persistence wire boundary", () => {
       { generation: Number(object.generation) },
       { generation: "../other" },
       { ownerGeneration: Number.MAX_SAFE_INTEGER + 1 },
-      { bytes: 128 * 1024 * 1024 + 1 },
+      { bytes: 512 * 1024 * 1024 + 1 },
       { sha256: "truncated" },
     ]) {
       expect(RunnerWorkspaceObjectSchema.safeParse({ ...object, ...patch }).success).toBe(false);

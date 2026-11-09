@@ -9,7 +9,7 @@ export function createServerDiagnosticReporter(
   return (rawCode, context) => {
     const code = safeDiagnosticCode(rawCode);
     try {
-      logger()?.error(redactForLog({ ...context, code }), "Server diagnostic");
+      logger()?.error(redactForLog({ ...context, code, errorCode: code }), "Server diagnostic");
     } catch {
       // A diagnostic logger is never allowed to break the observed operation.
     }

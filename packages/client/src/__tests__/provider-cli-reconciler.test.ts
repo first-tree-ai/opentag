@@ -280,7 +280,7 @@ describe("provider CLI reconciler", () => {
       validation: { run: vi.fn(), cleanupAll: vi.fn() },
     });
     await runtime.emit(requirement);
-    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only" });
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only", signal: expect.any(AbortSignal) });
     expect(inspect).toHaveBeenCalledTimes(2);
     expect(runtime.send).toHaveBeenNthCalledWith(
       1,
@@ -703,7 +703,7 @@ describe("provider CLI reconciler", () => {
       validation: { run: vi.fn(), cleanupAll: vi.fn() },
     });
     await runtime.emit(requirement);
-    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only" });
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only", signal: expect.any(AbortSignal) });
   });
 
   it("waits out a foreground installer's lock and converges without a reconnect", async () => {
@@ -1362,6 +1362,35 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
+  it("publishes readiness for an active requirement after a restart, with no prewarm", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    // A restarted daemon has published nothing, and a bound Agent gets no prewarm.
+    await runtime.emit(requirement);
+    runtime.setImCliReadiness.mockClear();
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
+    await reconciler.close();
+  });
+
+  it("publishes nothing for a provider with no requirement and no earlier readiness", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
+    await reconciler.close();
+  });
+
   it("stops a passive refresh that becomes unavailable mid-flight", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
@@ -1777,6 +1806,41 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
+  it("aborts an in-flight ensure on close so shutdown finishes promptly", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(notReadyInspect("slack", "install", { code: "not_installed" }));
+    let received: AbortSignal | undefined;
+    // A download that never ends on its own: it settles only when its signal is aborted.
+    const ensure = vi.fn(
+      (_provider: string, options: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          received = options.signal;
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+        }),
+    );
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: ensure as never, layout: fixture.layout },
+      refreshRuntimeProvider: vi.fn(async () => ({ provider: "codex" as const, status: "ready" as const })),
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const frame = runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledOnce());
+    expect(received?.aborted).toBe(false);
+
+    const started = Date.now();
+    await reconciler.close();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(received?.aborted).toBe(true);
+    await expect(
+      Promise.race([frame.then(() => "settled"), new Promise((r) => setTimeout(r, 1_000, "pending"))]),
+    ).resolves.toBe("settled");
+    // Closing never publishes a verdict for the cancelled preparation.
+    expect(runtime.setImCliReadiness).not.toHaveBeenCalledWith({ provider: "slack", status: "unavailable" });
+  });
+
   it("runs the idempotent auto ensure for a Server-owned existing-Computer preparation", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
@@ -1796,7 +1860,7 @@ describe("provider CLI reconciler", () => {
     await runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
 
     expect(refreshRuntimeProvider).toHaveBeenCalledWith("codex");
-    expect(ensure).toHaveBeenCalledWith("slack", { mode: "auto" });
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "auto", signal: expect.any(AbortSignal) });
     expect(inspect).toHaveBeenCalledTimes(2);
     expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
       { provider: "slack", status: "checking" },
@@ -2113,6 +2177,59 @@ describe("provider CLI reconciler", () => {
       expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
       expect.anything(),
     );
+    await reconciler.close();
+  });
+
+  it("does not let refreshPublishedImCliReadiness overwrite an active ensure prewarm with a stale install inspection", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let initial = true;
+    let ensured = false;
+    let ensureStarted!: () => void;
+    let releaseEnsure!: () => void;
+    let releasePassive!: (value: ProviderCliInspection) => void;
+    const started = new Promise<void>((resolve) => {
+      ensureStarted = resolve;
+    });
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const passiveGate = new Promise<ProviderCliInspection>((resolve) => {
+      releasePassive = resolve;
+    });
+    const inspect = vi.fn(async () => {
+      if (initial) {
+        initial = false;
+        return notReadyInspect("slack", "install", { code: "not_installed" });
+      }
+      if (!ensured) return passiveGate;
+      return fixture.inspection;
+    });
+    const ensure = vi.fn(async () => {
+      ensureStarted();
+      await ensureGate;
+      ensured = true;
+      return { ok: true, action: "installed-managed" } as never;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      refreshRuntimeProvider: vi.fn(async () => ({ provider: "codex" as const, status: "ready" as const })),
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const active = runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
+    await started;
+    const passive = reconciler.refreshPublishedImCliReadiness();
+    releasePassive(notReadyInspect("slack", "install", { code: "not_installed" }));
+    await passive;
+    releaseEnsure();
+    await active;
+
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "ready" },
+    ]);
     await reconciler.close();
   });
 });

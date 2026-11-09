@@ -18,9 +18,15 @@ import {
   AccountSandboxRunnerStopRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_STATUS_HEADER,
+  AGENT_STATUS_PATH,
+  AGENT_STATUS_VERSION,
   AgentAdminConfigSchema,
   AgentCreationIntentIdSchema,
   AgentCreationIntentResultSchema,
+  AgentStatusQuerySchema,
   type ChannelName,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
   type CloudAvailability,
@@ -33,27 +39,40 @@ import {
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTaskRepliesResponseSchema,
   ListTasksResponseSchema,
   negotiateProviderReadinessFromHeaders,
+  projectAgentActivityForClient,
   type RuntimeProviderReadinessNegotiation,
+  requestsAgentActivityQueuedCount,
+  requestsAgentActivityTaskCount,
   requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE,
+  TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE,
+  TASK_DETAIL_TEMPLATE,
+  TASK_DETAIL_TURNS_TEMPLATE,
   TASK_REPLIES_TEMPLATE,
+  TASK_SECTION_DEFAULT_LIMIT,
+  TASK_SECTION_MAX_LIMIT,
   TaskCancelResponseSchema,
+  TaskCollaborationMessagePageSchema,
+  TaskDetailPageSchema,
   TaskDetailSchema,
+  TaskDetailSectionSchema,
+  TaskInternalSessionPageSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
+  TaskTurnPageSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import type { AgentStatusService } from "../services/agents/agent-status-service.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import {
@@ -86,6 +105,30 @@ const TaskDetailQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).default(50),
   })
   .strict();
+/** One independently paged Task detail section: turns, internal Sessions, or collaboration messages. */
+const TaskSectionQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(1024).optional(),
+    limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
+  })
+  .strict();
+/**
+ * The first page of the named sections, every section when none is named. It takes no cursor: each
+ * section's own cursor continues it. Naming a subset is what keeps a reader from paying for a
+ * section it discards.
+ */
+const TaskDetailPageQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(TASK_SECTION_MAX_LIMIT).default(TASK_SECTION_DEFAULT_LIMIT),
+    sections: z
+      .string()
+      .min(1)
+      .max(120)
+      .transform((value) => value.split(","))
+      .pipe(z.array(TaskDetailSectionSchema).min(1))
+      .optional(),
+  })
+  .strict();
 const TaskRepliesQuerySchema = z
   .object({
     cursor: z.string().min(1).max(1024).optional(),
@@ -110,6 +153,7 @@ export interface AccountRoutesOptions {
    */
   cloudModelOptions?: () => Promise<CloudModelOptions>;
   agentService?: AgentService;
+  agentStatusService?: AgentStatusService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   sandboxService?: SandboxService;
@@ -124,7 +168,6 @@ export interface AccountRoutesOptions {
    */
   setupResetService?: AccountSetupResetService;
   /** Process-wide preview state; absent everywhere the internal tools are absent. */
-  internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
@@ -135,11 +178,6 @@ export interface AccountSetupResetService {
   readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
-}
-
-export interface InternalNavigationVisibilityService {
-  read(): InternalNavigationVisibility;
-  update(value: InternalNavigationVisibility): InternalNavigationVisibility;
 }
 
 function accountId(request: FastifyRequest): string {
@@ -158,6 +196,14 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
+
+  if (options.agentStatusService) {
+    const statuses = options.agentStatusService;
+    app.get(AGENT_STATUS_PATH, { preHandler }, async (request, reply) => {
+      const { ids } = parseRequest(AgentStatusQuerySchema, request.query);
+      return reply.header("Cache-Control", "private, no-store").send(await statuses.read(accountId(request), ids));
+    });
+  }
 
   app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
     const availability = options.cloudAvailability?.() ?? {
@@ -202,12 +248,18 @@ export function registerAccountRoutes(
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const account = accountId(request);
       const response = await agentService.listForAccount(account);
+      const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
+      const includeQueuedCount = requestsAgentActivityQueuedCount(request.headers[AGENT_ACTIVITY_QUEUED_COUNT_HEADER]);
       return reply.code(200).send(
         ListAgentsResponseSchema.parse({
-          agents:
-            options.slackOAuthAvailable === undefined
-              ? response.agents
-              : response.agents.map((agent) => ({ ...agent, slackOAuthAvailable: options.slackOAuthAvailable })),
+          ...(options.agentStatusService && request.headers[AGENT_STATUS_HEADER] === AGENT_STATUS_VERSION
+            ? { statusVersion: 1 }
+            : {}),
+          agents: response.agents.map((agent) => ({
+            ...agent,
+            activity: projectAgentActivityForClient(agent.activity, includeTaskCount, includeQueuedCount),
+            ...(options.slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable: options.slackOAuthAvailable }),
+          })),
         }),
       );
     });
@@ -237,10 +289,56 @@ export function registerAccountRoutes(
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 
+    /*
+     * The legacy complete detail. Its Turn page is bounded by `limit`, but its Internal Session and
+     * collaboration arrays are not: readers written against it are migrated to the sectioned
+     * contract below rather than having their answer silently cut.
+     */
     app.get(TASK_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailQuerySchema, request.query);
       const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    /*
+     * The bounded detail: one page of each section. Every section carries its own keyset cursor, so
+     * a reader that needs more of one section asks for that section alone.
+     */
+    app.get(TASK_DETAIL_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskDetailPageQuerySchema, request.query);
+      const response = TaskDetailPageSchema.parse(
+        await taskService.detail(accountId(request), sessionId, {
+          limit: query.limit,
+          ...(query.sections ? { sections: query.sections } : {}),
+        }),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_TURNS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskTurnPageSchema.parse(await taskService.listTurns(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskInternalSessionPageSchema.parse(
+        await taskService.listInternalSessions(accountId(request), sessionId, query),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskSectionQuerySchema, request.query);
+      const response = TaskCollaborationMessagePageSchema.parse(
+        await taskService.listCollaborationMessages(accountId(request), sessionId, query),
+      );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 
@@ -419,6 +517,7 @@ export function registerAccountRoutes(
               downloadBaseUrl,
               environment,
               publicUrl,
+              targetComputerId: input.mode === "repair" ? input.targetComputerId : undefined,
             }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
@@ -480,25 +579,6 @@ export function registerAccountRoutes(
       if (mode === "all") await setupResetService.resetOnboarding(account);
       else await setupResetService.reboard(account);
       return reply.code(204).send();
-    });
-  }
-
-  if (options.internalNavigationService) {
-    const internalNavigationService = options.internalNavigationService;
-
-    app.get(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (_request, reply) =>
-      reply
-        .header("Cache-Control", "no-store")
-        .code(200)
-        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.read())),
-    );
-
-    app.put(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (request, reply) => {
-      const input = parseRequest(InternalNavigationVisibilitySchema, request.body);
-      return reply
-        .header("Cache-Control", "no-store")
-        .code(200)
-        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.update(input)));
     });
   }
 }

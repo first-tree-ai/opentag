@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { App } from "../app.js";
 import { pendingSlackConfiguration, setupSlackConfiguration } from "../onboarding-v2/agent-setup-test-fixtures.js";
+import { createMemorySetupAdapter } from "../onboarding-v2/setup-memory-adapter.js";
 import { agentId, computerId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
 import { withLocaleAsync } from "./support/with-locale.js";
 
@@ -72,6 +73,118 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
+  it("offers a new Agent instead of connection buttons for a disconnected identity", async () => {
+    installApi({ bound: false });
+    const original = browserApi.agentSetup.bind(browserApi);
+    vi.spyOn(browserApi, "agentSetup").mockImplementation(async (id) => {
+      const { agent } = await original(id);
+      const { adapter } = createMemorySetupAdapter({
+        agent,
+        messaging: { kind: "bound", provider: "feishu", reachable: true },
+      });
+      const snapshot = await adapter.readSnapshot(id);
+      if (snapshot.messaging.kind !== "ready") throw new Error("Missing messaging fixture");
+      await adapter.unbindMessaging(id, "feishu", snapshot.messaging.bindingId);
+      return adapter.readSnapshot(id);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    expect(await screen.findByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Lark" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+  });
+
+  it.each(["feishu", "slack"] as const)(
+    "shows a paused %s connection and blocks messaging writes",
+    async (provider) => {
+      installApi({ bound: true, provider, initialStatus: "suspended" });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      expect(
+        await screen.findByText("This Agent is paused. Messaging settings are read-only until it resumes."),
+      ).toBeTruthy();
+      expect(await screen.findByText("Connected")).toBeTruthy();
+      for (const name of ["Mentions only", "Every message"]) {
+        expect(screen.getByRole("button", { name })).toHaveProperty("disabled", true);
+        fireEvent.click(screen.getByRole("button", { name }));
+      }
+      if (provider === "feishu") {
+        expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+        for (const name of ["Disconnect Lark"]) {
+          expect(screen.getByRole("button", { name })).toHaveProperty("disabled", true);
+          fireEvent.click(screen.getByRole("button", { name }));
+        }
+      } else {
+        await waitFor(() => expect(screen.getByRole("button", { name: "More" })).not.toHaveProperty("disabled", true));
+        fireEvent.click(screen.getByRole("button", { name: "More" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Having trouble?" }));
+        expect(screen.queryByRole("button", { name: "Update credentials" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Disconnect Slack" })).toBeNull();
+      }
+      expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method && init.method !== "GET")).toHaveLength(0);
+    },
+  );
+
+  it("shows saved Feishu authorization while paused without enabling activation or cancellation", async () => {
+    installApi({ bound: true, initialStatus: "suspended" });
+    const attempt = {
+      id: "f645f26d-9184-4f2f-98a1-4ee83ae6a603",
+      agentId,
+      intent: "reauthorize" as const,
+      state: "pending_activation" as const,
+      qrUrl: null,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-20T00:00:00.000Z",
+      activation: {
+        appId: "cli_readonly",
+        reason: "permissions_pending" as const,
+        missingScopes: ["im:message"],
+        lastCheckedAt: null,
+        nextCheckAt: "2030-01-01T00:00:00.000Z",
+      },
+    };
+    vi.spyOn(browserApi, "currentFeishuSetupAttempt").mockResolvedValue(attempt);
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt);
+    const check = vi.spyOn(browserApi, "checkFeishuSetupAttempt");
+    const cancel = vi.spyOn(browserApi, "cancelFeishuSetupAttempt");
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    for (const name of ["Check latest status", "Cancel connection request"]) {
+      const button = await screen.findByRole("button", { name });
+      expect(button).toHaveProperty("disabled", true);
+      fireEvent.click(button);
+    }
+    expect(check).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unbound paused Agent read-only and localizes the reason", async () => {
+    await withLocaleAsync("zh", async () => {
+      installApi({ bound: false, initialStatus: "suspended" });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      expect(await screen.findByText("Agent 已暂停，消息设置仅供查看。恢复运行后可修改。")).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "连接飞书" })).toHaveProperty("disabled", true);
+      expect(await screen.findByRole("button", { name: "连接 Slack" })).toHaveProperty("disabled", true);
+    });
+  });
+
+  it.each(["/settings", ""])("shows the paused Agent's real channel state at %s", async (suffix) => {
+    installApi({ bound: true, provider: "slack", initialStatus: "suspended", handoffEvidenceFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}${suffix}`);
+    render(<App />);
+    if (suffix) expect(await screen.findByText("Slack · Reviewer · Connected")).toBeTruthy();
+    else
+      expect(
+        await within(await screen.findByRole("region", { name: "Agent status" })).findByText("Connected"),
+      ).toBeTruthy();
+    expect(screen.queryByText("Status unavailable")).toBeNull();
+  });
+
   it("offers messaging app setup only when the missing binding is confirmed", async () => {
     installApi({ bound: false, slackOAuthAvailable: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
@@ -79,10 +192,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("button", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
-    // Nothing is connected yet, so the page's own sentence stands alone with no heading restating it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    // Nothing is connected yet; the page carries no subtitle restating its title.
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging app" })).toBeNull();
   });
 
@@ -125,6 +236,43 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("button", { name: "Connect Lark" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
+  });
+
+  it.each(["active", "suspended"] as const)("shows a stopped Lark binding for a %s Agent", async (initialStatus) => {
+    installApi({ bound: true, bindingConnectionFailure: "credentials_rejected", initialStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByText("Connection failed")).toBeTruthy();
+    expect(
+      screen.getByText("The application credentials are no longer valid. Reconnect to authorize it again."),
+    ).toBeTruthy();
+    const reconnect = screen.getByRole("button", { name: "Reconnect" });
+    expect(reconnect).toHaveProperty("disabled", initialStatus === "suspended");
+    if (initialStatus === "suspended") {
+      fireEvent.click(reconnect);
+      expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method && init.method !== "GET")).toHaveLength(0);
+    }
+  });
+
+  it("names the provider when a stopped app is disabled, in both languages", async () => {
+    installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    const rendered = render(<App />);
+    expect(
+      await screen.findByText(
+        "This application is disabled or not installed in Lark. Enable it there, then reconnect.",
+      ),
+    ).toBeTruthy();
+    rendered.unmount();
+    await withLocaleAsync("zh", async () => {
+      resetWebAppState();
+      installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      expect(await screen.findByText("此应用在飞书中已停用或未安装。启用后请重新连接。")).toBeTruthy();
+      expect(screen.getByText("连接失败")).toBeTruthy();
+    });
   });
 
   it("keeps an existing Slack binding manageable when OAuth is unavailable", async () => {
@@ -173,7 +321,7 @@ describe("OpenTag Web App Shell", () => {
       window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
       render(<App />);
       fireEvent.click(await screen.findByRole("button", { name: "More" }));
-      fireEvent.click(screen.getByText("Having trouble?"));
+      fireEvent.click(screen.getByText("Help"));
       fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
       expect(Boolean(screen.queryByRole("button", { name: "Reauthorize" }))).toBe(
         available !== false && preferredRecovery === "oauth",
@@ -210,10 +358,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    // One sentence describes the page in either state, so a connected reader still reads it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
     expect(identity).toBeTruthy();
     // The mark and the bot name already say which channel this is, and the state reads under the name.
@@ -232,7 +377,7 @@ describe("OpenTag Web App Shell", () => {
       screen.getByText("This Agent always receives direct messages. Choose when it receives messages in group chats."),
     ).toBeTruthy();
     expect(screen.getByRole("group", { name: "Receive mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("ui-button");
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
     const disconnect = screen.getByRole("button", { name: "Disconnect Lark" });
     expect(disconnect.className).toContain("ui-button");
     expect(disconnect.className).toContain("text-kumo-danger");
@@ -364,16 +509,24 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { level: 1, name: "Reviewer" })).toBeNull();
   });
 
-  it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
+  it("marks retained Agent status unavailable after a failed primary refresh", async () => {
     let agentListStatus: number | undefined;
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
     expect(await screen.findByText("Ready")).toBeTruthy();
+    const listReads = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && (init?.method ?? "GET") === "GET")
+        .length;
+    const readsBefore = listReads();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Status unavailable")).toBeTruthy();
+    await waitFor(() => expect(listReads()).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(screen.getByText("Status unavailable")).toBeTruthy());
+    expect(screen.queryByText("Ready")).toBeNull();
     expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -512,17 +665,18 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByText("Permissions required")).toBeTruthy();
+    expect(await screen.findByText("Messaging permissions need updating")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: /Update permissions$/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
-    expect(await screen.findByRole("dialog", { name: "Change Lark bot" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Update permissions$/ }));
+    expect(await screen.findByRole("dialog", { name: "Update Lark permissions" })).toBeTruthy();
     const request = vi
       .mocked(fetch)
       .mock.calls.find(
         ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
       );
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "reauthorize" });
   });
 
   it("keeps Agent delivery state separate from its connected messaging app", async () => {
@@ -552,12 +706,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
-  it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
-    installApi({ bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
+  it("keeps occupied-App recovery on the original first-connection intent", async () => {
+    installApi({ bound: false, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
-    const setupNotice = await screen.findByRole("dialog", { name: "Change Lark bot" });
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Lark" }));
+    const setupNotice = await screen.findByRole("dialog", { name: "Connect Lark" });
     expect(setupNotice?.textContent).toContain(
       "This Lark bot is already connected to another Agent. Choose a different bot and try again.",
     );
@@ -570,36 +724,73 @@ describe("OpenTag Web App Shell", () => {
         );
       expect(requests).toHaveLength(2);
       expect(requests.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
-        { intent: "replace" },
-        { intent: "replace" },
+        { intent: "create" },
+        { intent: "create" },
       ]);
     });
   });
 
-  it("opens dedicated Slack setup without starting official OAuth", async () => {
-    installApi({ bound: false });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
-    expect(await screen.findByLabelText("Code")).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-  });
+  it.each(["local", "cloud"] as const)(
+    "opens dedicated Slack setup without starting official OAuth (%s)",
+    async (computerKind) => {
+      installApi({
+        bound: false,
+        ...(computerKind === "cloud"
+          ? {
+              computers: [
+                {
+                  id: computerId,
+                  kind: "cloud",
+                  displayName: "openTag Cloud",
+                  platform: "linux",
+                  connectionStatus: "offline",
+                  providerReadiness: [],
+                  connectedAt: null,
+                  lastSeenAt: null,
+                },
+              ],
+            }
+          : {}),
+      });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+      if (computerKind === "cloud") {
+        expect(await screen.findByRole("link", { name: "View Apps" })).toHaveProperty(
+          "href",
+          "https://api.slack.com/apps",
+        );
+        expect(
+          vi
+            .mocked(fetch)
+            .mock.calls.filter(
+              ([input, init]) =>
+                String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
+            ),
+        ).toHaveLength(0);
+        fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      }
+      expect(await screen.findByLabelText("Code")).toBeTruthy();
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
+          ),
+      ).toHaveLength(0);
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) =>
+              String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
+          ),
+      ).toHaveLength(1);
+    },
+  );
 });
 
 /**

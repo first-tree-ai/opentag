@@ -35,14 +35,14 @@ export class PostgresApprovalStore implements ApprovalStore {
     });
   }
   async deliver(approval: PendingApproval, send: () => Promise<void>): Promise<boolean> {
-    return this.database.transaction(async (transaction) => {
+    const delivery = await this.database.transaction(async (transaction) => {
       // Registration takes this same row lock before replacing the durable connection and staling approvals.
       const [computer] = await transaction
         .select()
         .from(computers)
         .where(eq(computers.id, approval.computerId))
         .for("update");
-      if (!isCurrentConnection(computer, approval)) return false;
+      if (!isCurrentConnection(computer, approval)) return undefined;
       const [current] = await transaction
         .select({ id: runtimeApprovals.id })
         .from(runtimeApprovals)
@@ -55,10 +55,14 @@ export class PostgresApprovalStore implements ApprovalStore {
           ),
         )
         .for("update");
-      if (!current) return false;
-      await send();
-      return true;
+      if (!current) return undefined;
+      const sent = send();
+      void sent.catch(() => undefined);
+      return { sent };
     });
+    if (!delivery) return false;
+    await delivery.sent;
+    return true;
   }
   async find(id: string) {
     return (await this.database.select().from(runtimeApprovals).where(eq(runtimeApprovals.id, id)).limit(1))[0];

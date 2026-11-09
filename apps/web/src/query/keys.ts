@@ -1,4 +1,18 @@
-import type { AgentUsageWindowDays } from "@opentag/shared/browser";
+import { type AgentUsageWindowDays, type CloudUsageWindowDays, UsageTimezoneSchema } from "@opentag/shared/browser";
+
+/**
+ * Resolves the browser's IANA timezone identifier for daily usage bucketing, falling back to `"UTC"`
+ * when `Intl` is unavailable or returns an unparseable value.
+ */
+export function viewerTimezone(): string {
+  try {
+    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const parsed = UsageTimezoneSchema.safeParse(resolved);
+    return parsed.success ? parsed.data : "UTC";
+  } catch {
+    return "UTC";
+  }
+}
 
 /**
  * Every cache key the application reads, in one place so that the writes which invalidate them can
@@ -8,14 +22,17 @@ import type { AgentUsageWindowDays } from "@opentag/shared/browser";
  * Agent itself can invalidate its detail, config and binding together without listing them.
  */
 export const queryKeys = {
+  imFeedbackList: (agentId: string) => ["im-feedback-list", agentId] as const,
+  imFeedback: (feedbackId: string) => ["im-feedback", feedbackId] as const,
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
   internalToolsOffered: () => ["internalToolsOffered"] as const,
-  internalNavigationVisibility: () => ["internalNavigationVisibility"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
   cloudAvailability: () => ["cloudAvailability"] as const,
   cloudModelOptions: () => ["cloudModelOptions"] as const,
+  cloudUsage: (windowDays: CloudUsageWindowDays, timezone = viewerTimezone()) =>
+    ["cloud-usage", windowDays, timezone] as const,
   computerConnectCode: (connectCodeId: string) => ["computerConnectCodes", connectCodeId] as const,
   agentSetup: (agentId: string) => ["agentSetup", agentId] as const,
   /** Every Setup snapshot read, for a write that must retire whichever one is still in flight. */
@@ -31,8 +48,10 @@ export const queryKeys = {
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
-    usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
+    usage: (agentId: string, windowDays: AgentUsageWindowDays, timezone = viewerTimezone()) =>
+      ["agents", agentId, "usage", windowDays, timezone] as const,
     progressNotice: (agentId: string) => ["agents", agentId, "progress-notice"] as const,
+    workspaceRecovery: (agentId: string) => ["agents", agentId, "workspace-recovery"] as const,
     schedules: (agentId: string) => ["agents", agentId, "schedules"] as const,
     schedule: (agentId: string, scheduleId: string) => ["agents", agentId, "schedules", scheduleId] as const,
     /** Everything held for one Agent, for a write that invalidates the Agent as a whole. */
@@ -47,6 +66,8 @@ export const queryKeys = {
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
     /** One Task's captured outbound replies, a sibling of its detail with its own cursor. */
     replies: (taskId: string) => ["tasks", taskId, "replies"] as const,
+    /** One Task's internal Sessions, a sibling of its detail paged with their own cursor. */
+    internalSessions: (taskId: string) => ["tasks", taskId, "internalSessions"] as const,
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,

@@ -5,17 +5,10 @@ description: "The shared Skill contract: ownership, stored archives, object stor
 
 # Agent Skills
 
-> **Status: the shared contract is the source of truth; the lanes build against it.**
->
-> The `@opentag/shared` runtime schemas, constants, HTTP path templates, the manifest parser, and this
-> document are delivered in `packages/shared/src/skill.ts`, `packages/shared/src/skill-manifest.ts`,
-> and their tests. The Server lane delivers the `agent_skills` table and its migration, the
-> `SkillObjectStore` and its S3 adapter, the three HTTP surfaces, and the deferred orphan-object
-> collector. The Web lane delivers the Skills page. The Client/CLI lane delivers `opentag skill push`
-> and runtime materialization on a Computer.
->
-> Where this document and the shipped contract differ, the contract wins; a change to it is a change
-> to this design.
+The shared runtime schemas and manifest parser in `packages/shared/src/skill.ts` and
+`packages/shared/src/skill-manifest.ts` define the wire and archive contracts. The Server owns
+storage and authorization, the Web owns management, and the Client/CLI owns upload and runtime
+materialization. Update this page with a contract change; resolve disagreements from source evidence.
 
 ## What this feature is for
 
@@ -100,7 +93,8 @@ the Server copies into the row.
 tests — the same interface/adapter/fake shape as `WorkspaceObjectStore` in
 `packages/server/src/services/sandboxes/workspace-object-store.ts`. `list` is a bounded
 `ListObjectsV2` page (`prefix`, optional `cursor`/`limit`) used only by the object collector; the S3
-adapter parses its XML with a small extractor rather than an XML dependency.
+adapter bounds the streamed XML to 4 MiB of bytes before UTF-8 decoding and parsing with a small
+extractor. Overflow cancels the reader and reports `invalid_response`; later passes can recover.
 
 `aws4fetch` is chosen over the AWS SDK v3 because it is SigV4 over `fetch` with zero transitive
 dependencies and no default-checksum behaviour, which several S3-compatible services reject. The
@@ -151,7 +145,18 @@ hold:
   key is re-checked immediately before its delete, because a row can appear between the two.
 
 Deletes are capped per run (`maxDeletesPerRun`, default 500); a failed delete is logged and left for
-the next pass. Logging is one `info` summary per run (scanned, deleted, skipped-young,
+the next pass. A pass also lists at most ten pages (`maxPagesPerRun`) of 200 entries by default,
+so young/referenced objects and failed deletions cannot drive an entire-prefix scan. The worker
+keeps the next-page cursor in memory across passes and wraps only at listing end. A delete cap
+reached mid-page leaves the remaining keys for a later wrap; they are not reported as processed.
+A failed LIST clears its continuation for the next scheduled pass and never retries inline.
+At the default hourly cadence this admits at most 2,000 listed entries per hour; full-prefix
+revisit time depends on population and deletion backlog. This is a work bound, not a measured
+production cleanup SLA.
+
+Stop closes GC admission and waits for its actual current list/SQL/delete work. It rechecks stop
+between stages and objects. Repeated stop callers join the same work; stopped collectors cannot
+be restarted, and manual passes return an empty summary. Construct a new collector to restart. Logging is one `info` summary per run (scanned, deleted, skipped-young,
 skipped-referenced, duration), `debug` per delete, and `warn` on a failed delete.
 
 Failed writes still check the current row before deleting their own object: a lost commit acknowledgement
@@ -246,6 +251,19 @@ have, verifies the sha256, and materializes it:
 | Codex | Agent-scoped only: `<workspace>/.agents/skills/<name>/`, or a per-Agent `CODEX_HOME`; otherwise out of v1 |
 | Pi | explicit `--skill <path>` arguments |
 
+Local Claude discovers its project Skills in `.claude/skills` through native configuration. OpenTag
+does not also link those paths into its private plugin. External packaged Skills, including Context
+Tree Skills, use the private plugin's per-runtime namespace, `opentag-<random-id>:<name>`, as listed in the
+current native catalog. The unique name avoids shadowing a user plugin named `opentag`. Root comparison
+uses canonical filesystem paths so aliases of Agent Home do not offer a project Skill twice.
+This preserves the original resources. Native user plugins and Skills are separate from the
+platform's archive ownership and marker-based synchronization.
+
+Local Pi also discovers native user/project Skills. Platform paths stay explicit additions to
+that discovery; Pi owns canonical-path deduplication and native exclusion rules. The managed
+model-option query suppresses Skills and extensions and is not a loaded-Skill check. Inspect
+Pi's actual `get_commands` catalog from the Agent cwd to verify availability.
+
 **Codex materialization must be Agent-scoped.** The only acceptable targets are the workspace's
 `.agents/skills` or a per-Agent `CODEX_HOME`. The OS account home's `.agents/skills` is shared by
 every Agent on the Computer and is **never** a target or a fallback — writing there would expose one
@@ -288,7 +306,7 @@ A Skill no longer has to be built locally and uploaded. An operator can paste a 
 the open skills ecosystem into an Agent's Skills page, preview what it publishes, and install a
 selection; the result is an ordinary Skill with `source = url_install`. The whole feature — accepted
 source forms, discovery rules, the outbound policy, and the per-item install semantics — is specified
-in `docs/design/skill-remote-install.md`; what matters here is that it adds no new storage, no new
+in [Installing Skills from a remote source](skill-remote-install.md); what matters here is that it adds no new storage, no new
 row shape, and no new runtime behaviour. Installation goes through `SkillService.upload`, so the
 archive contract and the per-Agent ownership rules above apply unchanged, and a name conflict is
 skipped rather than replaced.
@@ -403,6 +421,16 @@ a conflicting name retains `SKILL_NAME_CONFLICT`, while a new name without a slo
 A failed admission uses the existing reference-aware object cleanup; an uncertain commit never
 justifies deleting a possibly referenced object.
 
+Enable, remove and replace also guard the current owned Agent before the row/revision CAS.
+Account, Computer and Runtime reads resolve authority and Skill rows in one read-only Repeatable
+Read snapshot. Archive preparation, PUT, download and cleanup stay outside those transactions.
+Runtime calls preserve their authenticated Session, proof ID, Computer, placement generation,
+installation and connection identity through presets and uploads. Final writes reuse Session CLI
+proof authority under the Agent guard, then lock binding → Session → placement → Computer → proof
+before the Skill mutation. An ended Session, replaced proof/placement, rebind or closed execution
+cannot authorize a later write. Skills remain available independently of the Agent configuration
+self-edit opt-in switch.
+
 Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
 end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
 because openTag already ships them and an upload must not shadow them: the six `context-tree-*`
@@ -436,8 +464,15 @@ A Skill the platform's own team owns is authored as a bundle under one of two ho
 
 `packages/skill-presets/skills/<name>/` is the **preset catalog**: these bundles ship with the
 product and are discoverable and installable through the routes above. One lives there today:
-`mcp-onboarding` tells an Agent how to find, mount, and verify an MCP Server for itself, and which of
-those steps only a human may take.
+`mcp-onboarding` tells an Agent to configure an MCP Server inside the current chat. The Agent branches on
+the operation first. An enable, disable, remove, or reauthorize request uses the mounted name from `self mcp
+list` and does not search or add. A new connection checks mounted and available definitions. A mounted Server
+whose authorization is missing, expired, revoked, or in error stays on that binding. A pending authorization
+waits on the link already sent and does not start a new OAuth flow. A Bearer key for an existing mount is
+written with `self mcp use`, not with another `add`. The Agent does not create a second definition. The Agent
+searches the catalog only when neither list has the Server, and asks the user to paste an MCP configuration
+when the catalog has no installable match. A reply that sends the user to the web console or the Connectors
+page is the failure this Skill forbids. The OAuth consent screen is the step only a human takes.
 
 Root `skills/<name>/` is the home for a first-party bundle that is not part of the discoverable
 catalog. `mcp-catalog-entry` lives there today: the operator's procedure for recording a remote

@@ -186,14 +186,14 @@ async function sandboxCommand(
         approvals: "on-request",
         tools: { mode: "provider-default" },
       },
-    ) as { permissions: Record<string, { filesystem: Record<string, string> }> };
-    const profile = settings.permissions[CODEX_EXECUTION_PERMISSIONS];
+    ) as Record<`permissions.${string}`, { filesystem: Record<string, string> }>;
+    const profile = settings[`permissions.${CODEX_EXECUTION_PERMISSIONS}`];
     if (!profile) throw new Error("Missing native Codex profile");
     profile.filesystem[home] = "read";
     profile.filesystem[config] = "read";
     await writeFile(
       join(codexHome, "config.toml"),
-      `features={network_proxy=true}\npermissions=${toml(settings.permissions)}\n`,
+      `features.network_proxy=true\npermissions.${CODEX_EXECUTION_PERMISSIONS}=${toml(profile)}\n`,
     );
     return { file: codex, args: ["sandbox", "--permission-profile", CODEX_EXECUTION_PERMISSIONS, "--"] };
   }

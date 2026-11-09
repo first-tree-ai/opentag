@@ -20,6 +20,8 @@ export const OPENTAG_ATTR = {
   RUNTIME_INSTANCE_ID: "opentag.runtime.instance.id",
   RUNTIME_PLACEMENT_GENERATION: "opentag.runtime.placement_generation",
   RUNTIME_PROTOCOL_VERSION: "opentag.runtime.protocol.version",
+  SANDBOX_ID: "opentag.sandbox.id",
+  ENVIRONMENT_GENERATION: "opentag.sandbox.environment_generation",
   SESSION_ID: "opentag.session.id",
   WS_CLOSE_CODE: "opentag.runtime.ws.close_code",
 } as const;
@@ -58,6 +60,8 @@ export function runtimeAttrs(input: {
   installationId?: string;
   connectionId?: string;
   instanceId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   protocolVersion?: number;
   placementGeneration?: number;
   attempt?: number;
@@ -73,6 +77,8 @@ export function runtimeAttrs(input: {
     [OPENTAG_ATTR.INSTALLATION_ID]: input.installationId,
     [OPENTAG_ATTR.RUNTIME_CONNECTION_ID]: input.connectionId,
     [OPENTAG_ATTR.RUNTIME_INSTANCE_ID]: input.instanceId,
+    [OPENTAG_ATTR.SANDBOX_ID]: input.sandboxId,
+    [OPENTAG_ATTR.ENVIRONMENT_GENERATION]: input.environmentGeneration,
     [OPENTAG_ATTR.RUNTIME_PROTOCOL_VERSION]: input.protocolVersion,
     [OPENTAG_ATTR.RUNTIME_PLACEMENT_GENERATION]: input.placementGeneration,
     [OPENTAG_ATTR.ATTEMPT]: input.attempt,

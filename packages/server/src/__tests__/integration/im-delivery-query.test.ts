@@ -4,12 +4,8 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "../../runtime/im-delivery-selector.js";
-import {
-  cloudPendingHeadQuery,
-  deliveryCandidatePage,
-  deliveryCustodyQuery,
-} from "../../runtime/im-delivery-work-query.js";
-import { deliveryTestId, seedDeliveryQuery } from "../support/im-delivery-query-fixture.js";
+import { deliveryCandidatePage, deliveryCustodyQuery, pendingHeadQuery } from "../../runtime/im-delivery-work-query.js";
+import { deliveryTestId, seedBlockedDeliveryQuery, seedDeliveryQuery } from "../support/im-delivery-query-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -71,10 +67,29 @@ async function explain(query: { sql: string; params: unknown[] }, generic: boole
     connection.release();
   }
 }
+/**
+ * Indexes that cannot return the reported history this suite loads: `im_delivery_work_idx` is partial on the
+ * work predicate, `im_message_deliveries_pending_idx` on `state = 'pending'`, `..._unreported_accepted_idx` on
+ * `state = 'accepted' and reported_at is null`, and the dispatch-request index only holds a non-null request
+ * id. A `pending` row is unsettled by definition — it has no terminal state and the janitor expires it — so
+ * none of these can serve an 80,000-row reported backlog.
+ */
+const ACTIVE_WORK_INDEXES = new Set([
+  "im_delivery_work_idx",
+  "im_message_deliveries_pending_idx",
+  "im_message_deliveries_unreported_accepted_idx",
+  "im_message_deliveries_dispatch_request_unique",
+]);
+
 function expectActiveIndex(plan: Plan) {
   const nodes = flatten(plan.Plan);
-  // Reject BitmapOr plans that combine the work index with indexes containing historical rows.
-  expect(nodes.map((node) => node["Index Name"]).filter(Boolean)).toEqual(["im_delivery_work_idx"]);
+  // The properties under test are "reads no reported history" and "no sequential scan", not "uses exactly one
+  // index": a BitmapOr over the partial active-work indexes is still bounded to unsettled work. It became
+  // reachable when the Agent list gained its own unreported-accepted partial index; measured on this fixture
+  // the BitmapOr path reads 425 rows in 14 buffers, against 128 rows in 6 buffers through the work index.
+  const indexes = nodes.map((node) => node["Index Name"]).filter(Boolean);
+  expect(indexes.length).toBeGreaterThan(0);
+  for (const name of indexes) expect(ACTIVE_WORK_INDEXES.has(name as string)).toBe(true);
   expect(
     nodes.filter((node) => node["Relation Name"] === "im_message_deliveries").map((node) => node["Node Type"]),
   ).not.toContain("Seq Scan");
@@ -95,7 +110,7 @@ async function selectAndLock(selector: ImDeliverySelector, expectedId: string) {
 
 describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
   it.each([424, 4240])("bounds historical work with 80k reported rows and %i blocked inputs", async (blocked) => {
-    const fixture = await seedDeliveryQuery(client.database, 80_000, blocked);
+    const fixture = await seedBlockedDeliveryQuery(client.database, 80_000, blocked);
     const candidate = deliveryCandidatePage(client.database, new Date()).toSQL();
     const custody = dialect.sqlToQuery(deliveryCustodyQuery());
     const metrics = [];
@@ -136,7 +151,7 @@ describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
     await client.database.execute(sql`analyze im_message_deliveries`);
     for (const generic of [false, true]) {
       const custody = await explain(dialect.sqlToQuery(deliveryCustodyQuery()), generic);
-      const head = await explain(dialect.sqlToQuery(cloudPendingHeadQuery(deliveryTestId("session", 1))), generic);
+      const head = await explain(dialect.sqlToQuery(pendingHeadQuery(deliveryTestId("session", 1))), generic);
       expectActiveIndex(custody);
       const headNodes = flatten(head.Plan);
       expect(

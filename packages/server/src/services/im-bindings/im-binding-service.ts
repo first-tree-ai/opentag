@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type {
-  ErrorCategory,
   ImBindingAdminDetail,
   ImBindingDiagnostics,
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
-  ImBindingUnbindRequiredDetail,
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
@@ -22,16 +20,14 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
-  ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   computers,
   imBindings,
-  imMessages,
   sessionPlacements,
   sessions,
   slackInstallations,
@@ -44,6 +40,12 @@ import {
 } from "../../runtime-credentials/runtime-validation-execution.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { activeBindingValues } from "./active-binding-values.js";
+import {
+  type BindingObservation,
+  readBindingActivity,
+  readBindingDiagnostics,
+  readBindingObservation,
+} from "./binding-read-snapshot.js";
 import { type BotProfile, sameBotProfileIdentity, storedBotProfile } from "./bot-profile.js";
 import { computerKindFor, localRawGrantAllowed } from "./computer-kind.js";
 import {
@@ -62,11 +64,14 @@ import {
 } from "./credential-material.js";
 import { currentBindingOf } from "./current-binding.js";
 import { disableImBindingInTransaction } from "./disable-im-binding.js";
+import { ImBindingServiceError } from "./errors.js";
+import { connectionFailureOf, listFeishuConnectionCandidates, stopFeishuConnection } from "./feishu-connection-rows.js";
 import {
   ImBindingProviderCli,
   type ImBindingReadiness,
   type ImBindingReadinessInput,
 } from "./im-binding-provider-cli.js";
+import { assertFeishuIdentity, assertSlackIdentity, disconnectedSetupBinding } from "./messaging-identity.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
@@ -110,6 +115,7 @@ export interface SlackIngressBinding extends SlackInstallationIngress {
 
 export interface FeishuConnectionMaterial {
   imBindingId: string;
+  agentId: string;
   generation: number;
   appId: string;
   teamId: string | null;
@@ -121,6 +127,7 @@ export interface FeishuConnectionMaterial {
 
 export interface SlackConnectionMaterial {
   imBindingId: string;
+  agentId: string;
   installationId: string;
   generation: number;
   appId: string;
@@ -150,6 +157,7 @@ export interface AgentSetupBindingState {
   handoff: ImBindingHandoffStatus;
 }
 interface ObservedAgentBinding {
+  row: typeof imBindings.$inferSelect;
   id: string;
   provider: "feishu" | "slack";
   status: ImBindingState;
@@ -167,35 +175,8 @@ interface ActivatedBinding {
   botId: string;
   credentialGeneration: number;
 }
-export class ImBindingServiceError extends Error {
-  constructor(
-    readonly code: string,
-    readonly statusCode: number,
-    message: string,
-    readonly category: ErrorCategory = "deterministic",
-    options: { cause?: unknown } = {},
-  ) {
-    super(message, options.cause === undefined ? undefined : { cause: options.cause });
-  }
-}
 
-/**
- * A cross-Provider messaging start fails closed: the Account must explicitly unbind the exact current
- * binding first, then bind any Provider. The structured identity lets the caller offer that unbind
- * without a second lookup. Same-Provider reauthorization and replacement never raise it.
- */
-export class ImBindingUnbindRequiredError extends ImBindingServiceError {
-  readonly unbindRequired: ImBindingUnbindRequiredDetail;
-  constructor(detail: ImBindingUnbindRequiredDetail) {
-    super(
-      "IM_BINDING_UNBIND_REQUIRED",
-      409,
-      "Unbind the current messaging connection before starting a different Provider",
-    );
-    this.name = "ImBindingUnbindRequiredError";
-    this.unbindRequired = ImBindingUnbindRequiredDetailSchema.parse(detail);
-  }
-}
+export { ImBindingServiceError, ImBindingUnbindRequiredError } from "./errors.js";
 
 /** Whether a thrown error (or any error in its cause chain) is a PostgreSQL unique violation on one constraint. */
 export function isImBindingUniqueViolation(error: unknown, constraintName: string): boolean {
@@ -311,6 +292,7 @@ export class ImBindingService {
         provider: "feishu" | "slack",
         integrationId: string,
         credentialGeneration: number,
+        refresh: boolean,
       ) =>
         | Promise<ImCliReadinessStatus | { status: ImCliReadinessStatus; reason?: ProviderCliArtifactPublicReason }>
         | ImCliReadinessStatus
@@ -320,6 +302,7 @@ export class ImBindingService {
         provider: "feishu" | "slack",
         integrationId: string,
         credentialGeneration: number,
+        refresh: boolean,
       ) =>
         | Promise<{ status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason }>
         | { status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason };
@@ -334,12 +317,9 @@ export class ImBindingService {
     this.#logger = options.logger;
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
     this.#providerCli = new ImBindingProviderCli(database, cipher, {
-      artifactReadiness: async (agentId, provider, integrationId, credentialGeneration) =>
-        (await options.imCliReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? "checking",
-      credentialReadiness: async (agentId, provider, integrationId, credentialGeneration) =>
-        (await options.credentialExecutionReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? {
-          status: "unconfirmed",
-        },
+      artifactReadiness: async (...args) => (await options.imCliReadiness?.(...args)) ?? "checking",
+      credentialReadiness: async (...args) =>
+        (await options.credentialExecutionReadiness?.(...args)) ?? { status: "unconfirmed" },
       logger: this.#logger,
     });
     this.#onActiveBindingChanged = options.onActiveBindingChanged;
@@ -672,6 +652,7 @@ export class ImBindingService {
     if (!credential) return undefined;
     return {
       imBindingId,
+      agentId: row.imBinding.agentId,
       installationId: ingress.installationId,
       generation: ingress.generation,
       appId: ingress.appId,
@@ -683,22 +664,15 @@ export class ImBindingService {
     };
   }
 
-  async listFeishuConnectionIds(afterId: string | undefined, limit = 100): Promise<string[]> {
-    const rows = await this.#database
-      .select({ imBindingId: imBindings.id })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .where(
-        and(
-          eq(imBindings.provider, "feishu"),
-          eq(imBindings.status, "active"),
-          ne(agents.status, "deleted"),
-          ...(afterId ? [gt(imBindings.id, afterId)] : []),
-        ),
-      )
-      .orderBy(asc(imBindings.id))
-      .limit(limit);
-    return rows.map((row) => row.imBindingId);
+  listFeishuConnectionIds(afterId: string | undefined, limit = 100) {
+    return listFeishuConnectionCandidates(this.#database, afterId, limit);
+  }
+
+  /** Stops a binding Feishu keeps refusing; see `stopFeishuConnection`. */
+  async markFeishuConnectionFailed(fence: Parameters<typeof stopFeishuConnection>[1], errorCode: string) {
+    const agentId = await stopFeishuConnection(this.#database, fence, errorCode, this.#now());
+    if (agentId) await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
+    return agentId !== undefined;
   }
 
   async getFeishuConnectionMaterial(
@@ -712,6 +686,7 @@ export class ImBindingService {
     if (!credential) return undefined;
     return {
       imBindingId,
+      agentId: imBinding.agentId,
       generation: imBinding.credentialGeneration,
       appId: imBinding.externalAppId,
       teamId: imBinding.externalTeamId,
@@ -731,52 +706,55 @@ export class ImBindingService {
   }
 
   async getForAgent(callerUserId: string, agentId: string): Promise<ImBindingSummary | undefined> {
-    await this.#assertCanRead(callerUserId, agentId);
-    const [row] = await this.#database
-      .select({
-        id: imBindings.id,
-        agentId: imBindings.agentId,
-        provider: imBindings.provider,
-        bindingState: imBindings.status,
-        botDisplayName: imBindings.botDisplayName,
-        botAvatarUrl: imBindings.botAvatarUrl,
-        observedAt: imBindings.observedAt,
-        activatedAt: imBindings.activatedAt,
-        receiveMode: agents.receiveMode,
-        grantedCapabilities: imBindings.grantedCapabilities,
-        encryptedCredential: imBindings.encryptedCredential,
-        externalAppId: imBindings.externalAppId,
-        externalBotId: imBindings.externalBotId,
-        externalTeamId: imBindings.externalTeamId,
-        credentialSchemaVersion: imBindings.credentialSchemaVersion,
-        credentialGeneration: imBindings.credentialGeneration,
-        slackInstallation: slackInstallations,
-      })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(currentBindingOf(agentId))
-      .limit(1);
-    if (!row) return undefined;
-    const activity = await this.#activity(row.id);
-    const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
-    const reauthorizationRequired =
-      row.bindingState === "reauthorization_required" ||
-      needsScopeUpdate(row.bindingState, row.provider, row.grantedCapabilities) ||
-      (row.bindingState === "active" && credential.status === "invalid");
-    return {
-      id: row.id,
-      agentId: row.agentId,
-      provider: row.provider,
-      bindingState: reauthorizationRequired ? "reauthorization_required" : row.bindingState,
-      bot: { displayName: row.botDisplayName, avatarUrl: row.botAvatarUrl },
-      receiveMode: row.receiveMode,
-      ...activity,
-      lastValidatedAt: row.activatedAt?.toISOString() ?? null,
-      lastRuntimeObservationAt:
-        (row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt)?.toISOString() ??
-        null,
-    };
+    return this.readForAgent(callerUserId, agentId, async (transaction) => {
+      const [row] = await transaction
+        .select({
+          id: imBindings.id,
+          agentId: imBindings.agentId,
+          provider: imBindings.provider,
+          bindingState: imBindings.status,
+          botDisplayName: imBindings.botDisplayName,
+          botAvatarUrl: imBindings.botAvatarUrl,
+          observedAt: imBindings.observedAt,
+          activatedAt: imBindings.activatedAt,
+          receiveMode: agents.receiveMode,
+          grantedCapabilities: imBindings.grantedCapabilities,
+          encryptedCredential: imBindings.encryptedCredential,
+          externalAppId: imBindings.externalAppId,
+          externalBotId: imBindings.externalBotId,
+          externalTeamId: imBindings.externalTeamId,
+          lastErrorCode: imBindings.lastErrorCode,
+          credentialSchemaVersion: imBindings.credentialSchemaVersion,
+          credentialGeneration: imBindings.credentialGeneration,
+          slackInstallation: slackInstallations,
+        })
+        .from(imBindings)
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+        .where(currentBindingOf(agentId))
+        .limit(1);
+      if (!row) return undefined;
+      const activity = await readBindingActivity(transaction, row.id);
+      const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
+      const reauthorizationRequired =
+        row.bindingState === "reauthorization_required" ||
+        needsScopeUpdate(row.bindingState, row.provider, row.grantedCapabilities) ||
+        (row.bindingState === "active" && credential.status === "invalid");
+      return {
+        id: row.id,
+        agentId: row.agentId,
+        provider: row.provider,
+        bindingState: reauthorizationRequired ? "reauthorization_required" : row.bindingState,
+        bot: { displayName: row.botDisplayName, avatarUrl: row.botAvatarUrl },
+        receiveMode: row.receiveMode,
+        ...activity,
+        lastValidatedAt: row.activatedAt?.toISOString() ?? null,
+        lastRuntimeObservationAt:
+          (row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt)?.toISOString() ??
+          null,
+        ...connectionFailureOf(row.bindingState, row.lastErrorCode),
+      };
+    });
   }
 
   async getHandoffForAgent(callerUserId: string, agentId: string): Promise<ImBindingHandoffStatus | undefined> {
@@ -785,53 +763,49 @@ export class ImBindingService {
   }
 
   async getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined> {
-    const observed = await this.#observeForAgent(callerUserId, agentId);
-    if (!observed) return undefined;
+    return (await this.readSetupForAgent(callerUserId, agentId))?.binding;
+  }
+
+  /** Internal captured row for Feishu projection; only the public binding view may be serialized. */
+  async readSetupForAgent(callerUserId: string, agentId: string) {
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId, true),
+    );
+    if (!selected) return undefined;
+    if (selected.binding.status === "disabled") return disconnectedSetupBinding(selected.binding);
+    const observed = await this.#observeBinding(selected);
     return {
-      bindingId: observed.id,
-      provider: observed.provider,
-      credentialGeneration: observed.credentialGeneration,
-      errorCode: projectedErrorCode({
-        credentialStatus: observed.credential.status,
-        lastErrorCode: observed.lastErrorCode,
-        missingCapabilities: observed.credential.missingCapabilities,
+      row: observed.row,
+      binding: {
+        bindingId: observed.id,
         provider: observed.provider,
-        reauthorizationRequired: observed.readiness.reauthorizationRequired,
-        status: observed.status,
-      }),
-      handoff: observed.readiness.handoff,
+        credentialGeneration: observed.credentialGeneration,
+        errorCode: projectedErrorCode({
+          credentialStatus: observed.credential.status,
+          lastErrorCode: observed.lastErrorCode,
+          missingCapabilities: observed.credential.missingCapabilities,
+          provider: observed.provider,
+          reauthorizationRequired: observed.readiness.reauthorizationRequired,
+          status: observed.status,
+        }),
+        handoff: observed.readiness.handoff,
+      },
     };
   }
 
   async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
-    await this.#assertCanRead(callerUserId, agentId);
-    const [row] = await this.#database
-      .select({
-        id: imBindings.id,
-        agentId: imBindings.agentId,
-        provider: imBindings.provider,
-        status: imBindings.status,
-        lastErrorCode: imBindings.lastErrorCode,
-        connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
-        observedConnectedAt: imBindings.observedConnectedAt,
-        observedAt: imBindings.observedAt,
-        grantedCapabilities: imBindings.grantedCapabilities,
-        encryptedCredential: imBindings.encryptedCredential,
-        externalAppId: imBindings.externalAppId,
-        externalBotId: imBindings.externalBotId,
-        externalTeamId: imBindings.externalTeamId,
-        credentialSchemaVersion: imBindings.credentialSchemaVersion,
-        credentialGeneration: imBindings.credentialGeneration,
-        slackInstallation: slackInstallations,
-        computerKind: computers.kind,
-      })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .leftJoin(computers, eq(computers.id, agents.computerId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(currentBindingOf(agentId))
-      .limit(1);
-    if (!row) return undefined;
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId),
+    );
+    return selected ? this.#observeBinding(selected) : undefined;
+  }
+
+  async #observeBinding(selected: BindingObservation): Promise<ObservedAgentBinding> {
+    const row = {
+      ...selected.binding,
+      slackInstallation: selected.slackInstallation,
+      computerKind: selected.computerKind,
+    };
     const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
     const observedConnectedAt =
       row.provider === "slack" ? (row.slackInstallation?.observedConnectedAt ?? null) : row.observedConnectedAt;
@@ -859,8 +833,10 @@ export class ImBindingService {
         credentialStatus: credential.status,
       },
       row.computerKind,
+      selected.agentStatus === "active",
     );
     return {
+      row: selected.binding,
       id: row.id,
       provider: row.provider,
       status,
@@ -871,66 +847,76 @@ export class ImBindingService {
     };
   }
 
-  async getConfigForAgent(callerUserId: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
-    await this.assertCanManage(callerUserId, agentId);
-    const [row] = await this.#database
-      .select({ imBinding: imBindings, receiveMode: agents.receiveMode, slackInstallation: slackInstallations })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
-      .limit(1);
-    if (!row) return undefined;
-    const binding = row.imBinding;
-    if (!binding.externalAppId || !binding.externalBotId || binding.credentialGeneration < 1) return undefined;
-    const activity = await this.#activity(binding.id);
-    const credential = this.#inspectBindingCredentials(binding, row.slackInstallation);
-    const reauthorizationRequired =
-      binding.status === "reauthorization_required" ||
-      needsScopeUpdate(binding.status, binding.provider, binding.grantedCapabilities) ||
-      (binding.status === "active" && credential.status === "invalid");
-    const summary: ImBindingSummary = {
-      id: binding.id,
-      agentId: binding.agentId,
-      provider: binding.provider,
-      bindingState: reauthorizationRequired ? "reauthorization_required" : binding.status,
-      bot: { displayName: binding.botDisplayName, avatarUrl: binding.botAvatarUrl },
-      receiveMode: row.receiveMode,
-      ...activity,
-      lastValidatedAt: binding.activatedAt?.toISOString() ?? null,
-      lastRuntimeObservationAt: binding.observedAt?.toISOString() ?? null,
-    };
-    return {
-      ...summary,
-      identity:
-        binding.provider === "feishu"
-          ? {
-              provider: "feishu",
-              appId: binding.externalAppId,
-              teamId: binding.externalTeamId,
-              botOpenId: binding.externalBotId,
-              teamBrand: binding.externalTeamBrand,
-            }
-          : {
-              provider: "slack",
-              appId: binding.externalAppId,
-              teamId: binding.externalTeamId ?? "",
-              enterpriseId: binding.externalEnterpriseId,
-              botUserId: binding.externalBotId,
-              appIdEvidence: "configured",
-            },
-      credentialGeneration: binding.credentialGeneration,
-      grantedCapabilities: binding.grantedCapabilities,
-      reauthorizationRequired,
-      lastErrorCode: projectedErrorCode({
-        credentialStatus: credential.status,
-        lastErrorCode: binding.lastErrorCode,
-        missingCapabilities: credential.missingCapabilities,
-        provider: binding.provider,
-        reauthorizationRequired,
-        status: binding.status,
-      }),
-    };
+  async getConfigForAgent(
+    callerUserId: string,
+    agentId: string,
+    transaction?: DatabaseTransaction,
+  ): Promise<ImBindingAdminDetail | undefined> {
+    return this.readForAgent(
+      callerUserId,
+      agentId,
+      async (transaction) => {
+        const [row] = await transaction
+          .select({ imBinding: imBindings, receiveMode: agents.receiveMode, slackInstallation: slackInstallations })
+          .from(imBindings)
+          .innerJoin(agents, eq(agents.id, imBindings.agentId))
+          .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+          .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+          .limit(1);
+        if (!row) return undefined;
+        const binding = row.imBinding;
+        if (!binding.externalAppId || !binding.externalBotId || binding.credentialGeneration < 1) return undefined;
+        const activity = await readBindingActivity(transaction, binding.id);
+        const credential = this.#inspectBindingCredentials(binding, row.slackInstallation);
+        const reauthorizationRequired =
+          binding.status === "reauthorization_required" ||
+          needsScopeUpdate(binding.status, binding.provider, binding.grantedCapabilities) ||
+          (binding.status === "active" && credential.status === "invalid");
+        const summary: ImBindingSummary = {
+          id: binding.id,
+          agentId: binding.agentId,
+          provider: binding.provider,
+          bindingState: reauthorizationRequired ? "reauthorization_required" : binding.status,
+          bot: { displayName: binding.botDisplayName, avatarUrl: binding.botAvatarUrl },
+          receiveMode: row.receiveMode,
+          ...activity,
+          lastValidatedAt: binding.activatedAt?.toISOString() ?? null,
+          lastRuntimeObservationAt: binding.observedAt?.toISOString() ?? null,
+        };
+        return {
+          ...summary,
+          identity:
+            binding.provider === "feishu"
+              ? {
+                  provider: "feishu",
+                  appId: binding.externalAppId,
+                  teamId: binding.externalTeamId,
+                  botOpenId: binding.externalBotId,
+                  teamBrand: binding.externalTeamBrand,
+                }
+              : {
+                  provider: "slack",
+                  appId: binding.externalAppId,
+                  teamId: binding.externalTeamId ?? "",
+                  enterpriseId: binding.externalEnterpriseId,
+                  botUserId: binding.externalBotId,
+                  appIdEvidence: "configured",
+                },
+          credentialGeneration: binding.credentialGeneration,
+          grantedCapabilities: binding.grantedCapabilities,
+          reauthorizationRequired,
+          lastErrorCode: projectedErrorCode({
+            credentialStatus: credential.status,
+            lastErrorCode: binding.lastErrorCode,
+            missingCapabilities: credential.missingCapabilities,
+            provider: binding.provider,
+            reauthorizationRequired,
+            status: binding.status,
+          }),
+        };
+      },
+      transaction,
+    );
   }
 
   async disable(callerUserId: string, imBindingId: string): Promise<void> {
@@ -961,7 +947,8 @@ export class ImBindingService {
    * The explicit Account-owned unbind. Naming the exact current Provider and binding fences the mutation
    * against a stale view: anything else fails closed and nothing is disabled. The atomic disable clears the
    * effective credential, setup attempt context and owner, and connection leases, terminates active chat
-   * sessions, and retains message and session history. Afterwards any Provider may bind.
+   * sessions, and retains message, session and configured identity history. A configured identity cannot
+   * reconnect here; only a never-activated slot can be cleared so creation can resume.
    */
   async unbindForAgent(
     callerUserId: string,
@@ -989,35 +976,9 @@ export class ImBindingService {
   }
 
   async diagnostics(callerUserId: string, imBindingId: string): Promise<ImBindingDiagnostics> {
-    const [row] = await this.#database
-      .select({
-        id: imBindings.id,
-        agentId: imBindings.agentId,
-        provider: imBindings.provider,
-        status: imBindings.status,
-        credentialGeneration: imBindings.credentialGeneration,
-        connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
-        observedConnectedAt: imBindings.observedConnectedAt,
-        observedAt: imBindings.observedAt,
-        lastErrorCode: imBindings.lastErrorCode,
-        grantedCapabilities: imBindings.grantedCapabilities,
-        externalAppId: imBindings.externalAppId,
-        externalBotId: imBindings.externalBotId,
-        externalTeamId: imBindings.externalTeamId,
-        encryptedCredential: imBindings.encryptedCredential,
-        credentialSchemaVersion: imBindings.credentialSchemaVersion,
-        activatedAt: imBindings.activatedAt,
-        slackInstallation: slackInstallations,
-        computerKind: computers.kind,
-      })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .leftJoin(computers, eq(computers.id, agents.computerId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(eq(imBindings.id, imBindingId))
-      .limit(1);
-    if (!row) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
-    await this.assertCanManage(callerUserId, row.agentId);
+    const snapshot = await readBindingDiagnostics(this.#database, callerUserId, imBindingId);
+    if (!snapshot) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
+    const { row, activity } = snapshot;
     const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
     const observedConnectedAt =
       row.provider === "slack" ? (row.slackInstallation?.observedConnectedAt ?? null) : row.observedConnectedAt;
@@ -1045,8 +1006,11 @@ export class ImBindingService {
       credentialGeneration,
       lastErrorCode,
     };
-    const readiness = await this.#readiness({ ...imBinding, credentialStatus: credential.status }, row.computerKind);
-    const activity = await this.#activity(imBindingId);
+    const readiness = await this.#readiness(
+      { ...imBinding, credentialStatus: credential.status },
+      row.computerKind,
+      row.agentStatus === "active",
+    );
     return {
       imBindingId,
       provider: imBinding.provider,
@@ -1248,6 +1212,15 @@ export class ImBindingService {
     return result.disabled;
   }
 
+  async assertCanRead(callerUserId: string, agentId: string, executor: QueryExecutor = this.#database): Promise<void> {
+    const [agent] = await executor
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+  }
+
   async assertCanManage(
     callerUserId: string,
     agentId: string,
@@ -1276,19 +1249,36 @@ export class ImBindingService {
     await this.#afterMutationAuthorityLocked?.();
   }
 
-  async #assertCanRead(callerUserId: string, agentId: string): Promise<void> {
-    await this.assertCanManage(callerUserId, agentId);
+  async readForAgent<T>(
+    callerUserId: string,
+    agentId: string,
+    read: (transaction: DatabaseTransaction) => Promise<T>,
+    transaction?: DatabaseTransaction,
+  ): Promise<T> {
+    if (transaction) {
+      await this.assertCanRead(callerUserId, agentId, transaction);
+      return read(transaction);
+    }
+    return this.#database.transaction(
+      async (transaction) => {
+        await this.assertCanRead(callerUserId, agentId, transaction);
+        return read(transaction);
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   async #readiness(
     imBinding: ImBindingReadinessInput,
     computerKind: "local" | "cloud" | null,
+    refresh = true,
   ): Promise<ImBindingReadiness> {
     return this.#providerCli.readiness(
       imBinding,
       this.#agentRuntimeReadiness(imBinding.agentId),
       this.#now(),
       computerKind ?? "local",
+      refresh,
     );
   }
 
@@ -1445,6 +1435,7 @@ export class ImBindingService {
         .where(and(eq(imBindings.agentId, input.agentId), ne(imBindings.status, "disabled")))
         .limit(1)
         .for("update");
+      await assertSlackIdentity(transaction, input, currentRoute);
       if (currentRoute && currentRoute.provider !== "slack") {
         throw new ImBindingServiceError(
           "IM_BINDING_PROVIDER_IMMUTABLE",
@@ -1917,6 +1908,7 @@ export class ImBindingService {
         .where(and(eq(imBindings.agentId, input.agentId), ne(imBindings.status, "disabled")))
         .limit(1)
         .for("update");
+      await assertFeishuIdentity(transaction, input.agentId, current, input.identity.appId);
       if (current && current.provider !== input.provider) {
         throw new ImBindingServiceError(
           "IM_BINDING_PROVIDER_IMMUTABLE",
@@ -1978,7 +1970,6 @@ export class ImBindingService {
           "The authorized Feishu Bot identity does not match the current App binding",
         );
       }
-      const sameIdentity = sameProviderApp;
       const activated = (id: string, credentialGeneration: number): ActivatedBinding => ({
         id,
         agentId: activationInput.agentId,
@@ -1988,20 +1979,6 @@ export class ImBindingService {
         botId: activationInput.identity.botId,
         credentialGeneration,
       });
-      if (current && current.status !== "provisioning" && !sameIdentity) {
-        await disableImBindingInTransaction(transaction, current.id, now);
-        const replacementId = randomUUID();
-        const [created] = await transaction
-          .insert(imBindings)
-          .values({ id: replacementId, ...activeBindingValues(activationInput, encryptFor(replacementId), 1, now) })
-          .returning({ id: imBindings.id });
-        if (!created) throw new Error("Replacement IM binding insert did not return an id");
-        await transaction
-          .update(imBindings)
-          .set({ replacementImBindingId: created.id })
-          .where(eq(imBindings.id, current.id));
-        return activated(created.id, 1);
-      }
       if (current) {
         const nextGeneration = current.credentialGeneration + 1;
         const [updated] = await transaction
@@ -2065,17 +2042,5 @@ export class ImBindingService {
       )
       .limit(1);
     return row?.imBinding;
-  }
-
-  async #activity(imBindingId: string): Promise<{ lastInboundAt: string | null }> {
-    const [inbound] = await this.#database
-      .select({ at: imMessages.receivedAt })
-      .from(imMessages)
-      .where(and(eq(imMessages.imBindingId, imBindingId), eq(imMessages.direction, "inbound")))
-      .orderBy(desc(imMessages.receivedAt))
-      .limit(1);
-    return {
-      lastInboundAt: inbound?.at.toISOString() ?? null,
-    };
   }
 }

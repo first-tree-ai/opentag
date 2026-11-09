@@ -11,6 +11,7 @@ import {
   hashTuple,
   type ImMessageDeliveryResult,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
   type RuntimeImSteerRequest,
@@ -19,20 +20,33 @@ import {
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
+  type SessionMessageOutcomeResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRecoverRequest,
+  type SessionRecoverResult,
   type TurnReportRequest,
   type TurnReportResult,
 } from "@opentag/shared";
 import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, withSpan } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
 import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
-type DomainBusinessFrame = Exclude<ClientRuntimeBusinessFrame, { type: "approval:request" | "approval:result" }>;
+/** Server-only evidence of committed claims; the Client's manifest remains untrusted. */
+export type RuntimeReconcileResult = SessionReconcileResult & {
+  claimedRetainedReports?: NonNullable<SessionReconcileResult["retainedReports"]>;
+};
+
+type DomainBusinessFrame = Exclude<
+  ClientRuntimeBusinessFrame,
+  { type: "approval:request" | "approval:result" | "runtime:self-check:report" | "runtime:credential-failure" }
+>;
 
 /**
  * The Session-message delivery request on the wire: the frozen v2 ordinary shape or the v3 shape
@@ -55,6 +69,12 @@ function sessionMessageRequestOriginKey(request: AnySessionMessageDeliveryReques
   return request.sourceSessionId;
 }
 
+function matchesReconcileMessage(request: SessionReconcileRequest, result: SessionReconcileResult): boolean {
+  const message = result.sessionMessage;
+  if (!request.sessionMessage) return message === undefined;
+  return message === "deferred" || message?.messageId === request.sessionMessage.messageId;
+}
+
 type ProviderCliResultFrame = Extract<
   ClientRuntimeBusinessFrame,
   { type: "provider-cli:artifact:status" | "provider-cli:prewarm:result" | "provider-cli:validation:result" }
@@ -71,12 +91,23 @@ export class RuntimeDomainConflictError extends Error {
   }
 }
 
+export class RuntimeDispatchDeferredError extends Error {
+  readonly code: "IM_DELIVERY_STEER_TARGET_ENDED" | "IM_DELIVERY_BATCH_CHANGED";
+
+  constructor(reason: "target_ended" | "batch_changed") {
+    super(`The undispatched IM input was deferred: ${reason}`);
+    this.name = "RuntimeDispatchDeferredError";
+    this.code = reason === "target_ended" ? "IM_DELIVERY_STEER_TARGET_ENDED" : "IM_DELIVERY_BATCH_CHANGED";
+  }
+}
+
 export class RuntimeDomainRequestError extends Error {
   constructor(
     readonly code:
       | "aborted"
       | "authority_unavailable"
       | "capacity"
+      | "delivery_unconfirmed"
       | "not_pending"
       | "send_unavailable"
       | "stale_placement"
@@ -103,6 +134,23 @@ export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
   onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
+  /**
+   * Session-collaboration v4 Run outcome report from the exact current connection. Called only
+   * after the instance and capability checks; it answers `notified`, `ignored`, or `retry`.
+   */
+  onSessionMessageOutcome?(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult["status"]>;
+  /**
+   * `runtime.sessionRecovery` v1 request from the exact current connection: re-prepare a Session
+   * whose accepted work the Client is about to retry. Called only after the instance and
+   * capability checks. It must not wait for the reconcile it schedules.
+   */
+  onSessionRecover?(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<Pick<SessionRecoverResult, "status" | "reason">>;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext & { imCredentialGrantVersion: 1 | 2 },
@@ -117,6 +165,7 @@ export interface RuntimeDomainOwnerOptions {
 
 interface PendingBase<TRequest, TResult> {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   request: TRequest;
@@ -129,7 +178,7 @@ interface PendingBase<TRequest, TResult> {
 interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionReconcileResult> {
   kind: "reconcile";
   onResult?: PreparedSessionReconcile["onResult"];
-  completing?: boolean;
+  completing?: Promise<void>;
 }
 
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
@@ -160,6 +209,7 @@ interface ExpiredDelivery {
 
 interface CompletedRequest {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   kind: "reconcile" | "delivery" | "steer" | "session-message";
@@ -168,6 +218,7 @@ interface CompletedRequest {
 
 type PendingRequestBase = {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   request:
@@ -224,11 +275,23 @@ interface StartingDelivery {
 }
 
 export class RuntimeDomainOwner {
+  readonly #work = new Set<Promise<unknown>>();
+  #closed = false;
+  #closing: Promise<void> | undefined;
+
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "onTurnActivity" | "prepareReconcile">;
+    Pick<
+      RuntimeDomainOwnerOptions,
+      | "onImCredentialGrant"
+      | "onSessionMessageOutcome"
+      | "onSessionRecover"
+      | "onTrace"
+      | "onTurnActivity"
+      | "prepareReconcile"
+    >;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -236,7 +299,13 @@ export class RuntimeDomainOwner {
   readonly #tracedPromises = new WeakMap<Promise<unknown>, Promise<unknown>>();
   readonly #preparingReconciles = new Map<
     string,
-    { hash: string; instanceId: string; computerId: string; promise: Promise<SessionReconcileResult> }
+    {
+      hash: string;
+      instanceId: string;
+      computerId: string;
+      connectionId?: string;
+      promise: Promise<SessionReconcileResult>;
+    }
   >();
 
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
@@ -246,6 +315,8 @@ export class RuntimeDomainOwner {
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
+      onSessionMessageOutcome: options.onSessionMessageOutcome,
+      onSessionRecover: options.onSessionRecover,
       onTurnActivity: options.onTurnActivity,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
@@ -260,30 +331,38 @@ export class RuntimeDomainOwner {
   }
 
   getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
-    return this.#custody.getDelivery(deliveryId);
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(this.#custody.getDelivery(deliveryId));
   }
 
   getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
-    return this.#custody.getTurn(turnId);
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(this.#custody.getTurn(turnId));
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined),
+        );
       } else if (pending.kind === "delivery") {
-        void this.#custody
-          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
-          .catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined),
+        );
       }
-      pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+      const code = pending.kind === "reconcile" && pending.request.sessionMessage ? "delivery_unconfirmed" : "stopped";
+      pending.reject(new RuntimeDomainRequestError(code, "The runtime domain owner stopped"));
     }
     this.#pending.clear();
-    this.#startingDeliveries.clear();
-    this.#expiredDeliveries.clear();
-    this.#completed.clear();
-    this.#preparingReconciles.clear();
+
+    this.#closing = this.#drain();
+    return this.#closing;
   }
 
   requestReconcile(
@@ -293,7 +372,10 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     signal?: AbortSignal,
-  ): Promise<SessionReconcileResult> {
+    options: { joinSettlement?: boolean } = {},
+  ): Promise<RuntimeReconcileResult> {
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -306,6 +388,7 @@ export class RuntimeDomainOwner {
     let operation: Promise<SessionReconcileResult>;
     try {
       this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
+      const connectionId = this.#inlineMessageConnection(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
       const preparation = this.#options.prepareReconcile;
       if (!preparation) {
@@ -322,18 +405,27 @@ export class RuntimeDomainOwner {
               undefined,
               admissionDispatched,
               signal,
+              undefined,
+              options.joinSettlement,
+              connectionId,
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
       } else {
         const existing = this.#preparingReconciles.get(request.requestId);
         if (existing) {
-          if (existing.hash !== hash || existing.computerId !== computerId || existing.instanceId !== instanceId) {
+          if (
+            existing.hash !== hash ||
+            existing.computerId !== computerId ||
+            existing.instanceId !== instanceId ||
+            existing.connectionId !== connectionId
+          ) {
             throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
           }
           onDispatched?.();
           operation = existing.promise;
         } else {
+          signal?.throwIfAborted();
           operation = preparation(computerId, instanceId, request).then((prepared) =>
             this.#withDispatchAdmission(
               admission,
@@ -351,21 +443,20 @@ export class RuntimeDomainOwner {
                   admissionDispatched,
                   signal,
                   prepared.onResult,
+                  options.joinSettlement,
+                  connectionId,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
           );
           this.#preparingReconciles.set(request.requestId, {
+            connectionId,
             hash,
             instanceId,
             computerId,
             promise: operation,
           });
-          while (this.#preparingReconciles.size > this.#options.maxPendingRequests) {
-            const oldest = this.#preparingReconciles.keys().next().value;
-            if (oldest === undefined) break;
-            this.#preparingReconciles.delete(oldest);
-          }
+          this.#trimPreparingReconciles();
         }
       }
     } catch (error) {
@@ -388,11 +479,39 @@ export class RuntimeDomainOwner {
     );
   }
 
+  #inlineMessageConnection(
+    computerId: string,
+    instanceId: string,
+    request: SessionReconcileRequest,
+  ): string | undefined {
+    if (!request.sessionMessage) return undefined;
+    const connectionId = this.#registry.currentConnectionId(computerId, instanceId);
+    if (
+      connectionId &&
+      this.#registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.sessionMessageReconcile) === 1
+    ) {
+      return connectionId;
+    }
+    throw new RuntimeDomainRequestError("authority_unavailable", "The Local Session message connection is unavailable");
+  }
+
   async requestSteer(
     computerId: string,
     instanceId: string,
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
+  ): Promise<RuntimeImSteerResult> {
+    this.#assertRunning();
+    return this.#track(this.#steerRequest(computerId, instanceId, request, onDispatched, signal));
+  }
+
+  async #steerRequest(
+    computerId: string,
+    instanceId: string,
+    request: RuntimeImSteerRequest,
+    onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<RuntimeImSteerResult> {
     if (this.#registry.currentInstanceId(computerId) !== instanceId) {
       throw new RuntimeDomainRequestError("authority_unavailable", "The Computer instance is not current");
@@ -410,12 +529,17 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     }
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginSteerDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "target_ended" || dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
@@ -430,9 +554,11 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     } catch (error) {
-      await this.#custody.releaseSteerDispatch(request, inputHash, "deferred").catch(() => undefined);
+      if (dispatch === "dispatched")
+        await this.#custody.releaseSteerDispatch(request, inputHash, "retry").catch(() => undefined);
       throw error;
     }
   }
@@ -442,7 +568,10 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       deliveryId: request.deliveryId,
@@ -455,7 +584,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<ImMessageDeliveryResult>;
     try {
-      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched);
+      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched, signal);
     } catch (error) {
       return tracePromise(
         "runtime.delivery",
@@ -484,29 +613,33 @@ export class RuntimeDomainOwner {
     admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
     signal?: AbortSignal,
   ): Promise<SessionMessageDeliveryResult> {
-    return this.#withDispatchAdmission(
-      admission,
-      (admissionDispatched) =>
-        this.#request(
-          "session-message",
-          computerId,
-          instanceId,
-          request,
-          hashTuple([
-            request.messageId,
-            sessionMessageRequestOriginKey(request),
-            request.targetSessionId,
-            request.agentId,
-            request.placementGeneration,
-            request.content,
-            request.runtime,
-          ]),
-          undefined,
-          undefined,
-          admissionDispatched,
-          signal,
-        ) as Promise<SessionMessageDeliveryResult>,
-      onDispatched,
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(
+      this.#withDispatchAdmission(
+        admission,
+        (admissionDispatched) =>
+          this.#request(
+            "session-message",
+            computerId,
+            instanceId,
+            request,
+            hashTuple([
+              request.messageId,
+              sessionMessageRequestOriginKey(request),
+              request.targetSessionId,
+              request.agentId,
+              request.placementGeneration,
+              request.content,
+              request.runtime,
+            ]),
+            undefined,
+            undefined,
+            admissionDispatched,
+            signal,
+          ) as Promise<SessionMessageDeliveryResult>,
+        onDispatched,
+      ),
     );
   }
 
@@ -515,6 +648,7 @@ export class RuntimeDomainOwner {
     operation: (onDispatched?: () => void) => Promise<T>,
     onDispatched?: () => void,
   ): Promise<T> {
+    this.#assertRunning();
     if (!admission) return operation(onDispatched);
     return admission((admissionDispatched) =>
       operation(() => {
@@ -529,6 +663,14 @@ export class RuntimeDomainOwner {
     });
   }
 
+  #trimPreparingReconciles(): void {
+    while (this.#preparingReconciles.size > this.#options.maxPendingRequests) {
+      const oldest = this.#preparingReconciles.keys().next().value;
+      if (oldest === undefined) break;
+      this.#preparingReconciles.delete(oldest);
+    }
+  }
+
   #traceOnce<T>(
     name: string,
     attrs: Record<string, unknown>,
@@ -540,7 +682,7 @@ export class RuntimeDomainOwner {
     if (existing) return existing as Promise<T>;
     const traced = tracePromise(name, attrs, () => operation, resultAttrs, errorAttrs);
     this.#tracedPromises.set(operation, traced);
-    return traced;
+    return this.#track(traced);
   }
 
   #requestDelivery(
@@ -548,6 +690,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -573,21 +716,24 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     }
     this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
-    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched, signal);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
-    void promise.then(
-      () => {
-        if (this.#startingDeliveries.get(request.requestId) === owner)
-          this.#startingDeliveries.delete(request.requestId);
-      },
-      () => {
-        if (this.#startingDeliveries.get(request.requestId) === owner)
-          this.#startingDeliveries.delete(request.requestId);
-      },
+    void this.#track(
+      promise.then(
+        () => {
+          if (this.#startingDeliveries.get(request.requestId) === owner)
+            this.#startingDeliveries.delete(request.requestId);
+        },
+        () => {
+          if (this.#startingDeliveries.get(request.requestId) === owner)
+            this.#startingDeliveries.delete(request.requestId);
+        },
+      ),
     );
     return promise;
   }
@@ -599,11 +745,17 @@ export class RuntimeDomainOwner {
     requestHash: string,
     inputHash: string,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
+    this.#assertRunning();
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
@@ -618,6 +770,7 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     } catch (error) {
       await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);
@@ -626,6 +779,11 @@ export class RuntimeDomainOwner {
   }
 
   async resend(requestId: string): Promise<void> {
+    if (this.#closed) return;
+    return this.#track(this.#resendRequest(requestId));
+  }
+
+  async #resendRequest(requestId: string): Promise<void> {
     const pending = this.#pending.get(requestId);
     if (!pending) throw new RuntimeDomainRequestError("not_pending", "The runtime request is not pending");
     await this.#registry.send(pending.computerId, pending.instanceId, pending.request);
@@ -635,7 +793,11 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success && parsed.data.type !== "approval:request" && parsed.data.type !== "approval:result"
+        return parsed.success &&
+          parsed.data.type !== "approval:request" &&
+          parsed.data.type !== "approval:result" &&
+          parsed.data.type !== "runtime:self-check:report" &&
+          parsed.data.type !== "runtime:credential-failure"
           ? parsed.data
           : undefined;
       },
@@ -649,10 +811,17 @@ export class RuntimeDomainOwner {
     };
   }
 
-  async handle(
+  async handle(frame: DomainBusinessFrame, context: RuntimeBusinessContext): Promise<DomainBusinessResult | undefined> {
+    if (this.#closed) return undefined;
+    return this.#track(this.#handleFrame(frame, context));
+  }
+
+  async #handleFrame(
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+  ): Promise<DomainBusinessResult | undefined> {
+    // Connection-scoped requests answer a stale connection themselves.
+    if (isConnectionScoped(frame)) return this.#handleConnectionScoped(frame, context);
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -711,6 +880,43 @@ export class RuntimeDomainOwner {
       await this.#options.onTrace?.(frame, context);
     }
     return undefined;
+  }
+
+  async #handleSessionMessageOutcome(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult> {
+    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+      return sessionOutcomeResult(frame, "stale_generation");
+    }
+    const version = context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ?? 0;
+    if (version < RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION || !this.#options.onSessionMessageOutcome) {
+      return sessionOutcomeResult(frame, "unsupported_capability");
+    }
+    return sessionOutcomeResult(frame, await this.#options.onSessionMessageOutcome(frame, context));
+  }
+
+  #handleConnectionScoped(
+    frame: SessionMessageOutcomeReport | SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult | SessionRecoverResult> {
+    return frame.type === "session:recover"
+      ? this.#handleSessionRecover(frame, context)
+      : this.#handleSessionMessageOutcome(frame, context);
+  }
+
+  async #handleSessionRecover(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionRecoverResult> {
+    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+      return sessionRecoverResult(frame, "rejected", "stale_connection");
+    }
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionRecovery] !== 1 || !this.#options.onSessionRecover) {
+      return sessionRecoverResult(frame, "unsupported_capability");
+    }
+    const decision = await this.#options.onSessionRecover(frame, context);
+    return sessionRecoverResult(frame, decision.status, decision.reason);
   }
 
   #handleActivity(
@@ -814,14 +1020,18 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     signal?: AbortSignal,
     onReconcileResult?: PreparedSessionReconcile["onResult"],
+    joinReconcileSettlement = false,
+    expectedConnectionId?: string,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
+    this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
     if (existing) {
       if (
         existing.kind !== kind ||
         existing.hash !== hash ||
         existing.computerId !== computerId ||
-        existing.instanceId !== instanceId
+        existing.instanceId !== instanceId ||
+        existing.expectedConnectionId !== expectedConnectionId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
@@ -834,7 +1044,8 @@ export class RuntimeDomainOwner {
         completed.kind !== kind ||
         completed.hash !== hash ||
         completed.computerId !== computerId ||
-        completed.instanceId !== instanceId
+        completed.instanceId !== instanceId ||
+        completed.expectedConnectionId !== expectedConnectionId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
@@ -879,17 +1090,20 @@ export class RuntimeDomainOwner {
       this.#pending.delete(request.requestId);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined),
+        );
       } else if (pending.kind === "delivery") {
-        void this.#custody
-          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
-          .catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined),
+        );
       }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
     timer.unref();
     const base = {
       computerId,
+      expectedConnectionId,
       hash,
       instanceId,
       request,
@@ -900,42 +1114,70 @@ export class RuntimeDomainOwner {
     };
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
-    const dispatch = this.#registry.send(computerId, instanceId, request);
-    void dispatch
-      .then(() => onDispatched?.())
-      .catch((error: unknown) => {
-        if (this.#pending.get(request.requestId) !== pending) return;
+    const dispatch = this.#registry.send(computerId, instanceId, request, expectedConnectionId);
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      const abort = () => {
+        if (this.#pending.get(request.requestId) !== pending || pending.completing) return;
         this.#pending.delete(request.requestId);
         clearTimeout(timer);
-        try {
-          this.#logger?.warn(
-            {
-              code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
-              computerId,
-              instanceId,
-              requestId: request.requestId,
-            },
-            "Runtime domain request failed",
-          );
-        } catch {
-          // Logging must never replace the request failure.
-        }
-        if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
-        if (pending.kind === "steer") {
-          void this.#custody
-            .releaseSteerDispatch(pending.request, pending.inputHash, "deferred")
-            .catch(() => undefined);
-        } else if (pending.kind === "delivery") {
-          void this.#custody
-            .releaseDeliveryDispatch(pending.request, pending.inputHash, "retry")
-            .catch(() => undefined);
-        }
-        pending.reject(
-          error instanceof Error
-            ? error
-            : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
+        // A cancelled waiter still owns an admitted send until its actual callback settles.
+        void dispatch.then(
+          () => pending.reject(signal.reason),
+          () => pending.reject(signal.reason),
         );
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void promise.then(
+        () => signal.removeEventListener("abort", abort),
+        () => signal.removeEventListener("abort", abort),
+      );
+      if (signal.aborted) abort();
+    }
+    void this.#track(
+      dispatch
+        .then(() => onDispatched?.())
+        .catch((error: unknown) => {
+          if (this.#pending.get(request.requestId) !== pending) return;
+          this.#pending.delete(request.requestId);
+          clearTimeout(timer);
+          try {
+            this.#logger?.warn(
+              {
+                code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
+                computerId,
+                instanceId,
+                requestId: request.requestId,
+              },
+              "Runtime domain request failed",
+            );
+          } catch {
+            // Logging must never replace the request failure.
+          }
+          if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+          if (pending.kind === "steer") {
+            void this.#track(
+              this.#custody
+                .releaseSteerDispatch(pending.request, pending.inputHash, "uncertain")
+                .catch(() => undefined),
+            );
+          } else if (pending.kind === "delivery") {
+            void this.#track(
+              this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "retry").catch(() => undefined),
+            );
+          }
+          pending.reject(
+            error instanceof Error
+              ? error
+              : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
+          );
+        }),
+    );
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      return promise.finally(async () => {
+        await dispatch.catch(() => undefined);
+        await pending.completing;
       });
+    }
     return promise;
   }
 
@@ -950,18 +1192,31 @@ export class RuntimeDomainOwner {
     if (!this.#matchesContext(pending, context)) return;
     if (
       result.sessionId !== pending.request.sessionId ||
-      result.placementGeneration !== pending.request.placementGeneration
+      result.placementGeneration !== pending.request.placementGeneration ||
+      !matchesReconcileMessage(pending.request, result) ||
+      (pending.expectedConnectionId !== undefined && pending.expectedConnectionId !== context.connectionId)
     ) {
       return;
     }
-    pending.completing = true;
+    pending.completing = Promise.resolve().then(() => this.#processReconcileResult(pending, result, context));
+    await pending.completing;
+  }
+
+  async #processReconcileResult(
+    pending: PendingReconcile,
+    result: SessionReconcileResult,
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    const requestId = pending.request.requestId;
     try {
-      if (result.status !== "rejected") {
-        await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
-      }
+      const claimedRetainedReports =
+        result.status === "rejected"
+          ? []
+          : await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
       if (this.#pending.get(requestId) !== pending) return;
       await pending.onResult?.(result);
-      this.#settle(pending, result);
+      const settled: RuntimeReconcileResult = { ...result, claimedRetainedReports };
+      this.#settle(pending, settled);
     } catch (error) {
       if (this.#pending.get(requestId) !== pending) return;
       this.#pending.delete(requestId);
@@ -1044,7 +1299,7 @@ export class RuntimeDomainOwner {
       if (custody === "conflict") throw new RuntimeDomainConflictError("The steer custody conflicts");
       if (custody === "stale_generation") return;
     } else {
-      const disposition = result.status === "retry" ? "retry" : "deferred";
+      const disposition = steerReleaseDisposition(result);
       const release = await this.#custody.releaseSteerDispatch(attempt.request, attempt.inputHash, disposition);
       if (release === "conflict") throw new RuntimeDomainConflictError("The steer dispatch release conflicts");
     }
@@ -1131,11 +1386,12 @@ export class RuntimeDomainOwner {
   }
 
   #rememberCompleted(
-    request: Pick<PendingRequest | ExpiredDelivery, "hash" | "instanceId" | "kind" | "request" | "computerId">,
+    request: Pick<PendingRequest, "hash" | "instanceId" | "kind" | "request" | "computerId" | "expectedConnectionId">,
     result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
   ): void {
     this.#completed.set(request.request.requestId, {
       computerId: request.computerId,
+      expectedConnectionId: request.expectedConnectionId,
       hash: request.hash,
       instanceId: request.instanceId,
       kind: request.kind,
@@ -1163,9 +1419,32 @@ export class RuntimeDomainOwner {
       this.#expiredDeliveries.delete(oldest);
     }
   }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  #assertRunning(): void {
+    if (this.#closed) throw new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped");
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
+    this.#startingDeliveries.clear();
+    this.#expiredDeliveries.clear();
+    this.#completed.clear();
+    this.#preparingReconciles.clear();
+  }
 }
 
 function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
+  if (error instanceof RuntimeDispatchDeferredError) return outcomeAttrs("deferred", error.code);
+  if (error instanceof InboundReceiptPendingError) return outcomeAttrs("deferred", error.code);
   let code = "RUNTIME_REQUEST_FAILED";
   if (error instanceof RuntimeDomainConflictError) {
     code = "RUNTIME_REQUEST_CONFLICT";
@@ -1175,6 +1454,7 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
         aborted: "RUNTIME_REQUEST_ABORTED",
         authority_unavailable: "RUNTIME_AUTHORITY_UNAVAILABLE",
         capacity: "RUNTIME_OWNER_CAPACITY",
+        delivery_unconfirmed: "RUNTIME_DELIVERY_UNCONFIRMED",
         not_pending: "RUNTIME_REQUEST_NOT_PENDING",
         send_unavailable: "RUNTIME_SEND_UNAVAILABLE",
         stale_placement: "RUNTIME_PLACEMENT_STALE",
@@ -1192,9 +1472,46 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
+type DomainBusinessResult =
+  | TurnReportResult
+  | TurnActivityResult
+  | RuntimeImCredentialGrantResult
+  | SessionMessageOutcomeResult
+  | SessionRecoverResult;
+
+function isConnectionScoped(frame: DomainBusinessFrame): frame is SessionMessageOutcomeReport | SessionRecoverRequest {
+  return frame.type === "session:message:outcome" || frame.type === "session:recover";
+}
+
+function sessionRecoverResult(
+  frame: SessionRecoverRequest,
+  status: SessionRecoverResult["status"],
+  reason?: string,
+): SessionRecoverResult {
+  return {
+    type: "session:recover:result",
+    requestId: frame.requestId,
+    sessionId: frame.sessionId,
+    status,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function sessionOutcomeResult(
+  frame: SessionMessageOutcomeReport,
+  status: SessionMessageOutcomeResult["status"],
+): SessionMessageOutcomeResult {
+  return { type: "session:message:outcome:result", requestId: frame.requestId, messageId: frame.messageId, status };
+}
+
+function businessFailureResult(
+  frame: unknown,
+): RuntimeImCredentialGrantResult | SessionMessageOutcomeResult | SessionRecoverResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
   if (!parsed.success) return undefined;
+  if (parsed.data.type === "session:recover") return sessionRecoverResult(parsed.data, "retry");
+  // A processing failure proves nothing about the notice: the Client keeps the report and resends.
+  if (parsed.data.type === "session:message:outcome") return sessionOutcomeResult(parsed.data, "retry");
   if (parsed.data.type === "im:credential") {
     return {
       type: "im:credential:result",
@@ -1207,6 +1524,9 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
+  if (frame.type === "runtime:self-check:report") return `self-check:${frame.selfCheckId}`;
+  if (frame.type === "runtime:credential-failure")
+    return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report" || frame.type === "turn:activity")
     return `delivery:${frame.deliveryId}`;
@@ -1215,9 +1535,18 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
   }
+  if (frame.type === "session:recover") return `session-recover:${frame.sessionId}`;
+  if (frame.type === "session:message:outcome") {
+    return `session-message-outcome:${frame.targetSessionId}:${frame.messageId}`;
+  }
   if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
     return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   }
   if (frame.type === "provider-cli:prewarm:result") return `provider-cli:prewarm:${frame.requestId}`;
   return `turn:${frame.turnId}`;
+}
+
+function steerReleaseDisposition(result: RuntimeImSteerResult): "retry" | "deferred" | "uncertain" {
+  if (result.status === "deferred" && result.reason === "steer_state_unknown") return "uncertain";
+  return result.status === "retry" ? "retry" : "deferred";
 }

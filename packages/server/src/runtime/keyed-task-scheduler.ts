@@ -1,3 +1,5 @@
+import { AsyncResource } from "node:async_hooks";
+import { getCurrentPerformanceContext, runWithPerformanceContext } from "../observability/performance-logger.js";
 import type { KeyedTaskSchedulerOptions, TaskLane } from "./keyed-task-scheduler.types.js";
 
 /**
@@ -17,6 +19,8 @@ export class KeyedTaskScheduler {
   #readyHead = 0;
   #active = 0;
   #closed = false;
+  #closing: Promise<void> | undefined;
+  #resolveClosed: (() => void) | undefined;
   #queued = 0;
   readonly #now: () => number;
 
@@ -37,7 +41,12 @@ export class KeyedTaskScheduler {
       return false;
     }
     if (!this.#lanes.has(key)) this.#lanes.set(key, lane);
-    lane.queue.push({ run: task, onDrop, enqueuedAt: this.#now() });
+    const currentPerf = getCurrentPerformanceContext();
+    const perfSnapshot = currentPerf ? { ...currentPerf } : undefined;
+    const boundTask = AsyncResource.bind(() =>
+      perfSnapshot ? runWithPerformanceContext({ ...perfSnapshot }, task) : task(),
+    );
+    lane.queue.push({ run: boundTask, onDrop, enqueuedAt: this.#now() });
     this.#queued += 1;
     if (!lane.running) this.#markReady(key);
     this.#pump();
@@ -58,7 +67,8 @@ export class KeyedTaskScheduler {
     };
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
     for (const lane of this.#lanes.values()) {
       this.#queued -= lane.queue.length;
@@ -76,6 +86,15 @@ export class KeyedTaskScheduler {
     this.#ready.length = 0;
     this.#readySet.clear();
     this.#readyHead = 0;
+    this.#closing = new Promise((resolve) => {
+      this.#resolveClosed = resolve;
+    });
+    this.#resolveCloseIfIdle();
+    return this.#closing;
+  }
+
+  #resolveCloseIfIdle(): void {
+    if (this.#active === 0) this.#resolveClosed?.();
   }
 
   #markReady(key: string): void {
@@ -147,6 +166,7 @@ export class KeyedTaskScheduler {
           if (lane.queue.length === 0) this.#lanes.delete(key);
           else this.#markReady(key);
           this.#pump();
+          this.#resolveCloseIfIdle();
         });
     }
   }

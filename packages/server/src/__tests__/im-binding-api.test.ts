@@ -607,6 +607,7 @@ describe("ImBindingService persistence", () => {
     const material = await value.service.getFeishuConnectionMaterial(bindingId);
     expect(material).toMatchObject({
       imBindingId: bindingId,
+      agentId: value.agent.id,
       generation: 1,
       appId: "cli_1",
       teamId: "tenant_1",
@@ -614,7 +615,7 @@ describe("ImBindingService persistence", () => {
       appSecret: "app-secret",
     });
     expect(material?.grantedScopes).toEqual([...FEISHU_REQUIRED_TENANT_SCOPES].sort());
-    expect(await value.service.listFeishuConnectionIds(undefined)).toEqual([bindingId]);
+    expect((await value.service.listFeishuConnectionIds(undefined)).map((row) => row.imBindingId)).toEqual([bindingId]);
     expect(await value.service.listFeishuConnectionIds(bindingId)).toEqual([]);
     expect(await value.service.getForAgent(value.bootstrap.userId, value.agent.id)).toMatchObject({
       id: bindingId,
@@ -704,6 +705,7 @@ describe("ImBindingService persistence", () => {
     const connection = await value.service.getSlackConnectionMaterial(activated.imBindingId);
     expect(connection).toMatchObject({
       imBindingId: activated.imBindingId,
+      agentId: value.agent.id,
       generation: 1,
       botId: "B1",
       botAccessToken: "xoxb-secret",
@@ -761,17 +763,22 @@ describe("ImBindingService persistence", () => {
       code: "IM_BINDING_PROVIDER_IMMUTABLE",
     });
     await value.service.disable(value.bootstrap.userId, feishu);
-    const first = await value.service.activateSlack(slackInput(value.agent.id), "B1");
     await expect(value.service.activateSlack(slackInput(value.agent.id), "B1")).rejects.toMatchObject({
+      code: "IM_BINDING_CONFIGURATION_CONFLICT",
+    });
+    const slackAgent = await createSiblingAgent(value, "slack-own");
+    const first = await value.service.activateSlack(slackInput(slackAgent.id), "B1");
+    await expect(value.service.activateSlack(slackInput(slackAgent.id), "B1")).rejects.toMatchObject({
       code: "SLACK_CONFIGURATION_CONFLICT",
     });
-    const reauth = await value.service.activateSlack(slackInput(value.agent.id, { intent: "reauthorize" }), "B1");
+    const reauth = await value.service.activateSlack(slackInput(slackAgent.id, { intent: "reauthorize" }), "B1");
     expect(reauth.credentialGeneration).toBe(2);
-    const replacement = await value.service.activateSlack(
-      slackInput(value.agent.id, { intent: "reauthorize", appId: "A2", teamId: "T2" }),
-      "B2",
-    );
-    expect(replacement.credentialGeneration).toBe(1);
+    await expect(
+      value.service.activateSlack(
+        slackInput(slackAgent.id, { intent: "reauthorize", appId: "A2", teamId: "T2" }),
+        "B2",
+      ),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
     expect(first.imBindingId).toBe(reauth.imBindingId);
   });
 
@@ -786,7 +793,8 @@ describe("ImBindingService persistence", () => {
       value.bootstrap.userId,
       (await value.service.getConfigForAgent(value.bootstrap.userId, value.agent.id))?.id ?? "",
     );
-    await value.service.activateSlack(slackInput(value.agent.id), "B1");
+    const slackAgent = await createSiblingAgent(value, "slack-owner");
+    await value.service.activateSlack(slackInput(slackAgent.id), "B1");
     await expect(value.service.activateSlack(slackInput(sibling.id), "B1")).rejects.toMatchObject({
       code: "SLACK_APP_TEAM_ALREADY_BOUND",
     });
@@ -1370,50 +1378,37 @@ describe("ImBindingService persistence", () => {
     });
   });
 
-  it("advances the Feishu binding epoch on replacement and disable with idempotent terminal operations", async () => {
+  it("preserves the Feishu identity and epoch on rejected replacement and disables idempotently", async () => {
     const value = await persistedFixture();
     const first = await value.service.activateFeishu(feishuInput(value.agent.id));
-    const generationOf = async (id: string) => {
-      const [row] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, id));
-      return { status: row?.status, credentialGeneration: row?.credentialGeneration };
-    };
-    expect(await generationOf(first)).toEqual({ status: "active", credentialGeneration: 1 });
-    // Credential rotation on the same identity bumps the epoch.
     await value.service.activateFeishu(feishuInput(value.agent.id, { appSecret: "rotated-secret" }));
-    expect(await generationOf(first)).toEqual({ status: "active", credentialGeneration: 2 });
-    // Replacement with a different App disables the old row (epoch bump) and starts a new epoch.
-    const replacement = await value.service.activateFeishu(feishuInput(value.agent.id, { appId: "cli_2" }));
-    expect(replacement).not.toBe(first);
-    expect(await generationOf(first)).toEqual({ status: "disabled", credentialGeneration: 3 });
-    expect(await generationOf(replacement)).toEqual({ status: "active", credentialGeneration: 1 });
-    // Account-owned disable bumps once and stays idempotent.
-    await value.service.disable(value.bootstrap.userId, replacement);
-    expect(await generationOf(replacement)).toEqual({ status: "disabled", credentialGeneration: 2 });
-    await value.service.disable(value.bootstrap.userId, replacement);
-    expect(await generationOf(replacement)).toEqual({ status: "disabled", credentialGeneration: 2 });
+    await expect(value.service.activateFeishu(feishuInput(value.agent.id, { appId: "cli_2" }))).rejects.toMatchObject({
+      code: "IM_BINDING_CONFIGURATION_CONFLICT",
+    });
+    const read = async () => (await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, first)))[0];
+    expect(await read()).toMatchObject({ status: "active", credentialGeneration: 2 });
+    await value.service.disable(value.bootstrap.userId, first);
+    await value.service.disable(value.bootstrap.userId, first);
+    expect(await read()).toMatchObject({ status: "disabled", credentialGeneration: 3 });
   });
 
-  it("handles Slack reauthorization replacement and orphan installation cleanup", async () => {
+  it("rejects Slack identity replacement without changing its route or installation", async () => {
     const value = await persistedFixture();
     const first = await value.service.activateSlack(slackInput(value.agent.id), "B1");
-    const replacement = await value.service.activateSlack(
-      slackInput(value.agent.id, { intent: "reauthorize", appId: "A2", teamId: "T2", botUserId: "U2" }),
-      "B2",
-    );
-    expect(replacement.imBindingId).not.toBe(first.imBindingId);
-    const [oldRoute] = await unitDatabase.database
-      .select()
-      .from(imBindings)
-      .where(eq(imBindings.id, first.imBindingId));
-    expect(oldRoute?.status).toBe("disabled");
-    const [oldInstallation] = await unitDatabase.database
-      .select()
-      .from(slackInstallations)
-      .where(eq(slackInstallations.externalAppId, "A1"));
-    expect(oldInstallation?.replacementSlackInstallationId).toBeTruthy();
-    await value.service.disable(value.bootstrap.userId, replacement.imBindingId);
+    await expect(
+      value.service.activateSlack(
+        slackInput(value.agent.id, { intent: "reauthorize", appId: "A2", teamId: "T2", botUserId: "U2" }),
+        "B2",
+      ),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+    const [route] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, first.imBindingId));
+    expect(route).toMatchObject({ status: "active", credentialGeneration: 1 });
+    const installations = await unitDatabase.database.select().from(slackInstallations);
+    expect(installations).toHaveLength(1);
+    expect(installations[0]).toMatchObject({ status: "active", replacementSlackInstallationId: null });
+    await value.service.disable(value.bootstrap.userId, first.imBindingId);
     expect(
-      await value.service.disableSlackInstallationFromProvider(oldInstallation?.id ?? crypto.randomUUID(), 999),
+      await value.service.disableSlackInstallationFromProvider(installations[0]?.id ?? crypto.randomUUID(), 999),
     ).toBe(false);
   });
 
@@ -1493,11 +1488,17 @@ describe("ImBindingService persistence", () => {
       agentId: agent.id,
       computerId: computer.id,
     });
-    const slack = await service.activateSlack(slackInput(agent.id), "B1");
+    const sibling = await new AgentService(unitDatabase.database).createForAccount(bootstrap.userId, {
+      name: "slack-sibling",
+      displayName: "Slack",
+      runtimeProvider: "codex",
+      computerId: computer.id,
+    });
+    const slack = await service.activateSlack(slackInput(sibling.id), "B1");
     changed.mockClear();
     await expect(service.requireReauthorization(slack.imBindingId, 1, "SLACK_TOKEN_REVOKED")).resolves.toBe(true);
     expect(changed).toHaveBeenCalledWith({
-      agentId: agent.id,
+      agentId: sibling.id,
       computerId: computer.id,
     });
   });

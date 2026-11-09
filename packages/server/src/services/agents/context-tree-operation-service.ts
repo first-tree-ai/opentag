@@ -1,6 +1,7 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  type ContextTreeAvailabilityResponse,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
@@ -11,7 +12,10 @@ import {
 } from "@opentag/shared";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { AgentService } from "./agent-service.js";
-import type { GitHubContextTreeOperationRunner } from "./github-context-tree-operations.js";
+import type {
+  GitHubContextTreeOperationRunner,
+  PreparedContextTreeOperation,
+} from "./github-context-tree-operations.js";
 
 /** Validate remotely first, then compare revisions again inside the Agent update transaction. */
 export class ContextTreeOperationService {
@@ -20,6 +24,17 @@ export class ContextTreeOperationService {
     readonly registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
     readonly github: GitHubContextTreeOperationRunner,
   ) {}
+  async availability(userId: string, agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    const config = await this.agents.getConfigById(userId, agentId);
+    if (!config.computerId) return { status: "failed", code: "computer_unavailable" };
+    const kind = await this.github.computerKind(config.computerId);
+    if (!kind) return { status: "failed", code: "computer_unavailable" };
+    if (kind === "local") {
+      const failure = this.#checkComputer(config.computerId);
+      if (failure) return failure;
+    }
+    return this.github.availability(userId, agentId);
+  }
   async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     const input = ContextTreeOperationRequestSchema.parse(raw);
     const config = await this.agents.getConfigById(userId, agentId);
@@ -31,11 +46,11 @@ export class ContextTreeOperationService {
     const connections = config.runtimeConfig.contextTrees;
     const unchanged = attachmentOutcome(config, input);
     if (unchanged) return unchanged;
-    if (connections.length > 0 && config.status !== "suspended") return { status: "failed", code: "pause_required" };
-    const result: ContextTreeOperationResponse =
+    const prepared: PreparedContextTreeOperation =
       input.action === "disconnect"
-        ? { status: "completed", repository: null }
+        ? { result: { status: "completed", repository: null } }
         : await this.#dispatch(userId, agentId, config, input.action, input);
+    const { result, authority } = prepared;
     if (result.status !== "completed") return result;
     const selection = updatedSelection(connections, input, result);
     if (!selection) return { status: "failed", code: "failed" };
@@ -51,6 +66,7 @@ export class ContextTreeOperationService {
           status: config.status,
         },
         selection,
+        ...(authority ? [authority] : []),
       );
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "AGENT_REVISION_CONFLICT")
@@ -67,13 +83,13 @@ export class ContextTreeOperationService {
     config: AgentAdminConfig,
     action: "connect" | "create",
     input: ContextTreeOperationRequest,
-  ): Promise<ContextTreeOperationResponse> {
-    if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
+  ): Promise<PreparedContextTreeOperation> {
+    if (config.computerId === null) return { result: { status: "failed", code: "computer_unavailable" } };
     const kind = await this.github.computerKind(config.computerId);
-    if (!kind) return { status: "failed", code: "computer_unavailable" };
+    if (!kind) return { result: { status: "failed", code: "computer_unavailable" } };
     if (kind === "local") {
       const failure = this.#checkComputer(config.computerId);
-      if (failure) return failure;
+      if (failure) return { result: failure };
     }
     const result = await this.github.run({
       accountId: userId,
@@ -84,12 +100,12 @@ export class ContextTreeOperationService {
       repository: input.repository,
     });
     // A reconnect during remote verification must not persist a selection for an older peer.
-    return kind === "local" && result.status === "completed"
-      ? (this.#checkComputer(config.computerId) ?? result)
+    return kind === "local" && result.result.status === "completed"
+      ? { ...result, result: this.#checkComputer(config.computerId) ?? result.result }
       : result;
   }
 
-  #checkComputer(computerId: string): Extract<ContextTreeOperationResponse, { status: "failed" }> | undefined {
+  #checkComputer(computerId: string): Extract<ContextTreeAvailabilityResponse, { status: "failed" }> | undefined {
     const instanceId = this.registry.currentInstanceId(computerId);
     if (!instanceId) return { status: "failed", code: "computer_unavailable" };
     if (!this.registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.contextTreeSettings))

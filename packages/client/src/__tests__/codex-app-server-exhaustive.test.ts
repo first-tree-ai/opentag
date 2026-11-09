@@ -172,6 +172,19 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await expect(process.notify("fixture/closed", {})).rejects.toMatchObject({ code: "write" });
   });
 
+  it("consumes a late response after cancellation without breaking the next request", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    const controller = new AbortController();
+    const aborted = process.request("fixture/abort", {}, controller.signal);
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: "aborted" });
+    child.respond(1, { late: true });
+    child.handle = (message) => child.respond(message.id, { next: true });
+    await expect(process.request("fixture/next", {})).resolves.toEqual({ next: true });
+    await process.close();
+  });
+
   it("handles unavailable stdin, oversized requests, and write callback errors", async () => {
     const unavailable = new FakeChild();
     const unavailableProcess = processWith(unavailable);
@@ -212,6 +225,79 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
       await expect(failure).resolves.toMatchObject({ code: "protocol" });
       child.stdout.write(Buffer.from("ignored-after-failure\n"));
       await process.close().catch(() => undefined);
+    }
+  });
+
+  it("accepts 8 MiB records across UTF-8 splits and batches larger than the per-line budget", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    const received: Array<{ bytes: number; prefix: string }> = [];
+    process.subscribe((message) => {
+      if (message.method !== "item/completed") return;
+      const output = (message.params as { item: { aggregatedOutput: string } }).item.aggregatedOutput;
+      received.push({ bytes: Buffer.byteLength(output), prefix: output.slice(0, 2) });
+    });
+    const line = sizedToolNotification(8 * 1024 * 1024);
+    const split = line.indexOf(Buffer.from("😀")) + 1;
+    try {
+      child.stdout.write(line.subarray(0, split));
+      child.stdout.write(line.subarray(split));
+      expect(received).toHaveLength(0);
+      child.stdout.write(Buffer.concat([Buffer.from("\n\n"), line, Buffer.from("\n")]));
+      expect(received).toHaveLength(2);
+      expect(received[0]?.bytes).toBeGreaterThan(1024 * 1024);
+      expect(received[0]?.prefix).toBe("😀");
+      expect(received[1]).toEqual(received[0]);
+    } finally {
+      await process.close();
+    }
+  });
+
+  it.each(["complete", "fragmented", "batch-tail"])(
+    "fails once and rejects pending requests for an 8 MiB plus one byte %s record",
+    async (framing) => {
+      const child = new FakeChild();
+      const process = processWith(child);
+      const failures: unknown[] = [];
+      process.subscribe((message) => {
+        if (message.method === "opentag/processError") failures.push(message.params);
+      });
+      const pending = process.request("fixture/pending", {}).catch((error: unknown) => error);
+      const line = sizedToolNotification(8 * 1024 * 1024 + 1);
+      if (framing === "complete") child.stdout.write(Buffer.concat([line, Buffer.from("\n")]));
+      else if (framing === "fragmented") {
+        child.stdout.write(line.subarray(0, line.byteLength - 1));
+        expect(failures).toHaveLength(0);
+        child.stdout.write(line.subarray(line.byteLength - 1));
+      } else child.stdout.write(Buffer.concat([Buffer.from('\n{"method":"fixture/ready","params":{}}\n'), line]));
+      await expect(pending).resolves.toMatchObject({
+        code: "protocol",
+        message: "Codex emitted an oversized JSONL line",
+      });
+      child.stdout.write("ignored-after-failure\n");
+      await expect(process.request("fixture/after-failure", {})).rejects.toMatchObject({ code: "protocol" });
+      expect(failures).toHaveLength(1);
+      expect(child.kills).toEqual(["SIGTERM"]);
+      await process.close();
+    },
+  );
+
+  it("keeps outbound requests bounded to 8 MiB including their newline", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    const method = "fixture/large";
+    const overhead = Buffer.byteLength(`${JSON.stringify({ method, params: { value: "" } })}\n`);
+    const value = "x".repeat(8 * 1024 * 1024 - overhead);
+    try {
+      await process.notify(method, { value });
+      expect(child.messages).toHaveLength(1);
+      await expect(process.notify(method, { value: `${value}x` })).rejects.toMatchObject({
+        code: "protocol",
+        message: "Codex request exceeds the JSONL line limit",
+      });
+      expect(child.messages).toHaveLength(1);
+    } finally {
+      await process.close();
     }
   });
 
@@ -620,6 +706,19 @@ function initializeResult() {
   };
 }
 
+function sizedToolNotification(bytes: number): Buffer {
+  const message = {
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "tool-1", type: "commandExecution", status: "completed", aggregatedOutput: "😀" },
+    },
+  };
+  message.params.item.aggregatedOutput += "x".repeat(bytes - Buffer.byteLength(JSON.stringify(message)));
+  return Buffer.from(JSON.stringify(message));
+}
+
 function processFailure(process: CodexAppServerProcess): Promise<CodexAppServerError> {
   return new Promise((resolve) => {
     process.subscribe((message) => {
@@ -647,5 +746,5 @@ function dynamicToolRequest(id: string, callId: string): Record<string, unknown>
 
 type CodexAppServerRequest = import("../providers/codex/app-server-wire.js").CodexAppServerRequest;
 
-expect(CODEX_APP_SERVER_MAX_LINE_BYTES).toBe(1024 * 1024);
+expect(CODEX_APP_SERVER_MAX_LINE_BYTES).toBe(8 * 1024 * 1024);
 expect(CODEX_APP_SERVER_REQUEST_TIMEOUT_MS).toBe(60_000);

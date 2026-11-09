@@ -4,7 +4,10 @@ import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
+import { parseSemVer } from "@opentag/shared";
+import { CLI_VERSION } from "../../../build-info.js";
 import { buildChildEnvironment } from "../../command/environment.js";
+import { detectInstallMode, type InstallMode } from "../../update/install-mode.js";
 import { resolveDaemonPaths } from "../paths.js";
 import {
   acquireProcessFileLease,
@@ -13,6 +16,7 @@ import {
   ProcessLeaseUnverifiableError,
 } from "../process-lease.js";
 import {
+  CliInvocationError,
   type CommandResult,
   DaemonServiceError,
   type DaemonServiceErrorCode,
@@ -137,23 +141,125 @@ export async function resolveCliInvocation(options: {
   execPath?: string;
 }): Promise<ResolvedCliInvocation> {
   const environment = options.env ?? process.env;
-  const bin = await findExecutable(options.binName, environment.PATH);
-  if (bin) return { args: [], program: await realpath(bin).catch(() => bin) };
-
-  const argv = options.argv ?? process.argv;
-  const script = argv[1];
-  if (!script) {
-    throw new DaemonServiceError("CONFIGURATION", "Cannot resolve the openTag CLI entry script");
-  }
+  const script = (options.argv ?? process.argv)[1];
+  if (!script) throw invocationFailure("cli", "", "entry script is missing");
   const program = options.execPath ?? process.execPath;
-  if (!isAbsolute(program)) {
-    throw new DaemonServiceError("CONFIGURATION", "The Node.js executable path must be absolute");
-  }
+  if (!isAbsolute(program)) throw invocationFailure("node", program, "path must be absolute");
   const scriptPath = isAbsolute(script) ? script : resolve(options.cwd ?? process.cwd(), script);
-  return {
-    args: [await realpath(scriptPath).catch(() => scriptPath)],
-    program: await realpath(program).catch(() => program),
-  };
+  const node = await resolveCliFile(program, constants.X_OK, "node");
+  const entry = await resolveCliFile(scriptPath, constants.R_OK, "cli");
+  if (environment.OPENTAG_INSTALL_MODE !== "portable") {
+    return { args: [entry], program: await stableNodeInvocation(node, program, environment.PATH) };
+  }
+  const install = detectInstallMode(environment);
+  if (install.mode !== "portable") {
+    throw invocationFailure("portable", environment.OPENTAG_PORTABLE_ROOT ?? "", "installation paths are incomplete");
+  }
+  return resolvePortableInvocation(install, options.binName, node, entry);
+}
+
+function invocationFailure(
+  kind: "node" | "cli" | "portable",
+  path: string,
+  reason: string,
+  cause?: unknown,
+  installedVersion?: string,
+): CliInvocationError {
+  const label =
+    kind === "node" ? "Node.js executable" : kind === "cli" ? "CLI entry script" : "portable CLI installation";
+  return new CliInvocationError(
+    `The ${label} ${reason}: ${path}`,
+    { kind, path, reason, runningVersion: CLI_VERSION, ...(installedVersion ? { installedVersion } : {}) },
+    { cause },
+  );
+}
+
+async function resolveCliFile(path: string, mode: number, kind: "node" | "cli" | "portable"): Promise<string> {
+  try {
+    const target = await realpath(path);
+    if (!(await stat(target)).isFile()) throw new Error("Not a regular file");
+    await access(target, mode);
+    return target;
+  } catch (cause) {
+    throw invocationFailure(kind, path, "is unavailable", cause);
+  }
+}
+
+async function stableNodeInvocation(node: string, program: string, sourcePath?: string): Promise<string> {
+  const keg = node.match(/^(.*)\/Cellar\/(node(?:@[^/]+)?)\/[^/]+\/bin\/node$/);
+  const candidates = [
+    program,
+    ...(sourcePath
+      ?.split(delimiter)
+      .filter(isAbsolute)
+      .map((directory) => join(directory, "node")) ?? []),
+    ...(keg ? [join(keg[1] ?? "", "opt", keg[2] ?? "", "bin/node")] : []),
+  ];
+  for (const candidate of candidates) {
+    if (candidate === node || /\/Cellar\/node(?:@[^/]+)?\/[^/]+\/bin\/node$/.test(candidate)) continue;
+    try {
+      if ((await realpath(candidate)) !== node) continue;
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // An absent alias cannot replace the verified running executable.
+    }
+  }
+  return node;
+}
+
+function isPortablePayload(value: unknown, binName: string): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const metadata = value as Record<string, unknown>;
+  return (
+    metadata.installMode === "portable" && metadata.binName === binName && metadata.appEntry === "app/cli/index.mjs"
+  );
+}
+
+async function resolvePortableInvocation(
+  install: Extract<InstallMode, { mode: "portable" }>,
+  binName: string,
+  node: string,
+  entry: string,
+): Promise<ResolvedCliInvocation> {
+  const current = join(install.root, "current");
+  const launcher = join(install.binDir, binName);
+  let installedVersion: string | undefined;
+  let reason = "is not activated or is unavailable; install the Portable artifact before starting its daemon";
+  try {
+    const metadata = JSON.parse(await readFile(join(current, "INSTALL.json"), "utf8"));
+    installedVersion =
+      typeof metadata?.version === "string" && parseSemVer(metadata.version) ? metadata.version : undefined;
+    reason = "payload does not match this installation and channel";
+    const versions = await realpath(join(install.root, "versions"));
+    if (!isPortablePayload(metadata, binName)) throw new Error(reason);
+    const currentNode = await resolveCliFile(join(current, "node/bin/node"), constants.X_OK, "portable");
+    const currentEntry = await resolveCliFile(join(current, "app/cli/index.mjs"), constants.R_OK, "portable");
+    for (const [path, suffix] of [
+      [node, "node/bin/node"],
+      [entry, "app/cli/index.mjs"],
+      [currentNode, "node/bin/node"],
+      [currentEntry, "app/cli/index.mjs"],
+    ] as const) {
+      const payload = dirname(dirname(dirname(path)));
+      if (dirname(payload) !== versions || path !== join(payload, suffix)) throw new Error(reason);
+      const identity = JSON.parse(await readFile(join(payload, "INSTALL.json"), "utf8"));
+      if (!isPortablePayload(identity, binName)) throw new Error(reason);
+    }
+    reason = "launcher is unavailable or targets another installation";
+    await resolveCliFile(launcher, constants.X_OK, "portable");
+    const lines = (await readFile(launcher, "utf8")).split(/\r?\n/);
+    for (const [name, value] of [
+      ["root", current],
+      ["bin_dir", install.binDir],
+    ] as const) {
+      const assignments = lines.filter((line) => line.startsWith(`${name}=`));
+      if (assignments.length !== 1 || assignments[0] !== `${name}=${quotePosix(value)}`) throw new Error(reason);
+    }
+  } catch (cause) {
+    throw invocationFailure("portable", launcher, reason, cause, installedVersion);
+  }
+  return { args: [], program: launcher };
 }
 
 export function buildServicePath(
@@ -425,17 +531,4 @@ function parseServiceOperation(value: unknown): ServiceOperationRecord {
     throw new Error("The service operation lease is malformed");
   }
   return record as unknown as ServiceOperationRecord;
-}
-
-async function findExecutable(binName: string, pathValue: string | undefined): Promise<string | undefined> {
-  for (const directory of pathValue?.split(delimiter).filter(Boolean) ?? []) {
-    const candidate = join(directory, binName);
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching PATH.
-    }
-  }
-  return undefined;
 }

@@ -43,13 +43,20 @@ export interface UpdateManagerOptions {
   /** Authoritative protected-work count from the Session runtime boundary. */
   protectedWork(): ProtectedWorkCount;
   /**
-   * Atomically close new-work admission before checking the protected-work snapshot. The returned
+   * Whether the upgrade may interrupt running work. Absent or false means the updater waits for
+   * protected work before installing.
+   */
+  canInterruptWork?(): boolean;
+  /**
+   * Atomically close new-work admission, before the handoff or the protected-work wait. The returned
    * function reopens admission if the target is superseded or the attempt fails.
    */
   quiesce?(): () => void;
   /**
    * Install the exact target and refresh the daemon service definition through the newly installed
    * binary. Resolves when the new version is live on disk; rejects with the failure reason.
+   * Rejecting with `{ transient: true }` marks a pre-stage download failure that withdraws the
+   * attempt and retries with bounded exponential backoff instead of blocking the target.
    */
   executeUpdate(target: string): Promise<void>;
   /**
@@ -59,13 +66,17 @@ export interface UpdateManagerOptions {
   onHandoff(): void | Promise<void>;
   loadState(): Promise<UpdaterStateSnapshot | undefined>;
   saveState(state: UpdaterStateSnapshot): Promise<void>;
-  /** Protected-work re-check cadence. This is a poll interval, never a force timeout. */
+  /** Re-check cadence of the protected-work wait. This is a poll interval, never a force timeout. */
   checkIntervalMs?: number;
   /** Read the configured release channel without relying on a runtime heartbeat. */
   discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
   /** Successful release discovery cadence. Failed reads use bounded exponential backoff. */
   discoveryIntervalMs?: number;
   discoveryMaxBackoffMs?: number;
+  /** Initial backoff after a transient download failure before staging. */
+  installRetryIntervalMs?: number;
+  /** Maximum backoff after repeated transient download failures. */
+  installRetryMaxBackoffMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -73,6 +84,7 @@ export interface UpdateManagerOptions {
 const DEFAULT_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_DISCOVERY_INTERVAL_MS = 300_000;
 const DEFAULT_DISCOVERY_MAX_BACKOFF_MS = 1_800_000;
+const DEFAULT_INSTALL_RETRY_INTERVAL_MS = 5_000;
 const QUIET_LOG_THROTTLE_MS = 60_000;
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
@@ -83,10 +95,10 @@ const defaultSleep = (milliseconds: number): Promise<void> =>
 
 /**
  * Drives automatic upgrades for the portable install mode. One decision loop, one durable attempt
- * per exact target, monotonic SemVer comparisons only (never an automatic downgrade), and an
- * indefinite protected-work gate: the updater adds no force timeout of its own, because the Session
- * module already bounds every unit of protected work (Turn budgets, delivery deadlines, report
- * retries with terminal outcomes) and therefore owns hang prevention.
+ * per exact target, and monotonic SemVer comparisons only (never an automatic downgrade). The
+ * upgrade interrupts running Sessions, because the restarted daemon recovers them; `quiesce` closes
+ * admission only for the handoff itself. When the connected Server could not recover them
+ * (`canInterruptWork` is false), the updater closes admission and waits for protected work instead.
  *
  * npm-global installs never attach a manager: they upgrade only through the manual CLI command.
  */
@@ -98,6 +110,8 @@ export class UpdateManager {
   readonly #checkIntervalMs: number;
   readonly #discoveryIntervalMs: number;
   readonly #discoveryMaxBackoffMs: number;
+  readonly #installRetryIntervalMs: number;
+  readonly #installRetryMaxBackoffMs: number;
   #latestTarget?: string;
   #deciding?: Promise<void>;
   #stopped = false;
@@ -106,6 +120,8 @@ export class UpdateManager {
   #discoveryFailures = 0;
   #discoveryTimer?: ReturnType<typeof setTimeout>;
   #discoveryInFlight?: Promise<boolean>;
+  #installFailures = 0;
+  #installRetryTimer?: ReturnType<typeof setTimeout>;
   #recoveryKeepAlive = 0;
   #stateWriteTail: Promise<void> = Promise.resolve();
 
@@ -122,6 +138,14 @@ export class UpdateManager {
     this.#discoveryMaxBackoffMs = positive(
       options.discoveryMaxBackoffMs ?? DEFAULT_DISCOVERY_MAX_BACKOFF_MS,
       "discoveryMaxBackoffMs",
+    );
+    this.#installRetryIntervalMs = positive(
+      options.installRetryIntervalMs ?? DEFAULT_INSTALL_RETRY_INTERVAL_MS,
+      "installRetryIntervalMs",
+    );
+    this.#installRetryMaxBackoffMs = positive(
+      options.installRetryMaxBackoffMs ?? this.#discoveryMaxBackoffMs,
+      "installRetryMaxBackoffMs",
     );
   }
 
@@ -159,6 +183,8 @@ export class UpdateManager {
     }
     if (advertisement.version === this.#options.currentVersion) {
       this.#latestTarget = advertisement.version;
+      this.#installFailures = 0;
+      this.#clearInstallRetry();
       this.#logger.debug({ version: advertisement.version }, "Server target matches the running version");
       this.#deciding ??= this.#recordSatisfiedTarget(advertisement.version).finally(() => {
         this.#deciding = undefined;
@@ -183,19 +209,13 @@ export class UpdateManager {
     if (this.#latestTarget === advertisement.version) return;
     if (this.#latestTarget && compareSemVer(advertisement.version, this.#latestTarget) < 0) return;
     this.#latestTarget = advertisement.version;
+    this.#installFailures = 0;
+    this.#clearInstallRetry();
     this.#logger.info(
       { current: this.#options.currentVersion, target: advertisement.version },
       "Server advertised a newer channel target",
     );
-    this.#deciding ??= this.#decide().finally(() => {
-      this.#deciding = undefined;
-    });
-    void this.#deciding.catch((error: unknown) => {
-      this.#logger.warn(
-        { error: error instanceof Error ? error.message : String(error) },
-        "Automatic upgrade decision failed",
-      );
-    });
+    this.#startDecision();
   }
 
   /** Start the single heartbeat-independent release discovery loop. */
@@ -221,12 +241,16 @@ export class UpdateManager {
     if (this.#stopped || !this.#options.discoverTarget) return () => undefined;
     this.#recoveryKeepAlive += 1;
     this.#discoveryTimer?.ref?.();
+    this.#installRetryTimer?.ref?.();
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#recoveryKeepAlive = Math.max(0, this.#recoveryKeepAlive - 1);
-      if (this.#recoveryKeepAlive === 0) this.#discoveryTimer?.unref?.();
+      if (this.#recoveryKeepAlive === 0) {
+        this.#discoveryTimer?.unref?.();
+        this.#installRetryTimer?.unref?.();
+      }
     };
   }
 
@@ -277,6 +301,49 @@ export class UpdateManager {
     this.#stopped = true;
     if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
     this.#discoveryTimer = undefined;
+    this.#clearInstallRetry();
+  }
+
+  #startDecision(): void {
+    this.#deciding ??= this.#decide().finally(() => {
+      this.#deciding = undefined;
+    });
+    void this.#deciding.catch((error: unknown) => {
+      this.#logger.warn(
+        { error: error instanceof Error ? error.message : String(error) },
+        "Automatic upgrade decision failed",
+      );
+    });
+  }
+
+  #clearInstallRetry(): void {
+    if (this.#installRetryTimer) clearTimeout(this.#installRetryTimer);
+    this.#installRetryTimer = undefined;
+  }
+
+  #scheduleInstallRetry(delay: number): void {
+    if (this.#stopped) return;
+    this.#clearInstallRetry();
+    const timer = setTimeout(() => {
+      this.#installRetryTimer = undefined;
+      if (this.#stopped) return;
+      if (this.#deciding) {
+        void this.#deciding.finally(() => {
+          if (!this.#stopped) this.#startDecision();
+        });
+        return;
+      }
+      this.#startDecision();
+    }, delay);
+    this.#installRetryTimer = timer;
+    if (this.#recoveryKeepAlive > 0) timer.ref?.();
+    else timer.unref?.();
+  }
+
+  #nextInstallRetryDelay(): number {
+    const exponent = Math.min(Math.max(0, this.#installFailures - 1), 10);
+    const backoff = this.#installRetryIntervalMs * 2 ** exponent;
+    return Math.min(this.#installRetryMaxBackoffMs, backoff);
   }
 
   #scheduleDiscovery(delay: number): void {
@@ -389,22 +456,81 @@ export class UpdateManager {
   }
 
   async #attemptTarget(target: string, state: UpdaterStateSnapshot): Promise<"finished" | "superseded"> {
-    state.state = "awaiting_protected_work";
-    state.target = target;
-    await this.#options.saveState(state);
-    const resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
+    let resumeAdmission: (() => void) | undefined;
     let keepQuiesced = false;
     try {
-      await this.#waitForProtectedWork(target);
-      if (this.#stopped) return "finished";
-      if (this.#latestTarget !== target) return "superseded";
+      if (!this.#canInterruptWork()) {
+        state.state = "awaiting_protected_work";
+        state.target = target;
+        await this.#options.saveState(state);
+        resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
+        await this.#waitForProtectedWork(target);
+        if (this.#canInterruptWork()) {
+          // Recovery became available: new work no longer has to wait through the install.
+          resumeAdmission();
+          resumeAdmission = undefined;
+        }
+      }
+      const cancelled = this.#cancellation(target);
+      if (cancelled) return cancelled;
+      const previousAttempt = state.lastAttempt;
       const started = await this.#recordStartedAttempt(target, state);
-      if (!(await this.#executeAttempt(target, state, started))) return "finished";
+      const cancelledDuringWrite = this.#cancellation(target);
+      if (cancelledDuringWrite) {
+        await this.#withdrawAttempt(target, state, previousAttempt);
+        return cancelledDuringWrite;
+      }
+      // Without a wait there is nothing to drain: Sessions keep running and new work keeps arriving
+      // through the install, and a failed install costs them nothing.
+      const outcome = await this.#executeAttempt(
+        target,
+        state,
+        started,
+        previousAttempt,
+        resumeAdmission !== undefined,
+      );
+      if (outcome !== "installed") return outcome;
+      resumeAdmission ??= this.#options.quiesce?.() ?? (() => undefined);
       keepQuiesced = true;
       await this.#requestHandoff(target);
       return "finished";
     } finally {
-      if (!keepQuiesced) resumeAdmission();
+      if (!keepQuiesced) resumeAdmission?.();
+    }
+  }
+
+  #canInterruptWork(): boolean {
+    return this.#options.canInterruptWork?.() ?? false;
+  }
+
+  /** Why a new attempt must not start: the awaits before it can outlive a stop or a newer target. */
+  #cancellation(target: string): "finished" | "superseded" | undefined {
+    if (this.#stopped) return "finished";
+    return this.#latestTarget === target ? undefined : "superseded";
+  }
+
+  /**
+   * Remove an attempt whose install never staged or activated changes. Left in place, it would read
+   * as an interrupted attempt after a restart and block this target.
+   */
+  async #withdrawAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    previous: UpdaterAttempt | undefined,
+  ): Promise<boolean> {
+    delete state.attempts[target];
+    state.state = "idle";
+    if (previous) state.lastAttempt = previous;
+    else delete state.lastAttempt;
+    try {
+      await this.#options.saveState(state);
+      return true;
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "An attempt whose install never started could not be withdrawn; the target stays blocked",
+      );
+      return false;
     }
   }
 
@@ -418,13 +544,29 @@ export class UpdateManager {
     return started;
   }
 
-  async #executeAttempt(target: string, state: UpdaterStateSnapshot, started: UpdaterAttempt): Promise<boolean> {
+  async #executeAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    started: UpdaterAttempt,
+    previousAttempt: UpdaterAttempt | undefined,
+    quiesced: boolean,
+  ): Promise<"installed" | "finished" | "superseded"> {
     try {
       await this.#options.executeUpdate(target);
     } catch (error) {
+      const failureReason = error instanceof Error ? error.message : String(error);
+      // Only withdraw and schedule background retries when the attempt ran without pausing
+      // admission (`runtime.sessionRecovery` active). When the fallback path had to quiesce and
+      // drain protected work first, the installer has already run its bounded in-attempt download
+      // retries; repeating full attempts would repeatedly pause admission for the same target.
+      if (isTransientUpdateError(error) && !quiesced && this.#canInterruptWork()) {
+        return this.#retryTransientAttempt(target, state, previousAttempt, failureReason);
+      }
+      this.#installFailures = 0;
+      this.#clearInstallRetry();
       started.finishedAt = new Date(this.#now()).toISOString();
       started.result = "failed";
-      started.failureReason = error instanceof Error ? error.message : String(error);
+      started.failureReason = failureReason;
       state.state = "blocked";
       state.lastAttempt = started;
       await this.#options.saveState(state);
@@ -432,8 +574,10 @@ export class UpdateManager {
         { target, failureReason: started.failureReason },
         "Automatic upgrade attempt failed; blocked until a new target or a manual upgrade",
       );
-      return false;
+      return this.#cancellation(target) ?? "finished";
     }
+    this.#installFailures = 0;
+    this.#clearInstallRetry();
     started.finishedAt = new Date(this.#now()).toISOString();
     started.result = "installed";
     state.state = "installed";
@@ -446,7 +590,27 @@ export class UpdateManager {
         "The update was installed but its durable state could not be recorded; continuing supervisor handoff",
       );
     }
-    return true;
+    return "installed";
+  }
+
+  async #retryTransientAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    previousAttempt: UpdaterAttempt | undefined,
+    failureReason: string,
+  ): Promise<"finished" | "superseded"> {
+    const withdrawn = await this.#withdrawAttempt(target, state, previousAttempt);
+    if (!withdrawn) return "finished";
+    const cancelled = this.#cancellation(target);
+    if (cancelled) return cancelled;
+    this.#installFailures = Math.min(this.#installFailures + 1, 31);
+    const backoffMs = this.#nextInstallRetryDelay();
+    this.#scheduleInstallRetry(backoffMs);
+    this.#logger.warn(
+      { target, backoffMs, failureReason },
+      "Automatic upgrade download failed transiently; attempt withdrawn and retry scheduled",
+    );
+    return "finished";
   }
 
   async #requestHandoff(target: string): Promise<void> {
@@ -461,15 +625,16 @@ export class UpdateManager {
   }
 
   /**
-   * Wait for the Session module to report no protected work. Indefinite by design: there is no
-   * force timeout here, because the Session module owns the bounded lifetime of every protected
-   * unit. The wait is re-checked on a fixed cadence and logged at a throttled rate.
+   * The fallback while the connected Server could not recover interrupted work: wait for the Session
+   * module to report no protected work, or for that to change (a reconnect or a Server upgrade). There
+   * is no force timeout here, because an interruption would surface as a failure. The wait is
+   * re-checked on a fixed cadence and logged at a throttled rate.
    */
   async #waitForProtectedWork(target: string): Promise<void> {
     let lastLogAt = Number.NEGATIVE_INFINITY;
     while (!this.#stopped) {
       const work = this.#options.protectedWork();
-      if (work.total === 0) return;
+      if (work.total === 0 || this.#canInterruptWork()) return;
       const now = this.#now();
       if (now - lastLogAt >= QUIET_LOG_THROTTLE_MS) {
         lastLogAt = now;
@@ -540,4 +705,13 @@ function reconcileStoredState(state: UpdaterStateSnapshot, currentVersion: strin
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
+}
+
+function isTransientUpdateError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "transient" in error &&
+    (error as { transient?: unknown }).transient === true
+  );
 }

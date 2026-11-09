@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { TurnActivityResult } from "@opentag/shared";
 import {
+  computeRuntimeImSteerInputHash,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   MCP_GATEWAY_PATH,
@@ -18,6 +19,11 @@ import {
   type RunnerCloudSessionMessageRunFrameV2,
   type RunnerCloudSessionMessageSettledAckFrame,
   type RunnerCloudSessionMessageVerifiedFrame,
+  type RunnerCloudSteerAckFrame,
+  type RunnerCloudSteerFrame,
+  type RuntimeImOutboxContext,
+  type RuntimeImSteerResult,
+  RuntimeImSteerResultSchema,
   RuntimeUsageSchema,
   type SessionCliProofGrant,
   type SessionMessageDeliveryRequestV3,
@@ -29,13 +35,22 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { publishExecutionMaterial } from "../cloud-runtime/bridge-material.js";
-import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import {
+  CLOUD_CONNECT_PROXY_PORT,
+  CLOUD_CONTEXT_TREE_PORT,
+  CLOUD_EXECUTION_MOUNT,
+  CLOUD_SANDBOX_CA_FILE,
+} from "../cloud-runtime/sandbox-entry.js";
 import { createPiDiagnosticReader, type PiDiagnosticContext } from "../observability/pi-diagnostics.js";
 import type { TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
+import { resolveContextTreePackage } from "../runtime/context-tree.js";
+import { ContextTreeCommandGateway } from "../runtime/context-tree-commands.js";
+import { managedAgentSlug } from "../runtime/managed-instructions.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
+import { providerRoutingEnvironment, runtimeProxyOutboxContext } from "../runtime/runtime-proxy-material.js";
 import { TurnActivityReporter } from "../runtime/turn-activity-reporter.js";
 import { WebToolsServerClient } from "../runtime/web-tools-client.js";
 import { createExecutionWebDispatch } from "../runtime/web-tools-dispatch.js";
@@ -51,11 +66,17 @@ import {
   type CloudJournalSettlementOutcome,
   computeCloudDeliveryInputHash,
   computeCloudSessionInputHash,
+  steerNeverStarted,
 } from "./cloud-journal.js";
+import { CLOUD_STEER_RELAY_SOURCE, cloudSteerResult, cloudSteerSocketPath } from "./cloud-steer-control.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
+import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "./context-tree-command-worker.js";
+import { createSandboxContextTreeSessionHints } from "./context-tree-session-hints.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
+
+const startupClockId = randomUUID();
 
 /**
  * Trusted-parent Cloud Turn lifecycle (E4). Owns the durable journal boundary for every delivery
@@ -121,6 +142,11 @@ export interface CloudTurnRunnerOptions {
   readonly relayOptions?: Pick<RuntimeCredentialRelayOptions, "dataConnectionFactory">;
   readonly send: (frame: RunnerClientFrame) => void;
   readonly turnActivityEnabled?: () => boolean;
+  readonly steeringEnabled?: () => boolean;
+  readonly steerWorker?: (
+    input: { request: import("@opentag/shared").RuntimeImSteerRequest; token: string },
+    signal: AbortSignal,
+  ) => Promise<RuntimeImSteerResult>;
   /** The #633 tunnel over the current Runner connection. */
   readonly credentialChannel: () => CloudCredentialChannel;
   /** Allocation-stable in-sandbox directory for Pi conversation continuity. */
@@ -139,8 +165,9 @@ export interface CloudTurnRunnerOptions {
    */
   readonly sandboxReset?: () => Promise<void>;
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
-  readonly checkpoint?: () => Promise<void>;
+  readonly checkpoint?: (options?: { readonly executionEffects?: TurnCompletion["executionEffects"] }) => Promise<void>;
   readonly log?: (message: string) => void;
+  readonly onStartupDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
   readonly onPersistenceError?: (error: unknown) => void;
@@ -168,10 +195,11 @@ function workerStopDiagnostic(
   else if (error instanceof NativeSandboxError && error.message === "Sandbox execution deadline exceeded")
     stopType = "exec_timeout";
   else if (failed) stopType = "exec_rejected";
+  const expectedShutdown = aborted && !bridgeFailed;
   return {
-    severity: failed || exitCode !== 0 ? "ERROR" : "INFO",
+    severity: !expectedShutdown && (failed || exitCode !== 0) ? "ERROR" : "INFO",
     workerExitCode: exitCode,
-    errorCode: error instanceof NativeSandboxError ? error.code : undefined,
+    errorCode: !expectedShutdown && error instanceof NativeSandboxError ? error.code : undefined,
     stopType,
   };
 }
@@ -200,6 +228,8 @@ export interface CloudTurnExecutionHandle {
    * parent process and is deliberately absent here.
    */
   readonly webTools?: { readonly extensionPath: string; readonly socketPath: string };
+  /** Nonsecret outbox context of the execution's IM grant, naming the Session's own kind. */
+  readonly outboxContext?: RuntimeImOutboxContext;
   /**
    * E8 Session CLI proof received on the execution-open result. Ephemeral: forwarded to the worker
    * via stdin and cleared with the execution; never journaled, logged, or archived.
@@ -222,6 +252,7 @@ interface ActiveTurn {
   readonly settled: Promise<void>;
   readonly settle: () => void;
   execution?: Promise<void>;
+  steering?: { token: string; turnId: string };
 }
 
 interface QueuedDeliveryVerified {
@@ -240,6 +271,20 @@ interface QueuedSessionVerified {
 }
 
 type QueuedVerified = QueuedDeliveryVerified | QueuedSessionVerified;
+
+interface CloudTurnWork<Entry extends CloudJournalEntry> {
+  readonly kind: Entry["kind"];
+  readonly key: string;
+  readonly requestId: string;
+  readonly generation: number;
+  readonly model: RunnerCloudModelGrant | undefined;
+  readonly matches: (entry: CloudJournalEntry | undefined) => entry is Entry;
+  readonly markStarted: (entry: Entry) => Promise<Entry>;
+  readonly admit: (entry: Entry) => TurnCompletion | undefined;
+  readonly run: (entry: Entry, model: RunnerCloudModelGrant, signal: AbortSignal) => Promise<TurnCompletion>;
+  readonly settle: (entry: Entry, completion: TurnCompletion, checkpoint?: boolean) => Promise<void>;
+  readonly missingModel: (entry: Entry) => Promise<void>;
+}
 
 /**
  * Result of one start attempt: `started` occupies the turn slot, `settled` resolved the head
@@ -286,6 +331,17 @@ const UNKNOWN_COMPLETION: TurnCompletion = {
   outcome: "unknown",
 };
 
+interface CloudRelayExecutionInput {
+  agentId: string;
+  contextTrees: readonly import("@opentag/shared").ContextTreeConnection[];
+  agentSlug?: string;
+  placementGeneration: number;
+  sessionId: string;
+  signal: AbortSignal;
+  scope: CloudTurnScope;
+  source: { kind: "delivery"; deliveryId: string; turnId: string } | { kind: "session-message"; messageId: string };
+}
+
 export class CloudTurnRunner {
   readonly #options: CloudTurnRunnerOptions;
   readonly #activity: TurnActivityReporter;
@@ -295,7 +351,7 @@ export class CloudTurnRunner {
   /** Monotonic control-channel generation; a close invalidates queued connection-scoped grants. */
   #channelGeneration = 0;
   #active?: ActiveTurn;
-  #closed = false;
+  #admission: "open" | "draining" | "drained" | "closed" = "open";
   /**
    * Set for an interrupted Turn until its immediate verified cleanup succeeds. The next start
    * also checks it, so no delivery can ever observe a dirty namespace between turns.
@@ -307,6 +363,7 @@ export class CloudTurnRunner {
   /** Serializes control-state mutations only; the worker itself runs outside the queue. */
   #serial: Promise<unknown> = Promise.resolve();
   readonly #journalListeners = new Set<() => void>();
+  readonly #steerJobs = new Map<string, Promise<void>>();
 
   constructor(options: CloudTurnRunnerOptions) {
     this.#options = options;
@@ -314,6 +371,19 @@ export class CloudTurnRunner {
       send: options.send,
       enabled: () => options.turnActivityEnabled?.() === true,
     });
+  }
+
+  get #closed(): boolean {
+    return this.#admission !== "open";
+  }
+
+  resumeAfterFailedRelease(): boolean {
+    if (this.#admission === "closed" || this.#admission === "draining" || this.#sandboxUnusable) return false;
+    if (this.#admission === "drained") {
+      this.onChannelClosed();
+      this.#admission = "open";
+    }
+    return true;
   }
 
   get activeDeliveryId(): string | undefined {
@@ -361,12 +431,13 @@ export class CloudTurnRunner {
       }
       const journalScope = this.#requireJournalScope();
       const existing = await this.#options.journal.read(delivery.deliveryId);
-      const reusable = this.#reuseDeliveryEntry(existing, delivery, journalScope);
+      const reusable = await this.#reuseDeliveryEntry(existing, delivery, journalScope);
       if (existing && !reusable) return;
       // A journaled delivery may only be re-dispatched with the SAME dispatch identity and
       // content. Changed input under the same ids is a visible conflict, never a second turn.
+      const retained = reusable === "replace-steer" ? undefined : reusable;
       const entry =
-        reusable ??
+        retained ??
         (await this.#options.journal.recordReceived({
           delivery,
           scope: journalScope,
@@ -383,12 +454,12 @@ export class CloudTurnRunner {
     });
   }
 
-  /** Reuse one already-journaled delivery, or undefined when the re-dispatch must be refused. */
-  #reuseDeliveryEntry(
+  /** Reuse direct input or allow atomic replacement of a steer that never started. */
+  async #reuseDeliveryEntry(
     existing: CloudJournalEntry | undefined,
     delivery: DirectImMessageDeliveryRequest,
     journalScope: CloudJournalScope,
-  ): CloudJournalDeliveryEntry | undefined {
+  ): Promise<CloudJournalDeliveryEntry | "replace-steer" | undefined> {
     if (!existing) return undefined;
     if (existing.kind !== "delivery") {
       this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journal key belongs to a Session message`);
@@ -398,6 +469,11 @@ export class CloudTurnRunner {
       assertCloudJournalScope(existing, journalScope);
     } catch {
       this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled under another allocation`);
+      return undefined;
+    }
+    if (existing.steer) {
+      if (steerNeverStarted(existing) && existing.requestId !== delivery.requestId) return "replace-steer";
+      await this.#reconcileSteer(existing);
       return undefined;
     }
     if (existing.requestId !== delivery.requestId || existing.inputHash !== computeCloudDeliveryInputHash(delivery)) {
@@ -414,6 +490,221 @@ export class CloudTurnRunner {
     if (entry.phase === "received" && entry.requestId !== requestId) this.#sendReceipt(entry);
   }
 
+  async handleSteer(frame: RunnerCloudSteerFrame): Promise<void> {
+    const generation = this.#channelGeneration;
+    await this.#enqueue(async () => {
+      if (this.#closed || generation !== this.#channelGeneration || !this.#options.steeringEnabled?.()) return;
+      const request = frame.steer;
+      const scope = this.#requireJournalScope();
+      if (request.sessionId !== scope.sessionId) return;
+      const existing = await this.#existingSteer(request, scope);
+      if (typeof existing === "string") {
+        if (existing === "conflict")
+          this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "rejected", "input_conflict"));
+        return;
+      }
+      if (existing && (await this.#replaySteer(existing))) return;
+      const prepared = await this.#prepareSteer(request, scope, existing);
+      if (prepared) await this.#startSteer(prepared.entry, prepared.root, generation);
+    });
+  }
+
+  async #prepareSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    scope: CloudJournalScope,
+    existing: CloudJournalDeliveryEntry | undefined,
+  ) {
+    const root = await this.#steerRoot(request, scope);
+    if (!root) {
+      const result = cloudSteerResult(request, "deferred", "turn_not_running");
+      if (existing)
+        this.#sendSteerResult(await this.#options.journal.recordSteerResult(existing.deliveryId, scope, result));
+      else this.#sendSteerWithoutJournal(request, result);
+      return;
+    }
+    const entry = existing ?? (await this.#receiveSteer(request, root));
+    if (!entry) return;
+    return { entry, root };
+  }
+
+  async #existingSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    scope: CloudJournalScope,
+  ): Promise<CloudJournalDeliveryEntry | "conflict" | "retiring" | undefined> {
+    const entry = await this.#options.journal.read(request.deliveryId);
+    if (!entry) return undefined;
+    assertCloudJournalScope(entry, scope);
+    if (entry.kind !== "delivery" || !entry.steer) return "conflict";
+    if (entry.requestId === request.requestId && entry.inputHash === computeRuntimeImSteerInputHash(request))
+      return entry;
+    if (steerNeverStarted(entry) && entry.requestId !== request.requestId) return undefined;
+    if (entry.requestId !== request.requestId && differentSteerTarget(entry.steer, request)) {
+      await this.#reconcileSteer(entry);
+      this.#sendSteerWithoutJournal(request, cloudSteerResult(request, "retry", "turn_starting"));
+      return "retiring";
+    }
+    return "conflict";
+  }
+
+  async #replaySteer(entry: CloudJournalDeliveryEntry): Promise<boolean> {
+    if (entry.steerResult) {
+      this.#sendSteerResult(entry);
+      return true;
+    }
+    if (this.#steerJobs.has(entry.deliveryId)) return true;
+    if (entry.phase === "started") {
+      await this.#reconcileSteer(entry);
+      return true;
+    }
+    return false;
+  }
+
+  #sendSteerWithoutJournal(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    result: RuntimeImSteerResult,
+  ): void {
+    this.#send({
+      type: "delivery:steer:result",
+      requestId: request.requestId,
+      inputHash: computeRuntimeImSteerInputHash(request),
+      result,
+    });
+  }
+
+  async #steerRoot(request: import("@opentag/shared").RuntimeImSteerRequest, scope: CloudJournalScope) {
+    const root = await this.#options.journal.read(request.rootDeliveryId);
+    if (!root || root.kind !== "delivery" || root.steer || root.turnId !== request.expectedTurnId) return undefined;
+    assertCloudJournalScope(root, scope);
+    return root;
+  }
+
+  async #receiveSteer(request: import("@opentag/shared").RuntimeImSteerRequest, root: CloudJournalDeliveryEntry) {
+    try {
+      return await this.#options.journal.recordSteerReceived(request, root);
+    } catch (error) {
+      if (error instanceof CloudJournalError && error.code === "conflict") return undefined;
+      throw error;
+    }
+  }
+
+  async #startSteer(
+    entry: CloudJournalDeliveryEntry,
+    root: CloudJournalDeliveryEntry,
+    generation: number,
+  ): Promise<void> {
+    const request = entry.steer;
+    if (!request) return;
+    const scope = entry.scope;
+    if (request.deadlineAt && Date.parse(request.deadlineAt) <= Date.now()) {
+      this.#sendSteerResult(
+        await this.#options.journal.recordSteerResult(
+          entry.deliveryId,
+          scope,
+          cloudSteerResult(request, "rejected", "invalid_input"),
+        ),
+      );
+      return;
+    }
+    const active = this.#active;
+    if (!active || active.entryKey !== root.deliveryId || !active.steering) {
+      const result =
+        root.phase === "received" || active?.entryKey === root.deliveryId
+          ? cloudSteerResult(request, "retry", "turn_starting")
+          : cloudSteerResult(request, "deferred", "turn_not_running");
+      this.#sendSteerResult(await this.#options.journal.recordSteerResult(entry.deliveryId, scope, result));
+      return;
+    }
+    if (generation !== this.#channelGeneration) return;
+    entry = await this.#options.journal.markSteerStarted(entry.deliveryId, scope);
+    if (generation !== this.#channelGeneration) {
+      this.#sendSteerResult(
+        await this.#options.journal.recordSteerResult(
+          entry.deliveryId,
+          scope,
+          cloudSteerResult(request, "retry", "turn_starting"),
+        ),
+      );
+      return;
+    }
+    const job = this.#injectSteer(entry, active)
+      .catch((error) => this.#reportPersistenceError(error))
+      .finally(() => this.#steerJobs.delete(entry.deliveryId));
+    this.#steerJobs.set(entry.deliveryId, job);
+  }
+
+  async #injectSteer(entry: CloudJournalDeliveryEntry, active: ActiveTurn): Promise<void> {
+    const request = entry.steer;
+    if (!request || !active.steering) return;
+    let result: RuntimeImSteerResult;
+    try {
+      if (this.#options.steerWorker)
+        result = await this.#options.steerWorker({ request, token: active.steering.token }, active.abort.signal);
+      else {
+        const response = await this.#options.sandbox.exec(
+          SANDBOX_NODE,
+          ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(request.rootDeliveryId)],
+          {
+            stdin: JSON.stringify({ token: active.steering.token, request }),
+            timeoutMs: 3_000,
+            signal: active.abort.signal,
+          },
+        );
+        if (response.code !== 0) throw new Error("CLOUD_STEER_CONTROL_UNAVAILABLE");
+        result = RuntimeImSteerResultSchema.parse(JSON.parse(response.stdout));
+      }
+    } catch {
+      result = cloudSteerResult(request, "deferred", "steer_state_unknown");
+    }
+    await this.#enqueue(async () => {
+      const recorded = await this.#options.journal.recordSteerResult(entry.deliveryId, entry.scope, result);
+      this.#sendSteerResult(recorded);
+      this.#notifyJournalChanged();
+    });
+  }
+
+  async #reconcileSteer(entry: CloudJournalDeliveryEntry): Promise<void> {
+    if (!entry.steer || this.#steerJobs.has(entry.deliveryId)) return;
+    if (!entry.steerResult) {
+      const result =
+        entry.phase === "received"
+          ? cloudSteerResult(entry.steer, "retry", "turn_starting")
+          : cloudSteerResult(entry.steer, "deferred", "steer_state_unknown");
+      entry = await this.#options.journal.recordSteerResult(entry.deliveryId, entry.scope, result);
+    }
+    this.#sendSteerResult(entry);
+  }
+
+  #sendSteerResult(entry: CloudJournalDeliveryEntry): void {
+    if (entry.steerResult)
+      this.#send({
+        type: "delivery:steer:result",
+        requestId: entry.requestId,
+        inputHash: entry.inputHash,
+        result: entry.steerResult,
+      });
+  }
+
+  async handleSteerAck(frame: RunnerCloudSteerAckFrame): Promise<void> {
+    await this.#enqueue(async () => {
+      const entry = await this.#options.journal.read(frame.deliveryId);
+      if (
+        entry?.kind !== "delivery" ||
+        !entry.steerResult ||
+        frame.requestId !== entry.requestId ||
+        frame.inputHash !== entry.inputHash
+      )
+        return;
+      this.#assertCurrentScope(entry);
+      await this.#options.journal.clearSteerAcknowledged(
+        entry.deliveryId,
+        entry.scope,
+        frame.requestId,
+        frame.inputHash,
+      );
+      this.#notifyJournalChanged();
+    });
+  }
+
   /** Server persisted durable custody: execution may start (the model grant rides along). */
   async handleVerified(frame: RunnerCloudDeliveryVerifiedFrame): Promise<void> {
     // Capture BEFORE waiting for the serial queue: a close may happen while this frame is queued
@@ -421,7 +712,7 @@ export class CloudTurnRunner {
     const generation = this.#channelGeneration;
     await this.#enqueue(async () => {
       const entry = await this.#entryByRequestId(frame.requestId);
-      if (entry?.kind !== "delivery") return; // Already retired or never received.
+      if (entry?.kind !== "delivery" || entry.steer) return; // Already retired or never received.
       if (generation !== this.#channelGeneration) {
         this.#log(`ignoring delivery ${entry.deliveryId} verified on a closed channel generation`);
         return;
@@ -445,6 +736,7 @@ export class CloudTurnRunner {
         await this.#reportTerminal(entry, denial.completion);
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueVerified(entry, frame, generation);
     });
   }
@@ -594,6 +886,7 @@ export class CloudTurnRunner {
         await this.#settleSessionTerminal(entry, denial);
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueSessionVerified(entry, frame, generation);
     });
   }
@@ -680,6 +973,10 @@ export class CloudTurnRunner {
       if (!entry || entry.kind !== kind) return;
       this.#assertCurrentScope(entry);
       if (entry.phase !== "received") return;
+      if (entry.kind === "delivery" && entry.steer) {
+        await this.#reconcileSteer(entry);
+        return;
+      }
       if (entry.kind === "delivery") await this.#reportTerminal(entry, cancelledBeforeStart());
       else await this.#settleSessionTerminal(entry, "cancelled");
     }).catch((error) => this.#reportPersistenceError(error));
@@ -693,7 +990,9 @@ export class CloudTurnRunner {
   async handleReportAck(frame: RunnerCloudDeliveryReportAckFrame): Promise<void> {
     await this.#enqueue(async () => {
       const entries = await this.#options.journal.list();
-      const entry = entries.find((candidate) => candidate.turnId === frame.turnId);
+      const entry = entries.find(
+        (candidate) => candidate.kind === "delivery" && !candidate.steer && candidate.turnId === frame.turnId,
+      );
       if (entry?.kind !== "delivery") return;
       this.#assertCurrentScope(entry);
       if (entry.phase !== "reported" || !entry.report) return;
@@ -780,6 +1079,10 @@ export class CloudTurnRunner {
   }
 
   async #reconcileEntry(entry: CloudJournalEntry): Promise<void> {
+    if (entry.kind === "delivery" && entry.steer) {
+      await this.#reconcileSteer(entry);
+      return;
+    }
     if (entry.kind === "session-message") {
       await this.#reconcileSessionEntry(entry);
       return;
@@ -863,6 +1166,8 @@ export class CloudTurnRunner {
       messageId: entry.messageId,
       turnId: entry.turnId,
       outcome: entry.settlement.outcome,
+      // Stripped by the channel for a Server that negotiated collaboration below version 3.
+      ...(entry.settlement.reason ? { reason: entry.settlement.reason } : {}),
     });
   }
 
@@ -882,9 +1187,14 @@ export class CloudTurnRunner {
   }
 
   async close(): Promise<void> {
-    this.#closed = true;
+    this.#admission = "closed";
+    await this.#quiesce();
+  }
+
+  async #quiesce(): Promise<void> {
     this.#active?.abort.abort();
     await this.#active?.settled;
+    await Promise.all(this.#steerJobs.values());
     await this.#serial.catch(() => undefined);
   }
 
@@ -893,7 +1203,8 @@ export class CloudTurnRunner {
    * seals storage. This wait never holds the control queue that must receive those acks.
    */
   async drainForRelease(timeoutMs: number): Promise<void> {
-    await this.close();
+    if (this.#admission !== "closed") this.#admission = "draining";
+    await this.#quiesce();
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       let notify: () => void = () => undefined;
@@ -908,7 +1219,10 @@ export class CloudTurnRunner {
           for (const entry of entries) await this.#drainReleaseEntry(entry);
           return entries.length;
         });
-        if (remaining === 0) return;
+        if (remaining === 0) {
+          if (this.#admission !== "closed") this.#admission = "drained";
+          return;
+        }
         const waitMs = deadline - Date.now();
         if (waitMs <= 0) throw new CloudJournalError("store_failed", "Release reports were not acknowledged");
         await Promise.race([
@@ -937,6 +1251,10 @@ export class CloudTurnRunner {
    */
   async #drainReleaseEntry(entry: CloudJournalEntry): Promise<void> {
     this.#assertCurrentScope(entry);
+    if (entry.kind === "delivery" && entry.steer) {
+      await this.#reconcileSteer(entry);
+      return;
+    }
     if (entry.kind === "delivery") {
       if (entry.phase === "reported" && entry.report) {
         this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
@@ -960,81 +1278,52 @@ export class CloudTurnRunner {
    * Turn execution
    * ------------------------------------------------------------------------------------------ */
 
-  /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
-  async #startTurn(
-    entry: CloudJournalDeliveryEntry,
-    frame: RunnerCloudDeliveryVerifiedFrame,
-    generation: number,
-  ): Promise<StartTurnOutcome> {
-    if (this.#closed || this.#active) return "wait";
-    if (!(this.#options.canStart?.() ?? true)) return "wait";
-    let settle: () => void = () => undefined;
-    const settled = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    const active: ActiveTurn = {
-      abort: new AbortController(),
-      entryKey: entry.deliveryId,
+  #deliveryWork(next: QueuedDeliveryVerified): CloudTurnWork<CloudJournalDeliveryEntry> {
+    return {
       kind: "delivery",
-      settle,
-      settled,
+      key: next.deliveryId,
+      requestId: next.frame.requestId,
+      generation: next.generation,
+      model: next.frame.model,
+      matches: (entry): entry is CloudJournalDeliveryEntry => entry?.kind === "delivery",
+      markStarted: (entry) => this.#options.journal.markStarted(entry.deliveryId, entry.scope),
+      admit: (entry) => this.#admit(entry.delivery, next.frame)?.completion,
+      run: (entry, model, signal) => this.#runInSandbox(entry.delivery, model, entry, signal, next.generation),
+      settle: (entry, completion, checkpoint) => this.#reportTerminal(entry, completion, checkpoint),
+      missingModel: async () => undefined,
     };
-    this.#active = active;
-    try {
-      if (this.#sandboxUnusable) {
-        throw new CloudJournalError(
-          "store_failed",
-          "The native sandbox namespace could not be verified clean; the Runner must not start another Turn",
-        );
-      }
-      if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
-      const current = await this.#options.journal.read(entry.deliveryId);
-      if (this.#closed) return "wait";
-      if (current?.kind !== "delivery" || current.phase !== "received") {
-        // Another path already settled or started this head; the drain may advance.
-        this.#queue.delete(entry.requestId);
-        return "settled";
-      }
-      if (generation !== this.#channelGeneration) {
-        // The grant's connection closed while this read was pending: leave `received` for a fresh
-        // verification instead of marking started with a revoked grant, and advance the drain.
-        this.#queue.delete(entry.requestId);
-        return "settled";
-      }
-      if (active.abort.signal.aborted) {
-        // A stop arrived before the started boundary: no native effect happened, so settle an
-        // honest not_started result, never mark the entry started, and advance to the next head.
-        this.#queue.delete(entry.requestId);
-        this.#cancelRequested.delete(entry.deliveryId);
-        await this.#reportTerminal(current, cancelledBeforeStart());
-        return "settled";
-      }
-      const started = await this.#options.journal.markStarted(current.deliveryId, current.scope);
-      active.execution = this.#executeTurn(started, frame, active.abort.signal, generation)
-        .catch((error) => this.#reportPersistenceError(error))
-        .finally(() => {
-          this.#completeActive(active);
-          this.#scheduleDrain();
-        });
-      return "started";
-    } finally {
-      if (!active.execution) {
-        // Release the reserved slot. The caller advances a settled head; a wait or surfaced
-        // journal/namespace failure must not schedule another drain and spin on the same head.
-        this.#completeActive(active);
-      }
-    }
   }
 
-  /**
-   * The Session-message counterpart of `#startTurn`: same synchronous slot reservation, namespace
-   * reset, cancel re-check, and durable `started` marker, but the terminal evidence is the
-   * immutable Session settlement instead of a delivery report.
-   */
-  async #startSessionTurn(
-    entry: CloudJournalSessionEntry,
-    frame: RunnerCloudSessionMessageVerifiedFrame,
-    generation: number,
+  #sessionWork(next: QueuedSessionVerified): CloudTurnWork<CloudJournalSessionEntry> {
+    return {
+      kind: "session-message",
+      key: next.messageId,
+      requestId: next.frame.requestId,
+      generation: next.generation,
+      model: next.frame.model,
+      matches: (entry): entry is CloudJournalSessionEntry => entry?.kind === "session-message",
+      markStarted: (entry) => this.#options.journal.markSessionStarted(entry.messageId, entry.scope),
+      admit: () =>
+        this.#admitSession(next.frame) ? { outcome: "failed", executionEffects: "not_started" } : undefined,
+      run: (entry, model, signal) => this.#runSessionInSandbox(entry.message, model, entry, signal, next.generation),
+      settle: (entry, completion, checkpoint) =>
+        checkpoint
+          ? this.#settleSessionTerminal(
+              entry,
+              sessionSettlementOutcome(completion),
+              true,
+              completion.executionEffects,
+              completion.errorReason,
+            )
+          : this.#settleSessionTerminal(entry, sessionSettlementOutcome(completion)),
+      missingModel: (entry) => this.#settleSessionTerminal(entry, "failed"),
+    };
+  }
+
+  /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
+  async #startTurn<Entry extends CloudJournalEntry>(
+    entry: Entry,
+    work: CloudTurnWork<Entry>,
   ): Promise<StartTurnOutcome> {
     if (this.#closed || this.#active) return "wait";
     if (!(this.#options.canStart?.() ?? true)) return "wait";
@@ -1044,8 +1333,8 @@ export class CloudTurnRunner {
     });
     const active: ActiveTurn = {
       abort: new AbortController(),
-      entryKey: entry.messageId,
-      kind: "session-message",
+      entryKey: work.key,
+      kind: work.kind,
       settle,
       settled,
     };
@@ -1058,24 +1347,25 @@ export class CloudTurnRunner {
         );
       }
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
-      const current = await this.#options.journal.read(entry.messageId);
+      const current = await this.#options.journal.read(work.key);
       if (this.#closed) return "wait";
-      if (current?.kind !== "session-message" || current.phase !== "received") {
+      if (!work.matches(current) || current.phase !== "received") {
         this.#queue.delete(entry.requestId);
         return "settled";
       }
-      if (generation !== this.#channelGeneration) {
+      if (work.generation !== this.#channelGeneration) {
+        // A revoked grant leaves the received entry available for fresh verification.
         this.#queue.delete(entry.requestId);
         return "settled";
       }
       if (active.abort.signal.aborted) {
         this.#queue.delete(entry.requestId);
-        this.#cancelRequested.delete(entry.messageId);
-        await this.#settleSessionTerminal(current, "cancelled");
+        this.#cancelRequested.delete(work.key);
+        await work.settle(current, cancelledBeforeStart());
         return "settled";
       }
-      const started = await this.#options.journal.markSessionStarted(current.messageId, current.scope);
-      active.execution = this.#executeSessionTurn(started, frame, active.abort.signal, generation)
+      await work.markStarted(current);
+      active.execution = this.#executeTurn(work, active.abort.signal)
         .catch((error) => this.#reportPersistenceError(error))
         .finally(() => {
           this.#completeActive(active);
@@ -1083,6 +1373,7 @@ export class CloudTurnRunner {
         });
       return "started";
     } finally {
+      // A wait or surfaced journal/namespace failure must not spin on the same FIFO head.
       if (!active.execution) this.#completeActive(active);
     }
   }
@@ -1148,99 +1439,51 @@ export class CloudTurnRunner {
    * await so a delivery cancelled mid-drain is never started.
    */
   async #processQueued(next: QueuedVerified): Promise<"continue" | "started" | "stop"> {
-    return next.kind === "session-message" ? this.#processQueuedSession(next) : this.#processQueuedDelivery(next);
+    return next.kind === "delivery"
+      ? this.#processQueuedWork(this.#deliveryWork(next))
+      : this.#processQueuedWork(this.#sessionWork(next));
   }
 
-  /**
-   * Process the FIFO head. The entry stays queued until it is actually started, so losing the
-   * occupation race can never drop verified work, and cancellation is re-checked after every
-   * await so a delivery cancelled mid-drain is never started.
-   */
-  async #processQueuedDelivery(next: QueuedDeliveryVerified): Promise<"continue" | "started" | "stop"> {
-    if (this.#cancelRequested.delete(next.deliveryId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelled(next.deliveryId);
+  async #processQueuedWork<Entry extends CloudJournalEntry>(
+    work: CloudTurnWork<Entry>,
+  ): Promise<"continue" | "started" | "stop"> {
+    if (this.#cancelRequested.delete(work.key)) {
+      this.#queue.delete(work.requestId);
+      await this.#settleCancelled(work);
       return "continue";
     }
-    const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.kind !== "delivery" || entry.phase !== "received") {
-      this.#queue.delete(next.frame.requestId);
+    const entry = await this.#entryByRequestId(work.requestId);
+    if (!work.matches(entry) || entry.phase !== "received") {
+      this.#queue.delete(work.requestId);
       return "continue";
     }
-    if (this.#cancelRequested.delete(next.deliveryId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelled(next.deliveryId);
+    if (this.#cancelRequested.delete(work.key)) {
+      this.#queue.delete(work.requestId);
+      await this.#settleCancelled(work);
       return "continue";
     }
-    if (next.generation !== this.#channelGeneration) {
-      // The connection that minted the grant is gone; keep the received entry for re-verification.
-      this.#queue.delete(next.frame.requestId);
+    if (work.generation !== this.#channelGeneration) {
+      this.#queue.delete(work.requestId);
       return "continue";
     }
-    const denial = this.#admit(entry.delivery, next.frame);
+    const denial = work.admit(entry);
     if (denial) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#reportTerminal(entry, denial.completion);
+      this.#queue.delete(work.requestId);
+      await work.settle(entry, denial);
       return "continue";
     }
     if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const outcome = await this.#startTurn(entry, next.frame, next.generation);
+    const outcome = await this.#startTurn(entry, work);
     if (outcome === "wait") return "stop";
-    this.#queue.delete(next.frame.requestId);
-    // A settled head must not stall the FIFO line: continue with the next queued delivery.
+    this.#queue.delete(work.requestId);
     return outcome === "started" ? "started" : "continue";
   }
 
-  /** Session-message FIFO head: identical discipline, terminal evidence is the settlement. */
-  async #processQueuedSession(next: QueuedSessionVerified): Promise<"continue" | "started" | "stop"> {
-    if (this.#cancelRequested.delete(next.messageId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelledSession(next.messageId);
-      return "continue";
-    }
-    const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.kind !== "session-message" || entry.phase !== "received") {
-      this.#queue.delete(next.frame.requestId);
-      return "continue";
-    }
-    if (this.#cancelRequested.delete(next.messageId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelledSession(next.messageId);
-      return "continue";
-    }
-    if (next.generation !== this.#channelGeneration) {
-      this.#queue.delete(next.frame.requestId);
-      return "continue";
-    }
-    const denial = this.#admitSession(next.frame);
-    if (denial) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleSessionTerminal(entry, denial);
-      return "continue";
-    }
-    if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const outcome = await this.#startSessionTurn(entry, next.frame, next.generation);
-    if (outcome === "wait") return "stop";
-    this.#queue.delete(next.frame.requestId);
-    return outcome === "started" ? "started" : "continue";
-  }
-
-  async #settleCancelled(deliveryId: string): Promise<void> {
-    const entry = await this.#options.journal.read(deliveryId);
+  async #settleCancelled<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>): Promise<void> {
+    const entry = await this.#options.journal.read(work.key);
     if (!entry) return;
     this.#assertCurrentScope(entry);
-    if (entry.kind === "delivery" && entry.phase === "received") {
-      await this.#reportTerminal(entry, cancelledBeforeStart());
-    }
-  }
-
-  async #settleCancelledSession(messageId: string): Promise<void> {
-    const entry = await this.#options.journal.read(messageId);
-    if (!entry) return;
-    this.#assertCurrentScope(entry);
-    if (entry.kind === "session-message" && entry.phase === "received") {
-      await this.#settleSessionTerminal(entry, "cancelled");
-    }
+    if (work.matches(entry) && entry.phase === "received") await work.settle(entry, cancelledBeforeStart());
   }
 
   #completeActive(active: ActiveTurn): void {
@@ -1248,45 +1491,29 @@ export class CloudTurnRunner {
     active.settle();
   }
 
-  async #executeTurn(
-    entry: CloudJournalDeliveryEntry,
-    frame: RunnerCloudDeliveryVerifiedFrame,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<void> {
-    const current = await this.#options.journal.read(entry.deliveryId);
-    if (current?.kind !== "delivery" || current.phase !== "started") return;
-    if (generation !== this.#channelGeneration) {
-      // The connection closed after the durable started marker but before any sandbox work: no
-      // execution effect occurred, so settle honestly instead of running with a revoked grant.
-      await this.#reportTerminal(current, cancelledBeforeStart());
+  async #executeTurn<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>, signal: AbortSignal): Promise<void> {
+    const current = await this.#options.journal.read(work.key);
+    if (!work.matches(current) || current.phase !== "started") return;
+    if (work.generation !== this.#channelGeneration || signal.aborted) {
+      await work.settle(current, cancelledBeforeStart());
       return;
     }
-    if (signal.aborted) {
-      // A stop landed while the started marker was being written or shortly after. Nothing has
-      // been opened or executed yet, so this is a known not_started effect, not an unknown.
-      await this.#reportTerminal(current, cancelledBeforeStart());
+    if (!work.model) {
+      await work.missingModel(current);
       return;
     }
-    const model = frame.model;
-    if (!model) return;
     let completion: TurnCompletion;
     try {
-      completion = await this.#runInSandbox(current.delivery, model, current, signal, generation);
+      completion = await work.run(current, work.model, signal);
     } catch {
       completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
     }
     if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
       completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
     }
-    // An interrupted/failed/unknown Turn may still own native processes. Clean up IMMEDIATELY,
-    // while the occupation stays reserved, and only publish the terminal report after the
-    // verified reset: a stopped Session must never leave orphan children behind, and a failed
-    // reset must never be reported as a safe cancellation.
+    // Hold occupation through namespace cleanup, checkpoint and durable terminal evidence.
     const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#reportTerminal(current, cleanup.completion, true);
-    // Publish the honest report first; then surface the cleanup failure through the existing
-    // Runner failure path (serve marks the environment fatal and exits).
+    await work.settle(current, cleanup.completion, true);
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
@@ -1316,15 +1543,9 @@ export class CloudTurnRunner {
     completion: TurnCompletion,
     checkpoint = false,
   ): Promise<void> {
-    let checkpointError: unknown;
-    if (checkpoint) {
-      try {
-        await this.#options.checkpoint?.();
-      } catch (error) {
-        checkpointError = error;
-        completion = workspaceSaveFailure(completion);
-      }
-    }
+    const saved = checkpoint ? await this.#checkpoint(completion.executionEffects) : undefined;
+    const checkpointError = saved?.error;
+    if (saved?.failed && completion.executionEffects !== "not_started") completion = workspaceSaveFailure(completion);
     // Record exactly one honest result AFTER the save attempt. A crash before this point leaves
     // started/unknown custody (never automatic replay), not a success whose workspace was lost.
     const report = entry.report ?? this.#buildReport(entry.delivery, entry, completion);
@@ -1332,12 +1553,7 @@ export class CloudTurnRunner {
     if (!recorded.report) return;
     this.#notifyJournalChanged();
     this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
-    }
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
   }
 
   #buildReport(
@@ -1427,15 +1643,22 @@ export class CloudTurnRunner {
     if (!scope) throw new Error("The Runner scope is not established");
     // No model/Pi/tool effect exists yet: a stop here must never open credentials or spawn work.
     if (signal.aborted) return cancelledBeforeStart();
+    const steering = this.#options.steeringEnabled?.() ? { turnId: entry.turnId, token: randomUUID() } : undefined;
+    if (this.#active?.entryKey === entry.deliveryId && steering) this.#active.steering = steering;
     const openExecution =
-      this.#options.openExecution ?? ((input: CloudTurnExecutionOpenInput) => this.#openBridgeExecution(input));
-    const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
+      this.#options.openExecution ??
+      ((input: CloudTurnExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ delivery, scope, turnId: entry.turnId, signal }),
+    );
     try {
       // The credential bridge is open, but the worker has not started; close it without calling
       // the worker when a stop or grant revocation landed during the open.
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudTurnWorkerStdin({
         delivery,
+        ...(steering ? { steering } : {}),
+        ...(execution.outboxContext ? { outboxContext: execution.outboxContext } : {}),
         executionDir: execution.executionDir,
         ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
         ...(execution.webTools ? { webTools: execution.webTools } : {}),
@@ -1447,53 +1670,16 @@ export class CloudTurnRunner {
       });
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       this.#activity.start(delivery, entry.turnId);
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         deliveryId: delivery.deliveryId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       this.#activity.end(entry.turnId);
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
-  }
-
-  /**
-   * Session-message execution: same durable `started` boundary and namespace discipline as an IM
-   * Turn, but the terminal evidence is the immutable Session settlement. The execution-open result
-   * carries the ephemeral Session CLI proof, which is forwarded to the worker via stdin.
-   */
-  async #executeSessionTurn(
-    entry: CloudJournalSessionEntry,
-    frame: RunnerCloudSessionMessageVerifiedFrame,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<void> {
-    const current = await this.#options.journal.read(entry.messageId);
-    if (current?.kind !== "session-message" || current.phase !== "started") return;
-    if (generation !== this.#channelGeneration || signal.aborted) {
-      // The connection closed or a stop landed after the started marker but before any sandbox
-      // work: no execution effect occurred, so settle honestly instead of running.
-      await this.#settleSessionTerminal(current, "cancelled");
-      return;
-    }
-    const model = frame.model;
-    if (!model) {
-      await this.#settleSessionTerminal(current, "failed");
-      return;
-    }
-    let completion: TurnCompletion;
-    try {
-      completion = await this.#runSessionInSandbox(current.message, model, current, signal, generation);
-    } catch {
-      completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
-    }
-    if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
-      completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
-    }
-    const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#settleSessionTerminal(current, sessionSettlementOutcome(cleanup.completion), true);
-    if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
   /** Deadline/grant admission BEFORE any native or Pi effect, mirroring the IM Turn gate. */
@@ -1512,26 +1698,41 @@ export class CloudTurnRunner {
     entry: CloudJournalSessionEntry,
     outcome: CloudJournalSettlementOutcome,
     checkpoint = false,
+    executionEffects?: TurnCompletion["executionEffects"],
+    reason?: TurnCompletion["errorReason"],
   ): Promise<void> {
-    let effective = outcome;
-    let checkpointError: unknown;
-    if (checkpoint) {
-      try {
-        await this.#options.checkpoint?.();
-      } catch (error) {
-        checkpointError = error;
-        effective = "failed";
-      }
-    }
-    const recorded = await this.#options.journal.recordSessionSettled(entry.messageId, entry.scope, effective);
+    const saved = checkpoint ? await this.#checkpoint(executionEffects) : undefined;
+    const checkpointError = saved?.error;
+    const effective = saved?.failed && executionEffects !== "not_started" ? "failed" : outcome;
+    // A checkpoint failure replaces the outcome, so the worker's reason no longer describes it.
+    const effectiveReason = effective === outcome ? reason : undefined;
+    const recorded = await this.#options.journal.recordSessionSettled(
+      entry.messageId,
+      entry.scope,
+      effective,
+      effectiveReason,
+    );
     if (!recorded.settlement) return;
     this.#notifyJournalChanged();
     this.#sendSessionSettled(recorded);
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
+  }
+
+  async #checkpoint(
+    executionEffects?: TurnCompletion["executionEffects"],
+  ): Promise<{ failed: boolean; error?: unknown }> {
+    try {
+      await this.#options.checkpoint?.(executionEffects ? { executionEffects } : undefined);
+      return { failed: false };
+    } catch (error) {
+      let failure = error;
+      if (executionEffects === "not_started" && this.#options.sandboxReset) {
+        this.#markSandboxDirty();
+        await this.#resetSandboxNamespace().catch((resetError) => {
+          failure = resetError;
+        });
+      }
+      return { failed: true, error: failure };
     }
   }
 
@@ -1554,8 +1755,10 @@ export class CloudTurnRunner {
     const deadlineAt = new Date(Date.now() + budgetMs).toISOString();
     const openExecution =
       this.#options.openSessionExecution ??
-      ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
-    const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
+      ((input: CloudSessionExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ message, scope, turnId: entry.turnId, signal }),
+    );
     try {
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudSessionWorkerStdin({
@@ -1573,10 +1776,11 @@ export class CloudTurnRunner {
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         messageId: message.messageId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
@@ -1585,7 +1789,7 @@ export class CloudTurnRunner {
 
   /** Both execution paths use the same transport-failure and completion boundary. */
   async #runWorker(
-    input: { stdin: string; timeoutMs: number },
+    input: { stdin: string; timeoutMs: number; credentialOpenMs?: number },
     signal: AbortSignal,
     execution: CloudTurnExecutionHandle,
     context: PiDiagnosticContext,
@@ -1593,7 +1797,10 @@ export class CloudTurnRunner {
     const workerSignal = execution.bridgeFailureSignal
       ? AbortSignal.any([signal, execution.bridgeFailureSignal])
       : signal;
-    const diagnostics = createPiDiagnosticReader(context, (record) => this.#options.onDiagnostic?.(record));
+    this.#startupRecord("native_exec", context);
+    const diagnostics = createPiDiagnosticReader({ ...context, clockId: startupClockId }, (record) =>
+      this.#options.onDiagnostic?.(record),
+    );
     let workerExitCode: number | undefined;
     let execFailed = false;
     let execError: unknown;
@@ -1639,6 +1846,7 @@ export class CloudTurnRunner {
           Boolean(execution.bridgeFailure?.()),
         ),
         execTimeoutMs: input.timeoutMs,
+        ...(input.credentialOpenMs !== undefined ? { credentialOpenMs: input.credentialOpenMs } : {}),
       });
     }
   }
@@ -1653,42 +1861,96 @@ export class CloudTurnRunner {
    * unmounted private root. Nothing runs in this parent beyond credential relaying; the worker
    * executes inside the Sandbox.
    */
-  async #openBridgeExecution(input: CloudTurnExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
+  async #openWorkBridgeExecution(
+    entry: CloudJournalEntry,
+    scope: CloudTurnScope,
+    signal: AbortSignal,
+  ): Promise<CloudTurnExecutionHandle> {
+    const message = entry.kind === "delivery" ? entry.delivery : entry.message;
     return this.#openRelayExecution({
-      agentId: input.delivery.agentId,
-      placementGeneration: input.delivery.placementGeneration,
-      sessionId: input.delivery.sessionId,
-      signal: input.signal,
-      source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
-      scope: input.scope,
+      agentId: message.agentId,
+      placementGeneration: message.placementGeneration,
+      sessionId: entry.kind === "delivery" ? entry.delivery.sessionId : entry.message.targetSessionId,
+      signal,
+      source:
+        entry.kind === "delivery"
+          ? { kind: "delivery", deliveryId: entry.deliveryId, turnId: entry.turnId }
+          : { kind: "session-message", messageId: entry.messageId },
+      scope,
+      contextTrees: message.runtime.contextTrees,
+      agentSlug: managedAgentSlug(message.runtime.instructions.platform),
     });
   }
 
-  async #openSessionBridgeExecution(input: CloudSessionExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
-    return this.#openRelayExecution({
-      agentId: input.message.agentId,
-      placementGeneration: input.message.placementGeneration,
-      sessionId: input.message.targetSessionId,
-      signal: input.signal,
-      source: { kind: "session-message", messageId: input.message.messageId },
-      scope: input.scope,
+  async #openContextTreeGateway(
+    input: CloudRelayExecutionInput,
+    openRelay: RuntimeCredentialRelay,
+    inSandboxExecutionDir: string,
+  ): Promise<ContextTreeCommandGateway | undefined> {
+    if (!input.contextTrees.length || !openRelay.services?.some((service) => service.service === "context-tree"))
+      return undefined;
+    const pack = resolveContextTreePackage();
+    if (!pack) {
+      // The Turn still runs; without a gateway URL the worker reports each source unavailable.
+      this.#log("Context Tree package is unavailable; opening the execution without the command gateway");
+      return undefined;
+    }
+    const treeHome = "/workspace/.opentag/context-tree/home";
+    const contextTreeGateway = new ContextTreeCommandGateway({
+      parent: openRelay,
+      workspace: "/workspace",
+      sources: input.contextTrees,
+      stateDirectory: join(this.#options.stateDirectory, "context-tree-command-sessions", input.agentId),
+      sessionHints: createSandboxContextTreeSessionHints(this.#options.sandbox, "/workspace"),
+      environment: () => {
+        const routing = {
+          OPENTAG_PROVIDER_PROXY_URL: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,
+          OPENTAG_PROVIDER_CA_PATH: `${inSandboxExecutionDir}/${CLOUD_SANDBOX_CA_FILE}`,
+        };
+        return {
+          ...routing,
+          ...providerRoutingEnvironment(routing),
+          HOME: treeHome,
+          GIT_AUTHOR_NAME: input.agentSlug ?? "opentag-cloud-agent",
+          GIT_AUTHOR_EMAIL: `${input.agentSlug ?? "opentag-cloud-agent"}@localhost`,
+          GIT_COMMITTER_NAME: input.agentSlug ?? "opentag-cloud-agent",
+          GIT_COMMITTER_EMAIL: `${input.agentSlug ?? "opentag-cloud-agent"}@localhost`,
+        };
+      },
+      execute: async (args, environment, commandSignal) => {
+        const result = await this.#options.sandbox.exec(
+          SANDBOX_NODE,
+          ["--input-type=module", "-e", CONTEXT_TREE_COMMAND_WORKER_SOURCE],
+          {
+            timeoutMs: 122_000,
+            signal: commandSignal,
+            stdin: JSON.stringify({ cli: pack.cliPath, args, environment, cwd: "/workspace" }),
+          },
+        );
+        const parsed = z
+          .object({ code: z.number().int(), stdout: z.string(), stderr: z.string() })
+          .strict()
+          .parse(JSON.parse(result.stdout));
+        return parsed;
+      },
     });
+    try {
+      await contextTreeGateway.listen("tcp");
+      return contextTreeGateway;
+    } catch (error) {
+      await contextTreeGateway.close();
+      throw error;
+    }
   }
 
-  async #openRelayExecution(input: {
-    agentId: string;
-    placementGeneration: number;
-    sessionId: string;
-    signal: AbortSignal;
-    scope: CloudTurnScope;
-    source: { kind: "delivery"; deliveryId: string; turnId: string } | { kind: "session-message"; messageId: string };
-  }): Promise<CloudTurnExecutionHandle> {
+  async #openRelayExecution(input: CloudRelayExecutionInput): Promise<CloudTurnExecutionHandle> {
     const scope = input.scope;
     if (!scope.resourceUid) throw new Error("The Sandbox allocation UID is not tracked yet");
     const connection = new CloudCredentialConnection(this.#options.credentialChannel());
     let relay: Awaited<ReturnType<typeof RuntimeCredentialRelay.open>> | undefined;
     let adapter: Awaited<ReturnType<typeof RuntimeProxyLoopbackAdapter.start>> | undefined;
     let bridge: NativeProviderBridge | undefined;
+    let contextTreeGateway: ContextTreeCommandGateway | undefined;
     let webChannel: NativeWebExecutionChannel | undefined;
     let privateDirectory: string | undefined;
     let publicDirectory: string | undefined;
@@ -1709,6 +1971,7 @@ export class CloudTurnRunner {
           failures.push(error);
         }
       };
+      await step(() => contextTreeGateway?.close());
       await releaseRelayExecutionResources({
         step,
         connection,
@@ -1752,7 +2015,7 @@ export class CloudTurnRunner {
            * Agent's mounts — and withholds silently when it does not. A request is not an
            * authorization: without a grant on the open result neither channel below is opened.
            */
-          services: ["mcp", "web"],
+          services: ["mcp", "web", "context-tree"],
         },
         input.signal,
       );
@@ -1767,20 +2030,35 @@ export class CloudTurnRunner {
       publicDirectory = await mkdtemp(join(publicRoot, "turn-"));
       adapter = await RuntimeProxyLoopbackAdapter.start({
         executionId: openRelay.executionId,
-        localHandleFor: (provider) =>
-          openRelay.providers.some((entryPoint) => entryPoint.provider === provider)
-            ? openRelay.localHandleFor(provider)
-            : undefined,
+        localHandleFor: (provider) => {
+          const owner = provider === "github" ? contextTreeGateway?.relayFor(provider) : openRelay;
+          return owner?.providers.some((entryPoint) => entryPoint.provider === provider)
+            ? owner.localHandleFor(provider)
+            : undefined;
+        },
         materialDir: join(privateDirectory, "adapter"),
-        openStream: (request) => openRelay.openProviderStream(request),
-        verifyHandle: (provider, handle) => openRelay.verifyLocalHandle(provider, handle),
+        openStream: (request) => {
+          const owner =
+            request.provider === "github"
+              ? contextTreeGateway?.relayFor(request.provider, request.localHandle)
+              : openRelay;
+          if (!owner) throw new Error("Provider unavailable");
+          return owner.openProviderStream(request);
+        },
+        verifyHandle: (provider, handle) =>
+          (provider === "github" ? contextTreeGateway?.relayFor(provider, handle) : openRelay)?.verifyLocalHandle(
+            provider,
+            handle,
+          ) ?? false,
       });
       const inSandboxExecutionDir = `${CLOUD_EXECUTION_MOUNT}/${basename(publicDirectory)}`;
+      contextTreeGateway = await this.#openContextTreeGateway(input, openRelay, inSandboxExecutionDir);
       // Public files only: the native Sandbox never receives a parent socket. The HTTP/2 bridge
       // helper opened next owns the two loopback entry ports the published environment names.
       await publishExecutionMaterial({ adapter, relay: openRelay }, publicDirectory, {
         includeEntryPrograms: false,
         publicMountPath: inSandboxExecutionDir,
+        ...(contextTreeGateway ? { contextTreeUrl: `http://127.0.0.1:${CLOUD_CONTEXT_TREE_PORT}` } : {}),
       });
       const openAdapter = adapter;
       bridge = await NativeProviderBridge.open({
@@ -1789,6 +2067,7 @@ export class CloudTurnRunner {
         targets: {
           connect: loopbackPortOf(openAdapter.connectProxyUrl),
           slack: loopbackPortOf(openAdapter.slackApiHost),
+          ...(contextTreeGateway?.port ? { contextTree: contextTreeGateway.port } : {}),
         },
       });
       const openBridge = bridge;
@@ -1803,6 +2082,7 @@ export class CloudTurnRunner {
       });
       return {
         executionDir: inSandboxExecutionDir,
+        ...executionOutboxContext(openRelay),
         ...(mcpGrant
           ? {
               mcpGateway: { url: new URL(MCP_GATEWAY_PATH, this.#options.serverUrl).toString(), token: mcpGrant.token },
@@ -1931,14 +2211,86 @@ export class CloudTurnRunner {
     return run;
   }
 
+  #reportCheckpointError(error: unknown): void {
+    if (error instanceof CloudWorkspaceError && !error.retryable && error.archiveErrorCode !== undefined) {
+      this.#log(`cloud workspace checkpoint failed: ${error.message}`);
+      return;
+    }
+    this.#reportPersistenceError(error);
+  }
+
   #reportPersistenceError(error: unknown): void {
     this.#log(`cloud delivery durable boundary failed: ${error instanceof Error ? error.message : String(error)}`);
     this.#options.onPersistenceError?.(error);
   }
 
+  async #traceCredentialOpen(entry: CloudJournalEntry, open: () => Promise<CloudTurnExecutionHandle>) {
+    const started = performance.now();
+    try {
+      const execution = await open();
+      const credentialOpenMs = performance.now() - started;
+      this.#startup(entry, "credential_open", { durationMs: credentialOpenMs, outcome: "completed" });
+      return { execution, credentialOpenMs };
+    } catch (error) {
+      this.#startup(entry, "credential_open", { durationMs: performance.now() - started, outcome: "failed" });
+      throw error;
+    }
+  }
+
+  #startup(
+    entry: CloudJournalEntry,
+    event: "verified" | "credential_open",
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    this.#startupRecord(
+      event,
+      {
+        ...entry.scope,
+        turnId: entry.turnId,
+        dispatchRequestId: entry.requestId,
+        ...(entry.kind === "delivery" ? { deliveryId: entry.deliveryId } : { messageId: entry.messageId }),
+      },
+      timing,
+    );
+  }
+
+  #startupRecord(
+    event: "received" | "verified" | "credential_open" | "native_exec",
+    context: PiDiagnosticContext,
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    try {
+      this.#options.onStartupDiagnostic?.({
+        ...context,
+        module: "cloud-runner",
+        operation: "runner.turn.startup",
+        event,
+        timestamp: new Date().toISOString(),
+        clockId: startupClockId,
+        monotonicMs: performance.now(),
+        ...timing,
+      });
+    } catch {
+      // Startup diagnostics must never affect custody or execution.
+    }
+  }
+
   #send(frame: RunnerClientFrame): void {
     try {
       this.#options.send(frame);
+      if (
+        frame.type === "delivery:received" ||
+        (frame.type === "session:message:received" && frame.status === "accepted")
+      ) {
+        const scope = this.#options.scope();
+        if (scope)
+          this.#startupRecord("received", {
+            ...scope,
+            turnId: frame.turnId,
+            dispatchRequestId: frame.requestId,
+            ...(frame.type === "delivery:received" ? { deliveryId: frame.deliveryId } : { messageId: frame.messageId }),
+          });
+      }
     } catch {
       this.#log("cloud delivery frame could not be sent (channel closed)");
     }
@@ -1951,6 +2303,15 @@ export class CloudTurnRunner {
 
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
+}
+
+/** The Session's own kind reaches the worker through this, because a delivery does not carry it. */
+export function executionOutboxContext(relay: Pick<RuntimeCredentialRelay, "providers" | "cliMetadataFor">): {
+  outboxContext?: RuntimeImOutboxContext;
+} {
+  const im = relay.providers.find((entry) => entry.provider === "feishu" || entry.provider === "slack");
+  const outboxContext = im && runtimeProxyOutboxContext(relay.cliMetadataFor(im.provider));
+  return outboxContext ? { outboxContext } : {};
 }
 
 /**
@@ -2091,4 +2452,11 @@ function providerProtocolError(): TurnCompletion {
 /** UTF-8 byte length without depending on a Shared-internal helper. */
 function utf8Length(value: string): number {
   return Buffer.byteLength(value, "utf8");
+}
+
+function differentSteerTarget(
+  left: import("@opentag/shared").RuntimeImSteerRequest,
+  right: import("@opentag/shared").RuntimeImSteerRequest,
+): boolean {
+  return left.rootDeliveryId !== right.rootDeliveryId || left.expectedTurnId !== right.expectedTurnId;
 }

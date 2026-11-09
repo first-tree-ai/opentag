@@ -1,10 +1,14 @@
-import type { RuntimeCredentialProvider } from "@opentag/shared";
+import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
 import type { DatabaseClient } from "../db/client.js";
+import { createInstrumentedFetch } from "../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../observability/performance-logger.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
+import { TaskService } from "../services/tasks/index.js";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -22,7 +26,11 @@ import { McpGatewayExecutionAuthorizer } from "./mcp-gateway-execution.js";
 import { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
 import { LiveMcpServicePolicy, type McpUsableMountReader } from "./mcp-policy.js";
 import { ProviderOperationRegistry } from "./operation-registry.js";
-import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
+import {
+  ImProviderProxyAdapter,
+  type ProviderProxyAdapter,
+  type SessionTaskAnchorResolution,
+} from "./provider-proxy-adapter.js";
 import { RuntimeCredentialOwner, type RuntimeCredentialOwnerOptions } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
 import { SLACK_OPERATIONS } from "./slack-operations.js";
@@ -37,6 +45,7 @@ import type { RouterWebClient } from "./web-router-client.js";
 import { RuntimeWebService } from "./web-service.js";
 
 export * from "./capability-store.js";
+export * from "./capacity-error.js";
 export * from "./credential-broker.js";
 export * from "./data-transport.js";
 export * from "./execution-authority.js";
@@ -72,12 +81,15 @@ export * from "./web-service.js";
 export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
+  onCredentialFailure?: import("./provider-proxy-adapter.js").ImProviderProxyAdapterOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
+  publicOrigin?: string;
   database: DatabaseClient;
   cipher: ApplicationCipher;
   registry: ConnectionRegistry;
   custody: RuntimeCustodyStore;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
   /**
    * Additional exact connection fence composed with the Local registry fence (E4 Cloud Runner
    * connections). Local registry behavior is unchanged; a frame is current when EITHER fence
@@ -160,7 +172,7 @@ export interface RuntimeCredentialServices {
   web?: WebGatewayServices;
   /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
   mcp?: McpGatewayServices;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /** Builds the optional web service exactly once per stack; absent config keeps it fully off. */
@@ -282,10 +294,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       custody: options.custody,
       validationRuns,
     });
+  const feishuFetch = resolveProviderFetch(options, "feishu");
   const tenantTokens = new FeishuTenantTokenCache(
-    options.fetchImpl
+    feishuFetch
       ? {
-          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: options.fetchImpl as typeof fetch }),
+          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: feishuFetch }),
         }
       : {},
   );
@@ -311,7 +324,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       feishu: materialResolver,
     },
   });
-  const adapters = createImAdapters(options, urlHandles);
+  const outboundCapture = new ImOutboundCapture(options.database, {
+    slackWorkingStatus: options.slackWorkingStatus,
+    logger: options.logger,
+  });
+  const adapters = createImAdapters(options, urlHandles, outboundCapture);
   const mcp = createMcpGatewayServices(options, { executions, scopeResolver, authority, connectionFence });
   const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   const owner = new RuntimeCredentialOwner({
@@ -338,10 +355,12 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     executions,
     connectionFence,
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
   });
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);
   });
+  let closing: Promise<void> | undefined;
   return {
     owner,
     transport,
@@ -354,9 +373,21 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     ...(web ? { web } : {}),
     ...mcpServicesResult(mcp),
     close: () => {
-      unsubscribeHandles();
-      owner.close();
-      tenantTokens.clear();
+      closing ??= closeServerResources([
+        [
+          "credential and transport work",
+          () =>
+            startClosingServerResources([
+              ["credential owner", () => owner.close()],
+              ["provider transport", () => transport.close()],
+            ]),
+        ],
+        ["outbound capture", () => outboundCapture.close()],
+      ]).finally(() => {
+        unsubscribeHandles();
+        tenantTokens.clear();
+      });
+      return closing;
     },
   };
 }
@@ -384,22 +415,65 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
   };
 }
 
+function resolveProviderFetch(
+  options: RuntimeCredentialServicesOptions,
+  provider: "slack" | "feishu",
+): typeof fetch | undefined {
+  if (options.performanceLogger) {
+    return createInstrumentedFetch(options.performanceLogger, {
+      provider,
+      ...(options.fetchImpl ? { baseFetch: options.fetchImpl } : {}),
+    });
+  }
+  return options.fetchImpl;
+}
+
+/**
+ * Resolves an execution's Session to the Task anchor its `Session <shortId>` footer links to. A
+ * Task is one chat Session, and the Task routes resolve any Session id — a chat Session, or an
+ * internal Session through its creator chain — to its Task, so a Session links by its own id. It
+ * links only when that Task qualifies under the same rule Task list and detail apply
+ * (`TaskService.hasLinkableTask`): an ambient-only group channel Session, an internal Session rooted
+ * at one, a missing Session, or a failed lookup returns `plain`, so the footer never links to a 404
+ * route.
+ */
+export async function resolveSessionTaskAnchor(
+  database: DatabaseClient,
+  input: { sessionId: string; source?: RuntimeExecutionSource },
+  logger?: Pick<ServiceLogger, "warn">,
+): Promise<SessionTaskAnchorResolution> {
+  try {
+    if (!(await new TaskService(database).hasLinkableTask(input.sessionId))) return { kind: "plain" };
+    return { kind: "link", taskAnchorId: input.sessionId };
+  } catch (error) {
+    logger?.warn(
+      {
+        code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED",
+        sessionId: input.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "Failed to resolve IM session footer task anchor",
+    );
+    return { kind: "plain" };
+  }
+}
+
 /** Parent-provided adapters win; the Slack/Feishu IM adapters are constructed over their tables. */
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
   urlHandles: RuntimeUrlHandleStore,
+  outboundCapture: ImOutboundCapture,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
-  const outboundCapture = new ImOutboundCapture(options.database, {
-    slackWorkingStatus: options.slackWorkingStatus,
-    ...(options.logger ? { logger: options.logger } : {}),
-  });
+  const resolveTaskAnchor = (input: { sessionId: string; source?: RuntimeExecutionSource }) =>
+    resolveSessionTaskAnchor(options.database, input, options.logger);
   const defaults = [
     ["slack", SLACK_OPERATIONS],
     ["feishu", FEISHU_OPERATIONS],
   ] as const;
   for (const [provider, operations] of defaults) {
     if (adapters.has(provider)) continue;
+    const providerFetch = resolveProviderFetch(options, provider);
     adapters.set(
       provider,
       new ImProviderProxyAdapter({
@@ -407,7 +481,10 @@ function createImAdapters(
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
         outboundCapture,
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        onCredentialFailure: options.onCredentialFailure,
+        resolveTaskAnchor,
+        ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+        ...(providerFetch ? { fetchImpl: providerFetch } : {}),
         ...(options.logger ? { logger: options.logger } : {}),
       }),
     );

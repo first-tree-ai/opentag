@@ -329,7 +329,7 @@ describe("FeishuSetup recovery copy", () => {
     ["FEISHU_SETUP_OWNER_RESTARTED", "Lark setup was interrupted. Generate a new QR code and try again."],
     [
       "FEISHU_BINDING_IDENTITY_MISMATCH",
-      "This Lark bot does not match the current connection. Try again with the current bot, or choose Change bot.",
+      "This Lark bot does not match the current connection. Try again with the current bot. Create a new Agent to use a different bot.",
     ],
     ["SOMETHING_ELSE", "Couldn’t connect Lark. Try scanning a new QR code."],
   ])("maps the Server code %s onto its recovery sentence", async (code, message) => {

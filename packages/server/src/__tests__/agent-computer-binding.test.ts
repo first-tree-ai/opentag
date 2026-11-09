@@ -128,6 +128,27 @@ describe("An Agent created before its Computer", () => {
       code: "COMPUTER_NOT_FOUND",
     });
   });
+
+  it("finishes binding an edited Agent, preserves that target, and refuses a replacement", async () => {
+    const bootstrap = await account();
+    const service = new AgentService(unitDatabase.database);
+    const created = await service.createForAccount(bootstrap.userId, unboundInput());
+    const edited = await service.updateById(bootstrap.userId, created.id, {
+      displayName: "Edited Assistant",
+      expectedRevision: created.revision,
+    });
+    expect(edited.revision).toBeGreaterThan(1);
+    const first = await connectComputer(unitDatabase.database, bootstrap.userId);
+    const second = await connectComputer(unitDatabase.database, bootstrap.userId);
+    const bound = await service.rebindById(bootstrap.userId, created.id, first.id);
+    expect(bound.computerId).toBe(first.id);
+    await expect(service.rebindById(bootstrap.userId, created.id, first.id)).resolves.toEqual(bound);
+    await expect(service.rebindById(bootstrap.userId, created.id, second.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
+    });
+    await expect(service.getConfigById(bootstrap.userId, created.id)).resolves.toEqual(bound);
+  });
 });
 
 describe("Messaging for an Agent that has no Computer", () => {
@@ -295,12 +316,13 @@ describe("Cloud Computer Agent binding", () => {
     });
     const same = await open.rebindById(bootstrap.userId, cloudAgent.id, cloud.id);
     expect(same.computerId).toBe(cloud.id);
-    const reboundLocal = await open.rebindById(
-      bootstrap.userId,
-      localAgent.id,
-      (await connectComputer(unitDatabase.database, bootstrap.userId)).id,
-    );
-    expect(reboundLocal.computerId).not.toBe(local.id);
+    await expect(
+      open.rebindById(
+        bootstrap.userId,
+        localAgent.id,
+        (await connectComputer(unitDatabase.database, bootstrap.userId)).id,
+      ),
+    ).rejects.toMatchObject({ code: "AGENT_LIFECYCLE_CONFLICT" });
 
     const closed = new AgentService(unitDatabase.database);
     await expect(closed.rebindById(bootstrap.userId, cloudAgent.id, cloud.id)).rejects.toMatchObject({

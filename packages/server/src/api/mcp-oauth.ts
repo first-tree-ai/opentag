@@ -1,24 +1,43 @@
 /*
- * The two unauthenticated MCP paths.
+ * The public MCP paths.
  *
  * `/api/v1/mcp-servers/oauth/callback` verifies its own caller: the one-time `state` the flow row
- * holds (stored hashed), plus the flow secret issued to the initiating browser as a cookie. The
+ * holds (stored hashed), plus the browser secret the handoff handed to the browser as a cookie. The
  * state alone would not be enough — it travels in a URL that can be forwarded to anyone — so the
- * cookie is what binds the callback to the browser that started the flow, following the Slack
- * context cookie precedent. It redirects only to a fixed local surface carrying a bounded outcome,
- * and it never echoes the authorization server's `error_description` back to the browser.
+ * cookie is what binds the callback to the browser that redeemed the handoff. It redirects only to a
+ * fixed local surface carrying a bounded outcome, and it never echoes the authorization server's
+ * `error_description` back to the browser.
+ *
+ * `/api/v1/mcp-servers/oauth/handoff` is where a human lands from a URL an Agent produced. It is not
+ * anonymous: the request must carry this deployment's session, and the signed-in Account must own the
+ * Agent the flow belongs to. Without that, a link posted into a shared channel would bind whoever
+ * clicked it into the Agent's authorization, which is exactly the confusion the browser binding
+ * exists to prevent. An unauthenticated browser is sent to sign in and returned here; every rejected
+ * redemption answers with the same 404, so a stranger cannot probe which flows exist.
  *
  * `/oauth/client-metadata.json` is this deployment's public Client ID Metadata Document. It contains
  * only what the specification requires of a public client: the client ID (this same URL), a name,
  * and the redirect URIs. Nothing here is a secret, and nothing here names an Account.
  */
 
-import { MCP_CLIENT_METADATA_PATH, MCP_ERROR_CODES, MCP_OAUTH_CALLBACK_PATH } from "@opentag/shared";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import {
+  MCP_CLIENT_METADATA_PATH,
+  MCP_ERROR_CODES,
+  MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_HANDOFF_PATH,
+} from "@opentag/shared";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { BROWSER_COOKIE_NAMES, clearMcpOAuthContextCookie, parseCookies } from "../services/auth/browser-cookies.js";
+import { resolveAuthenticatedUserId, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import {
+  BROWSER_COOKIE_NAMES,
+  clearMcpOAuthContextCookie,
+  parseCookies,
+  setMcpOAuthContextCookie,
+} from "../services/auth/browser-cookies.js";
+import type { UserAuthService } from "../services/auth/index.js";
 import type { McpOAuthFlowService } from "../services/mcp/index.js";
-import { McpServiceError } from "../services/mcp/index.js";
+import { McpServiceError, mcpServerNotFound } from "../services/mcp/index.js";
 import { parseRequest } from "./request-validation.js";
 
 /*
@@ -40,7 +59,14 @@ const CallbackQuerySchema = z.object({
   iss: z.string().min(1).max(2048).optional(),
 });
 
+const HandoffQuerySchema = z.object({
+  token: z.string().min(1).max(16384),
+});
+
 export interface McpOAuthRoutesOptions {
+  authOptions?: UserAuthPreHandlerOptions;
+  /** Resolves the session a handoff link must arrive with; the callback does not need one. */
+  authService: UserAuthService;
   /**
    * Fired after a callback stores a credential.
    *
@@ -53,7 +79,7 @@ export interface McpOAuthRoutesOptions {
    * the row it just wrote already proved which Account owns the pair.
    */
   onCredentialStored?: (accountId: string, agentId: string, mcpServerId: string) => void;
-  flows: McpOAuthFlowService;
+  flows: Pick<McpOAuthFlowService, "callback" | "redirectFor" | "redeemHandoffToken">;
   publicOrigin: string;
   secureCookies: boolean;
 }
@@ -99,6 +125,33 @@ export function registerMcpOAuthRoutes(app: FastifyInstance, options: McpOAuthRo
     }
   });
 
+  app.get(MCP_OAUTH_HANDOFF_PATH, async (request, reply) => {
+    /*
+     * The session comes before the token. A link an Agent wrote into a channel is a link any reader
+     * can click, so the person landing here has to be the person the flow belongs to — and an
+     * anonymous visitor is sent to sign in first, to be returned to this exact URL.
+     */
+    const userId = await resolveAuthenticatedUserId(request, options.authService, options.authOptions ?? {});
+    if (!userId) return reply.redirect(signInRedirect(request, options.publicOrigin), 302);
+
+    try {
+      const query = parseRequest(HandoffQuerySchema, request.query);
+      const { flowSecret, targetUrl } = await options.flows.redeemHandoffToken(query.token, userId);
+      setMcpOAuthContextCookie(reply, flowSecret, {
+        path: MCP_OAUTH_CALLBACK_PATH,
+        secure: options.secureCookies,
+      });
+      return reply.redirect(targetUrl, 302);
+    } catch (error) {
+      /*
+       * One answer for every rejection — expired, already used, or not this Account's flow — so the
+       * response cannot be used to learn whether a token exists. The bounded code is only logged.
+       */
+      request.log.warn({ errorCode: publicCode(error) }, "MCP OAuth handoff rejected");
+      throw mcpServerNotFound();
+    }
+  });
+
   /*
    * The CIMD document. `client_id` must be this exact URL, so the value is derived from the
    * configured public origin rather than from the request: a spoofed Host header must not be able to
@@ -126,6 +179,19 @@ export function registerMcpOAuthRoutes(app: FastifyInstance, options: McpOAuthRo
 function publicCode(error: unknown): string {
   if (error instanceof McpServiceError) return error.code;
   return MCP_ERROR_CODES.OAUTH_FAILED;
+}
+
+/**
+ * Where an unauthenticated handoff visitor signs in, and where they come back to.
+ *
+ * `next` is the local path this request arrived on, never an absolute URL: the sign-in allowlist
+ * refuses anything else, so a handoff link cannot be turned into a redirect to another origin.
+ */
+function signInRedirect(request: FastifyRequest, publicOrigin: string): string {
+  const url = new URL("/login", publicOrigin);
+  const target = request.raw.url ?? MCP_OAUTH_HANDOFF_PATH;
+  url.searchParams.set("next", target.startsWith("//") ? MCP_OAUTH_HANDOFF_PATH : target);
+  return url.toString();
 }
 
 function redirectFailure(

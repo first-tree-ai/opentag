@@ -1,6 +1,6 @@
 ---
 title: "Database read/write standards"
-description: "Requirements for database design, atomic writes, authorization, read snapshots, locks, external effects, retries, and concurrency verification."
+description: "Requirements for database design, migrations, atomic writes, authorization, read snapshots, locks, external effects, retries, and concurrency verification."
 soft_links:
   - /system/agent-session-computer-model.md
   - /system/server-client-boundary.md
@@ -18,10 +18,15 @@ identity comes from the database. They are review requirements, not a claim
 that every existing path already complies. Keep the rule IDs when recording
 a finding or explaining an exception.
 
-Present a concrete database or read/write design for human confirmation before
-implementing or approving it. Include the affected paths, invariants, access
+Present a concrete proposal for human confirmation before implementing or
+approving database schema changes or migrations, including tables, columns,
+indexes, and constraints. Include the affected paths, invariants, access
 patterns, transaction and lock boundaries, failure behavior, validation, cost,
-and benefit. Investigation and local experiments may proceed first.
+and benefit. Investigation and local experiments may proceed first. Query,
+read/write-path, and lock changes without schema changes or migrations may
+proceed under existing task authorization without separate database-design
+confirmation. These standards and existing authorization boundaries for
+production operations, data cleanup, and deployment still apply.
 
 Preserve existing ownership, authorization, state transitions, revisions,
 generations, quotas, ordering, deduplication, retention, and custody semantics.
@@ -61,13 +66,45 @@ Finding a deviation does not authorize its implementation.
   [Observability](../operations/observability.md). A statement deadline,
   transaction idle timeout, transport deadline, and whole-operation budget
   cover different waits; document which component owns each applicable bound.
+  Benchmark admin, fixture and EXPLAIN connections reuse the shared client with
+  one connection and a five-second native close. Fixture statements use the
+  shared 30-second statement / 35-second elapsed budgets, measured separately
+  from the shorter startup migration budget.
+- The current budget for a single database query is 500 ms on representative data. It is still being calibrated and
+  may prove too high or too low; tighter or looser targets, overall or for a particular path, are set by a human
+  decision. It is a performance budget, not the statement timeout (`OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`, 30 seconds
+  by default), which only cancels runaway statements. Why: one stated budget lets changes, including Agent-authored
+  ones, be checked consistently, while deciding where faster is worth the cost stays a judgement call.
+
+HTTP authentication hooks belong in route options so application shutdown can
+retain their actual Promises through client disconnect. Ordinary callers need
+no extra drain set. Detached work and operations hidden by timeout races retain
+an explicit owner until actual settlement.
+
+## Migrations
+
+Run commands from the repository root; see the [migration policy](https://github.com/first-tree-ai/opentag/blob/main/packages/server/drizzle/README.md) for schema drift and rollback guidance.
+
+1. Generate SQL with `pnpm --filter @opentag/server db:generate`; add `--custom --name=describe_change` for custom SQL.
+2. Keep SQL, `meta/_journal.json`, and generated snapshots under `packages/server/drizzle/` together.
+   Journal tags must match SQL filenames without `.sql`; keep indexes and filename prefixes contiguous and timestamps increasing.
+3. Finalize SQL, then run `node scripts/check-migration-drift.mjs --update` to append `migration-hashes.json` entries.
+   Preserve merged history; reconcile only new migrations and metadata when concurrent changes collide.
+4. Match every `CURRENT_MIGRATION_COUNT` under `packages/server/src/__tests__/integration/` to the journal length.
+   Before opening a PR, run `pnpm check` and `pnpm --filter @opentag/server test:integration`
+   (requires Docker). The count check is covered by integration tests, not `pnpm check`.
+
+Startup migrations use a [short operation budget](../operations/observability.md).
+Large index builds and bulk backfills need a separate execution and compatibility design;
+measure their duration and lock impact before choosing an operation-specific limit.
+Do not widen the routine startup budget or rewrite merged migration history to accommodate them.
 
 ## 1. Atomic commit
 
 | ID | Requirement | Review evidence |
 | --- | --- | --- |
 | AT1 | Facts that must hold together commit in one atomic statement or transaction. | List the invariant, primary and related writes, deduplication record, and state change. A mid-operation failure leaves no partial combination. |
-| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace the actual caller through nested services and callbacks. A root pool call inside a transaction callback does not join that transaction. A locking helper requires a transaction in its type contract; ordinary reads may accept either executor. |
+| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace nested services and library hooks to the transaction, including adapter opt-ins. A root pool call does not join it. A locking helper requires a transaction type; ordinary reads may accept either executor. |
 | AT3 | Failure after commit is distinct from rollback. | A notification or cleanup failure does not undo a committed lifecycle change or prove an object is unreferenced. Keep the commit boundary visible in error handling. |
 
 ## 2. Final database authority
@@ -155,8 +192,8 @@ source and test evidence, minimum change, cost, benefit, and preserved business
 semantics. A deliberately misused helper in a test demonstrates an API risk;
 it does not prove a production caller made that mistake.
 
-Keep run evidence in `testing/` or the local review record rather than adding
-dated status, PR history, or issue lists to this standards page. Follow
+Keep run evidence outside the source repository and retain useful redacted results in the task's GitHub PR or Issue.
+Do not add dated status, PR history, or issue lists to this standards page. Follow
 [Local validation](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md#local-validation); do not repeat
 unchanged successful checks merely to complete a review. Distinguish source
 changes, checks, merge, deployment, and actual acceptance.

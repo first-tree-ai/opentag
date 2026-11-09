@@ -98,33 +98,46 @@ for (const status of [401, 403]) {
             oauthRequests.push(request.url());
         });
         await page.goto(`/agents/${agent}/mcp`);
-        if (bearer) await page.getByRole("button", { name: "Connect", exact: true }).click();
-        else await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
-        const dialog = page.getByRole("dialog");
-        if (bearer) await dialog.getByLabel("API key or token", { exact: true }).fill("wrong-fixture-key");
-        else await dialog.getByLabel("Connector URL", { exact: true }).fill(upstream.endpoint);
-        const probe = page.waitForResponse(
-          (response) => response.request().method() === "POST" && response.url().endsWith("/probe"),
-        );
-        const oauth = bearer
-          ? undefined
-          : page.waitForResponse(
-              (response) => response.request().method() === "POST" && response.url().endsWith("/authorization/oauth"),
-            );
-        const consent = bearer ? undefined : page.waitForEvent("popup");
-        await dialog.getByRole("button", { name: "Connect", exact: true }).click();
-        expect(await (await probe).json()).toMatchObject({
+        const rejected = {
           probeState: "failed",
           probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
-        });
+        };
         if (bearer) {
-          await expect(dialog).toContainText("Invalid API key. Try again.");
-          await expect(dialog.getByLabel("API key or token", { exact: true })).toHaveValue("wrong-fixture-key");
+          // A key installation that needs a key offers Authorize on its row; the key is saved from Details.
+          await page.getByRole("button", { name: /^Authorize: rejection-/ }).click();
+          const dialog = page.getByRole("dialog");
+          await dialog.getByRole("textbox", { name: "API key or token", exact: true }).fill("wrong-fixture-key");
+          await dialog.getByRole("button", { name: "Save", exact: true }).click();
+          // The rejected key stays a local form error that offers Update, never an OAuth attempt.
+          await expect(dialog).toContainText("The key was rejected. Update it.");
+          await expect(dialog.getByRole("button", { name: "Update", exact: true })).toBeVisible();
+          await expect
+            .poll(async () => {
+              const listed = (await (await page.request.get(`/api/v1/agents/${agent}/mcp-servers`)).json()) as {
+                servers: Array<{ authorization: { probeState: string; probeError: string | null } | null }>;
+              };
+              const authorization = listed.servers[0]?.authorization;
+              return authorization && { probeState: authorization.probeState, probeError: authorization.probeError };
+            })
+            .toEqual(rejected);
           expect(oauthRequests).toHaveLength(0);
         } else {
-          expect((await oauth)?.ok()).toBeTruthy();
+          // Account sign-in is the default: Connect tries the address, the real rejection leaves it
+          // unconnected, and authorization starts in its own window.
+          await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
+          const dialog = page.getByRole("dialog");
+          await dialog.getByLabel("Connector address", { exact: true }).fill(upstream.endpoint);
+          const connect = page.waitForResponse(
+            (response) => response.request().method() === "POST" && response.url().endsWith("/authorization/connect"),
+          );
+          const oauth = page.waitForResponse(
+            (response) => response.request().method() === "POST" && response.url().endsWith("/authorization/oauth"),
+          );
+          const consent = page.waitForEvent("popup");
+          await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+          expect(await (await connect).json()).toEqual({ connected: false });
+          expect((await oauth).ok()).toBeTruthy();
           const signIn = await consent;
-          if (!signIn) throw new Error("Missing authorization window");
           await expect(signIn.getByRole("heading", { name: "Fixture sign-in" })).toBeVisible();
           expect(oauthRequests).toHaveLength(1);
         }

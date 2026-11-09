@@ -44,3 +44,29 @@ export async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal)
     );
   });
 }
+
+export async function waitForRuntimeTimer(
+  milliseconds: number,
+  signal: AbortSignal,
+  scheduler: {
+    setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
+    clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+  },
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = scheduler.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      scheduler.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}

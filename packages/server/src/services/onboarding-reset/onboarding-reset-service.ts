@@ -13,19 +13,14 @@ import {
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import { lockActiveAccount as lockAccountForComputerAccess } from "../computers/account-lock.js";
-import { lockMcpBindings } from "../mcp/index.js";
+import { DomainServiceError } from "../domain-service-error.js";
+import { lockMcpAccounts, lockMcpBindings } from "../mcp/mcp-binding-locks.js";
 
 export type OnboardingResetErrorCode = "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT" | "ONBOARDING_RESET_UNVERIFIED";
 
-export class OnboardingResetError extends Error {
-  readonly category = "deterministic" as const;
-
-  constructor(
-    readonly code: OnboardingResetErrorCode,
-    readonly statusCode: 409,
-    message: string,
-  ) {
-    super(message);
+export class OnboardingResetError extends DomainServiceError<OnboardingResetErrorCode, "deterministic", 409> {
+  constructor(code: OnboardingResetErrorCode, statusCode: 409, message: string) {
+    super({ code, category: "deterministic", message, statusCode });
     this.name = "OnboardingResetError";
   }
 }
@@ -146,13 +141,14 @@ export class OnboardingResetService {
    * connections: they hold no credential and are the Account's own configuration.
    */
   async #deleteOwnedMcpRows(accountId: string): Promise<void> {
-    const owned = await this.#database
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.createdByUserId, accountId));
-    const agentIds = owned.map((agent) => agent.id);
-    if (agentIds.length === 0) return;
     await this.#database.transaction(async (transaction) => {
+      await lockMcpAccounts(transaction, [accountId]);
+      const owned = await transaction
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.createdByUserId, accountId));
+      const agentIds = owned.map((agent) => agent.id);
+      if (!agentIds.length) return;
       await lockMcpBindings(transaction, inArray(agentMcpServers.agentId, agentIds));
       await transaction.delete(mcpServerAuthorizations).where(inArray(mcpServerAuthorizations.agentId, agentIds));
       await transaction.delete(agentMcpServers).where(inArray(agentMcpServers.agentId, agentIds));

@@ -12,14 +12,26 @@ export {
   COMPUTER_ACCESS_CAPABILITY_HEADER,
   type CompleteAccountSetupRequest,
   CompleteAccountSetupRequestSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  type AccountApiEndpoint,
+  type AccountApiHttpMethod,
+  type AccountApiNoContentEndpoint,
+  type AccountApiRequestInit,
+  accountApiEndpoints,
+  toAccountApiRequestInit,
+} from "./account-api-endpoints.js";
+export {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
+  AGENT_NAME_PATTERN,
   AGENT_RUNTIME_PROVIDERS,
   AGENT_RUNTIME_TEST_FAILURE_CODES,
+  AGENT_SLUG_CHARACTERS,
   AGENT_USAGE_WINDOW_DAYS,
   AGENT_USAGE_WINDOW_OPTIONS,
   type AgentAdminConfig,
@@ -53,6 +65,8 @@ export {
   AgentSummarySchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
+  type AgentUsageQuery,
+  AgentUsageQuerySchema,
   type AgentUsageSummary,
   AgentUsageSummarySchema,
   type AgentUsageWindowDays,
@@ -63,18 +77,23 @@ export {
   CreateAgentRuntimeConfigSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  projectAgentActivityForClient,
   type RebindAgentComputerRequest,
   RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
+  requestsAgentActivityQueuedCount,
+  requestsAgentActivityTaskCount,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
+  UsageTimezoneSchema,
 } from "./agent.js";
 export * from "./agent-permissions.js";
 export * from "./agent-self.js";
 export * from "./agent-setup.js";
+export * from "./agent-status.js";
 export {
   type AuthIdentityProvider,
   AuthIdentityProviderSchema,
@@ -122,6 +141,15 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export * from "./cloud-billing.js";
+export {
+  type CloudLatencyCorrelation,
+  type CloudLatencyPhase,
+  CloudLatencyPhaseSchema,
+  type CloudLatencyRecord,
+  CloudLatencyRecorder,
+  CloudLatencyRecordSchema,
+  cloudLatencySessions,
+} from "./cloud-latency.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {
@@ -148,6 +176,8 @@ export {
   ComputerConnectCodeStatusSchema,
   type ComputerConnectionStatus,
   ComputerConnectionStatusSchema,
+  type ComputerConnectOutcome,
+  ComputerConnectOutcomeSchema,
   type ComputerImCliReadiness,
   type ComputerImCliReadinessCollection,
   ComputerImCliReadinessCollectionSchema,
@@ -266,6 +296,7 @@ export {
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_IM_BINDING_UNBIND_TEMPLATE,
+  AGENT_IM_FEEDBACK_TEMPLATE,
   AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE,
   AGENT_MCP_AUTHORIZATION_TEMPLATE,
   AGENT_MCP_PROBE_TEMPLATE,
@@ -315,6 +346,7 @@ export {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentImFeedbackPath,
   agentMcpAuthorizationOAuthPath,
   agentMcpAuthorizationPath,
   agentMcpProbePath,
@@ -366,11 +398,17 @@ export {
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
+  IM_FEEDBACK_ACTIONS_TEMPLATE,
+  IM_FEEDBACK_PATH,
+  IM_FEEDBACK_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  imFeedbackActionsPath,
+  imFeedbackPath,
   MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
   MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_HANDOFF_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
   MCP_SERVERS_PATH,
   mcpServerPath,
@@ -379,6 +417,11 @@ export {
   PUBLIC_MCP_CATALOG_REQUEST_MAX_BYTES,
   PUBLIC_MCP_SERVERS_PATH,
   PUBLIC_SKILLS_PATH,
+  RUNTIME_AGENT_MCP_SERVER_CREDENTIALS_TEMPLATE,
+  RUNTIME_AGENT_MCP_SERVER_DEFINITION_TEMPLATE,
+  RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH,
+  RUNTIME_AGENT_MCP_SERVER_OAUTH_START_TEMPLATE,
+  RUNTIME_AGENT_MCP_SERVER_OAUTH_STATUS_TEMPLATE,
   RUNTIME_AGENT_MCP_SERVER_TEMPLATE,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
@@ -395,6 +438,10 @@ export {
   RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
   RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
+  runtimeAgentMcpServerCredentialsPath,
+  runtimeAgentMcpServerDefinitionPath,
+  runtimeAgentMcpServerOAuthStartPath,
+  runtimeAgentMcpServerOAuthStatusPath,
   runtimeAgentMcpServerPath,
   runtimeAgentSchedulePath,
   runtimeAgentSchedulePausePath,
@@ -411,18 +458,39 @@ export {
   sandboxRunnerWebSocketUrl,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_DETAIL_COLLABORATION_MESSAGES_TEMPLATE,
+  TASK_DETAIL_INTERNAL_SESSIONS_TEMPLATE,
+  TASK_DETAIL_TEMPLATE,
+  TASK_DETAIL_TURNS_TEMPLATE,
   TASK_REPLIES_TEMPLATE,
   taskByIdPath,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
   taskRepliesPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export { renderImContentText, truncateImText } from "./im-content-text.js";
+export type { ImFeedbackActionKind, ImFeedbackActionRequest, ImFeedbackView } from "./im-feedback.js";
+export {
+  ImFeedbackActionKindSchema,
+  ImFeedbackActionRequestSchema,
+  type ImFeedbackList,
+  ImFeedbackListSchema,
+  ImFeedbackStateSchema,
+  ImFeedbackViewSchema,
+} from "./im-feedback.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
 export * from "./public-catalog.js";
+export {
+  MAX_UNKNOWN_KEY_PASSES,
+  type ParseIssue,
+  parseResponseIgnoringUnknownKeys,
+  type ResponseParseResult,
+} from "./response-parse.js";
 export * from "./runner-workspace.js";
 export {
   type AgentRuntimeOptions,
@@ -499,9 +567,11 @@ export {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   RUNTIME_ID_MAX_BYTES,
+  RUNTIME_IM_BATCH_MAX_COUNT,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_IM_RESOURCE_MAX_COUNT,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   RUNTIME_MVP_RETAINED_REPORT_LIMIT,
   RUNTIME_OUTGOING_REPLY_MAX_COUNT,
@@ -559,6 +629,7 @@ export {
   renderPlatformInstructions,
   requiredTurnReportVersion,
   runtimeUsageTotalTokens,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
   type SessionMessageDeliveryRequest,
@@ -567,10 +638,21 @@ export {
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
+  type SessionMessageOutcomeReport,
+  SessionMessageOutcomeReportSchema,
+  type SessionMessageOutcomeResult,
+  SessionMessageOutcomeResultSchema,
+  type SessionMessageRunOutcome,
+  SessionMessageRunOutcomeReasonSchema,
+  SessionMessageRunOutcomeSchema,
   type SessionReconcileRequest,
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
   SessionReconcileResultSchema,
+  type SessionRecoverRequest,
+  SessionRecoverRequestSchema,
+  type SessionRecoverResult,
+  SessionRecoverResultSchema,
   type TurnFailureReason,
   TurnFailureReasonSchema,
   type TurnOutgoingReply,
@@ -643,6 +725,7 @@ export {
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
+  RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RUNTIME_V0_CAPABILITIES,
@@ -691,6 +774,18 @@ export {
   type ServerWelcomeV2Frame,
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
+export {
+  RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_INITIAL_TIMEOUT_MS,
+  RUNTIME_SELF_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_STALE_MS,
+  type RuntimeCredentialFailureHint,
+  RuntimeCredentialFailureHintSchema,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckReportSchema,
+  type RuntimeSelfCheckRequest,
+  RuntimeSelfCheckRequestSchema,
+} from "./runtime-self-check.js";
 export * from "./sandbox.js";
 export * from "./schedules.js";
 export {

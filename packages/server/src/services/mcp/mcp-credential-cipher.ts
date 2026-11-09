@@ -13,6 +13,7 @@ const UuidSchema = z
  */
 const AuthorizationCredentialSchema = z
   .object({
+    clientId: z.string().min(1).max(2048).optional(),
     accessToken: z
       .string()
       .min(1)
@@ -34,12 +35,38 @@ const PKCESecretSchema = z
       .regex(/^[A-Za-z0-9._~-]+$/),
   })
   .strict();
+const PKCEFlowSchema = PKCESecretSchema.extend({
+  version: z.literal(2),
+  clientId: z.string().min(1),
+  accountId: z.string().uuid(),
+  initiatingAgentId: z.string().uuid(),
+  registrationId: z.string().uuid().nullable(),
+  scopes: z.array(z.string()),
+  config: z
+    .object({
+      url: z.string(),
+      authHeader: z.string(),
+      authScheme: z.string(),
+      extraHeaders: z.record(z.string(), z.string()),
+    })
+    .strict(),
+}).strict();
+const StoredPKCESchema = z.union([PKCESecretSchema, PKCEFlowSchema]);
+export type McpPkceFlow = z.infer<typeof PKCEFlowSchema>;
 const ClientSecretSchema = z
   .object({
     clientSecret: z
       .string()
       .min(1)
       .max(16 * 1024),
+  })
+  .strict();
+const HandoffPayloadSchema = z
+  .object({
+    flowSecret: z.string().min(1).max(256),
+    targetUrl: z.string().min(1).max(8192),
+    stateHash: z.string().min(1).max(128),
+    expiresAt: z.number().int().positive(),
   })
   .strict();
 const EncryptedMaterialSchema = z
@@ -127,7 +154,31 @@ export class McpCredentialCipher {
   }
 
   decryptPkceVerifier(binding: McpAuthorizationBinding, material: McpEncryptedMaterial): string {
-    return this.open(PKCESecretSchema, material, authorizationAadContext(binding)).codeVerifier;
+    return this.open(StoredPKCESchema, material, authorizationAadContext(binding)).codeVerifier;
+  }
+
+  encryptPkceFlow(binding: McpAuthorizationBinding, flow: McpPkceFlow): McpEncryptedMaterial {
+    return this.seal(PKCEFlowSchema, flow, authorizationAadContext(binding));
+  }
+
+  decryptPkceFlow(binding: McpAuthorizationBinding, material: McpEncryptedMaterial) {
+    return this.open(StoredPKCESchema, material, authorizationAadContext(binding));
+  }
+
+  rebindAuthorization(
+    previous: McpAuthorizationBinding,
+    next: McpAuthorizationBinding,
+    material: McpEncryptedMaterial,
+  ): McpEncryptedMaterial {
+    return this.encryptAuthorizationCredential(next, this.decryptAuthorizationCredential(previous, material));
+  }
+
+  rebindPkce(previous: McpAuthorizationBinding, next: McpAuthorizationBinding, ciphertext: string): string {
+    const keyId = /^v2\.([a-z0-9][a-z0-9-]{0,62})\./.exec(ciphertext)?.[1];
+    if (!keyId) throw new Error("MCP flow material could not be authenticated");
+    const material = EncryptedMaterialSchema.parse({ ciphertext, keyId });
+    const plaintext = this.cipher.decrypt(material.ciphertext, authorizationAadContext(previous));
+    return this.cipher.encryptBound(plaintext, authorizationAadContext(next)).ciphertext;
   }
 
   encryptClientSecret(binding: McpRegistrationBinding, clientSecret: string): McpEncryptedMaterial {
@@ -136,6 +187,16 @@ export class McpCredentialCipher {
 
   decryptClientSecret(binding: McpRegistrationBinding, material: McpEncryptedMaterial): string {
     return this.open(ClientSecretSchema, material, registrationAadContext(binding)).clientSecret;
+  }
+
+  encryptHandoff(payload: z.infer<typeof HandoffPayloadSchema>): string {
+    const sealed = this.seal(HandoffPayloadSchema, payload, "mcp-oauth-handoff");
+    return Buffer.from(JSON.stringify(sealed), "utf8").toString("base64url");
+  }
+
+  decryptHandoff(token: string): z.infer<typeof HandoffPayloadSchema> {
+    const material = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    return this.open(HandoffPayloadSchema, material, "mcp-oauth-handoff");
   }
 
   private seal<T>(schema: z.ZodType<T>, value: T, context: string): McpEncryptedMaterial {

@@ -99,36 +99,76 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
     serviceId: options.serviceId,
   });
 
-  const status = async (): Promise<DaemonServiceInfo> => {
-    const definition = await readRegularFile(unitPath);
-    if (definition === undefined) {
-      const orphaned = await options.runner.run(
-        systemctl,
-        ["--user", "show", identity.systemdUnitName, "--property", "LoadState", "--value"],
-        { timeoutMs: SYSTEMD_TIMEOUT_MS },
-      );
-      if (orphaned.timedOut) {
-        return info("unknown", {
-          detail: "systemctl could not verify whether a definition-less service target is loaded",
-          drifted: true,
-        });
-      }
-      const loadState = orphaned.stdout.trim();
-      if (orphaned.code === 0 && loadState === "not-found") {
-        return info("not-installed", { drifted: true });
-      }
-      if (orphaned.code === 0) {
-        return info("unknown", {
-          detail: `systemd still has the service target loaded (${loadState || "unknown state"}) even though its unit definition is missing`,
-          drifted: true,
-        });
-      }
+  const readOrphanedStatus = async (): Promise<DaemonServiceInfo> => {
+    const orphaned = await options.runner.run(
+      systemctl,
+      ["--user", "show", identity.systemdUnitName, "--property", "LoadState", "--value"],
+      { timeoutMs: SYSTEMD_TIMEOUT_MS },
+    );
+    if (orphaned.timedOut) {
       return info("unknown", {
-        detail: orphaned.stderr || orphaned.stdout || `systemctl exited with code ${orphaned.code}`,
+        detail: "systemctl could not verify whether a definition-less service target is loaded",
         drifted: true,
       });
     }
+    const loadState = orphaned.stdout.trim();
+    if (orphaned.code === 0 && loadState === "not-found") {
+      return info("not-installed", { drifted: true });
+    }
+    if (orphaned.code === 0) {
+      return info("unknown", {
+        detail: `systemd still has the service target loaded (${loadState || "unknown state"}) even though its unit definition is missing`,
+        drifted: true,
+      });
+    }
+    return info("unknown", {
+      detail: orphaned.stderr || orphaned.stdout || `systemctl exited with code ${orphaned.code}`,
+      drifted: true,
+    });
+  };
+
+  const readActiveMainPid = async (configuredHome: string, drifted: boolean): Promise<DaemonServiceInfo> => {
+    const pidResult = await options.runner.run(
+      systemctl,
+      ["--user", "show", identity.systemdUnitName, "--property", "MainPID", "--value"],
+      { timeoutMs: SYSTEMD_TIMEOUT_MS },
+    );
+    if (pidResult.timedOut) {
+      return info("unknown", {
+        configuredHome,
+        detail: "systemctl MainPID query timed out",
+        drifted,
+      });
+    }
+    if (pidResult.code !== 0) {
+      return info("unknown", {
+        configuredHome,
+        detail: pidResult.stderr || pidResult.stdout || `systemctl MainPID query exited with code ${pidResult.code}`,
+        drifted,
+      });
+    }
+    const parsedPid = Number.parseInt(pidResult.stdout, 10);
+    if (!Number.isInteger(parsedPid) || parsedPid <= 0) {
+      return info("unknown", {
+        configuredHome,
+        detail: "systemctl reported an invalid MainPID",
+        drifted,
+      });
+    }
+    return info("active", {
+      configuredHome,
+      drifted,
+      pid: parsedPid,
+    });
+  };
+
+  const status = async (): Promise<DaemonServiceInfo> => {
+    const definition = await readRegularFile(unitPath);
+    if (definition === undefined) {
+      return readOrphanedStatus();
+    }
     const expected = preserveSystemdEnvironment(template, definition);
+    const drifted = definition !== expected;
     const configuredHome = extractSystemdHome(definition);
     if (!configuredHome) {
       return info("unknown", {
@@ -143,50 +183,19 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       return info("unknown", {
         configuredHome,
         detail: "systemctl is-active timed out",
-        drifted: definition !== expected,
+        drifted,
       });
     }
     if (active.code !== 0 && !["inactive", "failed", "deactivating"].includes(active.stdout.trim())) {
       return info("unknown", {
         configuredHome,
         detail: active.stderr || active.stdout || `systemctl exited with code ${active.code}`,
-        drifted: definition !== expected,
+        drifted,
       });
     }
-    if (active.code !== 0) return info("inactive", { configuredHome, drifted: definition !== expected });
+    if (active.code !== 0) return info("inactive", { configuredHome, drifted });
 
-    const pidResult = await options.runner.run(
-      systemctl,
-      ["--user", "show", identity.systemdUnitName, "--property", "MainPID", "--value"],
-      { timeoutMs: SYSTEMD_TIMEOUT_MS },
-    );
-    if (pidResult.timedOut) {
-      return info("unknown", {
-        configuredHome,
-        detail: "systemctl MainPID query timed out",
-        drifted: definition !== expected,
-      });
-    }
-    if (pidResult.code !== 0) {
-      return info("unknown", {
-        configuredHome,
-        detail: pidResult.stderr || pidResult.stdout || `systemctl MainPID query exited with code ${pidResult.code}`,
-        drifted: definition !== expected,
-      });
-    }
-    const parsedPid = Number.parseInt(pidResult.stdout, 10);
-    if (!Number.isInteger(parsedPid) || parsedPid <= 0) {
-      return info("unknown", {
-        configuredHome,
-        detail: "systemctl reported an invalid MainPID",
-        drifted: definition !== expected,
-      });
-    }
-    return info("active", {
-      configuredHome,
-      drifted: definition !== expected,
-      pid: parsedPid,
-    });
+    return readActiveMainPid(configuredHome, drifted);
   };
 
   const preflight = async (): Promise<void> => {

@@ -1199,7 +1199,8 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     const ok = await readHttpResponse(authorized);
     expect(ok.status).toBe(200);
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ provider: "github", method: "GET" });
+    // The verified handle routes the stream to its owning execution; it is not a forwarded header.
+    expect(requests[0]).toMatchObject({ provider: "github", method: "GET", localHandle: "otrh_valid" });
     expect(requests[0]?.path).toBe("/acme/repo.git/info/refs?service=git-upload-pack");
     expect(requests[0]?.headers["x-opentag-provider-origin"]).toBe("github.com");
     expect(requests[0]?.headers).not.toHaveProperty("authorization");

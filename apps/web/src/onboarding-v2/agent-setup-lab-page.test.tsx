@@ -154,7 +154,7 @@ describe("agent setup lab page", () => {
     expect(screen.queryByRole("combobox", { name: "Screen state" })).toBeNull();
   });
 
-  it("keeps Screen synchronized when the production creation page moves forward and back", async () => {
+  it("keeps Screen synchronized when the production creation page moves forward", async () => {
     renderLabPage();
     await openControls();
 
@@ -166,14 +166,7 @@ describe("agent setup lab page", () => {
       expect(screen.getByRole("combobox", { name: "Screen" }).textContent?.trim()).toBe("Name & Runtime"),
     );
     expect(screen.queryByRole("combobox", { name: "Screen state" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
-
-    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Screen" }).textContent?.trim()).toBe("Choose location"),
-    );
-    expect(screen.getByRole("combobox", { name: "Screen state" }).textContent?.trim()).toBe("New computer");
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   });
 
   it("makes the blocked-messaging and all-preparation-ready combinations explicit", async () => {
@@ -197,7 +190,7 @@ describe("agent setup lab page", () => {
     renderLabPage();
 
     await chooseOption("Screen state", "Waiting for handoff");
-    expect(await screen.findByText("Checking your agent can be reached…")).toBeTruthy();
+    expect(await screen.findByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     await chooseOption("Screen state", "Needs recovery");
     expect(await screen.findByText("Lark needs updated permissions.")).toBeTruthy();
@@ -207,17 +200,17 @@ describe("agent setup lab page", () => {
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
   });
 
-  it("shows the real creation choice and only exposes Back to agents for an additional Agent", async () => {
+  it("shows the real creation choice and only exposes Back to Agents for an additional Agent", async () => {
     renderLabPage();
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Back to agents" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to Agents" })).toBeNull();
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag-2");
-    fireEvent.click(await screen.findByRole("button", { name: "Back to agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to Agents" }));
     expect(
       await screen.findByText(
         "The real product would open the Agents list here. The Lab keeps this in-memory run isolated.",
@@ -258,7 +251,8 @@ describe("agent setup lab page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Take computer offline" }));
     expect(screen.getByText("1 changed")).toBeTruthy();
-    expect(await screen.findByText("Offline")).toBeTruthy();
+    // The repair command window owns the status while the computer is offline.
+    expect(await screen.findByText(/to reconnect…$/)).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
     await waitFor(() => expect(screen.queryByText("1 changed")).toBeNull(), { timeout: 3_000 });
@@ -276,6 +270,19 @@ describe("agent setup lab page", () => {
     expect(screen.getByText("1 changed")).toBeTruthy();
     expect(screen.queryByText("Offline")).toBeNull();
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
+  });
+
+  it("mirrors the production Back to Agents exit on every setup screen", async () => {
+    renderLabPage();
+    await chooseOption("Screen state", "Connect messaging");
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+    expect(
+      await screen.findByText(
+        "The real product would open the Agents list here. The Lab keeps this in-memory run isolated.",
+      ),
+    ).toBeTruthy();
   });
 
   it("drives Feishu and Slack without leaving the Lab", async () => {
@@ -296,8 +303,10 @@ describe("agent setup lab page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
     fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "lab-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await screen.findByText("Send a message — try “Hi”.");
-    fireEvent.click(screen.getByRole("button", { name: "Close Test your Slack connection" }));
+    await screen.findByText(
+      "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
     expect(window.location.pathname).not.toContain("slack");
@@ -312,7 +321,7 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
+    expect(await screen.findByText("Open the Bot’s chat in Slack, send “Hello” and confirm its reply.")).toBeTruthy();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

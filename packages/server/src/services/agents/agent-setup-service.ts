@@ -21,20 +21,16 @@ import {
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "../computers/index.js";
+import type { AgentSetupMessagingObservation } from "../im-bindings/feishu/index.js";
 import type { AgentSetupBindingState } from "../im-bindings/index.js";
 import type { AgentService } from "./agent-service.js";
 import { AgentServiceError } from "./errors.js";
 
 class AgentSetupObservationError extends Error {}
 
-/** Reads the Agent's exact current Messaging binding together with its live handoff readiness. */
+/** Observes the binding and Feishu attempt from the same captured row. */
 export interface AgentSetupMessagingSource {
-  getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined>;
-}
-
-/** Observes the Agent-owned Feishu setup attempt with its expiry and owner-liveness projection. */
-export interface AgentSetupAttemptSource {
-  observeForAgent(agentId: string): Promise<FeishuSetupAttempt | undefined>;
+  observeMessagingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupMessagingObservation | undefined>;
 }
 
 export interface AgentSetupServiceOptions {
@@ -63,8 +59,7 @@ export interface AgentSetupServiceOptions {
  * consulted, so an unbound Agent is a legal answer rather than a fallback to a list.
  */
 export class AgentSetupService {
-  readonly #agents: Pick<AgentService, "getById">;
-  readonly #attempts: AgentSetupAttemptSource;
+  readonly #agents: Pick<AgentService, "getSummaryById">;
   readonly #database: DatabaseClient;
   readonly #messaging: AgentSetupMessagingSource;
   readonly #now: () => Date;
@@ -76,15 +71,13 @@ export class AgentSetupService {
 
   constructor(
     database: DatabaseClient,
-    agents: Pick<AgentService, "getById">,
+    agents: Pick<AgentService, "getSummaryById">,
     messaging: AgentSetupMessagingSource,
-    attempts: AgentSetupAttemptSource,
     options: AgentSetupServiceOptions = {},
   ) {
     this.#database = database;
     this.#agents = agents;
     this.#messaging = messaging;
-    this.#attempts = attempts;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#prepareComputer = options.prepareComputer;
@@ -94,8 +87,8 @@ export class AgentSetupService {
   }
 
   async getSetupById(callerUserId: string, agentId: string): Promise<AgentSetupSnapshot> {
-    const detail = await this.#agents.getById(callerUserId, agentId);
-    if (detail.status !== "active") {
+    const agent = await this.#agents.getSummaryById(callerUserId, agentId);
+    if (agent.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",
         "deterministic",
@@ -103,7 +96,6 @@ export class AgentSetupService {
         409,
       );
     }
-    const { activity: _activity, ...agent } = detail;
     const observedAt = this.#now();
     const computer = await this.#observeComputer(agent, observedAt);
     const runtime = this.#observeRuntime(agent.runtimeProvider, computer, observedAt);
@@ -112,7 +104,7 @@ export class AgentSetupService {
     // reads are in flight. Revalidate the exact target after the last observation: a stale tab
     // must never receive an actionable snapshot for an Agent that is no longer active, and a
     // concurrent Agent mutation must be retried rather than projected as one mixed revision.
-    const current = await this.#agents.getById(callerUserId, agentId);
+    const current = await this.#agents.getSummaryById(callerUserId, agentId);
     if (current.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",
@@ -122,9 +114,9 @@ export class AgentSetupService {
       );
     }
     if (
-      current.updatedAt !== detail.updatedAt ||
-      current.runtimeProvider !== detail.runtimeProvider ||
-      current.computer?.computerId !== detail.computer?.computerId
+      current.updatedAt !== agent.updatedAt ||
+      current.runtimeProvider !== agent.runtimeProvider ||
+      current.computer?.computerId !== agent.computer?.computerId
     ) {
       throw new AgentServiceError(
         "AGENT_REVISION_CONFLICT",
@@ -161,7 +153,7 @@ export class AgentSetupService {
    * daemon observations, so it never calls this method while the Agent remains unbound.
    */
   async refreshPreparationById(callerUserId: string, agentId: string): Promise<void> {
-    const detail = await this.#agents.getById(callerUserId, agentId);
+    const detail = await this.#agents.getSummaryById(callerUserId, agentId);
     if (detail.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",
@@ -293,14 +285,16 @@ export class AgentSetupService {
   }
 
   async #messagingState(callerUserId: string, agentId: string): Promise<AgentSetupMessagingState> {
-    const binding = await this.#messaging.getSetupBindingForAgent(callerUserId, agentId).catch((cause: unknown) => {
-      throw new AgentSetupObservationError("Messaging observation failed", { cause });
-    });
-    if (!binding) return { kind: "not-configured" };
+    const observation = await this.#messaging
+      .observeMessagingForAgent(callerUserId, agentId)
+      .catch((cause: unknown) => {
+        throw new AgentSetupObservationError("Messaging observation failed", { cause });
+      });
+    if (!observation) return { kind: "not-configured" };
+    const { binding, attempt } = observation;
     if (binding.handoff.bindingState === "active" && binding.handoff.handoffReady) {
       return activeMessagingState(binding, binding.handoff);
     }
-    const attempt = binding.provider === "feishu" ? await this.#observeAttempt(agentId) : undefined;
     if (
       attempt &&
       (attempt.state === "awaiting_user" || attempt.state === "pending_activation" || attempt.state === "validating")
@@ -320,19 +314,14 @@ export class AgentSetupService {
         return activeMessagingState(binding, handoff);
       case "reauthorization_required":
         return blockedMessagingState(binding, "reauthorization-required");
+      case "disabled":
       case "error":
         return blockedMessagingState(binding, "provider-error");
       case "provisioning":
         return provisioningMessagingState(binding, attempt);
       default:
-        throw new Error(`The Messaging binding handoff state cannot be projected: ${handoff.bindingState}`);
+        throw new Error("The Messaging binding handoff state cannot be projected");
     }
-  }
-
-  async #observeAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    return this.#attempts.observeForAgent(agentId).catch((cause: unknown) => {
-      throw new AgentSetupObservationError("Messaging attempt observation failed", { cause });
-    });
   }
 }
 
@@ -340,7 +329,7 @@ function provisioningMessagingState(
   binding: AgentSetupBindingState,
   attempt: FeishuSetupAttempt | undefined,
 ): AgentSetupMessagingState {
-  // Terminal first authorization retains its exact slot for a same-Provider retry.
+  if (!attempt || !["failed", "expired", "canceled"].includes(attempt.state)) return { kind: "observation-failed" };
   return {
     kind: "blocked",
     provider: binding.provider,
@@ -568,9 +557,8 @@ function deriveSetupActions(
   switch (stage) {
     case "needs-computer":
       if (computer.kind === "observation-failed") return [{ kind: "refresh" }];
-      if (computer.kind === "not-bound" || computer.kind === "requires-rebind") {
-        return [{ kind: "bind-computer" }];
-      }
+      if (computer.kind === "not-bound") return [{ kind: "bind-computer" }];
+      if (computer.kind === "requires-rebind") return [];
       return [{ kind: "refresh" }, { kind: "repair-computer", computerId: computer.computerId }];
     case "needs-runtime":
       return [{ kind: "refresh" }];
@@ -594,12 +582,7 @@ function deriveSetupActions(
   }
 }
 
-/**
- * The actions a Messaging state may offer. There is deliberately no direct Provider switch: while a
- * binding is current the only way toward another Provider is `unbind-messaging`, after which the
- * projection returns to not-configured and `start-messaging` becomes legal. Same-Provider
- * reauthorization (and Feishu replacement) stays available because it names the exact binding.
- */
+/** Configured identities allow repair in place; a disconnected identity requires a new Agent. */
 function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailable: boolean): AgentSetupAction[] {
   switch (messaging.kind) {
     case "not-configured": {
@@ -637,6 +620,7 @@ function blockedMessagingActions(
   messaging: Extract<AgentSetupMessagingState, { kind: "blocked" }>,
   slackOAuthAvailable: boolean,
 ): AgentSetupAction[] {
+  if (messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED") return [];
   if (messaging.code === "authorization-failed") {
     if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
     return [
@@ -667,9 +651,6 @@ function currentBindingActions(
   const actions: AgentSetupAction[] = [];
   if (provider !== "slack" || slackOAuthAvailable) {
     actions.push({ kind: "reauthorize-messaging", provider, bindingId, credentialGeneration });
-  }
-  if (provider === "feishu") {
-    actions.push({ kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration });
   }
   actions.push({ kind: "unbind-messaging", provider, bindingId });
   return actions;

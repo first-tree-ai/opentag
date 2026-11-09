@@ -78,7 +78,7 @@ describe("Setup completion sync", () => {
       </>,
     );
     await settle();
-    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
 
     memory.controls.scanFeishuCode();
     memory.controls.completeHandoff();

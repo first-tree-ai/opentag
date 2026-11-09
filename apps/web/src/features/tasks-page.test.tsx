@@ -1,10 +1,18 @@
-import type { TaskDetail, TaskReply, TaskSummary } from "@opentag/shared/browser";
+import type {
+  TaskDetail,
+  TaskDetailPage as TaskDetailResponse,
+  TaskReply,
+  TaskSummary,
+  TaskTurnPage,
+} from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { detailPage, mockDetail } from "../__tests__/support/task-detail-fixture.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
+import { agentSettingsSectionLink } from "./agents/agent-routes.js";
 import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -114,12 +122,18 @@ function RefreshTaskRepliesButton({ taskId }: { taskId: string }) {
 
 afterEach(() => vi.restoreAllMocks());
 
-// The Task replies subresource is read alongside the detail; tests declare its behavior here and
-// override per scenario as needed.
+// The Task replies and internal Sessions are read alongside the detail; tests declare their behavior
+// here and override per scenario as needed.
 beforeEach(() => {
   vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+  vi.spyOn(browserApi, "taskInternalSessions").mockResolvedValue({ items: [], nextCursor: null });
 });
 
+function responseAt(index: number): string {
+  return new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString();
+}
+
+/** One exchange: `Request N`, answered by the Agent's sent Feishu reply `Response N`. */
 function timelineTurn(index: number): TaskDetail["turns"][number] {
   const base = detail.turns[0];
   if (!base) throw new Error("Expected the Task fixture to include a Turn");
@@ -136,13 +150,44 @@ function timelineTurn(index: number): TaskDetail["turns"][number] {
       ...base.report,
       turnId: `turn-${index}`,
       finalText: `Response ${index}`,
-      reportedAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString(),
+      outgoingReplies: {
+        status: "complete",
+        replies: [
+          {
+            provider: "feishu",
+            teamBrand: "lark",
+            chatId: "oc_debug_channel",
+            messageId: `reply-${index}`,
+            createTime: String(Date.parse(responseAt(index))),
+            content: { msgType: "text", text: `Response ${index}` },
+          },
+        ],
+      },
+      reportedAt: responseAt(index),
     },
   };
 }
 
+/** The same sent reply as the Server's captured record, which every provider reads. */
+function capturedResponse(index: number, provider: TaskSummary["source"]["provider"]): TaskReply {
+  return {
+    id: `captured-${index}`,
+    provider,
+    channelId: "oc_debug_channel",
+    externalMessageId: `reply-${index}`,
+    authorKind: "bot",
+    authorDisplayName: null,
+    messageType: "text",
+    contentAvailable: true,
+    fallbackText: `Response ${index}`,
+    truncated: false,
+    occurredAt: responseAt(index),
+    timeSource: "provider",
+  };
+}
+
 function displayedMessages() {
-  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-execution-summary"] p')].map(
+  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-sent-reply"] p')].map(
     (message) => message.textContent,
   );
 }
@@ -161,9 +206,14 @@ describe("Tasks view", () => {
       task: { ...task, source: { ...task.source, provider, conversationKind } },
       turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(page);
+    mockDetail(page);
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [1, 2, 3].map((index) => capturedResponse(index, provider)),
+      nextCursor: null,
+    });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     await screen.findByText("Request 3");
+    await screen.findByText("Response 3");
 
     expect(displayedMessages()).toEqual([
       "Request 1",
@@ -186,12 +236,12 @@ describe("Tasks view", () => {
     "prepends complete older pages and keeps a failed page retryable above the %s conversation",
     async (conversationKind) => {
       const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
-      const request = vi
-        .spyOn(browserApi, "task")
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" })
-        .mockRejectedValueOnce(new Error("Temporary history failure"))
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" })
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(0)], nextCursor: null });
+      const { turns: request } = mockDetail(
+        { ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" },
+        new Error("Temporary history failure"),
+        { ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" },
+        { ...page, turns: [timelineTurn(0)], nextCursor: null },
+      );
       await renderInRouter(<TaskDetailPage taskId={sessionId} />);
       const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
       expect(
@@ -226,9 +276,10 @@ describe("Tasks view", () => {
     "places newly refreshed %s exchanges at the bottom",
     async (conversationKind) => {
       const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
-      vi.spyOn(browserApi, "task")
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)] })
-        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] });
+      mockDetail(
+        { ...page, turns: [timelineTurn(2), timelineTurn(1)] },
+        { ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] },
+      );
       await renderInRouter(
         <>
           <TaskDetailPage taskId={sessionId} />
@@ -309,14 +360,14 @@ describe("Tasks view", () => {
     const statusOf = (title: string) => {
       const row = screen.getByRole("link", { name: title }).closest("tr");
       if (!row) throw new Error("Expected the Task link to be inside a row");
-      return within(row).getByText(/^(Queued|Running|Completed|Failed)$/u).textContent;
+      return within(row).getByText(/^(Queued|Running|Completed|Failed|Cancelled)$/u).textContent;
     };
     expect(statuses.map((status) => statusOf(`Task ${status}`))).toEqual([
       "Queued",
       "Running",
       "Completed",
       "Failed",
-      "Completed",
+      "Cancelled",
       "Failed",
       "Completed",
     ]);
@@ -460,12 +511,13 @@ describe("Tasks view", () => {
   );
 
   it("renders a read-only activity record without exposing diagnostics", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    // The runtime's final text repeats the sent reply; the conversation never shows it.
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
     expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
     expect(screen.queryByText(/Provider outbound messages and detailed tool traces/)).toBeNull();
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
@@ -474,9 +526,9 @@ describe("Tasks view", () => {
   });
 
   it("stays an IM work-record view: no Cloud environment read, section, or controls", async () => {
-    // A Task is a work-record view organized by IM topic; it never queries or manages the runtime
+    // A Task is a work-record view of one IM Session; it never queries or manages the runtime
     // Cloud environments underneath, whatever the Agent's Computer kind.
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     const overview = vi.spyOn(browserApi, "agentCloudOverview");
     const agent = vi.spyOn(browserApi, "agent");
     const computers = vi.spyOn(browserApi, "computers");
@@ -485,9 +537,10 @@ describe("Tasks view", () => {
       path: `/agents/${agentId}/tasks/${sessionId}`,
     });
 
-    // The Task's own facts and conversation render exactly as before.
+    // The Task's own facts and conversation render; on the Agent's own page the Agent is not repeated.
     expect(await screen.findByLabelText("Task details")).toBeTruthy();
-    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).not.toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).toContain("Lark");
     expect(await screen.findByRole("region", { name: "Activity" })).toBeTruthy();
     // No environment region or resource control belongs to the page, and no Cloud read fires.
     expect(screen.queryByRole("region", { name: "Cloud environment" })).toBeNull();
@@ -496,6 +549,16 @@ describe("Tasks view", () => {
     expect(overview).not.toHaveBeenCalled();
     expect(agent).not.toHaveBeenCalled();
     expect(computers).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Agent fact when an Agent's page shows another Agent's Task", async () => {
+    mockDetail(detail);
+    const otherAgentId = "99999999-9999-4999-8999-999999999999";
+    await renderInRouter(<TaskDetailPage agentId={otherAgentId} taskId={sessionId} />, {
+      path: `/agents/${otherAgentId}/tasks/${sessionId}`,
+    });
+    // A stale or mistyped link: the Task belongs to Atlas, so the fact naming it stays.
+    expect((await screen.findByLabelText("Task details")).textContent).toContain("Atlas");
   });
 
   it("shows the agent logo in Task rows and the agent filter while preserving filter labels", async () => {
@@ -523,7 +586,7 @@ describe("Tasks view", () => {
 
   it("shows the agent logo in the chat header and falls back if it cannot load", async () => {
     const avatarPath = `/api/v1/agents/${agentId}/avatar`;
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       task: { ...task, agent: { ...task.agent, avatarPath } },
     });
@@ -580,7 +643,7 @@ describe("Tasks view", () => {
   });
 
   it("uses the local preview detail route without entering a synthetic Agent shell", async () => {
-    const taskRequest = vi.spyOn(browserApi, "task");
+    const { detail: taskRequest } = mockDetail();
 
     await renderInRouter(<TaskDetailPage showExamples taskId="10000000-0000-4000-8000-000000000001" />, {
       path: "/tasks/10000000-0000-4000-8000-000000000001?examples=true",
@@ -622,10 +685,32 @@ describe("Tasks view", () => {
     );
   });
 
+  it("opens the Task detail link when clicking a non-title cell in the Task row", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage agentId={agentId} />);
+    const link = await screen.findByRole("link", { name: task.title });
+    const row = link.closest("tr");
+    if (!row) throw new Error("Expected the Task link to be inside a row");
+    expect(row.className).toContain("cursor-pointer");
+
+    const linkClicks = vi.fn();
+    link.addEventListener("click", linkClicks);
+
+    fireEvent.click(within(row).getByText("Lark · Direct message"));
+    expect(linkClicks).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(within(row).getByText("Completed"));
+    expect(linkClicks).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(link);
+    expect(linkClicks).toHaveBeenCalledTimes(3);
+  });
+
   it("uses a user-facing author role when a sender name is unavailable", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [{ ...root, message: { ...root.message, authorDisplayName: null } }],
     });
@@ -638,7 +723,7 @@ describe("Tasks view", () => {
   });
 
   it("keeps the title alone and lists the status last among the Task details", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -656,7 +741,7 @@ describe("Tasks view", () => {
   it("names a Turn failure for the reader instead of printing its reason code", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -679,7 +764,7 @@ describe("Tasks view", () => {
   });
 
   it("announces Task status separately from the last activity time", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -689,10 +774,7 @@ describe("Tasks view", () => {
   });
 
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
-    const taskRequest = vi
-      .spyOn(browserApi, "task")
-      .mockResolvedValueOnce(detail)
-      .mockRejectedValueOnce(new ApiError(404, "Task not found"));
+    const { detail: taskRequest } = mockDetail(detail, new ApiError(404, "Task not found"));
 
     await renderInRouter(
       <>
@@ -730,7 +812,12 @@ describe("Tasks view", () => {
       absorbedBy: { deliveryId: root.deliveryId, turnId: root.report?.turnId ?? "turn-debug" },
       report: null,
     } satisfies TaskDetail["turns"][number];
-    vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
+    // A failed report keeps its entry, so the steered input shows it produced no second one.
+    const failedRoot = {
+      ...root,
+      report: root.report && { ...root.report, outcome: "failed" as const, errorReason: "provider_failed" },
+    } satisfies TaskDetail["turns"][number];
+    mockDetail({ ...detail, turns: [steered, failedRoot] });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
@@ -758,16 +845,34 @@ describe("Tasks view", () => {
         fallbackText: "This is an older inbound message.",
       },
     } satisfies TaskDetail["turns"][number];
-    const taskRequest = vi
-      .spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce({ ...detail, turns: [olderTurn], nextCursor: null });
+    const { turns: taskRequest } = mockDetail(firstPage, { ...detail, turns: [olderTurn], nextCursor: null });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
     expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
+  });
+
+  it("offers the messaging connection instead of View all when an Agent with no channel has no Tasks", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [], nextCursor: null });
+    await renderInRouter(
+      <AgentTasksSection
+        agentId={agentId}
+        connectChannel={{ label: "Connect messaging app", link: agentSettingsSectionLink(agentId, "messaging") }}
+      />,
+    );
+    const connect = await screen.findByRole("link", { name: "Connect messaging app" });
+    expect(connect.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
+    expect(screen.queryByText("Message this Agent in your chat app to put it to work.")).toBeNull();
+    expect(screen.queryByRole("link", { name: "View all" })).toBeNull();
+  });
+
+  it("asks for a first message when a connected Agent has no Tasks", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [], nextCursor: null });
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByText("Message this Agent in your chat app to put it to work.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View all" })).toBeNull();
   });
 
   it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
@@ -857,19 +962,20 @@ describe("Tasks view", () => {
           fallbackText: "Stale Task A Turn",
         },
       } satisfies TaskDetail["turns"][number];
-      let resolveTaskA: (value: TaskDetail) => void = () => undefined;
+      let resolveTaskA: (value: TaskTurnPage) => void = () => undefined;
       let rejectTaskA: (reason: Error) => void = () => undefined;
-      vi.spyOn(browserApi, "task").mockImplementation((requestedTaskId, cursor) => {
-        if (requestedTaskId === sessionId && !cursor) return Promise.resolve(firstPage);
-        if (requestedTaskId === sessionId && cursor === "older-turns") {
-          return new Promise((resolve, reject) => {
+      vi.spyOn(browserApi, "taskDetail").mockImplementation(async (requestedTaskId) => {
+        if (requestedTaskId === sessionId) return detailPage(firstPage);
+        if (requestedTaskId === secondTaskId) return detailPage(secondDetail);
+        throw new Error("Unexpected Task request");
+      });
+      vi.spyOn(browserApi, "taskTurns").mockImplementation(
+        () =>
+          new Promise((resolve, reject) => {
             resolveTaskA = resolve;
             rejectTaskA = reject;
-          });
-        }
-        if (requestedTaskId === secondTaskId && !cursor) return Promise.resolve(secondDetail);
-        return Promise.reject(new Error("Unexpected Task request"));
-      });
+          }),
+      );
 
       const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
       fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -880,7 +986,7 @@ describe("Tasks view", () => {
 
       await act(async () => {
         if (outcome === "success") {
-          resolveTaskA({ ...detail, turns: [staleTurn], nextCursor: null });
+          resolveTaskA({ items: [staleTurn], nextCursor: null });
         } else {
           rejectTaskA(new Error("Stale Task A pagination failure"));
         }
@@ -894,9 +1000,7 @@ describe("Tasks view", () => {
 
   it.each([401, 403, 404, 410])("withdraws the conversation when a Turn append is refused (%d)", async (status) => {
     const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockRejectedValueOnce(new ApiError(status, `Task refused (${status})`));
+    mockDetail(firstPage, new ApiError(status, `Task refused (${status})`));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -918,10 +1022,7 @@ describe("Tasks view", () => {
       task: { ...detail.task, id: secondTaskId, title: "Task B" },
       nextCursor: null,
     } satisfies TaskDetail;
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce(firstPage)
-      .mockRejectedValueOnce(new Error("Task A pagination failure"))
-      .mockResolvedValueOnce(secondDetail);
+    mockDetail(firstPage, new Error("Task A pagination failure"), secondDetail);
 
     const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
@@ -1001,21 +1102,16 @@ describe("Tasks view", () => {
     expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
     expect(screen.getByText("Task not found")).toBeTruthy();
 
-    vi.spyOn(browserApi, "task").mockRejectedValueOnce(new ApiError(404, "not found"));
+    mockDetail(new ApiError(404, "not found"));
     view.rerender(<TaskDetailPage taskId={sessionId} />);
     expect(await screen.findByText("This Task does not exist or is outside your Account.")).toBeTruthy();
 
-    vi.mocked(browserApi.task).mockRejectedValueOnce(new Error("database unavailable"));
+    mockDetail(new Error("database unavailable"));
     view.rerender(<TaskDetailPage taskId="66666666-6666-4666-8666-666666666666" />);
     expect(await screen.findByRole("heading", { name: "Task unavailable" })).toBeTruthy();
     expect(screen.getByText("database unavailable")).toBeTruthy();
 
-    vi.mocked(browserApi.task).mockResolvedValueOnce({
-      ...detail,
-      turns: [],
-      internalSessions: [],
-      collaborationMessages: [],
-    });
+    mockDetail({ ...detail, turns: [], internalSessions: [], collaborationMessages: [] });
     view.rerender(<TaskDetailPage taskId="77777777-7777-4777-8777-777777777777" />);
     expect(await screen.findByRole("heading", { name: "No activity recorded" })).toBeTruthy();
   });
@@ -1076,7 +1172,7 @@ describe("Tasks view", () => {
     };
     const firstSession = detail.internalSessions[0];
     if (!firstSession) throw new Error("Expected an internal session");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [pending, failed],
       internalSessions: [{ ...firstSession, endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
@@ -1084,7 +1180,9 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Work is in progress.")).toBeTruthy();
+    // The running Turn gets no Agent entry of its own: the Task status already says it is running.
+    expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).getByText("No text content")).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
     expect(within(activity).queryByText(/attempts/)).toBeNull();
@@ -1098,7 +1196,7 @@ describe("Tasks view", () => {
     async (isRunning) => {
       const root = detail.turns[0];
       if (!root) throw new Error("Expected the Task fixture to include a root Turn");
-      vi.spyOn(browserApi, "task").mockResolvedValue({
+      mockDetail({
         ...detail,
         task: { ...task, status: "expired" },
         turns: [{ ...root, delivery: { ...root.delivery, isRunning }, report: null }],
@@ -1111,25 +1209,24 @@ describe("Tasks view", () => {
     },
   );
 
-  it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+  it("shows no runtime final text or unsupported reply-history notice on a Slack Task", async () => {
+    mockDetail({
       ...detail,
       task: { ...task, source: { ...task.source, provider: "slack" } },
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).queryByText("Execution summary")).toBeNull();
-    expect(within(activity).getByRole("group", { name: "Execution summary" }).textContent).toContain(
-      detail.turns[0]?.report?.finalText,
-    );
+    expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(within(activity).queryByText(detail.turns[0]?.report?.finalText ?? "")).toBeNull();
+    expect(activity.querySelector('[data-ui="task-message-agent"]')).toBeNull();
     expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
   });
 
-  it("renders captured Lark replies separately from an execution summary", async () => {
+  it("renders captured Lark replies once, without the runtime final text", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1155,21 +1252,23 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
-      "task-message-author-agent",
-    );
+    // A plain-text reply's header names the author alone: no message kind or status label.
+    expect(activity.querySelector('[data-ui="task-message-author-agent"]')?.textContent).toBe("Atlas");
+    expect(within(activity).queryByText("Text")).toBeNull();
+    expect(within(activity).queryByText(/Completed/)).toBeNull();
     expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).queryByText("Execution summary")).toBeNull();
     expect(within(activity).queryByRole("button", { name: "Details" })).toBeNull();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
   });
 
-  it("does not invent a reply from finalText and keeps completed empty from rendering as running", async () => {
+  it("does not invent a reply from finalText and leaves a completed silent Turn without an entry", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1186,15 +1285,15 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
     expect(within(activity).queryByText("No reply records available.")).toBeNull();
-    expect(within(activity).getByText(/^Completed ·/)).toBeTruthy();
+    expect(within(activity).queryByText(/^Completed ·/)).toBeNull();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
-    expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
+    expect(activity.querySelector('[data-ui="task-message-agent"]')).toBeNull();
   });
 
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
-    vi.spyOn(browserApi, "task").mockResolvedValue({
+    mockDetail({
       ...detail,
       turns: [
         {
@@ -1246,18 +1345,14 @@ describe("Tasks view", () => {
           },
         ],
       };
-      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      mockDetail(data);
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findAllByText("Actual reply");
+      await screen.findByText("Actual reply");
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
-      const summary = container.querySelector('[data-ui="task-execution-summary"]');
-      if (finalText) {
-        expect(summary?.querySelector("p")?.textContent).toBe(finalText);
-      } else {
-        expect(summary).toBeNull();
-      }
+      expect(container.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
+      if (finalText && finalText !== "Actual reply") expect(screen.queryByText(finalText)).toBeNull();
       expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
     },
@@ -1270,23 +1365,24 @@ describe("Tasks view", () => {
       const report = data.turns[0]?.report;
       if (!report) throw new Error("Expected report fixture");
       report.outgoingReplies = status === "legacy" ? null : { status, replies: [] };
-      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      mockDetail(data);
       await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
       /*
        * The captured feed owns the empty state. The report's own incomplete-history note stays,
        * because it remains true of that snapshot; its missing/unavailable notice yields to the feed.
        */
-      await screen.findByRole("group", { name: "Execution summary" });
+      await screen.findByText("Please investigate the failed deployment.");
       if (status === "incomplete") {
         expect(
           screen.getByText("Reply history is incomplete. Some messages or content could not be included."),
         ).toBeTruthy();
+      } else {
+        expect(document.querySelector('[data-ui="task-message-agent"]')).toBeNull();
       }
       expect(screen.queryByText("No reply records available.")).toBeNull();
       expect(screen.queryByText("No sent replies recorded.")).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
-      expect(screen.queryByText("Execution summary")).toBeNull();
-      expect(screen.getByRole("group", { name: "Execution summary" }).textContent).toContain(report.finalText);
+      expect(screen.queryByText(report.finalText ?? "")).toBeNull();
     },
   );
 
@@ -1305,7 +1401,7 @@ describe("Tasks view", () => {
   });
 
   it("names the channel of a Task's source instead of printing its provider id", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -1318,6 +1414,126 @@ describe("Tasks view", () => {
     const sourceValue = sourceTerm.parentElement?.querySelector("dd");
     expect(sourceValue?.textContent).toContain("Lark");
     expect(sourceValue?.textContent).not.toMatch(/feishu/);
+  });
+
+  it("exposes Feishu chatMode metadata on Task rows and detail sources while keeping legacy rows compatible", async () => {
+    const topicTask = {
+      ...task,
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      title: "Topic chat task",
+      source: { ...task.source, conversationKind: "channel", chatMode: "topic" },
+    } satisfies TaskSummary;
+    const regularGroupTask = {
+      ...task,
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      title: "Regular group task",
+      source: { ...task.source, conversationKind: "channel", chatMode: "group", groupMessageType: "thread" },
+    } satisfies TaskSummary;
+    const legacyTask = {
+      ...task,
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      title: "Legacy group task",
+      source: { ...task.source, conversationKind: "channel", chatMode: null, groupMessageType: null },
+    } satisfies TaskSummary;
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({
+      tasks: [topicTask, regularGroupTask, legacyTask],
+      nextCursor: null,
+    });
+
+    const { container } = await renderInRouter(<TasksPage />);
+    await screen.findByText("Topic chat task");
+
+    const sources = [...container.querySelectorAll('[data-label="Source"]')];
+    expect(sources.map((cell) => cell.getAttribute("data-chat-mode"))).toEqual(["topic", "group", null]);
+    expect(sources.map((cell) => cell.getAttribute("data-group-message-type"))).toEqual([null, "thread", null]);
+
+    mockDetail({ ...detail, task: regularGroupTask });
+    const detailView = await renderInRouter(<TaskDetailPage taskId={regularGroupTask.id} />, {
+      path: `/tasks/${regularGroupTask.id}`,
+    });
+    await screen.findByRole("heading", { name: "Regular group task" });
+    const sourceSpan = detailView.container.querySelector("dd [data-chat-mode]");
+    expect(sourceSpan?.getAttribute("data-chat-mode")).toBe("group");
+    expect(sourceSpan?.getAttribute("data-group-message-type")).toBe("thread");
+  });
+
+  it("lists the Task's internal Sessions page by page, ended ones included, with what each was asked to do", async () => {
+    const detailRequest = vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
+      task: detail.task,
+      turns: { items: detail.turns, nextCursor: null },
+    });
+    const internalSession = (id: string, overrides: Record<string, unknown> = {}) => ({
+      id,
+      createdBySessionId: sessionId,
+      createdAt: "2026-08-27T01:10:00.000Z",
+      endedAt: null,
+      runtimeModel: "gpt-5",
+      runtimeReasoningEffort: null,
+      title: null,
+      lastActivityAt: "2026-08-27T01:12:00.000Z",
+      ...overrides,
+    });
+    const sessionsRequest = vi
+      .mocked(browserApi.taskInternalSessions)
+      .mockResolvedValueOnce({
+        items: [
+          internalSession("55555555-5555-4555-8555-555555555555", { title: "Review the failing deployment" }),
+          internalSession("66666666-6666-4666-8666-666666666666", {
+            endedAt: "2026-08-27T01:25:00.000Z",
+            runtimeModel: null,
+          }),
+        ],
+        nextCursor: "next-internal-sessions",
+      })
+      .mockResolvedValueOnce({
+        items: [internalSession("77777777-7777-4777-8777-777777777777", { title: "Summarize the logs" })],
+        nextCursor: null,
+      });
+
+    const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
+      path: `/tasks/${sessionId}`,
+    });
+
+    const list = await screen.findByRole("region", { name: "Internal Sessions" });
+    // The conversation still asks for its Turns alone; internal Sessions page on their own section.
+    expect(detailRequest).toHaveBeenCalledWith(sessionId, ["turns"]);
+    expect(sessionsRequest).toHaveBeenCalledWith(sessionId, undefined);
+    expect(list.querySelectorAll('[data-ui="task-internal-session-row"]')).toHaveLength(2);
+    expect(within(list).getByText("Review the failing deployment")).toBeTruthy();
+    // The id waits in the tooltip, and screen readers get it with the title.
+    const titled = within(list).getByText("Review the failing deployment");
+    expect(titled.getAttribute("tabindex")).toBe("0");
+    expect(within(titled).getByText("Session ID: 55555555-5555-4555-8555-555555555555").className).toContain("sr-only");
+    // Without a title or model the row names the Session by its id.
+    // It has nothing more to show, so it is plain text with no focus stop or tooltip.
+    const named = within(list).getByText("66666666-6666-4666-8666-666666666666");
+    expect(named.getAttribute("tabindex")).toBeNull();
+    expect(within(list).queryByText("Session ID: 66666666-6666-4666-8666-666666666666")).toBeNull();
+    expect(within(list).getByText("Active")).toBeTruthy();
+    expect(within(list).getByText("Ended")).toBeTruthy();
+
+    fireEvent.click(within(list).getByRole("button", { name: "Load more internal Sessions" }));
+    await within(list).findByText("Summarize the logs");
+    expect(sessionsRequest).toHaveBeenLastCalledWith(sessionId, "next-internal-sessions");
+    expect(list.querySelectorAll('[data-ui="task-internal-session-row"]')).toHaveLength(3);
+    expect(within(list).queryByRole("button", { name: "Load more internal Sessions" })).toBeNull();
+    expect(container.querySelector('[data-ui="task-internal-sessions-error"]')).toBeNull();
+  });
+
+  it("says when the internal Sessions could not be read without withdrawing the conversation", async () => {
+    vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
+      task: detail.task,
+      turns: { items: detail.turns, nextCursor: null },
+    });
+    vi.mocked(browserApi.taskInternalSessions).mockRejectedValue(new Error("unavailable"));
+
+    const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
+      path: `/tasks/${sessionId}`,
+    });
+
+    expect(await screen.findByText("Internal Sessions could not be loaded.")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Activity" })).toBeTruthy();
+    expect(container.querySelector('[data-ui="task-internal-sessions"]')).toBeNull();
   });
 });
 
@@ -1357,7 +1573,7 @@ function sentReplies(): HTMLElement[] {
 
 describe("Task captured replies", () => {
   it("shows a confirmed reply even when its Turn has no report", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: null }));
+    mockDetail(detailWithTurn({ report: null }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1375,7 +1591,7 @@ describe("Task captured replies", () => {
       errorReason: "provider_failed",
       finalText: null,
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: failedReport }));
+    mockDetail(detailWithTurn({ report: failedReport }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1397,7 +1613,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1419,7 +1635,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ contentAvailable: false, fallbackText: "" })],
       nextCursor: null,
@@ -1433,7 +1649,7 @@ describe("Task captured replies", () => {
   });
 
   it("marks a confirmed reply with unavailable content honestly", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ contentAvailable: false, fallbackText: "", timeSource: "observed" })],
       nextCursor: null,
@@ -1446,7 +1662,7 @@ describe("Task captured replies", () => {
   });
 
   it("keeps a truncated captured body distinguishable from an unavailable one", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ truncated: true, fallbackText: "Only part of this confirmed reply" })],
       nextCursor: null,
@@ -1471,7 +1687,7 @@ describe("Task captured replies", () => {
       .spyOn(browserApi, "taskReplies")
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockResolvedValueOnce({ items: [older], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     await screen.findByText("Confirmed reply from the platform");
@@ -1489,7 +1705,7 @@ describe("Task captured replies", () => {
   });
 
   it("reports replies loading while the conversation is already readable", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockReturnValue(new Promise<never>(() => undefined));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1505,7 +1721,7 @@ describe("Task captured replies", () => {
       .spyOn(browserApi, "taskReplies")
       .mockRejectedValueOnce(new Error("Temporary replies failure"))
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const error = await screen.findByRole("alert");
@@ -1520,7 +1736,7 @@ describe("Task captured replies", () => {
   });
 
   it("keeps the conversation visible without an empty reply notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
@@ -1532,9 +1748,9 @@ describe("Task captured replies", () => {
 
   it("waits for the detail's canonical Task id before reading replies", async () => {
     const canonicalId = "99999999-9999-4999-8999-999999999999";
-    let resolveDetail: (value: TaskDetail) => void = () => undefined;
-    vi.spyOn(browserApi, "task").mockReturnValue(
-      new Promise<TaskDetail>((resolve) => {
+    let resolveDetail: (value: TaskDetailResponse) => void = () => undefined;
+    vi.spyOn(browserApi, "taskDetail").mockReturnValue(
+      new Promise<TaskDetailResponse>((resolve) => {
         resolveDetail = resolve;
       }),
     );
@@ -1549,7 +1765,7 @@ describe("Task captured replies", () => {
 
     // The route id is a Session alias; replies belong to the Task id the detail resolved.
     await act(async () => {
-      resolveDetail({ ...detail, task: { ...task, id: canonicalId } });
+      resolveDetail(detailPage({ ...detail, task: { ...task, id: canonicalId } }));
     });
     await screen.findByText("Confirmed reply from the platform");
     expect(request).toHaveBeenCalledWith(canonicalId, undefined);
@@ -1567,7 +1783,7 @@ describe("Task captured replies", () => {
       ...baseReport(),
       outgoingReplies: { status: "complete" as const, replies: [receipt] },
     };
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
       items: [capturedReply({ messageType: "file", contentAvailable: false, fallbackText: "" })],
       nextCursor: null,
@@ -1581,7 +1797,7 @@ describe("Task captured replies", () => {
   });
 
   it("lets the captured feed replace the old per-report missing-reply notice", async () => {
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
     vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -1603,7 +1819,7 @@ describe("Task captured replies", () => {
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockRejectedValueOnce(new Error("Older replies failure"))
       .mockResolvedValueOnce({ items: [older], nextCursor: null });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     await screen.findByText("Confirmed reply from the platform");
@@ -1631,7 +1847,7 @@ describe("Task captured replies", () => {
       .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
       .mockRejectedValueOnce(new Error("Replies refresh failure"))
       .mockResolvedValueOnce({ items: [refreshed], nextCursor: "older-replies" });
-    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    mockDetail(detail);
 
     await renderInRouter(
       <>
@@ -1673,7 +1889,7 @@ describe("Task captured replies", () => {
     const request = vi
       .spyOn(browserApi, "taskReplies")
       .mockRejectedValue(new ApiError(404, "The requested resource was not found"));
-    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    mockDetail(detailWithTurn({ report }));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 

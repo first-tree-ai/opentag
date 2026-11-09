@@ -51,7 +51,7 @@ describe("mcp preset catalog shape", () => {
       expect(entry.whenToUse.zh.length).toBeGreaterThan(0);
       expect(entry.capabilities.length).toBeGreaterThan(0);
       expect(entry.auth.methods).toContain(entry.auth.defaultKind);
-      expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
+      if (entry.installable) expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
       expect(entry.auth.oauth !== undefined).toBe(entry.auth.methods.includes("oauth"));
     }
   });
@@ -72,7 +72,9 @@ describe("mcp preset catalog shape", () => {
     const text = MCP_CATALOG_ENTRY_SCHEMA.$defs.localizedText;
     expect(Object.keys(text.properties).sort()).toEqual(["en", "zh"]);
     expect(MCP_CATALOG_ENTRY_SCHEMA.required).not.toContain("remotes");
-    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual([{ required: ["packages"] }, { required: ["remotes"] }]);
+    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual(
+      expect.arrayContaining([{ required: ["packages"] }, { required: ["remotes"] }]),
+    );
   });
 
   it("embeds every icon as a self-contained data URL", () => {
@@ -114,6 +116,17 @@ describe("mcp preset catalog shape", () => {
 
   it("validates every entry against the Server create schema and card rules", () => {
     expect(validateMcpCatalog(MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES)).toEqual([]);
+  });
+
+  it("limits GitHub OAuth scopes and advertises the code, issue, and pull request toolsets", () => {
+    const github = MCP_CATALOG_ENTRIES.find((entry) => entry.id === "github");
+    expect(github).toMatchObject({
+      installable: true,
+      url: "https://api.githubcopilot.com/mcp/",
+      defaultAuthKind: "oauth",
+      oauthScopes: ["repo", "offline_access"],
+      extraHeaders: { "X-MCP-Toolsets": "context,repos,issues,pull_requests,users" },
+    });
   });
 
   it("points every entry at an endpoint the outbound gate would dial", () => {

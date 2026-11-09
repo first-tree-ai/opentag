@@ -436,14 +436,14 @@ describe("Agent Setup route boundary", () => {
 
     const open = await screen.findByRole("link", { name: "Open @reviewer" });
     expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
-    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeTruthy();
     // Nobody is moved: the reader chooses between the Agent that exists and a different name.
     expect(window.location.search).toBe("");
     expect(agentCreationPosts()).toHaveLength(1);
 
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "helper" } });
     expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
-    expect(screen.queryByText("An active Agent with this name already exists for this Account")).toBeNull();
+    expect(screen.queryByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeNull();
   });
 
   it("retires a refusal's offer with the refusal itself", async () => {
@@ -575,7 +575,7 @@ describe("Agent Setup route boundary", () => {
 
     const exit = await screen.findByRole("link", { name: "Go to your Agents" });
     expect(exit.getAttribute("href")).toBe("/agents");
-    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeTruthy();
   });
 
   it("does not repeat the Agent list destination already offered by the sidebar", async () => {
@@ -615,7 +615,9 @@ describe("Agent Setup route boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    expect(await screen.findByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(
+      await screen.findByText("An Agent with this name already exists. Names aren't case-sensitive."),
+    ).toBeTruthy();
     expect(screen.getByRole("link", { name: "All Agents" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Go to your Agents" })).toBeNull();
   });
@@ -666,7 +668,8 @@ describe("Agent Setup route boundary", () => {
     expect(window.location.pathname).toBe("/agents/setup");
     const continueButton = await expectPreparationGate();
     fireEvent.click(continueButton);
-    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    // The step heading is the page's only title: no "Set up Reviewer" subtitle repeats the Agent.
+    expect(screen.queryByText("Set up Reviewer")).toBeNull();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     const completions = vi
       .mocked(fetch)
@@ -688,6 +691,39 @@ describe("Agent Setup route boundary", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
     expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
     expect(agentCreationPosts()).toHaveLength(0);
+  });
+
+  it.each(["computer", "messaging"] as const)(
+    "returns to the Agent list from the unfinished first-time %s step through Back to Agents",
+    async (step) => {
+      installAgentSetupApi({ setupCompletedAt: null });
+      window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
+      render(<App />);
+
+      const continueButton = await expectPreparationGate();
+      if (step === "messaging") {
+        fireEvent.click(continueButton);
+        expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+      }
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(screen.getByRole("link", { name: "openTag" }).getAttribute("href")).toBe("/agents");
+      fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+
+      await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+      expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
+    },
+  );
+
+  it("offers both the Agent list and the Agent itself once first-time setup is complete", async () => {
+    installApi({ bound: true, setupCompletedAt: null });
+    window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "View agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
   });
 
   it("surfaces and then removes a Slack callback error on the canonical setup URL", async () => {

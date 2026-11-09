@@ -17,11 +17,13 @@ import { BackgroundFailureSupervisor } from "../observability/background-failure
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
+import { RuntimeProviderProxyTransport } from "../runtime-credentials/data-transport.js";
 import { createRuntimeCredentialServices } from "../runtime-credentials/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { formatStartupError } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
+import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
@@ -37,6 +39,7 @@ import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-servi
 import { SessionService } from "../services/sessions/index.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
+import { deferred } from "./support/deferred.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -374,4 +377,61 @@ describe("production Cloud runtime composition", () => {
     expect(restored).toBe("restore_required");
     expect(runtime.cloudAdmin.createCalls).toHaveLength(1);
   });
+});
+
+it.each([false, true])("credential stack joins capture after transport settles (failure=%s)", async (fails) => {
+  const transportEntered = deferred();
+  const releaseTransport = deferred();
+  const captureEntered = deferred();
+  const releaseCapture = deferred();
+  const originalTransportClose = RuntimeProviderProxyTransport.prototype.close;
+  const originalCaptureClose = ImOutboundCapture.prototype.close;
+  const transportSpy = vi.spyOn(RuntimeProviderProxyTransport.prototype, "close").mockImplementation(async function (
+    this: RuntimeProviderProxyTransport,
+  ) {
+    await originalTransportClose.call(this);
+    transportEntered.resolve();
+    await releaseTransport.promise;
+    if (fails) throw new Error("Controlled transport cleanup failure");
+  });
+  const captureSpy = vi.spyOn(ImOutboundCapture.prototype, "close").mockImplementation(async function (
+    this: ImOutboundCapture,
+  ) {
+    captureEntered.resolve();
+    await releaseCapture.promise;
+    await originalCaptureClose.call(this);
+  });
+  const stack = createRuntimeCredentialServices({
+    cipher: new ApplicationCipher(new Uint8Array(32).fill(7)),
+    custody: new PostgresRuntimeCustodyStore(unit.database),
+    database: unit.database,
+    registry: new ConnectionRegistry(),
+  });
+  const closing = stack.close();
+  const outcome = closing.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    expect(stack.close()).toBe(closing);
+    await transportEntered.promise;
+    expect(captureSpy).not.toHaveBeenCalled();
+    releaseTransport.resolve();
+    await captureEntered.promise;
+    let closed = false;
+    void outcome.then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    releaseCapture.resolve();
+    expect(await outcome).toEqual(fails ? expect.any(AggregateError) : undefined);
+    expect(captureSpy).toHaveBeenCalledOnce();
+  } finally {
+    releaseTransport.resolve();
+    releaseCapture.resolve();
+    await outcome;
+    transportSpy.mockRestore();
+    captureSpy.mockRestore();
+  }
 });

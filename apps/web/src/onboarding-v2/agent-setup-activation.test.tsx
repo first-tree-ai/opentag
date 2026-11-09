@@ -38,7 +38,8 @@ afterEach(() => {
 });
 
 describe("durable Feishu activation presentation", () => {
-  it.each(["offline", "runtime"])(
+  // An offline computer shows the repair command window, which polls on its own: no Check again there.
+  it.each(["runtime"])(
     "keeps preparation refresh available while authorization waits and %s needs recovery",
     async (condition) => {
       const memory = await pendingActivation();

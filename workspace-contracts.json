@@ -5,7 +5,7 @@
       "name": "open-tag",
       "requiresRootExport": true,
       "requiresFiles": true,
-      "allowedWorkspaceDependencies": ["@opentag/client", "@opentag/shared"]
+      "allowedWorkspaceDependencies": ["@opentag/client", "@opentag/mcp-presets", "@opentag/shared"]
     },
     "apps/web": {
       "name": "@opentag/web",

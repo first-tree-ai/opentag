@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import semver from "semver";
 import { createLogger } from "../../observability/logger.js";
@@ -69,6 +70,7 @@ export async function probeProviderCliExecutable(
   },
 ): Promise<ProviderCliProbeOutcome> {
   let probeHome: string | undefined;
+  const startedAt = performance.now();
   try {
     probeHome = await mkdtemp(join(tmpdir(), "opentag-provider-cli-probe-"));
     await chmod(probeHome, 0o700);
@@ -98,7 +100,15 @@ export async function probeProviderCliExecutable(
     try {
       versionOutput = (await run(target, [...prefix, ...entry.probes.versionArgs], execution)).stdout;
     } catch (error) {
-      logger.debug({ code: "version_probe_failed", error: String(error) }, "Provider CLI version probe failed");
+      logger.debug(
+        {
+          provider: entry.provider,
+          code: "version_probe_failed",
+          durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+          error: String(error),
+        },
+        "Provider CLI version probe failed",
+      );
       return { status: "failed", code: "probe_failed" };
     }
     const match = new RegExp(entry.probes.versionPattern).exec(versionOutput);
@@ -112,12 +122,36 @@ export async function probeProviderCliExecutable(
     try {
       await run(target, [...prefix, ...entry.probes.surfaceArgs], execution);
     } catch (error) {
-      logger.debug({ code: "surface_probe_failed", error: String(error) }, "Provider CLI surface probe failed");
+      logger.debug(
+        {
+          provider: entry.provider,
+          code: "surface_probe_failed",
+          durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+          error: String(error),
+        },
+        "Provider CLI surface probe failed",
+      );
       return { status: "failed", code: "probe_failed" };
     }
+    logger.debug(
+      {
+        provider: entry.provider,
+        version,
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      },
+      "Provider CLI probe succeeded",
+    );
     return { status: "ok", version };
   } catch (error) {
-    logger.debug({ code: "probe_setup_failed", error: String(error) }, "Provider CLI probe setup failed");
+    logger.debug(
+      {
+        provider: entry.provider,
+        code: "probe_setup_failed",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        error: String(error),
+      },
+      "Provider CLI probe setup failed",
+    );
     return { status: "failed", code: "probe_failed" };
   } finally {
     if (probeHome)

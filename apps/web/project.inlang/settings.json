@@ -25,7 +25,8 @@
       "./messages/onboarding-v2/{locale}.json",
       "./messages/im/{locale}.json",
       "./messages/mcp/{locale}.json",
-      "./messages/cloud/{locale}.json"
+      "./messages/cloud/{locale}.json",
+      "./messages/im-feedback/{locale}.json"
     ]
   }
 }

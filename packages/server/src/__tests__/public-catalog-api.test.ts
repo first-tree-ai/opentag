@@ -89,7 +89,7 @@ describe("public catalog routes", () => {
         website: entry.website,
         iconUrl: entry.iconUrl,
         order: entry.order,
-        defaultAuthKind: entry.defaultAuthKind,
+        defaultAuthKind: entry.auth.defaultKind,
       })),
     );
     const allowed = new Set([

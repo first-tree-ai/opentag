@@ -1,5 +1,5 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, DropdownMenu, Icon } from "../../ui/design-system.js";
 import type { ComputerConnectAdapter } from "../computer-connect/computer-connect.js";
@@ -25,14 +25,24 @@ export function ComputerManagement({
   onDeleted: (computer: AccountComputerSummary) => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  // The repair window opens only on request: issuing a command for every offline computer on load
+  // makes a long page and leaves unused commands behind. A link that names this computer (Reconnect,
+  // Restore connection) is that request, so the named card arrives with its window open.
+  const [recovering, setRecovering] = useState(requested);
   const menuRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLElement>(null);
+  const restoreRef = useRef<HTMLButtonElement>(null);
   const cloud = computer.kind === "cloud";
   const connection = confirmed ? computer.connectionStatus : "unconfirmed";
 
   useEffect(() => {
+    // A link that names this computer lands on its card.
     if (requested) cardRef.current?.focus();
   }, [requested]);
+
+  useEffect(() => {
+    if (connection === "online") setRecovering(false);
+  }, [connection]);
 
   return (
     <section
@@ -45,6 +55,7 @@ export function ComputerManagement({
         compact
         computer={computer}
         connection={connection}
+        hideStatus={recovering && !cloud && confirmed && connection !== "online"}
         lastSeenAt={computer.lastSeenAt}
         actions={
           cloud ? undefined : (
@@ -72,20 +83,17 @@ export function ComputerManagement({
         }
       />
       {!cloud && connection !== "online" ? (
-        <div className={confirmed ? "min-w-0 border-t border-kumo-line pt-5 sm:ml-13" : "min-w-0"}>
-          <ComputerRecovery
-            computer={computer}
-            adapter={adapter}
-            available={confirmed}
-            returnFocusRef={cardRef}
-            onConnected={onConnected}
-          />
-          {!confirmed ? (
-            <Button className="w-fit" variant="secondary" disabled={refreshing} onClick={onConnected}>
-              {refreshing ? m.computer_checking_status() : m.computer_check_status()}
-            </Button>
-          ) : null}
-        </div>
+        <ComputerRepairArea
+          adapter={adapter}
+          cardRef={cardRef}
+          computer={computer}
+          confirmed={confirmed}
+          recovering={recovering}
+          refreshing={refreshing}
+          restoreRef={restoreRef}
+          onConnected={onConnected}
+          onRecover={() => setRecovering(true)}
+        />
       ) : null}
       {deleting ? (
         <ComputerDeleteDialog
@@ -96,5 +104,60 @@ export function ComputerManagement({
         />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Below an offline card: one Restore action, or once pressed, the shared command window in place.
+ * While the inventory read is uncertain it offers Check status instead and keeps an open attempt.
+ */
+function ComputerRepairArea({
+  adapter,
+  cardRef,
+  computer,
+  confirmed,
+  recovering,
+  refreshing,
+  restoreRef,
+  onConnected,
+  onRecover,
+}: {
+  adapter?: ComputerConnectAdapter;
+  cardRef: RefObject<HTMLElement | null>;
+  computer: AccountComputerSummary;
+  confirmed: boolean;
+  recovering: boolean;
+  refreshing: boolean;
+  restoreRef: RefObject<HTMLButtonElement | null>;
+  onConnected: () => void;
+  onRecover: () => void;
+}) {
+  if (confirmed && !recovering) {
+    return (
+      <div className="min-w-0 sm:ml-13">
+        <Button ref={restoreRef} className="w-fit" variant="secondary" onClick={onRecover}>
+          {m.computer_recovery_heading()}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className={confirmed ? "min-w-0 border-t border-kumo-line pt-5 sm:ml-13" : "min-w-0"}>
+      {recovering ? (
+        <ComputerRecovery
+          computer={computer}
+          adapter={adapter}
+          available={confirmed}
+          focusOnMount
+          returnFocusRef={cardRef}
+          onConnected={onConnected}
+        />
+      ) : null}
+      {confirmed ? null : (
+        <Button className="w-fit" variant="secondary" disabled={refreshing} onClick={onConnected}>
+          {refreshing ? m.computer_checking_status() : m.computer_check_status()}
+        </Button>
+      )}
+    </div>
   );
 }

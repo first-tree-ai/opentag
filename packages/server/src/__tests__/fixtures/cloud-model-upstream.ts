@@ -17,13 +17,16 @@ export const FIXTURE_RESPONSE_HEADER = "x-fixture-upstream-secret";
 
 export type FixtureHandler =
   | { kind: "json"; payload?: unknown }
-  | { kind: "sse"; chunks?: string[] }
+  | { kind: "sse"; chunks?: string[]; retryAfter?: string }
+  | { kind: "raw-sse"; chunks: string[]; retryAfter?: string }
+  | { kind: "sequence"; handlers: FixtureHandler[] }
   | { kind: "slow-sse"; chunkIntervalMs?: number }
+  | { kind: "heartbeat"; chunkIntervalMs?: number }
   | { kind: "stall"; declaredLength?: number }
   | { kind: "overflow"; totalBytes?: number; chunkBytes?: number }
   | { kind: "backpressure"; totalBytes?: number; chunkBytes?: number }
   | { kind: "redirect"; location: string }
-  | { kind: "error"; status: number; body?: unknown; rawBody?: string }
+  | { kind: "error"; status: number; body?: unknown; rawBody?: string; retryAfter?: string }
   | { kind: "empty" }
   | { kind: "bad-content-type" };
 
@@ -68,6 +71,12 @@ async function respond(
   stats: CloudModelUpstreamStats,
 ): Promise<void> {
   switch (handler.kind) {
+    case "sequence":
+      return respond(
+        handler.handlers[Math.min(stats.hits - 1, handler.handlers.length - 1)] ?? { kind: "empty" },
+        response,
+        stats,
+      );
     case "json": {
       const payload = JSON.stringify(handler.payload ?? { id: "chatcmpl-fixture", choices: [] });
       response.writeHead(200, {
@@ -78,19 +87,13 @@ async function respond(
       response.end(payload);
       return;
     }
-    case "sse": {
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      for (const chunk of handler.chunks ?? ["fixture-chunk-0", "fixture-chunk-1", "fixture-chunk-2"]) {
-        const payload = `data: ${chunk}\n\n`;
-        stats.responseBytesSent += Buffer.byteLength(payload);
-        response.write(payload);
-      }
-      const done = "data: [DONE]\n\n";
-      stats.responseBytesSent += Buffer.byteLength(done);
-      response.end(done);
+    case "sse":
+    case "raw-sse": {
+      respondSse(handler, response, stats);
       return;
     }
-    case "slow-sse": {
+    case "slow-sse":
+    case "heartbeat": {
       response.writeHead(200, { "content-type": "text/event-stream" });
       let index = 0;
       const timer = setInterval(() => {
@@ -98,7 +101,7 @@ async function respond(
           clearInterval(timer);
           return;
         }
-        const payload = `data: fixture-chunk-${index}\n\n`;
+        const payload = handler.kind === "heartbeat" ? ": heartbeat\n\n" : `data: fixture-chunk-${index}\n\n`;
         index += 1;
         stats.responseBytesSent += Buffer.byteLength(payload);
         response.write(payload);
@@ -147,6 +150,7 @@ async function respond(
       response.writeHead(handler.status, {
         "content-type": "application/json",
         [FIXTURE_RESPONSE_HEADER]: FIXTURE_MASTER_KEY,
+        ...(handler.retryAfter === undefined ? {} : { "retry-after": handler.retryAfter }),
       });
       response.write(payload);
       response.end();
@@ -163,6 +167,31 @@ async function respond(
       return;
     }
   }
+}
+
+function respondSse(
+  handler: Extract<FixtureHandler, { kind: "sse" | "raw-sse" }>,
+  response: ServerResponse,
+  stats: CloudModelUpstreamStats,
+): void {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    ...(handler.retryAfter === undefined ? {} : { "retry-after": handler.retryAfter }),
+  });
+  if (handler.kind === "raw-sse") {
+    const payload = handler.chunks.join("");
+    stats.responseBytesSent += Buffer.byteLength(payload);
+    response.end(payload);
+    return;
+  }
+  for (const chunk of handler.chunks ?? ["fixture-chunk-0", "fixture-chunk-1", "fixture-chunk-2"]) {
+    const payload = `data: ${chunk}\n\n`;
+    stats.responseBytesSent += Buffer.byteLength(payload);
+    response.write(payload);
+  }
+  const done = "data: [DONE]\n\n";
+  stats.responseBytesSent += Buffer.byteLength(done);
+  response.end(done);
 }
 
 export async function startCloudModelUpstream(handler: FixtureHandler): Promise<CloudModelUpstream> {

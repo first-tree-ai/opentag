@@ -1,6 +1,6 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, buttonClassName, Icon, Text } from "../../ui/design-system.js";
@@ -19,8 +19,19 @@ import { useAgentListQuery, useComputersQuery } from "./agent-queries.js";
 import { accountComputerLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { ComputerManagement } from "./computer-management.js";
 
-/** All Account Computers are managed in place; existing targeted links focus the requested card. */
-export function ComputersPage({ computerId, fromAgent }: { computerId?: string; fromAgent?: string }) {
+/**
+ * All Account Computers are managed in place; existing targeted links focus the requested card.
+ * `connect` carries an explicit "connect another computer" request from elsewhere, such as Agent settings.
+ */
+export function ComputersPage({
+  computerId,
+  connect,
+  fromAgent,
+}: {
+  computerId?: string;
+  connect?: "another";
+  fromAgent?: string;
+}) {
   const { me } = useAccount();
   const query = useComputersQuery(true);
   const agentsQuery = useAgentListQuery(me.user.id, Boolean(fromAgent));
@@ -58,6 +69,7 @@ export function ComputersPage({ computerId, fromAgent }: { computerId?: string; 
                 key={computerId ?? "account"}
                 computers={computers}
                 computerId={computerId}
+                connectRequested={connect === "another"}
                 fromAgent={fromAgent}
                 confirmed={confirmed}
                 refreshing={query.isFetching}
@@ -79,6 +91,7 @@ export function ComputersPage({ computerId, fromAgent }: { computerId?: string; 
 function ComputerContent({
   computers,
   computerId,
+  connectRequested,
   fromAgent,
   confirmed,
   refreshing,
@@ -86,6 +99,7 @@ function ComputerContent({
 }: {
   computers: readonly AccountComputerSummary[];
   computerId?: string;
+  connectRequested: boolean;
   fromAgent?: string;
   confirmed: boolean;
   refreshing: boolean;
@@ -106,6 +120,17 @@ function ComputerContent({
     setConnectionBaseline(null);
     onConnected();
   };
+  const startConnection = () => setConnectionBaseline(computers.map((computer) => computer.computerId));
+  // A request carried in from another page is the reader's explicit action, but it is consumed once:
+  // the baseline needs a confirmed inventory, and dropping the request from the URL keeps a reload or
+  // Back from issuing another connection command.
+  const requestConsumed = useRef(false);
+  useEffect(() => {
+    if (!connectRequested || !confirmed || requestConsumed.current) return;
+    requestConsumed.current = true;
+    if (!connecting) setConnectionBaseline(computers.map((computer) => computer.computerId));
+    void navigate({ ...accountComputerLink(computerId, fromAgent), replace: true });
+  }, [connectRequested, confirmed, connecting, computers, computerId, fromAgent, navigate]);
   if (computers.length === 0 && computerId && !connecting) return <ComputerMissing />;
   return (
     <div className="grid min-w-0 gap-4">
@@ -125,7 +150,7 @@ function ComputerContent({
         <ComputerConnection
           additional={additional}
           connecting={connecting}
-          onStart={() => setConnectionBaseline(computers.map((computer) => computer.computerId))}
+          onStart={startConnection}
           onConnected={finishConnection}
         />
       ) : null}
@@ -159,7 +184,6 @@ function ComputerConnection({
         <Text as="h2" id="connect-computer-heading" variant="heading">
           {additional ? m.computer_connect_another_action() : m.computer_first_heading()}
         </Text>
-        <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_first_description()}</p>
       </div>
       {connecting ? (
         <ComputerConnect

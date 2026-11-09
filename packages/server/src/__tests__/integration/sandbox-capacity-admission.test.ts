@@ -7,18 +7,21 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { imBindings, sandboxes, users } from "../../db/schema/index.js";
+import { createDatabaseClient, type DatabaseClient, type DatabaseTransaction } from "../../db/client.js";
+import { imBindings, sandboxes, sessions, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { CloudRunAdminError } from "../../services/cloud-run/index.js";
 import { ComputerService } from "../../services/computers/index.js";
+import { CloudOverviewService } from "../../services/sandboxes/cloud-overview-service.js";
 import { CloudCapacityExceededError } from "../../services/sandboxes/errors.js";
 import { SandboxService } from "../../services/sandboxes/index.js";
+import { loadManagedSandboxById, loadSandboxOwnerById } from "../../services/sandboxes/owned-sandbox.js";
 import { RunnerBootstrapTokenService } from "../../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
-import { countCloudCapacityOccupancy } from "../../services/sandboxes/sandbox-capacity.js";
+import { countCloudCapacityOccupancy, lockCloudCapacityAdmission } from "../../services/sandboxes/sandbox-capacity.js";
 import { SandboxRunnerService } from "../../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
 import { FakeCloudRunAdmin } from "../support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "../support/fake-workspace-store.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -466,3 +469,236 @@ describe("E9 capacity admission races on PostgreSQL", () => {
     expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
   });
 });
+
+async function routeFor(sandboxId: string) {
+  const row = await rowFor(sandboxId);
+  const [route] = await database
+    .select({ agentId: imBindings.agentId, bindingId: imBindings.id })
+    .from(sessions)
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .where(eq(sessions.id, row.sessionId));
+  if (!route) throw new Error("Missing Sandbox route");
+  return { ...route, sessionId: row.sessionId };
+}
+async function holdTransaction(
+  client: ReturnType<typeof createDatabaseClient>,
+  lock: (tx: DatabaseTransaction) => Promise<unknown>,
+) {
+  const entered = deferred(),
+    release = deferred();
+  const done = client.database.transaction(async (tx) => {
+    await lock(tx);
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  return { release: () => release.resolve(), done };
+}
+
+describe("physical ownership and reservation authority", () => {
+  it.each(["suspend", "delete", "transfer"] as const)(
+    "retains original physical capacity and cleanup after actual %s",
+    async (change) => {
+      const accountId = await account(),
+        target = await account();
+      const stack = makeStack({ accountLimit: 1, platformLimit: 20 }, { workspace: true });
+      const ready = await readySandbox(stack, accountId, "retained-owner");
+      const route = await routeFor(ready.row.id);
+      const service = new AgentService(database, { cloudIdentitiesEnabled: true });
+      await service.suspendById(accountId, route.agentId);
+      if (change === "delete") await service.deleteById(accountId, route.agentId);
+      if (change === "transfer") {
+        await expect(
+          service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" }),
+        ).rejects.toMatchObject({ reason: "configuration_immutable" });
+        // Retained capacity from historical transfers keeps its original owner.
+        await sql`update agents set created_by_user_id=${target}, computer_id=null, revision=revision+1 where id=${route.agentId}`;
+      }
+      expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
+      expect(await countCloudCapacityOccupancy(database, target)).toEqual({ accountUsed: 0, platformUsed: 1 });
+      expect(await loadSandboxOwnerById(database, ready.row.id)).toMatchObject({
+        computerId: ready.sandbox.computerId,
+        sandbox: { currentResourceUid: ready.row.currentResourceUid },
+      });
+      expect(await loadManagedSandboxById(database, ready.row.id)).toBeUndefined();
+      expect(await stack.service.statusForAccount(accountId, ready.row.id)).toMatchObject({ lifecycle: "ready" });
+      await expect(stack.service.statusForAccount(target, ready.row.id)).rejects.toMatchObject({ statusCode: 404 });
+      const overview = new CloudOverviewService(database, { accountLimit: 1, controlsEnabled: true });
+      if (change !== "transfer")
+        expect(await overview.read(accountId, route.agentId, { limit: 20 })).toMatchObject({
+          capacity: { accountUsed: 1 },
+          counts: { allocated: 1 },
+        });
+      else
+        await expect(overview.read(accountId, route.agentId, { limit: 20 })).rejects.toMatchObject({ statusCode: 404 });
+      // A second reservation is not allowed to erase the retained physical charge by changing Agent state.
+      const second = await ownedSandbox(accountId, "retained-capacity");
+      const marker = await rowFor(ready.row.id);
+      await database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, marker.id));
+      await expect(stack.service.startForAccount(accountId, second.sandboxId)).rejects.toMatchObject({
+        code: "CLOUD_CAPACITY_EXCEEDED",
+        scope: "account",
+      });
+      await database.update(sandboxes).set({ idleReclaimAt: null }).where(eq(sandboxes.id, marker.id));
+      await stack.service.stopForAccount(accountId, ready.row.id);
+      expect((await rowFor(ready.row.id)).currentResourceUid).toBeNull();
+      expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 0, platformUsed: 0 });
+      await stack.service.startForAccount(accountId, second.sandboxId);
+      expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
+    },
+  );
+
+  it.each(["suspend", "transfer", "revision", "binding", "session", "placement", "account"] as const)(
+    "refuses a reservation after committed-first %s",
+    async (change) => {
+      const accountId = await account(),
+        target = await account();
+      const stack = makeStack({ accountLimit: 3, platformLimit: 20 });
+      const sandbox = await ownedSandbox(accountId, "withdraw-before-reserve");
+      const route = await routeFor(sandbox.sandboxId);
+      const control = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+      const writer = createDatabaseClient(testDatabase.databaseUrl);
+      const held = await holdTransaction(control, lockCloudCapacityAdmission);
+      const running = stack.service.startForAccount(accountId, sandbox.sandboxId).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      try {
+        await expect
+          .poll(
+            async () =>
+              (
+                await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event='advisory'`
+              )[0]?.n,
+          )
+          .toBeGreaterThan(0);
+        await withdrawAuthority(change, writer, route, accountId, target);
+        held.release();
+        await held.done;
+        expect(await running).toMatchObject({ error: { statusCode: 404 } });
+        expect(await rowFor(sandbox.sandboxId)).toMatchObject({
+          lifecycle: "unallocated",
+          environmentGeneration: 0,
+          currentResourceName: null,
+          currentResourceUid: null,
+        });
+        expect(stack.fake.createCalls).toHaveLength(0);
+        if (change === "revision") {
+          await stack.service.startForAccount(accountId, sandbox.sandboxId);
+          expect(stack.fake.createCalls).toHaveLength(1);
+        }
+        expect(
+          await control.sql`select pid from pg_stat_activity where datname=current_database() and state='idle in transaction'`,
+        ).toHaveLength(0);
+      } finally {
+        held.release();
+        await held.done;
+        await running;
+        await control.sql.end();
+        await writer.sql.end();
+      }
+    },
+  );
+
+  it.each(["suspend", "account", "binding", "session"] as const)(
+    "serializes independent %s after admission guards and before Sandbox reservation",
+    async (change) => {
+      const accountId = await account();
+      const stack = makeStack({ accountLimit: 3, platformLimit: 20 });
+      const sandbox = await ownedSandbox(accountId, "guard-before-sandbox");
+      const route = await routeFor(sandbox.sandboxId);
+      const control = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+      const writer = createDatabaseClient(testDatabase.databaseUrl);
+      const held = await holdTransaction(control, (tx) =>
+        tx.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId)).for("update"),
+      );
+      const running = stack.service.startForAccount(accountId, sandbox.sandboxId).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      let changed = false;
+      let changing: Promise<unknown> = Promise.resolve();
+      try {
+        await expect
+          .poll(
+            async () =>
+              (
+                await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like '%sandboxes%'`
+              )[0]?.n,
+          )
+          .toBeGreaterThan(0);
+        changing = withdrawAuthority(change, writer, route, accountId, accountId).then(() => {
+          changed = true;
+        });
+        await expect
+          .poll(
+            async () =>
+              (
+                await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`
+              )[0]?.n,
+          )
+          .toBeGreaterThanOrEqual(2);
+        expect(changed).toBe(false);
+        held.release();
+        await held.done;
+        expect(await running).toHaveProperty("value");
+        await changing;
+        expect((await rowFor(sandbox.sandboxId)).environmentGeneration).toBe(1);
+        expect(await loadManagedSandboxById(database, sandbox.sandboxId)).toBeUndefined();
+        expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
+      } finally {
+        held.release();
+        await held.done;
+        await Promise.allSettled([running, changing]);
+        await control.sql.end();
+        await writer.sql.end();
+      }
+    },
+  );
+});
+
+async function withdrawAuthority(
+  change: "suspend" | "transfer" | "revision" | "binding" | "session" | "placement" | "account",
+  writer: ReturnType<typeof createDatabaseClient>,
+  route: Awaited<ReturnType<typeof routeFor>>,
+  accountId: string,
+  target: string,
+): Promise<void> {
+  const service = new AgentService(writer.database, { cloudIdentitiesEnabled: true });
+  switch (change) {
+    case "suspend":
+      await service.suspendById(accountId, route.agentId);
+      return;
+    case "transfer":
+      await service.suspendById(accountId, route.agentId);
+      await expect(
+        service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" }),
+      ).rejects.toMatchObject({ reason: "configuration_immutable" });
+      await writer.sql`update agents set created_by_user_id=${target}, computer_id=null, revision=revision+1 where id=${route.agentId}`;
+      return;
+    case "revision": {
+      const current = await service.getConfigById(accountId, route.agentId);
+      await service.updateById(accountId, route.agentId, {
+        expectedRevision: current.revision,
+        displayName: "Changed",
+      });
+      return;
+    }
+    case "binding":
+      await writer.sql`update im_bindings set status='disabled', encrypted_credential=null, encrypted_setup_context=null, setup_owner_instance_id=null, connection_owner_instance_id=null, connection_lease_expires_at=null, disabled_at=now() where id=${route.bindingId}`;
+      return;
+    case "session":
+      await writer.sql`update sessions set ended_at=now() where id=${route.sessionId}`;
+      return;
+    case "placement": {
+      const cloud = await new ComputerService(writer.database, unusedAccountResolver, {
+        cloudIdentities,
+      }).ensureCloudComputerForAccount(target);
+      await new SessionService(writer.database).movePlacement(route.sessionId, cloud.computerId);
+      return;
+    }
+    case "account":
+      await writer.sql`update users set suspended_at=now() where id=${accountId}`;
+      return;
+  }
+}

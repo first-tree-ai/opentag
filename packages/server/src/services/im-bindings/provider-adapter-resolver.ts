@@ -1,3 +1,4 @@
+import type { ExternalCallPolicy } from "../im/external-call-policy.js";
 import { FeishuAdapter } from "./feishu/adapter.js";
 import type { ImBindingService } from "./im-binding-service.js";
 import type { ImProviderAdapter } from "./provider-adapter.js";
@@ -13,6 +14,7 @@ export class ProviderAdapterResolutionError extends Error {
 export function createImProviderAdapterResolver(input: {
   imBindings: ImBindingService;
   slackApi: SlackApiClient;
+  feishuPolicy?: ExternalCallPolicy;
   createFeishuAdapter?: (options: {
     appId: string;
     appSecret: string;
@@ -22,7 +24,12 @@ export function createImProviderAdapterResolver(input: {
 }): (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>> {
   const createFeishuAdapter =
     input.createFeishuAdapter ??
-    ((options) => new FeishuAdapter({ ...options, channel: null }) as ImProviderAdapter<unknown>);
+    ((options) =>
+      new FeishuAdapter({
+        ...options,
+        channel: null,
+        ...(input.feishuPolicy ? { policy: input.feishuPolicy } : {}),
+      }) as ImProviderAdapter<unknown>);
   return async (imBindingId, generation) => {
     const slack = await input.imBindings.getSlackConnectionMaterial(imBindingId);
     if (slack) {

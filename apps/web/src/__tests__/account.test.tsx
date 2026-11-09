@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { viewerTimezone } from "../query/keys.js";
 import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
 
 async function expectPreparationGate(): Promise<HTMLButtonElement> {
@@ -29,7 +30,7 @@ describe("OpenTag Web App Shell", () => {
           minimumTopUpCents: 1000,
           maximumTopUpCents: 100_000,
         });
-      if (path === "/api/v1/cloud/billing/usage?windowDays=30")
+      if (path === `/api/v1/cloud/billing/usage?windowDays=30&timezone=${encodeURIComponent(viewerTimezone())}`)
         return json({
           enabled: true,
           windowDays: 30,
@@ -59,15 +60,12 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/account");
     render(<App />);
 
-    const email = (await screen.findByLabelText("Email")) as HTMLInputElement;
+    // The sign-in email can't be changed here, so it is plain text rather than a locked input.
+    expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByLabelText("Email")).toBeNull();
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
-    expect(email.value).toBe("ada@example.com");
-    expect(email.readOnly).toBe(true);
-    expect(email.getAttribute("aria-describedby")).toBeNull();
     expect(screen.queryByText("Read only")).toBeNull();
-    expect(email.closest('[data-ui="field"]')).toBeTruthy();
     expect(displayName.closest('[data-ui="field"]')).toBeTruthy();
-    expect(email.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
     expect(displayName.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
     fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
     fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
@@ -329,8 +327,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
-    expect(screen.getByText("No computer connected")).toBeTruthy();
+    expect(screen.queryByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeNull();
+    expect(screen.queryByText("No computer connected")).toBeNull();
     expect(window.location.pathname).toBe("/agents/setup");
 
     // The second row, so this cannot pass by binding whichever Computer happens to be first.
@@ -513,7 +511,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(computers);
     expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connected Computers" })).toBeNull();
-    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

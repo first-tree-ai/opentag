@@ -13,7 +13,7 @@ import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Select, SettingsList, SettingsRow, Switch, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
 import { PermissionsField } from "./permissions-field.js";
@@ -32,6 +32,8 @@ export interface RuntimeConfigurationFormProps {
   readonly initialConfig: AgentAdminConfig;
   readonly save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
   readonly section?: "all" | "execution" | "instructions";
+  /** Told after a change that other Agent views should re-read, such as self-configuration. */
+  readonly onAgentChanged?: () => void;
 }
 
 export function RuntimeConfigurationForm(props: RuntimeConfigurationFormProps) {
@@ -71,6 +73,7 @@ function RuntimeConfigurationEditor({
   computerOnline = true,
   cloudModelState,
   initialConfig,
+  onAgentChanged,
   save,
   section = "all",
 }: RuntimeConfigurationFormProps & { cloudModelState?: CloudModelState }) {
@@ -90,7 +93,9 @@ function RuntimeConfigurationEditor({
     section: "runtime" | "instructions";
     text: string;
   }>();
-  const [saving, setSaving] = useState<"runtime" | "instructions">();
+  // One write at a time: every save sends the same config revision, so a second concurrent write
+  // would fail with a revision conflict.
+  const [saving, setSaving] = useState<"runtime" | "instructions" | "selfConfiguration">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const providerName = runtimeProviderName(config.runtimeProvider);
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
@@ -164,6 +169,26 @@ function RuntimeConfigurationEditor({
     }
   }
 
+  async function saveSelfConfiguration(next: boolean) {
+    if (saving) return;
+    setSaving("selfConfiguration");
+    setMessage(undefined);
+    try {
+      const updated = await save({ expectedRevision: config.revision, selfConfigurationEnabled: next });
+      setConfig(updated);
+      setMessage({ kind: "success", section: "runtime", text: m.agent_settings_self_configuration_saved() });
+      onAgentChanged?.();
+    } catch (cause) {
+      setMessage({
+        kind: "error",
+        section: "runtime",
+        text: cause instanceof Error ? cause.message : m.agent_settings_save_self_configuration_failed(),
+      });
+    } finally {
+      setSaving(undefined);
+    }
+  }
+
   async function saveInstructions(event: FormEvent<HTMLFormElement>): Promise<boolean> {
     event.preventDefault();
     if (saving || !instructionsDirty) return false;
@@ -218,6 +243,7 @@ function RuntimeConfigurationEditor({
                 cloudModelState={cloudModelState}
                 modelDraft={modelDraft}
                 id={fieldId("model")}
+                note={cloud ? undefined : localOptionsNote(localOptions, computerOnline, modelField.choices.length > 0)}
                 onSelectionChange={(selection) => {
                   setModelSelection(selection);
                   if (selection === CUSTOM_MODEL_OPTION) {
@@ -264,6 +290,14 @@ function RuntimeConfigurationEditor({
                   </Select>
                 </div>
               </SettingsRow>
+              {section === "execution" ? (
+                <SelfConfigurationRow
+                  checked={config.selfConfigurationEnabled}
+                  disabled={Boolean(saving)}
+                  saving={saving === "selfConfiguration"}
+                  onChange={(next) => void saveSelfConfiguration(next)}
+                />
+              ) : null}
               {permissionsAvailable ? (
                 <PermissionsField value={permissionsDraft} onChange={setPermissionsDraft} />
               ) : null}
@@ -272,7 +306,6 @@ function RuntimeConfigurationEditor({
               <LocalRuntimeOptionsFeedback
                 query={localOptions}
                 computerOnline={computerOnline}
-                discovered={discovered}
                 reasoningInvalid={reasoningInvalid}
               />
             ) : null}
@@ -378,33 +411,33 @@ function invalidNewReasoning(
   return historical && dirty;
 }
 
+/** Why the computer's model list is missing, said once by the model field; undefined when it loaded. */
+function localOptionsNote(
+  query: ReturnType<typeof useLocalRuntimeOptions>,
+  computerOnline: boolean,
+  suggested: boolean,
+) {
+  if (computerOnline && !query.isError) return undefined;
+  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
+  if (denied) return m.agent_settings_runtime_options_denied();
+  // The runtime's suggested models are still offered, so the note must not say there is no list.
+  return suggested ? m.agent_settings_runtime_options_suggested() : m.agent_settings_runtime_options_unavailable();
+}
+
 function LocalRuntimeOptionsFeedback({
   query,
   computerOnline,
-  discovered,
   reasoningInvalid,
 }: {
   query: ReturnType<typeof useLocalRuntimeOptions>;
   computerOnline: boolean;
-  discovered?: AgentRuntimeOptions;
   reasoningInvalid: boolean;
 }) {
-  const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  let feedback = null;
-  if (!computerOnline || query.isError)
-    feedback = (
-      <p role={denied ? "alert" : "status"} className="text-sm text-kumo-subtle">
-        {denied ? m.agent_settings_runtime_options_denied() : m.agent_settings_runtime_options_unavailable()}
-      </p>
-    );
-  else if (query.isPending && query.isFetching)
-    feedback = <p role="status">{m.agent_settings_runtime_options_loading()}</p>;
-  const reasoningUnknown = !discovered || discovered.reasoningEffortAllowedValues === null;
-  if (!feedback && !reasoningUnknown && !reasoningInvalid) return null;
+  const loading = computerOnline && !query.isError && query.isPending && query.isFetching;
+  if (!loading && !reasoningInvalid) return null;
   return (
     <div className="grid gap-2">
-      {feedback}
-      {reasoningUnknown ? <p className="text-sm text-kumo-subtle">{m.agent_settings_reasoning_unknown()}</p> : null}
+      {loading ? <p role="status">{m.agent_settings_runtime_options_loading()}</p> : null}
       {reasoningInvalid ? (
         <p role="alert" className="text-sm text-kumo-danger">
           {m.agent_settings_reasoning_unsupported()}
@@ -486,4 +519,35 @@ function runtimeTestDisabledReason(input: { runtimeDirty: boolean; computerOnlin
 
 function supportsPermissionSettings(computerKind: "local" | "cloud", provider: AgentRuntimeProvider): boolean {
   return computerKind === "local" && provider !== "pi";
+}
+
+/**
+ * Whether the Agent may change its own configuration from the chat. It sits with the other rules
+ * about what the Agent may do on its own, beside asking before it acts, and saves on its own.
+ */
+function SelfConfigurationRow({
+  checked,
+  disabled,
+  saving,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  saving: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <SettingsRow
+      description={m.agent_settings_self_configuration_description()}
+      label={m.agent_settings_self_configuration()}
+    >
+      <Switch
+        aria-label={m.agent_settings_self_configuration()}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onChange(next === true)}
+        transitioning={saving}
+      />
+    </SettingsRow>
+  );
 }

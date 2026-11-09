@@ -11,7 +11,7 @@ import type {
   RunnerCloudTurnWorkerRequest,
   RuntimeImOutboxContext,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
@@ -43,6 +43,45 @@ const MODEL = {
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
+
+it("continues the Turn and closes Pi when the optional steering socket cannot open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-steer-unavailable-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const request = turnRequest(await fixtureExecution(root, "steer-unavailable"));
+  request.steering = { turnId: randomUUID(), token: randomUUID() };
+  const { cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+  const path = cloudSteerSocketPath(request.delivery.deliveryId);
+  await mkdir(path);
+  cleanup.push(() => rm(path, { recursive: true, force: true }));
+  const close = vi.fn(async () => undefined);
+  const prompt = vi.fn(async (input: AgentPromptRequest) => ({
+    runId: input.runId,
+    output: [{ text: "completed without steering", type: "text" as const }],
+    status: "completed" as const,
+  }));
+  const diagnostics: PiDiagnosticEvent[] = [];
+  const runtime = { close, prompt };
+  let child: ChildProcess | undefined;
+  cleanup.push(async () => {
+    child?.kill("SIGKILL");
+  });
+  const completion = await runCloudTurnWorker(request, {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    onDiagnostic: (event) => diagnostics.push(event),
+    createPiFactory: ({ pids }) => {
+      child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      if (child.pid) pids.add(child.pid);
+      return { create: async () => runtime, resume: async () => runtime };
+    },
+  });
+  expect(completion).toMatchObject({ outcome: "completed", finalText: "completed without steering" });
+  expect(prompt).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
+  await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
+  expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {
   const delivery = cloudDeliveryFixture();
@@ -101,6 +140,47 @@ it("reports the original get_state abort and the Turn deadline through the Cloud
   expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
 });
 
+it("compacts a Channel Session on the first Turn after 8 idle hours in the continuity directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-idle-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const start = Date.parse("2026-11-07T00:00:00.000Z");
+  const runAt = async (name: string, at: number, kind: "channel" | "thread" = "channel") => {
+    const request = turnRequest(await fixtureExecution(root, name));
+    request.delivery.sessionId = "channel-session";
+    request.delivery.deadlineAt = new Date(at + 60_000).toISOString();
+    // A thread reference on the message does not decide this: only the Session's own outbox does.
+    request.delivery.content.providerRef = {
+      ...request.delivery.content.providerRef,
+      threadId: "omt_1",
+    } as typeof request.delivery.content.providerRef;
+    request.outboxContext =
+      kind === "channel"
+        ? { provider: "feishu", sessionKind: "channel", chatId: "chat" }
+        : { provider: "feishu", sessionKind: "thread", chatId: "chat", threadId: "omt_1" };
+    const seen: AgentPromptRequest[] = [];
+    const runtime = {
+      close: async () => undefined,
+      prompt: async (input: AgentPromptRequest) => {
+        seen.push(input);
+        return { runId: input.runId, output: [], status: "completed" as const };
+      },
+    };
+    await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      now: () => at,
+      createPiFactory: () => ({ create: async () => runtime, resume: async () => runtime }),
+    });
+    return seen[0]?.compactContext;
+  };
+  const hours = (count: number) => count * 60 * 60 * 1000;
+  await expect(runAt("first", start)).resolves.toBeUndefined();
+  await expect(runAt("at-threshold", start + hours(8))).resolves.toBeUndefined();
+  await expect(runAt("over-threshold", start + hours(16) + 1)).resolves.toBe(true);
+  await expect(runAt("thread", start + hours(40), "thread")).resolves.toBeUndefined();
+});
+
 it("captures a prompt rejection before runtime execution converts it to a completion", async () => {
   const root = await mkdtemp(join(tmpdir(), "cloud-worker-prompt-rejected-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
@@ -127,6 +207,75 @@ it("captures a prompt rejection before runtime execution converts it to a comple
     error: { errorCode: "EINVAL", messageOrigin: "omitted" },
   });
   expect(JSON.stringify(diagnostics)).not.toContain("private validation text");
+});
+
+describe("Cloud worker Context Tree read path", () => {
+  const source = { kind: "git", repository: "acme/project", path: "docs", ref: "main" } as const;
+  async function promptFor(options: { gateway: boolean; skillsFail: boolean }): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-tree-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-tree");
+    if (options.gateway) {
+      const manifestPath = join(executionDir, "environment.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { environment: Record<string, string> };
+      manifest.environment.OPENTAG_CONTEXT_TREE_URL = "http://127.0.0.1:18082";
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+    const request = turnRequest(executionDir);
+    request.delivery.runtime.contextTrees = [source];
+    let systemPrompt = "";
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      // Local preparation succeeded; only the read path differs between cases.
+      prepareContextTree: async () => ({
+        status: {
+          status: "configured",
+          connections: [{ ...source, status: "available", projectPath: "/workspace/.opentag/context-tree/project" }],
+        },
+      }),
+      ...(options.skillsFail
+        ? {
+            assembleContextTreeSkills: async () => {
+              throw new Error("Context Tree packaged skills missing: context-tree-read");
+            },
+          }
+        : {}),
+      createPiFactory: () => ({
+        create: async (create) => {
+          systemPrompt = create.systemPrompt ?? "";
+          return {
+            close: async () => undefined,
+            prompt: async () => ({ runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] }),
+          };
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+    });
+    expect(completion.outcome).toBe("completed");
+    return systemPrompt;
+  }
+
+  it("advertises the read rule when the gateway and packaged Skills are present", async () => {
+    const prompt = await promptFor({ gateway: true, skillsFail: false });
+    expect(prompt).toContain("Read Context through the context-tree-read skill.");
+    expect(prompt).not.toContain("Context Tree unavailable");
+  });
+
+  it("reports each source unavailable when packaged Skill assembly fails", async () => {
+    const prompt = await promptFor({ gateway: true, skillsFail: true });
+    expect(prompt).toContain("Context Tree unavailable (SKILLS_UNAVAILABLE).");
+    expect(prompt).not.toContain("Read Context through the context-tree-read skill.");
+  });
+
+  it("reports each source unavailable when the parent opened no command gateway", async () => {
+    const prompt = await promptFor({ gateway: false, skillsFail: false });
+    expect(prompt).toContain("Context Tree unavailable (GATEWAY_UNAVAILABLE).");
+    expect(prompt).not.toContain("Read Context through the context-tree-read skill.");
+  });
 });
 
 it("mounts only the execution-scoped MCP gateway in the Cloud Pi configuration", async () => {
@@ -408,6 +557,7 @@ describe("cloud-turn-worker", () => {
     expect(Object.keys(models.providers)).toEqual(["opentag"]);
     expect(models.providers.opentag?.api).toBe("openai-completions");
     expect(models.providers.opentag?.baseUrl).toBe("https://server.example.com/api/v1/cloud-model");
+    expect(models.providers.opentag).toMatchObject({ headers: { "x-opentag-model-retry-owner": "proxy" } });
     expect(models.providers.opentag?.models[0]?.id).toBe("deepseek-v4.1-flash-expires-on-0910");
     // The Server-selected window and issued output budget reach Pi verbatim: Pi's native
     // compaction works against the real 258,000-token window, not its 128K custom-model default.
@@ -426,6 +576,13 @@ describe("cloud-turn-worker", () => {
     expect(settings.defaultModel).toBe("opentag/deepseek-v4.1-flash-expires-on-0910");
     // Native auto-compaction is explicitly enabled; Pi's pinned reserve/keep defaults stay untouched.
     expect(settings.compaction).toEqual({ enabled: true });
+    expect(settings).toMatchObject({
+      retry: {
+        enabled: false,
+        maxRetries: 0,
+        provider: { maxRetries: 0 },
+      },
+    });
   });
 
   it("resumes the SAME Pi binding/history across two Turns of one allocation", async () => {
@@ -503,7 +660,7 @@ describe("cloud-turn-worker", () => {
       const systemPrompt = entry.args[entry.args.indexOf("--append-system-prompt") + 1];
       expect(systemPrompt).toContain("slack api chat.postMessage --json");
       expect(systemPrompt).toContain("messages-resources-download");
-      expect(systemPrompt).toContain("GitHub integration, when enabled");
+      expect(systemPrompt).toContain("Use this Agent's connected GitHub MCP tools");
       expect(entry.environment.HOME).not.toBe(process.env.HOME);
       expect(entry.environment.OPENTAG_RUNNER_BOOTSTRAP_TOKEN).toBeUndefined();
       expect(entry.environment.GITHUB_TOKEN).toBeUndefined();
@@ -1307,11 +1464,8 @@ describe("session-message worker integration", () => {
     expect(observed.systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
     expect(observed.systemPrompt).toContain("When you speak, be warm and natural");
     expect(observed.systemPrompt).toContain("## When to speak");
-    expect(observed.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
-    expect(observed.systemPrompt).toContain("to the original message via the provider CLI");
-    expect(observed.systemPrompt).toContain(
-      "Do not use approval or completion reactions such as thumbs-up or check marks",
-    );
+    expect(observed.systemPrompt).toContain("OpenTag manages the working and error reactions on incoming messages.");
+    expect(observed.systemPrompt).toContain("Do not add, change, or remove these status reactions yourself");
     // The visible continuation keeps its real provider scope and the outbox instruction path.
     expect(observed.inputText).toContain('Default provider outbox context: {"channelId":"C0EXAMPLE"');
     expect(observed.inputText).toContain("1700000000.1234");
@@ -1502,11 +1656,8 @@ describe("session-message worker integration", () => {
     expect(opened[0]?.systemPrompt).toContain(`Current Session: ${delivery.sessionId}`);
     expect(opened[0]?.systemPrompt).toContain("When you speak, be warm and natural");
     expect(opened[0]?.systemPrompt).toContain("## When to speak");
-    expect(opened[0]?.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
-    expect(opened[0]?.systemPrompt).toContain("to the original message via the provider CLI");
-    expect(opened[0]?.systemPrompt).toContain(
-      "Do not use approval or completion reactions such as thumbs-up or check marks",
-    );
+    expect(opened[0]?.systemPrompt).toContain("OpenTag manages the working and error reactions on incoming messages.");
+    expect(opened[0]?.systemPrompt).toContain("Do not add, change, or remove these status reactions yourself");
     expect(opened[1]?.systemPrompt).toContain("## Cloud execution context");
     expect(opened[1]?.systemPrompt).toContain("You are an internal Session");
     expect(opened[1]?.systemPrompt).toContain("Session kind: internal");
@@ -1523,4 +1674,80 @@ describe("session-message worker integration", () => {
     // The continuation binding persists under the Session continuity directory, not scratch.
     await expect(readFile(join(continuity, "pi-binding.json"), "utf8")).resolves.toContain("pi");
   });
+});
+
+it("injects authenticated input through the native socket before the Cloud prompt finishes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-steer-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const request = turnRequest(await fixtureExecution(root, "steer-turn"));
+  request.steering = { turnId: randomUUID(), token: randomUUID() };
+  let started!: () => void;
+  const active = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const inputs: import("../agent-runtime/types.js").AgentSteerRequest[] = [];
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async (input) => {
+          started();
+          await done;
+          return { runId: input.runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        },
+        steer: async (input) => {
+          inputs.push(input);
+        },
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  await active;
+  const { runtime: _, ...base } = request.delivery;
+  const steer: import("@opentag/shared").RuntimeImSteerRequest = {
+    ...base,
+    type: "im:steer",
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    requestId: randomUUID(),
+    rootDeliveryId: base.deliveryId,
+    expectedTurnId: request.steering.turnId,
+    content: { ...base.content, text: "顺序追加的中文消息" },
+  };
+  const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+  const relay = async (input: typeof steer) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(base.deliveryId)]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: request.steering?.token, request: input }));
+    });
+  try {
+    expect(JSON.parse(await relay({ ...steer, expectedTurnId: randomUUID() }))).toMatchObject({
+      status: "rejected",
+      reason: "target_mismatch",
+    });
+    expect(inputs).toHaveLength(0);
+    expect(JSON.parse(await relay(steer))).toMatchObject({ status: "steered" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.expectedRunId).toBe(`cloud-turn-${base.deliveryId}`);
+    expect(JSON.stringify(inputs[0]?.input)).toContain(steer.content.text);
+  } finally {
+    finish();
+    await completion;
+  }
 });

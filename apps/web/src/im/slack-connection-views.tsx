@@ -11,8 +11,15 @@ import { slackBotConversationUrl } from "./slack-app-manifest.js";
 
 export type SlackConnectionPanel = "test" | "help" | "details";
 
-function canRetrySlackSetup(view: SlackConfigurationView, manualOnly: boolean): boolean {
+function slackConnectionReady(view: SlackConfigurationView): boolean {
+  return Boolean(
+    view.identityClosure?.status === "verified" && view.handoff?.bindingState === "active" && view.handoff.handoffReady,
+  );
+}
+
+function canRetrySlackSetup(view: SlackConfigurationView, manualOnly: boolean, readOnly: boolean): boolean {
   return (
+    !readOnly &&
     !manualOnly &&
     !view.blockedReason &&
     view.allowedIntent === "reauthorize" &&
@@ -28,7 +35,7 @@ export function slackConnectionTitle(view: SlackConfigurationView, panel: SlackC
   if (panel === "details") return m.im_slack_details_title();
   if (view.identityClosure?.status !== "verified")
     return m.im_slack_test_title({ provider: messagingProviderLabel("slack") });
-  if (view.handoff?.handoffReady) return m.im_slack_ready_title({ provider: messagingProviderLabel("slack") });
+  if (slackConnectionReady(view)) return m.im_slack_ready_title({ provider: messagingProviderLabel("slack") });
   return isHandoffChecking(view.handoff) ? m.im_slack_preparing_agent() : m.im_slack_attention_title();
 }
 
@@ -36,7 +43,7 @@ export function slackConnectionDescription(view: SlackConfigurationView, panel: 
   if (panel === "help") return m.im_slack_help_description();
   if (panel === "details") return m.im_slack_details_description({ provider: messagingProviderLabel("slack") });
   if (view.identityClosure?.status !== "verified") return m.im_slack_test_description();
-  if (view.handoff?.handoffReady) return m.im_slack_ready_description({ provider: messagingProviderLabel("slack") });
+  if (slackConnectionReady(view)) return m.im_slack_ready_description({ provider: messagingProviderLabel("slack") });
   return isHandoffChecking(view.handoff)
     ? m.im_slack_received_description({ provider: messagingProviderLabel("slack") })
     : m.im_slack_attention_description();
@@ -72,6 +79,7 @@ export function SlackSavedApp({
   onOAuth,
   onRetrySetup,
   manualOnly,
+  readOnly,
   savedMethod,
   onClose,
 }: {
@@ -84,6 +92,7 @@ export function SlackSavedApp({
   onRetrySetup?: () => void;
   savedMethod?: "auto" | "manual";
   manualOnly: boolean;
+  readOnly: boolean;
   onClose: () => void;
 }) {
   const identity = view.binding?.identity;
@@ -95,9 +104,9 @@ export function SlackSavedApp({
       <SlackAppHelp
         appSettings={appSettings}
         onDetails={() => onPanel("details")}
-        onUpdate={onUpdate}
-        onOAuth={onOAuth}
-        onRetrySetup={canRetrySlackSetup(view, manualOnly) ? onRetrySetup : undefined}
+        onUpdate={readOnly ? undefined : onUpdate}
+        onOAuth={readOnly ? undefined : onOAuth}
+        onRetrySetup={canRetrySlackSetup(view, manualOnly, readOnly) ? onRetrySetup : undefined}
       />
     );
   return (
@@ -113,8 +122,8 @@ export function SlackSavedApp({
 }
 
 function slackConnectionStatus(view: SlackConfigurationView): string {
-  if (view.identityClosure?.status !== "verified") return m.im_slack_pending_verification();
-  if (view.handoff?.handoffReady) return m.im_slack_connected({ provider: messagingProviderLabel("slack") });
+  if (view.identityClosure?.status !== "verified") return m.im_slack_connection_pending_status();
+  if (slackConnectionReady(view)) return m.im_slack_connected({ provider: messagingProviderLabel("slack") });
   return isHandoffChecking(view.handoff) ? m.im_slack_preparing_agent() : m.im_slack_check_agent();
 }
 
@@ -138,13 +147,14 @@ function SlackConnectionTest({
   const verified = view.identityClosure?.status === "verified";
   const verifyUrl =
     !verified && savedMethod === "manual" && !view.binding?.lastRuntimeObservationAt && !view.binding?.lastInboundAt;
-  const preparing = verified && !view.handoff?.handoffReady;
+  const ready = slackConnectionReady(view);
+  const preparing = verified && !ready;
   return (
     <>
       {!verified ? (
         <ol className="grid gap-4 border-t border-kumo-line pt-5 text-sm">
           {(verifyUrl
-            ? [m.im_slack_verify_instructions({ provider: messagingProviderLabel("slack") })]
+            ? [m.im_slack_connection_verify_instructions({ provider: messagingProviderLabel("slack") })]
             : [m.im_slack_test_open({ provider: messagingProviderLabel("slack") }), m.im_slack_test_send()]
           ).map((step, index) => (
             <li className="flex items-start gap-3" key={step}>
@@ -171,8 +181,8 @@ function SlackConnectionTest({
           rel="noreferrer"
         >
           {verifyUrl
-            ? m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })
-            : m.im_slack_open_dm({ provider: messagingProviderLabel("slack") })}
+            ? m.im_slack_connection_open_settings({ provider: messagingProviderLabel("slack") })
+            : m.im_slack_connection_open_dm({ provider: messagingProviderLabel("slack") })}
           <Icon name="external-link" />
         </a>
       )}
@@ -183,10 +193,10 @@ function SlackConnectionTest({
       </p>
       <div className="flex items-center justify-between gap-3 border-t border-kumo-line pt-3">
         <Button className="justify-between!" variant="ghost" onClick={onHelp}>
-          {m.im_slack_existing_app_help()}
+          {m.im_slack_connection_help_label()}
           <Icon name="chevron-right" />
         </Button>
-        {verified && view.handoff?.handoffReady ? (
+        {ready ? (
           <Button variant="secondary" onClick={onClose}>
             {m.common_done()}
           </Button>
@@ -205,7 +215,7 @@ function SlackAppHelp({
 }: {
   appSettings: string;
   onDetails: () => void;
-  onUpdate: () => void;
+  onUpdate?: () => void;
   onOAuth?: () => void;
   onRetrySetup?: () => void;
 }) {
@@ -238,7 +248,7 @@ function SlackAppHelp({
             target="_blank"
             rel="noreferrer"
           >
-            {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
+            {m.im_slack_connection_open_settings({ provider: messagingProviderLabel("slack") })}
             <Icon name="external-link" />
           </a>
           <Button className="justify-start! text-kumo-link" variant="ghost" onClick={onDetails}>
@@ -247,22 +257,24 @@ function SlackAppHelp({
           </Button>
         </Collapsible.Panel>
       </Collapsible.Root>
-      <div className="py-4">
-        <Button
-          className="h-auto! w-full justify-between! text-left"
-          variant="ghost"
-          aria-label={m.im_slack_update_credentials()}
-          onClick={onUpdate}
-        >
-          <span className="grid gap-1">
-            <span>{m.im_slack_update_credentials()}</span>
-            <span className="text-sm font-normal text-kumo-subtle">
-              {m.im_slack_help_changed_credentials({ provider: messagingProviderLabel("slack") })}
+      {onUpdate ? (
+        <div className="py-4">
+          <Button
+            className="h-auto! w-full justify-between! text-left"
+            variant="ghost"
+            aria-label={m.im_slack_update_credentials()}
+            onClick={onUpdate}
+          >
+            <span className="grid gap-1">
+              <span>{m.im_slack_update_credentials()}</span>
+              <span className="text-sm font-normal text-kumo-subtle">
+                {m.im_slack_help_changed_credentials({ provider: messagingProviderLabel("slack") })}
+              </span>
             </span>
-          </span>
-          <Icon name="chevron-right" />
-        </Button>
-      </div>
+            <Icon name="chevron-right" />
+          </Button>
+        </div>
+      ) : null}
       {onOAuth ? (
         <div className="py-4">
           <Button variant="secondary" onClick={onOAuth}>
@@ -310,7 +322,7 @@ function SlackConnectionDetails({ view, appSettings }: { view: SlackConfiguratio
         <SlackCopyValue label={m.im_slack_request_url()} value={view.eventsUrl} multiline />
         <p className="text-kumo-subtle">{m.im_slack_request_url_help()}</p>
         <a className="text-kumo-link underline underline-offset-4" href={appSettings} target="_blank" rel="noreferrer">
-          {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
+          {m.im_slack_connection_open_settings({ provider: messagingProviderLabel("slack") })}
         </a>
         <div className="grid gap-3">
           <Text as="h4" variant="heading" headingSize="body">

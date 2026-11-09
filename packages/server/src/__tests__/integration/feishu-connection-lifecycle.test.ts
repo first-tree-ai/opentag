@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { computers, imBindings } from "../../db/schema/index.js";
+import { AgentSetupService } from "../../services/agents/agent-setup-service.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import type { FeishuAdapter } from "../../services/im-bindings/feishu/adapter.js";
@@ -13,6 +14,8 @@ import type { FeishuChannel } from "../../services/im-bindings/feishu/index.js";
 import { encodeFeishuSetupCandidate } from "../../services/im-bindings/feishu/setup-context.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { deferred } from "../support/deferred.js";
+import { pausedBindingRead } from "../support/paused-binding-read.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -40,6 +43,7 @@ afterEach(async () => {
 
 interface FakeAdapterHarness {
   createAdapter: (input: {
+    onCardAction?: (event: unknown) => Promise<unknown>;
     appId: string;
     appSecret: string;
     teamId: string | null;
@@ -179,15 +183,23 @@ async function insertCandidate(
 function createManager(
   value: Awaited<ReturnType<typeof fixture>>,
   harness: FakeAdapterHarness,
-  options: { instanceId?: string; runtimeReady?: boolean } = {},
+  options: {
+    instanceId?: string;
+    runtimeReady?: boolean | (() => Promise<boolean>);
+    database?: DatabaseClient;
+    onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
+  } = {},
 ) {
   return new FeishuConnectionManager({
-    database: value.client.database,
+    database: options.database ?? value.client.database,
     inbox: { ingest: vi.fn() } as never,
     instanceId: options.instanceId ?? randomUUID(),
     imBindings: value.imBindings,
     createAdapter: harness.createAdapter,
-    runtimeReady: vi.fn(async () => options.runtimeReady ?? true),
+    ...(options.onCardAction ? { onCardAction: options.onCardAction } : {}),
+    runtimeReady: vi.fn(async () =>
+      typeof options.runtimeReady === "function" ? options.runtimeReady() : (options.runtimeReady ?? true),
+    ),
     now: () => clock.now,
   });
 }
@@ -237,9 +249,14 @@ describe("Feishu durable connection lifecycle (PostgreSQL)", () => {
     try {
       const checking = service.check(value.bootstrap.userId, attemptId);
       await entered;
-      await manager.stop();
+      let drained = false;
+      const stopping = manager.stop().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
       release();
-      await checking;
+      await Promise.all([checking, stopping]);
       expect(harness.disconnectedAdapters).toEqual(["cli_integration"]);
       const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
       expect(row).toMatchObject({ setupState: "succeeded", connectionOwnerInstanceId: null });
@@ -275,10 +292,15 @@ describe("Feishu durable connection lifecycle (PostgreSQL)", () => {
     try {
       const checking = service.check(value.bootstrap.userId, attemptId);
       await entered;
-      await service.stop();
-      await manager.stop();
+      const setupStopped = service.stop();
+      let drained = false;
+      const stopping = manager.stop().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
       release();
-      await checking;
+      await Promise.all([checking, setupStopped, stopping]);
       await activation.mock.results[0]?.value;
       expect(harness.disconnectedAdapters).toEqual(["cli_integration"]);
     } finally {
@@ -449,4 +471,457 @@ describe("Feishu durable connection lifecycle (PostgreSQL)", () => {
     await service.stop();
     await manager.stop();
   });
+});
+
+async function setupObservationFixture(credentialStatus: "ready" | "unconfirmed" = "ready") {
+  const value = await fixture();
+  const writer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+  openClients.push(writer);
+  await value.client.database
+    .update(computers)
+    .set({ currentInstanceId: randomUUID(), lastSeenAt: clock.now })
+    .where(eq(computers.id, value.agent.computerId as string));
+  const pause = pausedBindingRead(value.client.database);
+  const bindings = new ImBindingService(pause.database, value.cipher, {
+    now: () => clock.now,
+    agentRuntimeReadiness: () => "ready",
+    imCliReadiness: () => "ready",
+    credentialExecutionReadiness: () => ({ status: credentialStatus }),
+  });
+  const registration = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
+  const entered = deferred<void>();
+  const probe = deferred<import("../../services/im-bindings/feishu/setup-check.js").FeishuCandidateCheckOutcome>();
+  const setup = new FeishuSetupService({
+    database: pause.database,
+    cipher: value.cipher,
+    instanceId: randomUUID(),
+    imBindings: bindings,
+    now: () => clock.now,
+    registrations: {
+      start: () => ({
+        qrReady: Promise.resolve({ url: "https://example.com/qr", expiresAt: new Date(clock.now.getTime() + 60_000) }),
+        result: registration.promise,
+        abort: vi.fn(() => registration.reject(Object.assign(new Error("Registration canceled"), { code: "abort" }))),
+      }),
+    },
+    activation: {
+      checkCandidate: async () => {
+        entered.resolve();
+        return probe.promise;
+      },
+      activateAtomicAttempt: vi.fn(),
+    },
+  });
+  const service = new AgentSetupService(
+    pause.database,
+    new AgentService(pause.database, { now: () => clock.now }),
+    setup,
+    {
+      now: () => clock.now,
+      providerReadiness: {
+        providerReadiness: () => [
+          { observation: { provider: "codex", status: "ready" }, observedAt: clock.now.getTime() },
+        ],
+      },
+    },
+  );
+  return { ...value, writer, pause, setup, service, registration, entered, probe };
+}
+
+describe("Feishu setup observation consistency", () => {
+  it.each(["ready", "unconfirmed"] as const)(
+    "keeps a coherent snapshot across activation on another PostgreSQL connection (%s)",
+    async (credentialStatus) => {
+      const value = await setupObservationFixture(credentialStatus);
+      try {
+        await value.setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+        value.pause.arm();
+        const pending = value.service.getSetupById(value.bootstrap.userId, value.agent.id);
+        await value.pause.captured;
+        const writerBindings = new ImBindingService(value.writer.database, value.cipher, { now: () => clock.now });
+        await value.writer.database.transaction(async (transaction) => {
+          const id = await writerBindings.activateFeishu(
+            {
+              agentId: value.agent.id,
+              appId: "cli_observation",
+              appSecret: "synthetic",
+              teamId: "T",
+              botOpenId: "ou_bot",
+              grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+            },
+            transaction,
+          );
+          await transaction
+            .update(imBindings)
+            .set({
+              setupState: "succeeded",
+              encryptedSetupContext: null,
+              setupOwnerInstanceId: null,
+              setupOwnerHeartbeatAt: null,
+              setupExpiresAt: null,
+              connectionOwnerInstanceId: randomUUID(),
+              connectionLeaseExpiresAt: new Date(clock.now.getTime() + 60_000),
+              observedConnectedAt: clock.now,
+              observedAt: clock.now,
+            })
+            .where(eq(imBindings.id, id));
+        });
+        value.pause.release();
+        const observed = await pending;
+        expect(["authorizing", credentialStatus === "ready" ? "ready" : "waiting-handoff"]).toContain(
+          observed.messaging.kind,
+        );
+        expect(
+          observed.actions.some((action) => action.kind === "start-messaging" || action.kind === "unbind-messaging"),
+        ).toBe(false);
+        expect((await value.service.getSetupById(value.bootstrap.userId, value.agent.id)).messaging).toMatchObject({
+          kind: credentialStatus === "ready" ? "ready" : "waiting-handoff",
+          credentialGeneration: 1,
+        });
+      } finally {
+        value.pause.release();
+        await value.setup.stop();
+      }
+    },
+  );
+
+  it("revalidates a QR row after normal durable registration completion on PostgreSQL", async () => {
+    const value = await setupObservationFixture();
+    try {
+      const attempt = await value.setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      value.pause.arm();
+      const pending = value.setup.observeForAgent(value.agent.id);
+      await value.pause.captured;
+      value.registration.resolve({ appId: "cli_observation", appSecret: "synthetic", teamBrand: "feishu" });
+      await value.entered.promise;
+      expect(await value.setup.get(value.bootstrap.userId, attempt.id)).toMatchObject({ state: "validating" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      value.pause.release();
+      expect(await pending).toMatchObject({ state: "validating", activation: { reason: "checking" } });
+    } finally {
+      value.pause.release();
+      const stopping = value.setup.stop();
+      value.probe.resolve({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
+      await stopping;
+    }
+  });
+});
+
+it("joins the actual maintenance pass after material SQL and releases the lease last", async () => {
+  const value = await fixture(),
+    harness = fakeAdapterFactory();
+  const manager = createManager(value, harness),
+    setup = createSetupService(value, manager);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  await setup.check(value.bootstrap.userId, attemptId);
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const original = value.imBindings.getFeishuConnectionMaterial.bind(value.imBindings);
+  const material = vi.spyOn(value.imBindings, "getFeishuConnectionMaterial").mockImplementationOnce(async (id) => {
+    const result = await original(id);
+    entered.resolve(undefined);
+    await release.promise;
+    return result;
+  });
+  try {
+    manager.start();
+    await entered.promise;
+    const pass = manager.maintain();
+    expect(manager.maintain()).toBe(pass);
+    let drained = false;
+    const stopping = manager.stop().then(() => {
+      drained = true;
+    });
+    manager.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve(undefined);
+    await Promise.all([stopping, pass]);
+    expect(drained).toBe(true);
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row).toMatchObject({ connectionOwnerInstanceId: null, connectionLeaseExpiresAt: null });
+    await expect(
+      manager.checkCandidate({ agentId: value.agent.id, appId: "stopped", appSecret: "synthetic" }),
+    ).rejects.toThrow("FEISHU_SETUP_FENCE_STALE");
+    expect((await value.client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+  } finally {
+    release.resolve(undefined);
+    material.mockRestore();
+    await setup.stop();
+    await manager.stop();
+  }
+});
+
+it("joins a candidate probe on stop and rejects its late ready result", async () => {
+  const value = await fixture(),
+    harness = fakeAdapterFactory();
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const create = harness.createAdapter;
+  harness.createAdapter = (input) => {
+    const adapter = create(input);
+    vi.spyOn(adapter, "listGrantedWorkspaceScopes").mockImplementation(async () => {
+      entered.resolve(undefined);
+      await release.promise;
+      return [...FEISHU_REQUIRED_TENANT_SCOPES];
+    });
+    return adapter;
+  };
+  const manager = createManager(value, harness);
+  const result = manager
+    .checkCandidate({ agentId: value.agent.id, appId: "candidate-probe", appSecret: "synthetic" })
+    .then(
+      () => "unexpected ready",
+      (error: unknown) => error,
+    );
+  try {
+    await entered.promise;
+    let drained = false;
+    const stopping = manager.stop().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve(undefined);
+    await stopping;
+    expect(await result).toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    expect(harness.channelAdapters).toEqual([]);
+  } finally {
+    release.resolve(undefined);
+    await result;
+    await manager.stop();
+  }
+});
+
+function pausedBindingUpdate(client: DatabaseClient) {
+  const captured = deferred<void>(),
+    released = deferred<void>();
+  let armed = false;
+  const database = new Proxy(client, {
+    get(target, key) {
+      const method = Reflect.get(target, key);
+      if (key !== "update") return typeof method === "function" ? method.bind(target) : method;
+      return (table: unknown) => {
+        const builder: object = Reflect.apply(method, target, [table]);
+        return new Proxy(builder, {
+          get(update, property) {
+            const set = Reflect.get(update, property);
+            if (property !== "set") return typeof set === "function" ? set.bind(update) : set;
+            return (...values: unknown[]) => {
+              const query = Reflect.apply(set, update, values) as object;
+              if (table !== imBindings) return query;
+              const then = Reflect.get(query, "then").bind(query);
+              // biome-ignore lint/suspicious/noThenProperty: retain the actual SQL completion as a native fault barrier.
+              Object.defineProperty(query, "then", {
+                configurable: true,
+                value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
+                  then(async (rows: unknown) => {
+                    if (armed) {
+                      armed = false;
+                      captured.resolve(undefined);
+                      await released.promise;
+                    }
+                    return rows;
+                  }).then(resolve, reject),
+              });
+              return query;
+            };
+          },
+        });
+      };
+    },
+  });
+  return {
+    database,
+    captured: captured.promise,
+    arm: () => {
+      armed = true;
+    },
+    release: () => released.resolve(undefined),
+  };
+}
+
+it("joins a detached connection observation after actual PostgreSQL completion", async () => {
+  const value = await fixture(),
+    harness = fakeAdapterFactory();
+  const pause = pausedBindingUpdate(value.client.database);
+  let handlers: Parameters<FeishuChannel["on"]>[0] | undefined;
+  const create = harness.createAdapter;
+  harness.createAdapter = (input) => {
+    const adapter = create(input);
+    vi.spyOn(adapter.channel, "on").mockImplementation((next) => {
+      handlers = next;
+      return () => undefined;
+    });
+    return adapter;
+  };
+  const manager = createManager(value, harness, { database: pause.database });
+  const setup = createSetupService(value, manager);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  try {
+    await setup.check(value.bootstrap.userId, attemptId);
+    pause.arm();
+    if (!handlers?.reconnected) throw new Error("Expected a live channel handler");
+    handlers.reconnected();
+    await pause.captured;
+    let drained = false;
+    const stopping = manager.stop().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    pause.release();
+    await stopping;
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row).toMatchObject({ connectionOwnerInstanceId: null, observedConnectedAt: null });
+  } finally {
+    pause.release();
+    await setup.stop();
+    await manager.stop();
+  }
+});
+
+it("disconnects a maintenance adapter when stop wins during lease observation SQL", async () => {
+  const value = await fixture(),
+    firstHarness = fakeAdapterFactory();
+  const first = createManager(value, firstHarness),
+    setup = createSetupService(value, first);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  await setup.check(value.bootstrap.userId, attemptId);
+  await first.stop();
+  const harness = fakeAdapterFactory(),
+    pause = pausedBindingUpdate(value.client.database);
+  const manager = createManager(value, harness, { database: pause.database });
+  try {
+    pause.arm();
+    manager.start();
+    await pause.captured;
+    const stopping = manager.stop();
+    pause.release();
+    await stopping;
+    expect(harness.channelAdapters).toEqual(["cli_integration"]);
+    expect(harness.disconnectedAdapters).toEqual(["cli_integration"]);
+    await manager.stop();
+    expect(harness.disconnectedAdapters).toHaveLength(1);
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row).toMatchObject({ connectionOwnerInstanceId: null, connectionLeaseExpiresAt: null });
+  } finally {
+    pause.release();
+    await setup.stop();
+    await manager.stop();
+  }
+});
+
+it.each(["activation", "maintenance"] as const)(
+  "joins %s card-action SQL and fences late card/error callbacks",
+  async (origin) => {
+    const value = await fixture(),
+      harness = fakeAdapterFactory();
+    let card: ((event: unknown) => Promise<unknown>) | undefined;
+    let handlers: Parameters<FeishuChannel["on"]>[0] | undefined;
+    const entered = deferred<void>(),
+      release = deferred<void>();
+    const decide = vi.fn(async () => {
+      await value.client.sql`select 1`;
+      entered.resolve(undefined);
+      await release.promise;
+      return (await value.client.sql`select 2 as result`)[0]?.result;
+    });
+    const create = harness.createAdapter;
+    harness.createAdapter = (input) => {
+      if (input.onCardAction) card = input.onCardAction;
+      const adapter = create(input);
+      vi.spyOn(adapter.channel, "on").mockImplementation((next) => {
+        handlers = next;
+        return () => undefined;
+      });
+      return adapter;
+    };
+    let manager = createManager(value, harness, { onCardAction: decide });
+    const setup = createSetupService(value, manager);
+    const { attemptId } = await insertCandidate(value.client.database, value.cipher, { agentId: value.agent.id });
+    try {
+      await setup.check(value.bootstrap.userId, attemptId);
+      if (origin === "maintenance") {
+        await manager.stop();
+        manager = createManager(value, harness, { onCardAction: decide });
+        manager.start();
+        await manager.maintain();
+      }
+      if (!card || !handlers?.error) throw new Error("Expected live provider callbacks");
+      const result = card({});
+      await entered.promise;
+      let drained = false;
+      const stopping = manager.stop().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      await expect(card({})).resolves.toBeUndefined();
+      const diagnostic = vi.spyOn(value.imBindings, "recordDiagnosticError");
+      handlers.error(new Error("late provider error"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(diagnostic).not.toHaveBeenCalled();
+      release.resolve(undefined);
+      expect(await result).toBe(2);
+      await stopping;
+      expect(decide).toHaveBeenCalledTimes(1);
+      diagnostic.mockRestore();
+    } finally {
+      release.resolve(undefined);
+      await setup.stop();
+      await manager.stop();
+    }
+  },
+);
+
+it("joins original runtime readiness SQL after setup and policy cancellation", async () => {
+  const value = await fixture(),
+    harness = fakeAdapterFactory();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    }),
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const manager = createManager(value, harness, {
+    runtimeReady: async () => {
+      await value.client.sql`select 1`;
+      enter();
+      await gate;
+      return true;
+    },
+  });
+  const setup = createSetupService(value, manager);
+  const { attemptId, bindingId } = await insertCandidate(value.client.database, value.cipher, {
+    agentId: value.agent.id,
+  });
+  let drained = false;
+  const checking = setup.check(value.bootstrap.userId, attemptId);
+  try {
+    await entered;
+    const stopping = Promise.all([setup.stop(), manager.stop()]).then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release();
+    await checking;
+    await stopping;
+    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+    expect(row?.setupState).toBe("pending_activation");
+    expect(row?.encryptedSetupContext).not.toBeNull();
+    expect((await value.client.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+  } finally {
+    release();
+    await checking;
+    await Promise.all([setup.stop(), manager.stop()]);
+  }
 });

@@ -2,13 +2,9 @@ import type { BackgroundFailureSupervisor } from "../../observability/background
 import type { SandboxRunnerService } from "./sandbox-runner-service.js";
 
 /**
- * E7 periodic idle sweep. ONE fixed cadence drives every consequence of the single idle budget:
- * a ready environment idle past the budget is sealed and deleted, an abandoned claim is retried
- * once that row's own `last_activity_at` budget has passed (the claim timestamp is intent, not a
- * second clock), and an automatic row already releasing resumes from its durable marker without
- * another budget. Each process runs at most one pass at a time; the database CAS in the runner
- * service makes restarts and concurrent workers converge. No environment is reclaimed merely
- * because a sweep happened.
+ * E7 periodic idle sweep. Business inactivity authorizes the initial claim; durable retry pacing
+ * in the service prevents claimed or releasing rows from repeating I/O on every sweep. Each
+ * process runs at most one pass at a time, and conditional reservations fence competing workers.
  */
 const DEFAULT_SWEEP_INTERVAL_MS = 15_000;
 
@@ -26,6 +22,7 @@ export class SandboxIdleReclaimer {
   readonly #onDiagnostic: (code: string) => void;
   #timer?: ReturnType<typeof setInterval>;
   #running?: Promise<unknown>;
+  #cancellation?: AbortController;
 
   constructor(options: SandboxIdleReclaimerOptions) {
     const intervalMs = options.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -47,19 +44,25 @@ export class SandboxIdleReclaimer {
   async stop(): Promise<void> {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    this.#cancellation?.abort();
     // The sweep's observer below reports failures. Drain before the Server closes its database.
     await this.#running?.catch(() => undefined);
   }
 
   /** One serialized pass; exposed so startup/tests can run it deterministically. */
-  async runOnce(): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
-    return this.#service.reclaimIdleSandboxes();
+  async runOnce(
+    signal?: AbortSignal,
+  ): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
+    return this.#service.reclaimIdleSandboxes(signal);
   }
 
   sweep(): void {
     if (this.#running) return;
-    const operation = this.runOnce().finally(() => {
+    const cancellation = new AbortController();
+    this.#cancellation = cancellation;
+    const operation = this.runOnce(cancellation.signal).finally(() => {
       this.#running = undefined;
+      this.#cancellation = undefined;
     });
     this.#running = operation;
     if (this.#supervisor) {

@@ -5,32 +5,139 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_PROTOCOL_V2,
   type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRecoverRequest,
   type TurnActivityRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { createApp } from "../app.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type {
   AcceptedDeliveryRecord,
   DeliveryDispatchStatus,
   RecordedTurnRecord,
   RuntimeCustodyStore,
+  SteerDispatchStatus,
 } from "../runtime/runtime-custody-store.js";
 import {
   type PreparedSessionReconcile,
+  RuntimeDispatchDeferredError,
   RuntimeDomainConflictError,
   RuntimeDomainOwner,
   type RuntimeDomainOwnerOptions,
 } from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
+import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
+import { deferred } from "./support/deferred.js";
 
 describe("RuntimeDomainOwner", () => {
+  it("records an unconfirmed outcome notice before real application shutdown releases shared resources", async () => {
+    const h = await ownerFixture(30_000);
+    const write = deferred();
+    const childSessionId = randomUUID();
+    const targetSessionId = randomUUID();
+    const messageId = randomUUID();
+    const recordMessageOutcome = vi.fn(async () => {
+      await write.promise;
+      return true;
+    });
+    const sessions = {
+      resolveRunOutcomeNotice: vi.fn(async () => ({ creatorSessionId: targetSessionId, installationId: h.computerId })),
+      authorizeAndRecordMessage: vi.fn(async (input: { messageId: string; content: string }) => ({
+        attemptCount: 1,
+        message: { id: input.messageId, content: input.content },
+        route: {
+          sourceSessionId: childSessionId,
+          targetSessionId,
+          targetComputerId: h.computerId,
+          targetInstallationId: h.computerId,
+          targetPlacementGeneration: 1,
+          targetSessionKind: "internal",
+          targetComputerKind: "local",
+          agentId: "agent-1",
+        },
+      })),
+      recordMessageOutcome,
+      withCollaborationDispatchAdmission: async (
+        _route: unknown,
+        operation: (mark: () => void) => Promise<unknown>,
+      ) => ({ admitted: true, result: operation(() => undefined) }),
+    };
+    const collaboration = new SessionCollaborationService({
+      assembler: { assembleForSession: async () => snapshot() },
+      domain: h.owner,
+      registry: h.registry,
+      sessions: sessions as never,
+    });
+    let resourcesClosed = false;
+    const app = createApp({
+      authService: {} as never,
+      machineAuthService: {} as never,
+      computerService: {} as never,
+      runtime: { domainOwner: h.owner, registry: h.registry },
+      beginShutdown: () => collaboration.close(),
+      closeResources: () => {
+        resourcesClosed = true;
+      },
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      await app.ready();
+      await expect(
+        collaboration.notifyRunOutcomeInBackground({
+          childSessionId,
+          messageId,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+          source: { computerId: h.computerId, connectionInstanceId: h.instanceId, placementGeneration: 1 },
+        }),
+      ).resolves.toBe("retry");
+      await expect.poll(() => h.frames.length).toBe(1);
+      const reconcile = h.frames[0] as SessionReconcileRequest;
+      await h.owner.handle(
+        {
+          type: "session:reconcile:result",
+          requestId: reconcile.requestId,
+          sessionId: targetSessionId,
+          placementGeneration: 1,
+          status: "ready",
+        },
+        h.context,
+      );
+      await expect.poll(() => h.frames.length).toBe(2);
+      expect(h.frames[1]).toMatchObject({ type: "session:message:deliver" });
+      closing = app.close();
+      await expect.poll(() => recordMessageOutcome.mock.calls.length).toBe(1);
+      expect(recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
+      );
+      expect(resourcesClosed).toBe(false);
+      write.resolve();
+      await closing;
+      expect(resourcesClosed).toBe(true);
+      expect(h.frames).toHaveLength(2);
+      await expect(h.owner.requestReconcile(h.computerId, h.instanceId, reconcile)).rejects.toMatchObject({
+        code: "stopped",
+      });
+    } finally {
+      write.resolve();
+      await h.owner.close();
+      await app.close();
+      await closing;
+      await collaboration.close();
+      await h.owner.close();
+    }
+  });
+
   it.each(["0.1.0", "0.1.1-staging.43.1"])(
     "rejects new snapshots before preparation or custody on %s",
     async (version) => {
@@ -91,6 +198,80 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
+  it.each([undefined, 3, 4])("gates Session Run outcome reports on collaboration version %s", async (version) => {
+    const onSessionMessageOutcome = vi.fn(async () => "notified" as const);
+    const h = await ownerFixture(1_000, { onSessionMessageOutcome });
+    const frame: SessionMessageOutcomeReport = {
+      type: "session:message:outcome",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+      outcome: "timed_out",
+      reason: "turn_timeout",
+    };
+    try {
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionCollaboration]: version } : {},
+      };
+      const supported = version === 4;
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:message:outcome:result",
+        requestId: frame.requestId,
+        messageId: frame.messageId,
+        status: supported ? "notified" : "unsupported_capability",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      if (supported) expect(onSessionMessageOutcome).toHaveBeenCalledWith(frame, context);
+      // A superseded connection can never notify on the child's behalf.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "stale_generation",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      // A processing failure answers retry so the Client keeps the report.
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+    } finally {
+      h.owner.close();
+    }
+  });
+
+  it.each([undefined, 1])("gates Session recovery requests on runtime.sessionRecovery %s", async (version) => {
+    const onSessionRecover = vi.fn(async () => ({ status: "scheduled" as const }));
+    const h = await ownerFixture(1_000, { onSessionRecover });
+    const frame: SessionRecoverRequest = {
+      type: "session:recover",
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+    };
+    try {
+      expect(h.owner.businessOptions().parse(frame)).toEqual(frame);
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionRecovery]: version } : {},
+      };
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:recover:result",
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+        status: version === 1 ? "scheduled" : "unsupported_capability",
+      });
+      expect(onSessionRecover).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+      // Only the current connection may recover: a superseded one is refused outright.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "rejected",
+        reason: "stale_connection",
+      });
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+      expect(h.owner.businessOptions().laneKey(frame as never)).toBe(`session-recover:${frame.sessionId}`);
+    } finally {
+      h.owner.close();
+    }
+  });
+
   it.each([undefined, 1, 2, 3])("gates provider failure categories on report capability %s", async (version) => {
     const fixture = await ownerFixture();
     try {
@@ -142,6 +323,96 @@ describe("RuntimeDomainOwner", () => {
       } finally {
         fixture.owner.close();
       }
+    },
+  );
+
+  it.each([false, true])(
+    "joins an admitted reconcile send before cancelling its waiter (abort during send=%s)",
+    async (duringSend) => {
+      const f = await ownerFixture();
+      const send = deferred<void>();
+      const abort = new AbortController();
+      const reason = new Error("reconcile cancelled");
+      vi.spyOn(f.registry, "send").mockImplementation(async () => {
+        if (duringSend) abort.abort(reason);
+        await send.promise;
+      });
+      let settled = false;
+      const pending = f.owner
+        .requestReconcile(
+          f.computerId,
+          f.instanceId,
+          reconcileRequest(f.computerId),
+          undefined,
+          undefined,
+          abort.signal,
+          { joinSettlement: true },
+        )
+        .catch((error: unknown) => {
+          settled = true;
+          return error;
+        });
+      abort.abort(reason);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      let closed = false;
+      const closing = f.owner.close().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      send.resolve();
+      await expect(pending).resolves.toBe(reason);
+      await closing;
+      expect(closed).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "joins admitted reconcile result processing through cancellation (native deadline=%s)",
+    async (nativeDeadline) => {
+      const f = await ownerFixture(nativeDeadline ? 25 : 1_000);
+      const entered = deferred<void>();
+      const finish = deferred<void>();
+      vi.spyOn(f.custody, "claimRetainedReports").mockImplementation(async () => {
+        entered.resolve();
+        await finish.promise;
+        return [];
+      });
+      const abort = new AbortController();
+      const request = reconcileRequest(f.computerId);
+      let settled = false;
+      const pending = f.owner
+        .requestReconcile(f.computerId, f.instanceId, request, undefined, undefined, abort.signal, {
+          joinSettlement: true,
+        })
+        .then(
+          (result) => {
+            settled = true;
+            return result;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+      const result = {
+        type: "session:reconcile:result" as const,
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "ready" as const,
+      };
+      const processing = f.owner.handle(result, f.context);
+      await entered.promise;
+      abort.abort(new Error("cancelled during completion"));
+      if (nativeDeadline) await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(settled).toBe(false);
+      finish.resolve();
+      await processing;
+      if (nativeDeadline) await expect(pending).resolves.toMatchObject({ code: "timeout" });
+      else await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
+      await f.owner.close();
     },
   );
 
@@ -205,6 +476,92 @@ describe("RuntimeDomainOwner", () => {
     );
     await expect(first).resolves.toMatchObject({ status: "ready" });
     await expect(second).resolves.toMatchObject({ code: "capacity" });
+  });
+
+  it.each(["delivery", "steer"] as const)(
+    "defers %s before sending when accepted receipt work is pending",
+    async (kind) => {
+      const f = await ownerFixture();
+      const custody = new MemoryRuntimeCustodyStore();
+      vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockResolvedValue(
+        "inbound_pending",
+      );
+      const release = vi.spyOn(custody, kind === "delivery" ? "releaseDeliveryDispatch" : "releaseSteerDispatch");
+      const owner = new RuntimeDomainOwner(f.registry, custody);
+      const dispatched = vi.fn();
+      const request = deliveryRequest();
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, request, dispatched)
+          : owner.requestSteer(f.computerId, f.instanceId, steerRequest(request), dispatched);
+      await expect(operation).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:deliver" }));
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:steer" }));
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { kind: "delivery", status: "batch_changed", code: "IM_DELIVERY_BATCH_CHANGED" },
+    { kind: "steer", status: "batch_changed", code: "IM_DELIVERY_BATCH_CHANGED" },
+    { kind: "steer", status: "target_ended", code: "IM_DELIVERY_STEER_TARGET_ENDED" },
+  ] as const)("defers $kind/$status only before sending", async ({ kind, status, code }) => {
+    const f = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    vi.spyOn(custody, "beginDeliveryDispatch").mockResolvedValue("batch_changed");
+    vi.spyOn(custody, "beginSteerDispatch").mockResolvedValue(status);
+    const releaseDelivery = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const releaseSteer = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(f.registry, custody);
+    const dispatched = vi.fn();
+    try {
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, deliveryRequest(), dispatched)
+          : owner.requestSteer(f.computerId, f.instanceId, steerRequest(deliveryRequest()), dispatched);
+      await expect(operation).rejects.toBeInstanceOf(RuntimeDispatchDeferredError);
+      await expect(operation).rejects.toMatchObject({ code });
+      expect(f.frames).toEqual([]);
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(releaseDelivery).not.toHaveBeenCalled();
+      expect(releaseSteer).not.toHaveBeenCalled();
+    } finally {
+      await owner.close();
+      await f.owner.close();
+    }
+  });
+
+  it.each(["delivery", "steer"] as const)("keeps cancellation ahead of a late %s deferral", async (kind) => {
+    const f = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const entered = deferred();
+    const resume = deferred();
+    vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockImplementation(
+      async () => {
+        entered.resolve();
+        await resume.promise;
+        return "batch_changed" as const;
+      },
+    );
+    const owner = new RuntimeDomainOwner(f.registry, custody);
+    const controller = new AbortController();
+    const cancelled = new Error("operation cancelled");
+    const operation =
+      kind === "delivery"
+        ? owner.requestDelivery(f.computerId, f.instanceId, deliveryRequest(), undefined, controller.signal)
+        : owner.requestSteer(f.computerId, f.instanceId, steerRequest(deliveryRequest()), undefined, controller.signal);
+    try {
+      await entered.promise;
+      controller.abort(cancelled);
+      resume.resolve();
+      await expect(operation).rejects.toBe(cancelled);
+      expect(f.frames).toEqual([]);
+    } finally {
+      resume.resolve();
+      await owner.close();
+      await f.owner.close();
+    }
   });
 
   it("maps custody and resend failures to request errors", async () => {
@@ -273,7 +630,37 @@ describe("RuntimeDomainOwner", () => {
     });
   });
 
-  it("releases pending steer custody when stopped", async () => {
+  it.each([
+    { status: "deferred", reason: "steer_state_unknown", disposition: "uncertain" },
+    { status: "rejected", reason: "input_conflict", disposition: "deferred" },
+    { status: "retry", reason: "turn_starting", disposition: "retry" },
+    { status: "deferred", reason: "turn_not_running", disposition: "deferred" },
+  ] as const)("records $status/$reason with $disposition steer custody", async ({ status, reason, disposition }) => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody);
+    const request = steerRequest(deliveryRequest());
+    const pending = owner.requestSteer(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual(expect.objectContaining({ type: "im:steer" })));
+    const result = {
+      type: "im:steer:result",
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status,
+      reason,
+    } as RuntimeImSteerResult;
+    await owner.handle(result, fixture.context);
+    expect(await pending).toEqual(result);
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), disposition);
+    owner.close();
+  });
+
+  it("preserves uncertain steer custody when stopped", async () => {
     const fixture = await ownerFixture();
     const custody = new MemoryRuntimeCustodyStore();
     const release = vi.spyOn(custody, "releaseSteerDispatch");
@@ -283,7 +670,7 @@ describe("RuntimeDomainOwner", () => {
     await vi.waitFor(() => expect(fixture.frames).toContainEqual(expect.objectContaining({ type: "im:steer" })));
     owner.close();
     await expect(pending).rejects.toMatchObject({ code: "stopped" });
-    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "uncertain");
   });
 
   it("releases delivery custody when the runtime send fails synchronously", async () => {
@@ -351,19 +738,24 @@ describe("RuntimeDomainOwner", () => {
     expect(custody.hasDispatch(request.deliveryId)).toBe(true);
   });
 
-  it("releases steer custody when admission capacity rejects after begin", async () => {
-    const fixture = await ownerFixture();
-    const custody = new MemoryRuntimeCustodyStore();
-    const release = vi.spyOn(custody, "releaseSteerDispatch");
-    const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
-    const reconcile = reconcileRequest(fixture.computerId);
-    owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
-    const request = steerRequest(deliveryRequest());
-    await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
-      code: "capacity",
-    });
-    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
-  });
+  it.each(["dispatched", "already_dispatched"] as const)(
+    "handles steer admission capacity after %s without losing prior execution evidence",
+    async (dispatch) => {
+      const fixture = await ownerFixture();
+      const custody = new MemoryRuntimeCustodyStore();
+      const release = vi.spyOn(custody, "releaseSteerDispatch");
+      vi.spyOn(custody, "beginSteerDispatch").mockResolvedValue(dispatch);
+      const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
+      const reconcile = reconcileRequest(fixture.computerId);
+      owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
+      const request = steerRequest(deliveryRequest());
+      await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+        code: "capacity",
+      });
+      if (dispatch === "dispatched") expect(release).toHaveBeenCalledWith(request, expect.any(String), "retry");
+      else expect(release).not.toHaveBeenCalled();
+    },
+  );
   it("passes the negotiated credential grant version to the authority callback", async () => {
     const onImCredentialGrant = vi.fn(async (request) => ({
       type: "im:credential:result" as const,
@@ -1083,10 +1475,11 @@ describe("RuntimeDomainOwner", () => {
       expect(onResult).toHaveBeenCalledOnce();
       release();
       await completion;
-      await expect(pending).resolves.toEqual(result);
-      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual(
-        result,
-      );
+      await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
+      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual({
+        ...result,
+        claimedRetainedReports: [],
+      });
       expect(onResult).toHaveBeenCalledOnce();
     } finally {
       fixture.owner.close();
@@ -1140,6 +1533,7 @@ describe("RuntimeDomainOwner", () => {
     if (stage === "custody")
       claim.mockImplementation(async () => {
         await blocked;
+        return [];
       });
     const request = reconcileRequest(fixture.computerId);
     try {
@@ -1248,6 +1642,99 @@ describe("RuntimeDomainOwner", () => {
     await expect(owner.handle(unmatched, context)).resolves.toBeUndefined();
   });
 
+  it("only completes a combined receipt for the expected message on the exact control connection", async () => {
+    const connectionId = randomUUID();
+    const fixture = await ownerFixture(1000, {}, "0.1.1", connectionId);
+    const message = sessionMessageDelivery();
+    const request = {
+      ...reconcileRequest(fixture.computerId),
+      agentId: message.agentId,
+      sessionId: message.targetSessionId,
+      placementGeneration: message.placementGeneration,
+      runtime: message.runtime,
+      sessionMessage: {
+        messageId: message.messageId,
+        sourceSessionId: message.sourceSessionId,
+        content: message.content,
+      },
+    };
+    const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual({ ...request, connectionId }));
+    const result: SessionReconcileResult = {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "ready",
+    };
+    const sessionMessage = {
+      type: "session:message:deliver:result" as const,
+      requestId: request.requestId,
+      messageId: message.messageId,
+      targetSessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "accepted" as const,
+    };
+    try {
+      // Neither a reply on a new socket for the same daemon instance nor a legacy or mismatched
+      // acknowledgement can prove that the inbox took custody.
+      await fixture.owner.handle({ ...result, sessionMessage }, { ...fixture.context, connectionId: randomUUID() });
+      await fixture.owner.handle(result, fixture.context);
+      await fixture.owner.handle(
+        { ...result, sessionMessage: { ...sessionMessage, messageId: randomUUID() } },
+        fixture.context,
+      );
+      await fixture.owner.handle({ ...result, sessionMessage }, fixture.context);
+      await expect(pending).resolves.toMatchObject({ sessionMessage });
+    } finally {
+      await fixture.owner.close();
+    }
+  });
+
+  it("refuses a combined frame if the socket was replaced while preparing the proof", async () => {
+    const connectionId = randomUUID();
+    const prepared = deferred();
+    const prepareReconcile = vi.fn(async (_computerId, _instanceId, request: SessionReconcileRequest) => {
+      await prepared.promise;
+      return { request };
+    });
+    const fixture = await ownerFixture(1000, { prepareReconcile }, "0.1.1", connectionId);
+    const message = sessionMessageDelivery();
+    const request = {
+      ...reconcileRequest(fixture.computerId),
+      agentId: message.agentId,
+      sessionId: message.targetSessionId,
+      runtime: message.runtime,
+      sessionMessage: {
+        messageId: message.messageId,
+        sourceSessionId: message.sourceSessionId,
+        content: message.content,
+      },
+    };
+    const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+    const rejection = expect(pending).rejects.toMatchObject({ code: "instance_replaced", mayHaveSent: false });
+    const replacementFrames: unknown[] = [];
+    await fixture.registry.register(
+      {
+        clientVersion: "0.1.1",
+        computerId: fixture.computerId,
+        installationId: fixture.computerId,
+        instanceId: fixture.instanceId,
+        connectionId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 2,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionReconcile]: 1 },
+        socket: socketFixture(replacementFrames),
+      },
+      async () => undefined,
+    );
+    prepared.resolve();
+    await rejection;
+    expect(fixture.frames).toEqual([]);
+    expect(replacementFrames).toEqual([]);
+    await fixture.owner.close();
+  });
+
   it("dispatches SessionMessage frames only through an admitted onDispatched boundary", async () => {
     const fixture = await ownerFixture();
     const rejected = sessionMessageDelivery();
@@ -1309,6 +1796,7 @@ async function ownerFixture(
   requestTimeoutMs = 1_000,
   options: Partial<RuntimeDomainOwnerOptions> = {},
   clientVersion = "0.1.1",
+  inlineMessageConnectionId?: string,
 ) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
@@ -1317,6 +1805,9 @@ async function ownerFixture(
   await registry.register(
     {
       clientVersion,
+      ...(inlineMessageConnectionId
+        ? { connectionId: inlineMessageConnectionId, protocolVersion: RUNTIME_PROTOCOL_V2 }
+        : {}),
       computerId,
       installationId: computerId,
       instanceId,
@@ -1327,6 +1818,7 @@ async function ownerFixture(
         "runtime.imSteer": 2,
         "runtime.sessionCollaboration": 3,
         [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+        ...(inlineMessageConnectionId ? { [RUNTIME_CAPABILITY.sessionMessageReconcile]: 1 } : {}),
       },
       socket: socketFixture(frames),
     },
@@ -1336,6 +1828,7 @@ async function ownerFixture(
   const owner = new RuntimeDomainOwner(registry, custody, { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
+    connectionId: inlineMessageConnectionId,
     installationId: computerId,
     instanceId,
     signal: new AbortController().signal,
@@ -1582,7 +2075,7 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     return "dispatched";
   }
 
-  async beginSteerDispatch(request: RuntimeImSteerRequest, inputHash: string): Promise<DeliveryDispatchStatus> {
+  async beginSteerDispatch(request: RuntimeImSteerRequest, inputHash: string): Promise<SteerDispatchStatus> {
     const current = this.#dispatches.get(request.deliveryId);
     if (current) {
       return current.requestId === request.requestId && current.inputHash === inputHash
@@ -1648,7 +2141,8 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
-  ): Promise<void> {
+  ): Promise<NonNullable<SessionReconcileResult["retainedReports"]>> {
+    const claimed: NonNullable<SessionReconcileResult["retainedReports"]> = [];
     for (const claim of claims) {
       const delivery = this.#deliveries.get(claim.deliveryId);
       if (
@@ -1674,7 +2168,9 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
         });
       }
       this.#expectedResultHashes.set(claim.turnId, claim.resultHash);
+      claimed.push(claim);
     }
+    return claimed;
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
@@ -1720,3 +2216,179 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     return "recorded";
   }
 }
+
+it("close joins preparation and prevents a late reconcile admission", async () => {
+  const entered = deferred(),
+    release = deferred();
+  const prepareReconcile = vi.fn(async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => {
+    entered.resolve();
+    await release.promise;
+    return { request };
+  });
+  const f = await ownerFixture(1000, { prepareReconcile });
+  const request = reconcileRequest(f.computerId);
+  const pending = f.owner.requestReconcile(f.computerId, f.instanceId, request).catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await pending).toMatchObject({ code: "stopped" });
+    expect(f.frames).toEqual([]);
+    await expect(f.owner.requestReconcile(f.computerId, f.instanceId, request)).rejects.toMatchObject({
+      code: "stopped",
+    });
+  } finally {
+    release.resolve();
+    await pending;
+    await f.owner.close();
+  }
+});
+
+it("close waits for an original send callback after rejecting its pending caller", async () => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  vi.spyOn(f.registry, "send").mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const pending = f.owner
+    .requestDelivery(f.computerId, f.instanceId, deliveryRequest())
+    .catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    expect(await pending).toMatchObject({ code: "stopped" });
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve();
+    await pending;
+    await f.owner.close();
+  }
+});
+
+it("close joins an already-admitted completion callback", async () => {
+  const entered = deferred(),
+    release = deferred();
+  const onTurnActivity = async (frame: TurnActivityRequest) => {
+    entered.resolve();
+    await release.promise;
+    return {
+      type: "turn:activity:result" as const,
+      requestId: frame.requestId,
+      turnId: frame.turnId,
+      sequence: frame.sequence,
+      status: "recorded" as const,
+    };
+  };
+  const f = await ownerFixture(1000, { onTurnActivity });
+  const frame: TurnActivityRequest = {
+    type: "turn:activity",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    sessionId: randomUUID(),
+    agentId: randomUUID(),
+    turnId: randomUUID(),
+    placementGeneration: 1,
+    sequence: 1,
+    phase: "running",
+  };
+  const result = f.owner.handle(frame, {
+    ...f.context,
+    negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnActivity]: 1 },
+  });
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    expect(await result).toMatchObject({ status: "recorded" });
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});
+
+it.each(["getDelivery", "getTurn"] as const)("close joins an admitted %s custody read", async (method) => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  vi.spyOn(f.custody, method).mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return undefined;
+  });
+  const result = f.owner[method](randomUUID());
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    expect(await result).toBeUndefined();
+    await closing;
+    await expect(f.owner[method](randomUUID())).rejects.toMatchObject({ code: "stopped" });
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});
+
+it("close joins complete Session-message admission before it creates a pending request", async () => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  const result = f.owner
+    .requestSessionMessageDelivery(
+      f.computerId,
+      f.instanceId,
+      sessionMessageDelivery(),
+      undefined,
+      async (operation) => {
+        entered.resolve();
+        await release.promise;
+        return { admitted: true, result: operation(() => undefined) };
+      },
+    )
+    .catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await result).toMatchObject({ code: "stopped" });
+    expect(f.frames).toEqual([]);
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});

@@ -432,7 +432,7 @@ function scriptedFactory(options: {
     state: { phase: "idle", queuedRunCount: 0 },
     binding: undefined,
     prompt: (request) => options.prompt?.(request, sink) ?? Promise.resolve(completed("nope")),
-    steer: async () => undefined,
+    steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
     followUp: async () => completed("nope"),
     respond: async () => undefined,
     abort: async () => undefined,

@@ -15,6 +15,7 @@ import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSkills, agents } from "../../db/schema/index.js";
 import { isUniqueViolation } from "../../db/unique-violation.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import type { SessionCliProofService, SessionCliSourceContext } from "../sessions/session-cli-proof-service.js";
 import {
   skillHashMismatch,
   skillLimitReached,
@@ -44,12 +45,19 @@ import { type SkillObjectStore, skillObjectKey } from "./skill-object-store.js";
  *    by joining `agents.created_by_user_id` and excluding soft-deleted Agents, so a caller from
  *    another Account and a missing Agent are deliberately indistinguishable (`SKILL_NOT_FOUND`).
  * 2. **Object keys are derived, never supplied.** The key is built from the Agent's owner, the Agent,
- *    the Skill id, and a fresh random object id for every write, which makes a replace safe without a lock:
- *    write the new key, update the row, and leave the old object for `SkillObjectGc` to collect.
+ *    the Skill id, and a fresh random object id for every write. Prepare the object outside SQL,
+ *    guard authority and revision when updating the row, and leave the old object for GC.
  */
+
+type SkillReadScope =
+  | { accountId: string; source?: SessionCliSourceContext }
+  | { computerId: string }
+  | { source: SessionCliSourceContext };
+type SkillExecutor = DatabaseClient | DatabaseTransaction;
 
 export interface SkillServiceOptions {
   database: DatabaseClient;
+  proofs?: Pick<SessionCliProofService, "assertCurrentSource" | "lockCurrentSource">;
   /** Absent when the deployment has no object storage; listing still works, bundles degrade. */
   store?: SkillObjectStore;
   keyPrefix: string;
@@ -130,6 +138,7 @@ function matchesExpectedRow(row: SkillRow | undefined, expected: SkillRowExpecta
 
 export class SkillService {
   readonly #database: DatabaseClient;
+  readonly #proofs: SkillServiceOptions["proofs"];
   readonly #store?: SkillObjectStore;
   readonly #keyPrefix: string;
   readonly #logger?: ServiceLogger;
@@ -138,6 +147,7 @@ export class SkillService {
 
   constructor(options: SkillServiceOptions) {
     this.#database = options.database;
+    this.#proofs = options.proofs;
     if (options.store) this.#store = options.store;
     this.#keyPrefix = options.keyPrefix;
     if (options.logger) this.#logger = options.logger;
@@ -148,13 +158,16 @@ export class SkillService {
   // ------------------------------------------------------------------ account
 
   async list(callerUserId: string, agentId: string): Promise<ListAgentSkillsResponse> {
-    await this.#requireAgent(callerUserId, agentId);
-    return this.#listSkills(agentId);
+    return this.#readAgent(agentId, { accountId: callerUserId }, (transaction) =>
+      this.#listSkills(agentId, transaction),
+    );
   }
 
   async get(callerUserId: string, agentId: string, skillId: string): Promise<SkillDetail> {
-    await this.#requireAgent(callerUserId, agentId);
-    return toSkillDetail(await this.#requireSkill(agentId, skillId));
+    const row = await this.#readAgent(agentId, { accountId: callerUserId }, (transaction) =>
+      this.#requireSkill(agentId, skillId, transaction),
+    );
+    return toSkillDetail(row);
   }
 
   async upload(callerUserId: string, agentId: string, input: SkillUploadInput): Promise<SkillDetail> {
@@ -163,15 +176,17 @@ export class SkillService {
   }
 
   async setEnabled(callerUserId: string, agentId: string, skillId: string, enabled: boolean): Promise<SkillDetail> {
-    await this.#requireAgent(callerUserId, agentId);
-    const existing = await this.#requireSkill(agentId, skillId);
-    // Optimistic concurrency: a write that raced a replace on this row changes nothing.
-    const [row] = await this.#database
-      .update(agentSkills)
-      .set({ enabled, updatedAt: this.#now() })
-      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
-      .returning();
-    if (!row) throw skillRevisionConflict();
+    const row = await this.#database.transaction(async (transaction) => {
+      await this.#lockAgent(transaction, callerUserId, agentId);
+      const existing = await this.#requireSkill(agentId, skillId, transaction);
+      const [updated] = await transaction
+        .update(agentSkills)
+        .set({ enabled, updatedAt: this.#now() })
+        .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
+        .returning();
+      if (!updated) throw skillRevisionConflict();
+      return updated;
+    });
     this.#logger?.info(
       { agentId, enabled, skillId: row.id, name: row.name },
       enabled ? "Skill enabled" : "Skill disabled",
@@ -180,14 +195,16 @@ export class SkillService {
   }
 
   async remove(callerUserId: string, agentId: string, skillId: string): Promise<void> {
-    await this.#requireAgent(callerUserId, agentId);
-    const existing = await this.#requireSkill(agentId, skillId);
-    const deleted = await this.#database
-      .delete(agentSkills)
-      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
-      .returning();
-    if (deleted.length === 0) throw skillRevisionConflict();
-    const row = deleted[0] as SkillRow;
+    const row = await this.#database.transaction(async (transaction) => {
+      await this.#lockAgent(transaction, callerUserId, agentId);
+      const existing = await this.#requireSkill(agentId, skillId, transaction);
+      const [deleted] = await transaction
+        .delete(agentSkills)
+        .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
+        .returning();
+      if (!deleted) throw skillRevisionConflict();
+      return deleted;
+    });
     if (this.#store) {
       await bestEffortDeleteSkillObject(this.#store, row.objectKey, "removed Skill", this.#logger, {
         agentId: row.agentId,
@@ -203,8 +220,10 @@ export class SkillService {
   }
 
   async openBundle(callerUserId: string, agentId: string, skillId: string): Promise<SkillBundle> {
-    await this.#requireAgent(callerUserId, agentId);
-    return this.#openBundle(await this.#requireSkill(agentId, skillId));
+    const row = await this.#readAgent(agentId, { accountId: callerUserId }, (transaction) =>
+      this.#requireSkill(agentId, skillId, transaction),
+    );
+    return this.#openBundle(row);
   }
 
   async readFile(
@@ -213,8 +232,9 @@ export class SkillService {
     skillId: string,
     query: ReadSkillFileQuery,
   ): Promise<ReadSkillFileResponse> {
-    await this.#requireAgent(callerUserId, agentId);
-    const row = await this.#requireSkill(agentId, skillId);
+    const row = await this.#readAgent(agentId, { accountId: callerUserId }, (transaction) =>
+      this.#requireSkill(agentId, skillId, transaction),
+    );
     if (query.archiveSha256 !== row.archiveSha256) throw skillRevisionConflict();
     return readSkillFile(await this.#openBundle(row), query.path, this.#readLimits);
   }
@@ -222,12 +242,13 @@ export class SkillService {
   // ----------------------------------------------------------------- computer
 
   async manifestForComputer(computerId: string, agentId: string): Promise<RuntimeSkillManifest> {
-    await this.#requireComputerAgent(computerId, agentId);
-    const rows = await this.#database
-      .select()
-      .from(agentSkills)
-      .where(and(eq(agentSkills.agentId, agentId), eq(agentSkills.enabled, true)))
-      .orderBy(asc(agentSkills.name));
+    const rows = await this.#readAgent(agentId, { computerId }, (transaction) =>
+      transaction
+        .select()
+        .from(agentSkills)
+        .where(and(eq(agentSkills.agentId, agentId), eq(agentSkills.enabled, true)))
+        .orderBy(asc(agentSkills.name)),
+    );
     return {
       skills: rows.map((row) => ({
         id: row.id,
@@ -239,40 +260,44 @@ export class SkillService {
   }
 
   async openBundleForComputer(computerId: string, agentId: string, skillId: string): Promise<SkillBundle> {
-    await this.#requireComputerAgent(computerId, agentId);
-    const row = await this.#requireSkill(agentId, skillId);
-    // The manifest lists enabled Skills only; a disabled Skill is not addressable on this surface.
+    const row = await this.#readAgent(agentId, { computerId }, (transaction) =>
+      this.#requireSkill(agentId, skillId, transaction),
+    );
     if (!row.enabled) throw skillNotFound();
     return this.#openBundle(row);
   }
 
   // -------------------------------------------------------------- agent (cli)
 
-  async listForAgent(agentId: string): Promise<ListAgentSkillsResponse> {
-    await this.#requireActiveAgent(agentId);
-    return this.#listSkills(agentId);
+  async listForAgent(source: SessionCliSourceContext): Promise<ListAgentSkillsResponse> {
+    return this.#readAgent(source.agentId, { source }, (transaction) => this.#listSkills(source.agentId, transaction));
   }
 
   async uploadForAgent(
-    agentId: string,
+    runtimeSource: SessionCliSourceContext,
     input: Omit<SkillUploadInput, "source">,
     source: SkillSource = "agent_upload",
   ): Promise<SkillDetail> {
-    const agent = await this.#requireActiveAgent(agentId);
-    return this.#upload(agent.accountId, agentId, { ...input, source });
+    const agent = await this.#readAgent(
+      runtimeSource.agentId,
+      { source: runtimeSource },
+      async (_transaction, owner) => owner,
+    );
+    return this.#upload(agent.accountId, agent.id, { ...input, source }, runtimeSource);
   }
 
-  async openBundleForAgent(agentId: string, name: string): Promise<SkillBundle> {
-    await this.#requireActiveAgent(agentId);
-    const row = await this.#findByName(agentId, name);
+  async openBundleForAgent(source: SessionCliSourceContext, name: string): Promise<SkillBundle> {
+    const row = await this.#readAgent(source.agentId, { source }, (transaction) =>
+      this.#findByName(source.agentId, name, transaction),
+    );
     if (!row) throw skillNotFound();
     return this.#openBundle(row);
   }
 
   // ------------------------------------------------------------------ shared
 
-  async #listSkills(agentId: string): Promise<ListAgentSkillsResponse> {
-    const rows = await this.#database
+  async #listSkills(agentId: string, executor: SkillExecutor = this.#database): Promise<ListAgentSkillsResponse> {
+    const rows = await executor
       .select()
       .from(agentSkills)
       .where(eq(agentSkills.agentId, agentId))
@@ -280,22 +305,42 @@ export class SkillService {
     return { skills: rows.map(toSkill), storage: this.#store ? "available" : "unavailable" };
   }
 
-  async #upload(accountId: string, agentId: string, input: SkillUploadInput): Promise<SkillDetail> {
+  async #upload(
+    accountId: string,
+    agentId: string,
+    input: SkillUploadInput,
+    runtimeSource?: SessionCliSourceContext,
+  ): Promise<SkillDetail> {
     const actual = createHash("sha256").update(input.bytes).digest("hex");
     if (actual !== input.declaredSha256) throw skillHashMismatch();
+    const normalizeStartedAtMs = Date.now();
     const normalized = await normalizeSkillArchive(input.bytes, input.format, this.#readLimits);
     this.#logger?.debug(
-      { agentId, bytes: normalized.archive.byteLength, fileCount: normalized.fileCount, source: input.source },
+      {
+        agentId,
+        bytes: normalized.archive.byteLength,
+        fileCount: normalized.fileCount,
+        source: input.source,
+        normalizeDurationMs: Math.max(0, Date.now() - normalizeStartedAtMs),
+      },
       "Skill archive validated",
     );
-    const existing = await this.#findByName(agentId, normalized.manifest.name);
+    const existing = await this.#readAgent(
+      agentId,
+      { accountId, ...(runtimeSource ? { source: runtimeSource } : {}) },
+      async (transaction) => {
+        const row = await this.#findByName(agentId, normalized.manifest.name, transaction);
+        if (!row && (await this.#countSkills(agentId, transaction)) >= SKILL_MAX_PER_AGENT) throw skillLimitReached();
+        return row;
+      },
+    );
     if (existing && !input.replace) throw skillNameConflict();
     if (input.expectedRow !== undefined && !matchesExpectedRow(existing, input.expectedRow)) {
       throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
     }
     return existing
-      ? this.#replaceSkill(accountId, existing, input, normalized)
-      : this.#insertSkill(accountId, agentId, input, normalized);
+      ? this.#replaceSkill(accountId, existing, input, normalized, runtimeSource)
+      : this.#insertSkill(accountId, agentId, input, normalized, runtimeSource);
   }
 
   async #insertSkill(
@@ -303,8 +348,8 @@ export class SkillService {
     agentId: string,
     input: SkillUploadInput,
     normalized: NormalizedSkillArchive,
+    runtimeSource?: SessionCliSourceContext,
   ): Promise<SkillDetail> {
-    if ((await this.#countSkills(agentId)) >= SKILL_MAX_PER_AGENT) throw skillLimitReached();
     const store = this.#requireStore();
     const skillId = randomUUID();
     const objectKey = skillObjectKey({
@@ -322,7 +367,7 @@ export class SkillService {
       // the row would be left pointing at a missing object, which no retry could repair. The catch's
       // cleanup is therefore conditional — it deletes only when the row is absent.
       [row] = await this.#database.transaction(async (transaction) => {
-        await this.#lockSkillAdmission(transaction, accountId, agentId, normalized.manifest.name);
+        await this.#lockSkillAdmission(transaction, accountId, agentId, normalized.manifest.name, runtimeSource);
         return transaction
           .insert(agentSkills)
           .values({
@@ -364,6 +409,7 @@ export class SkillService {
     existing: SkillRow,
     input: SkillUploadInput,
     normalized: NormalizedSkillArchive,
+    runtimeSource?: SessionCliSourceContext,
   ): Promise<SkillDetail> {
     const store = this.#requireStore();
     const objectKey = skillObjectKey({
@@ -376,24 +422,29 @@ export class SkillService {
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     let row: SkillRow | undefined;
     try {
-      [row] = await this.#database
-        .update(agentSkills)
-        .set({
-          description: normalized.manifest.description,
-          source: input.source,
-          objectKey,
-          archiveSha256: normalized.sha256,
-          archiveBytes: normalized.archive.byteLength,
-          fileCount: normalized.fileCount,
-          files: normalized.files,
-          filesTruncated: normalized.filesTruncated,
-          revision: sql`${agentSkills.revision} + 1`,
-          updatedAt: this.#now(),
-        })
-        // Optimistic concurrency: a replace built on a stale read changes nothing. If another writer
-        // moved the row since we read it, this matches zero rows and we must not touch its object.
-        .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
-        .returning();
+      [row] = await this.#database.transaction(async (transaction) => {
+        await this.#lockAgent(transaction, accountId, existing.agentId, runtimeSource);
+        return (
+          transaction
+            .update(agentSkills)
+            .set({
+              description: normalized.manifest.description,
+              source: input.source,
+              objectKey,
+              archiveSha256: normalized.sha256,
+              archiveBytes: normalized.archive.byteLength,
+              fileCount: normalized.fileCount,
+              files: normalized.files,
+              filesTruncated: normalized.filesTruncated,
+              revision: sql`${agentSkills.revision} + 1`,
+              updatedAt: this.#now(),
+            })
+            // Optimistic concurrency: a replace built on a stale read changes nothing. If another writer
+            // moved the row since we read it, this matches zero rows and we must not touch its object.
+            .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
+            .returning()
+        );
+      });
     } catch (error) {
       // A failed acknowledgement can follow a committed write; retain its referenced object.
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
@@ -414,6 +465,7 @@ export class SkillService {
 
   async #openBundle(row: SkillRow): Promise<SkillBundle> {
     const store = this.#requireStore();
+    const startedAtMs = Date.now();
     let stream: ReadableStream<Uint8Array>;
     try {
       stream = await store.get(row.objectKey);
@@ -421,7 +473,13 @@ export class SkillService {
       throw mapSkillStoreError(error);
     }
     this.#logger?.info(
-      { agentId: row.agentId, bytes: row.archiveBytes, skillId: row.id, name: row.name },
+      {
+        agentId: row.agentId,
+        bytes: row.archiveBytes,
+        skillId: row.id,
+        name: row.name,
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+      },
       "Skill bundle opened",
     );
     return { skill: toSkillDetail(row), stream, sha256: row.archiveSha256, bytes: row.archiveBytes };
@@ -456,8 +514,12 @@ export class SkillService {
     );
   }
 
-  async #findByName(agentId: string, name: string): Promise<SkillRow | undefined> {
-    const [row] = await this.#database
+  async #findByName(
+    agentId: string,
+    name: string,
+    executor: SkillExecutor = this.#database,
+  ): Promise<SkillRow | undefined> {
+    const [row] = await executor
       .select()
       .from(agentSkills)
       .where(and(eq(agentSkills.agentId, agentId), sql`lower(${agentSkills.name}) = ${name.toLowerCase()}`))
@@ -465,8 +527,8 @@ export class SkillService {
     return row;
   }
 
-  async #requireSkill(agentId: string, skillId: string): Promise<SkillRow> {
-    const [row] = await this.#database
+  async #requireSkill(agentId: string, skillId: string, executor: SkillExecutor = this.#database): Promise<SkillRow> {
+    const [row] = await executor
       .select()
       .from(agentSkills)
       .where(and(eq(agentSkills.id, skillId), eq(agentSkills.agentId, agentId)))
@@ -475,21 +537,22 @@ export class SkillService {
     return row;
   }
 
-  async #countSkills(agentId: string): Promise<number> {
-    const [row] = await this.#database
+  async #countSkills(agentId: string, executor: SkillExecutor = this.#database): Promise<number> {
+    const [row] = await executor
       .select({ count: sql<number>`count(*)::int` })
       .from(agentSkills)
       .where(eq(agentSkills.agentId, agentId));
     return row?.count ?? 0;
   }
 
-  async #lockSkillAdmission(transaction: DatabaseTransaction, accountId: string, agentId: string, name: string) {
-    const [agent] = await transaction
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
-      .for("no key update");
-    if (!agent) throw skillNotFound("The Agent was not found");
+  async #lockSkillAdmission(
+    transaction: DatabaseTransaction,
+    accountId: string,
+    agentId: string,
+    name: string,
+    runtimeSource?: SessionCliSourceContext,
+  ) {
+    await this.#lockAgent(transaction, accountId, agentId, runtimeSource);
     const [current] = await transaction
       .select({
         count: sql<number>`count(*)::int`,
@@ -512,23 +575,55 @@ export class SkillService {
     return { id: row.id, accountId: row.createdByUserId };
   }
 
-  async #requireActiveAgent(agentId: string): Promise<AgentOwner> {
-    const [row] = await this.#database
-      .select({ id: agents.id, createdByUserId: agents.createdByUserId })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!row) throw skillNotFound("The Agent was not found");
-    return { id: row.id, accountId: row.createdByUserId };
+  async #readAgent<T>(
+    agentId: string,
+    access: SkillReadScope,
+    read: (transaction: DatabaseTransaction, owner: AgentOwner) => Promise<T>,
+  ): Promise<T> {
+    return this.#database.transaction(
+      async (transaction) => {
+        const conditions = [eq(agents.id, agentId), ne(agents.status, "deleted")];
+        if ("accountId" in access) conditions.push(eq(agents.createdByUserId, access.accountId));
+        if ("computerId" in access) conditions.push(eq(agents.computerId, access.computerId));
+        if ("source" in access && access.source) conditions.push(eq(agents.id, access.source.agentId));
+        const [row] = await transaction
+          .select({ id: agents.id, accountId: agents.createdByUserId })
+          .from(agents)
+          .where(and(...conditions))
+          .limit(1);
+        if (!row) throw skillNotFound("The Agent was not found");
+        if ("source" in access && access.source)
+          await this.#proofAuthority().assertCurrentSource(transaction, access.source);
+        return read(transaction, row);
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
-  async #requireComputerAgent(computerId: string, agentId: string): Promise<AgentOwner> {
-    const [row] = await this.#database
-      .select({ id: agents.id, createdByUserId: agents.createdByUserId })
+  async #lockAgent(
+    transaction: DatabaseTransaction,
+    accountId: string,
+    agentId: string,
+    source?: SessionCliSourceContext,
+  ): Promise<void> {
+    const [agent] = await transaction
+      .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.computerId, computerId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!row) throw skillNotFound("The Agent was not found");
-    return { id: row.id, accountId: row.createdByUserId };
+      .where(
+        and(
+          eq(agents.id, agentId),
+          eq(agents.createdByUserId, accountId),
+          ne(agents.status, "deleted"),
+          source ? eq(agents.id, source.agentId) : undefined,
+        ),
+      )
+      .for("no key update");
+    if (!agent) throw skillNotFound("The Agent was not found");
+    if (source) await this.#proofAuthority().lockCurrentSource(transaction, source);
+  }
+
+  #proofAuthority() {
+    if (!this.#proofs) throw new Error("Session proof authority is not configured");
+    return this.#proofs;
   }
 }

@@ -1,6 +1,10 @@
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { RuntimeImOutboxContext } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
+import { resolveAccountHome } from "../storage/context-tree-home.js";
+import { resolveContextTreePackage, runContextTreeCli } from "./context-tree.js";
+import { ContextTreeCommandGateway } from "./context-tree-commands.js";
 import {
   ImCredentialEnvironmentError,
   ImCredentialEnvironmentManager,
@@ -92,7 +96,7 @@ export interface PreparedMcpGatewayLaunch {
 export interface PreparedRuntimeCredentialEnvironment {
   /** Local-only exact proxy socket for this execution. Cloud uses its mounted bridge. */
   readonly allowedUnixSockets?: readonly string[];
-  /** Present in proxy mode; exact-execution cleanup token. */
+  /** Exact preparation/execution cleanup token in either credential mode. */
   readonly executionId?: string;
   /** Execution environment manifest merged by the Turn launcher. */
   readonly environmentManifest?: string;
@@ -126,7 +130,7 @@ export interface RuntimeCredentialEnvironmentManagerOptions {
   readonly logger?: Pick<ClientLogger, "debug" | "warn">;
   /**
    * Explicit mode selection. `"proxy"` never falls back to raw materials; `"legacy"`
-   * keeps the existing Local behavior unchanged. Default `"legacy"`.
+   * keeps the existing Local raw-credential projection. Default `"legacy"`.
    */
   readonly mode?: RuntimeCredentialMode;
   readonly now?: () => number;
@@ -157,6 +161,7 @@ interface ActiveProxyExecution {
   readonly provider?: "feishu" | "slack";
   readonly providers: readonly RuntimeProxyProvider[];
   readonly relay: RuntimeCredentialRelay;
+  readonly contextTreeGateway?: ContextTreeCommandGateway;
   readonly slackApiHost?: string;
   readonly slackConfigDir?: string;
   readonly web?: PreparedWebToolsLaunch;
@@ -170,8 +175,8 @@ interface ActiveProxyExecution {
  * Runtime credential environment lifecycle with explicit proxy mode. Proxy mode opens
  * a trusted execution through the control connection, holds short-lived capabilities
  * only inside the trusted Relay, and materializes execution-local handles, CA, CLI
- * config, and shims for the Sandbox. Legacy mode delegates to the existing IM
- * credential environment manager unchanged.
+ * config, and shims for the Sandbox. Legacy mode delegates credential materialization
+ * and live non-secret outbox context to the existing IM manager.
  */
 export class RuntimeCredentialEnvironmentManager {
   readonly #legacy?: ImCredentialEnvironmentManager;
@@ -241,6 +246,14 @@ export class RuntimeCredentialEnvironmentManager {
     );
   }
 
+  configureContextTree(
+    sessionId: string,
+    cwd: string,
+    sources: readonly import("@opentag/shared").ContextTreeConnection[],
+  ): void {
+    this.#proxyExecutions.get(sessionId)?.contextTreeGateway?.configure(cwd, sources);
+  }
+
   /**
    * Raw execution environment for trusted host-side CLI children (for example Context Tree Git).
    * The standard proxy/CA variables are derived here because these consumers are allowed to use
@@ -253,6 +266,14 @@ export class RuntimeCredentialEnvironmentManager {
     const environment = this.#proxyExecutions.get(sessionId)?.environment;
     if (!environment) return undefined;
     return { ...environment, ...providerRoutingEnvironment(environment) };
+  }
+
+  /** IM outbox context of the Session's live execution, so input steered into it names the same target. */
+  outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
+    if (this.#mode === "legacy") {
+      return this.#requireLegacy().outboxContextForSession(sessionId);
+    }
+    return this.#proxyExecutions.get(sessionId)?.outboxContext;
   }
 
   /** Current execution id for a Session, when a proxy execution is active. */
@@ -323,7 +344,9 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async cleanup(sessionId: string, executionId?: string): Promise<void> {
-    if (this.#mode === "legacy") return this.#requireLegacy().cleanup(sessionId);
+    if (this.#mode === "legacy") {
+      return this.#requireLegacy().cleanup(sessionId, executionId);
+    }
     const active = this.#proxyExecutions.get(sessionId);
     if (executionId !== undefined && active && active.executionId !== executionId) {
       // Stale cleanup for a replaced execution: successor material stays untouched.
@@ -396,6 +419,9 @@ export class RuntimeCredentialEnvironmentManager {
     }
     if (this.#options.connection.capabilityVersion(RUNTIME_MCP_GATEWAY_CAPABILITY) === 1) {
       services.push("mcp");
+    }
+    if (this.#options.connection.capabilityVersion("runtime.contextTreeExecution") === 1) {
+      services.push("context-tree");
     }
     return services.length > 0 ? services : undefined;
   }
@@ -474,12 +500,71 @@ export class RuntimeCredentialEnvironmentManager {
     signal?.throwIfAborted();
     const layout = store.executionLayout(sessionId, relay.executionId);
     const handles = collectProxyHandles(relay);
-    const adapter = await this.#startProxyAdapter(sessionId, relay, layout);
+    let adapter: RuntimeProxyLoopbackAdapter | undefined;
+    const contextTreeGateway =
+      relay.services?.some((service) => service.service === "context-tree") &&
+      !this.#options.sandboxForSession?.(sessionId)
+        ? new ContextTreeCommandGateway({
+            parent: relay,
+            workspace: "",
+            sources: [],
+            stateDirectory: join(this.#options.home, "data", "runtime", "context-tree-command-sessions", relay.agentId),
+            environment: () => {
+              if (!adapter) throw new Error("Context Tree proxy is unavailable");
+              return {
+                ...buildRuntimeProxyEnvironment({
+                  executionId: relay.executionId,
+                  adapterCaCertPath: adapter.caCertPath,
+                  cliMetadata: () => undefined,
+                  connectProxyUrl: adapter.connectProxyUrl,
+                  slackApiHost: adapter.slackApiHost,
+                  handles: new Map(),
+                  layout,
+                }),
+                ...providerRoutingEnvironment({
+                  OPENTAG_PROVIDER_PROXY_URL: adapter.connectProxyUrl,
+                  OPENTAG_PROVIDER_CA_PATH: adapter.caCertPath,
+                }),
+                HOME: resolveAccountHome(process.env),
+                GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? "OpenTag Context Tree",
+                GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? "opentag-context-tree@localhost",
+                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? "OpenTag Context Tree",
+                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? "opentag-context-tree@localhost",
+              };
+            },
+            execute: async (args, environment, commandSignal) => {
+              const pack = resolveContextTreePackage();
+              if (!pack || !contextTreeGateway) throw new Error("Context Tree package is unavailable");
+              const result = await runContextTreeCli(pack, args, {
+                cwd: contextTreeGateway.workspace,
+                network: true,
+                env: { ...process.env, ...environment },
+                signal: commandSignal,
+              });
+              return {
+                code: result.failureCode ? 1 : 0,
+                stdout: JSON.stringify(result.payload ?? {}),
+                stderr: result.failureCode ? `Context Tree failed: ${result.failureCode}\n` : "",
+              };
+            },
+          })
+        : undefined;
     try {
-      const active = await this.#activateProxyExecution(sessionId, relay, store, layout, handles, adapter);
+      await contextTreeGateway?.listen("socket");
+      adapter = await this.#startProxyAdapter(relay, layout, contextTreeGateway);
+      const active = await this.#activateProxyExecution(
+        sessionId,
+        relay,
+        store,
+        layout,
+        handles,
+        adapter,
+        contextTreeGateway,
+      );
       return this.#preparedProxyResult(sessionId, relay, store, active);
     } catch (error) {
-      await adapter.close().catch(() => undefined);
+      await contextTreeGateway?.close().catch(() => undefined);
+      await adapter?.close().catch(() => undefined);
       await store.cleanupExecution(sessionId, relay.executionId).catch(() => undefined);
       throw error;
     }
@@ -495,26 +580,33 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async #startProxyAdapter(
-    sessionId: string,
     relay: RuntimeCredentialRelay,
     layout: ReturnType<RuntimeProxyMaterialStore["executionLayout"]>,
+    contextTreeGateway?: ContextTreeCommandGateway,
   ): Promise<RuntimeProxyLoopbackAdapter> {
     return RuntimeProxyLoopbackAdapter.start({
       executionId: relay.executionId,
-      githubApiSocket:
-        !this.#options.sandboxForSession?.(sessionId) && relay.providers.some((entry) => entry.provider === "github"),
       ...(this.#options.generateCa ? { generateCa: this.#options.generateCa } : {}),
       localHandleFor: (provider) => {
         try {
-          return relay.localHandleFor(provider);
+          return (provider === "github" ? contextTreeGateway?.relayFor(provider) : relay)?.localHandleFor(provider);
         } catch {
           return undefined;
         }
       },
       logger: this.#logger,
       materialDir: layout.executionDir,
-      openStream: (request) => relay.openProviderStream(request),
-      verifyHandle: (provider, handle) => relay.verifyLocalHandle(provider, handle),
+      openStream: (request) => {
+        const owner =
+          request.provider === "github" ? contextTreeGateway?.relayFor(request.provider, request.localHandle) : relay;
+        if (!owner) throw new Error("Provider unavailable");
+        return owner.openProviderStream(request);
+      },
+      verifyHandle: (provider, handle) =>
+        (provider === "github" ? contextTreeGateway?.relayFor(provider, handle) : relay)?.verifyLocalHandle(
+          provider,
+          handle,
+        ) ?? false,
     });
   }
 
@@ -525,6 +617,7 @@ export class RuntimeCredentialEnvironmentManager {
     layout: ReturnType<RuntimeProxyMaterialStore["executionLayout"]>,
     handles: Map<RuntimeProxyProvider, string>,
     adapter: RuntimeProxyLoopbackAdapter,
+    contextTreeGateway?: ContextTreeCommandGateway,
   ): Promise<ActiveProxyExecution> {
     const environment = buildRuntimeProxyEnvironment({
       executionId: relay.executionId,
@@ -535,6 +628,9 @@ export class RuntimeCredentialEnvironmentManager {
       layout,
       slackApiHost: adapter.slackApiHost,
     });
+    Object.assign(environment, { OPENTAG_CONTEXT_TREE_MANIFEST: store.manifestPath(sessionId) });
+    if (contextTreeGateway?.socketPath)
+      Object.assign(environment, { OPENTAG_CONTEXT_TREE_SOCKET: contextTreeGateway.socketPath });
     await store.publish({
       adapterCaCertPath: adapter.caCertPath,
       environment,
@@ -545,7 +641,9 @@ export class RuntimeCredentialEnvironmentManager {
       platform: this.#platform,
       sessionId,
     });
-    const providers = relay.providers.map((provider) => provider.provider);
+    const providers = relay.providers
+      .filter((provider) => provider.provider !== "github")
+      .map((provider) => provider.provider);
     const imProvider = providers.includes("feishu") ? "feishu" : providers.includes("slack") ? "slack" : undefined;
     const outboxContext = imProvider ? runtimeProxyOutboxContext(relay.cliMetadataFor(imProvider)) : undefined;
     const webGateway = await this.#startWebGateway(relay);
@@ -559,6 +657,7 @@ export class RuntimeCredentialEnvironmentManager {
     const active: ActiveProxyExecution = {
       adapter,
       environment,
+      ...(contextTreeGateway ? { contextTreeGateway } : {}),
       executionId: relay.executionId,
       ...(outboxContext ? { outboxContext } : {}),
       ...(imProvider ? { provider: imProvider } : {}),
@@ -576,6 +675,7 @@ export class RuntimeCredentialEnvironmentManager {
       () => {
         // Revocation/connection replacement: tear down the execution entry and material.
         if (this.#proxyExecutions.get(sessionId) === active) this.#proxyExecutions.delete(sessionId);
+        void contextTreeGateway?.close().catch(() => undefined);
         void adapter.close().catch(() => undefined);
         void this.#closeWebGateway(active).catch(() => undefined);
         void store.cleanupExecution(sessionId, active.executionId).catch(() => undefined);
@@ -592,13 +692,7 @@ export class RuntimeCredentialEnvironmentManager {
     active: ActiveProxyExecution,
   ): PreparedRuntimeCredentialEnvironment {
     return {
-      ...(!this.#options.sandboxForSession?.(sessionId) && active.adapter.githubApiSocketPath
-        ? {
-            allowedUnixSockets: [active.adapter.githubApiSocketPath, active.adapter.githubGitSocketPath].filter(
-              (path): path is string => path !== undefined,
-            ),
-          }
-        : {}),
+      ...(active.contextTreeGateway?.socketPath ? { allowedUnixSockets: [active.contextTreeGateway.socketPath] } : {}),
       executionId: relay.executionId,
       environmentManifest: store.manifestPath(sessionId),
       ...(active.outboxContext ? { outboxContext: active.outboxContext } : {}),
@@ -662,6 +756,12 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async #closeActive(active: ActiveProxyExecution): Promise<void> {
+    await active.contextTreeGateway?.close().catch((error: unknown) => {
+      this.#logger.warn(
+        { code: "context_tree_close_failed", reason: runtimeProxyErrorReason(error) },
+        "Context Tree command cleanup failed",
+      );
+    });
     await this.#closeWebGateway(active);
     await active.adapter.close().catch(() => undefined);
     await active.relay.close("cleanup").catch((error: unknown) => {
@@ -685,7 +785,10 @@ export class RuntimeCredentialEnvironmentManager {
 
 function collectProxyHandles(relay: RuntimeCredentialRelay): Map<RuntimeProxyProvider, string> {
   const handles = new Map<RuntimeProxyProvider, string>();
-  for (const provider of relay.providers) handles.set(provider.provider, relay.localHandleFor(provider.provider));
+  for (const provider of relay.providers) {
+    if (provider.provider !== "github" || relay.contextTreeExecution)
+      handles.set(provider.provider, relay.localHandleFor(provider.provider));
+  }
   return handles;
 }
 

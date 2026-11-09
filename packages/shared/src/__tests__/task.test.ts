@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentAvatarPath,
   ListTasksResponseSchema,
+  ProviderInboundContextSchema,
   TASK_TITLE_MAX_LENGTH,
   TaskAttachmentSchema,
   TaskCancelResponseSchema,
@@ -180,5 +181,44 @@ describe("Task browser contracts", () => {
     expect(() => TaskTitleUpdateRequestSchema.parse({ title: "   " })).toThrow();
     expect(() => TaskTitleUpdateRequestSchema.parse({ title: "A", accountId: "foreign" })).toThrow();
     expect(TaskTitleUpdateResponseSchema.parse({ task: summary })).toEqual({ task: summary });
+  });
+
+  it("preserves Feishu chatMode and groupMessageType across inbound provider context and Task summary sources", () => {
+    for (const chatMode of ["group", "topic", "p2p"] as const) {
+      expect(ProviderInboundContextSchema.parse({ provider: "feishu", chatType: "group", chatMode })).toEqual({
+        provider: "feishu",
+        chatType: "group",
+        chatMode,
+      });
+      expect(TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode } }).source.chatMode).toBe(
+        chatMode,
+      );
+    }
+    for (const groupMessageType of ["chat", "thread"] as const) {
+      expect(
+        ProviderInboundContextSchema.parse({
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "group",
+          groupMessageType,
+        }),
+      ).toEqual({
+        provider: "feishu",
+        chatType: "group",
+        chatMode: "group",
+        groupMessageType,
+      });
+      expect(
+        TaskSummarySchema.parse({ ...summary, source: { ...summary.source, groupMessageType } }).source
+          .groupMessageType,
+      ).toBe(groupMessageType);
+    }
+    expect(
+      TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode: null, groupMessageType: null } })
+        .source,
+    ).toMatchObject({ chatMode: null, groupMessageType: null });
+    expect(() => ProviderInboundContextSchema.parse({ provider: "feishu", chatMode: "forum" })).toThrow();
+    expect(() => ProviderInboundContextSchema.parse({ provider: "feishu", groupMessageType: "topic" })).toThrow();
+    expect(() => TaskSummarySchema.parse({ ...summary, source: { ...summary.source, chatMode: "forum" } })).toThrow();
   });
 });

@@ -1,0 +1,2 @@
+ALTER TABLE "im_feedback_targets" ADD COLUMN "message_format" text DEFAULT 'interactive_v1' NOT NULL;--> statement-breakpoint
+ALTER TABLE "im_feedback_targets" ADD CONSTRAINT "im_feedback_targets_message_format" CHECK ("im_feedback_targets"."message_format" in ('interactive_v1','text_v1'));

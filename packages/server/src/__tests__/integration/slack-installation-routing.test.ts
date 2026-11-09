@@ -379,7 +379,7 @@ describe("Slack installation routing", () => {
     }
   });
 
-  it("atomically replaces a migrated Slack installation and ends every old route Session", async () => {
+  it("rejects Slack installation replacement and preserves its routes and Sessions", async () => {
     const value = await fixture();
     try {
       const migrated = await activate(value.imBindingsService, value.first.id, "create", {
@@ -402,43 +402,22 @@ describe("Slack installation routing", () => {
         .returning();
       if (!session) throw new Error("Migrated Session fixture was not created");
 
-      const replacement = await activate(value.imBindingsService, value.first.id, "reauthorize", {
-        appId: "A_OPENTAG",
-        teamId: "T_OPENTAG",
-        botUserId: "U_OPENTAG",
-        botId: "B_OPENTAG",
-        token: "xoxb-opentag",
+      const routesBefore = await value.database.select().from(imBindings);
+      await expect(
+        activate(value.imBindingsService, value.first.id, "reauthorize", {
+          appId: "A_OPENTAG",
+          teamId: "T_OPENTAG",
+          botUserId: "U_OPENTAG",
+          botId: "B_OPENTAG",
+          token: "xoxb-opentag",
+        }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+      expect(await value.database.select().from(slackInstallations)).toEqual([migratedInstallation]);
+      expect(await value.database.select().from(imBindings)).toEqual(routesBefore);
+      expect((await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]).toMatchObject({
+        endedAt: null,
+        revision: 1,
       });
-      expect(replacement).toMatchObject({ credentialGeneration: 1, agentId: value.first.id });
-      expect(replacement.imBindingId).not.toBe(migrated.imBindingId);
-
-      const installations = await value.database.select().from(slackInstallations);
-      const disabledInstallation = installations.find((row) => row.id === migratedInstallation.id);
-      const currentInstallation = installations.find((row) => row.id !== migratedInstallation.id);
-      expect(disabledInstallation).toMatchObject({
-        status: "disabled",
-        encryptedCredential: null,
-        replacementSlackInstallationId: currentInstallation?.id,
-      });
-      expect(currentInstallation).toMatchObject({
-        status: "active",
-        externalAppId: "A_OPENTAG",
-        externalTeamId: "T_OPENTAG",
-        externalBotId: "U_OPENTAG",
-      });
-
-      const routes = await value.database.select().from(imBindings);
-      expect(routes.find((row) => row.id === migrated.imBindingId)).toMatchObject({
-        status: "disabled",
-        replacementImBindingId: replacement.imBindingId,
-      });
-      expect(routes.find((row) => row.id === replacement.imBindingId)).toMatchObject({
-        status: "active",
-        slackRouteKind: "default",
-        slackInstallationId: currentInstallation?.id,
-      });
-      const [endedSession] = await value.database.select().from(sessions).where(eq(sessions.id, session.id));
-      expect(endedSession).toMatchObject({ endedAt: now, revision: 2 });
     } finally {
       await value.sql.end();
     }

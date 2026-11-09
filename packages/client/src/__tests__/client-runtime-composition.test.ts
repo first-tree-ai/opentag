@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  computeDirectInputHash,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -14,7 +15,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
@@ -42,6 +43,7 @@ import {
   resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
+import { TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -228,8 +230,9 @@ describe("createClientRuntime production composition", () => {
       await expect(
         runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
       ).resolves.toMatchObject({ status: "ready" });
-      await runtime.runtimeManager.ensureRuntime("session-1");
-      expect(requestedSessions).toEqual(["session-1"]);
+      const firstRuntime = await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(await runtime.runtimeManager.ensureRuntime("session-1")).toBe(firstRuntime);
+      expect(requestedSessions).toEqual(["session-1", "session-1"]);
       expect(ensureAgent).toHaveBeenCalledTimes(1);
       const [cwd, provider, connections, environment] = ensureAgent.mock.calls[0] ?? [];
       expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));
@@ -483,13 +486,96 @@ describe("createClientRuntime production composition", () => {
     },
   );
 
+  it("does not start a retry whose start is being recorded when the runtime stops, nor count it", async () => {
+    const home = await temporaryDirectory("opentag-retry-shutdown-");
+    const connection = runtimeConnection();
+    const factory = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+    });
+    const options = {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+    };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+    const request = delivery(piSnapshot);
+    const retries = new TurnRetryStore(home);
+    const first = await createClientRuntime(connection, options);
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      await first.bindingStore.recordAccepted(request, computeDirectInputHash(request), "turn-1");
+      await retries.write(turnRetryRecord(request, "turn-1"));
+    } finally {
+      first.stop();
+      await first.run();
+    }
+    const restart = () =>
+      createClientRuntime(runtimeConnection(undefined, undefined, connection.installationId), options);
+    const restarted = await restart();
+    await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+
+    const update = TurnRetryStore.prototype.update;
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = vi.spyOn(TurnRetryStore.prototype, "update").mockImplementationOnce(async function (
+      this: TurnRetryStore,
+      ...args
+    ) {
+      await blocked;
+      return update.apply(this, args);
+    });
+    const start = vi.spyOn(restarted.runner, "start");
+    const dispatch = vi.spyOn(restarted.custody, "resume");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    const resumed = restarted.interruptedWork.resume(request.sessionId, turn);
+    restarted.stop();
+    const stopped = restarted.run();
+    let finished = false;
+    void stopped.finally(() => {
+      finished = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(finished).toBe(false);
+    release();
+    await stopped;
+    held.mockRestore();
+
+    await expect(resumed).resolves.toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+
+    // No Provider ran, so the next daemon doesn't count it again.
+    const next = await restart();
+    try {
+      await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+    } finally {
+      next.stop();
+      await next.run();
+    }
+  });
+
   it("recovers a Pi binding when Client restarts before the first prompt", async () => {
     const home = await temporaryDirectory("opentag-pi-unmaterialized-");
     const connection = runtimeConnection();
     const factory = new PiAgentRuntimeFactory({
       probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
     });
-    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const create = vi.spyOn(factory, "create");
+    const resume = vi.spyOn(factory, "resume");
+    const cliInvocation = ["/opt/current node/bin/node", "/opt/owner's app/cli/index.mjs"];
+    const cliCommand = cliInvocation.map((value) => `'${value.replaceAll("'", `'"'"'`)}'`).join(" ");
+    const options = {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+      cliInvocation,
+      cliCommand,
+    };
     const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
     const first = await createClientRuntime(connection, options);
     let originalBinding: AgentRuntime["binding"];
@@ -497,6 +583,8 @@ describe("createClientRuntime production composition", () => {
       await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
       originalBinding = (await first.runtimeManager.ensureRuntime("session-1")).binding;
       expect(originalBinding?.providerId).toBe("pi");
+      expect(create.mock.calls[0]?.[0].policy.managedCli).toEqual(cliInvocation);
+      expect(create.mock.calls[0]?.[0].systemPrompt).toContain(cliCommand);
     } finally {
       first.stop();
       await first.run();
@@ -508,6 +596,8 @@ describe("createClientRuntime production composition", () => {
       const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
       expect(recovered.binding?.providerId).toBe("pi");
       expect(recovered.binding).toEqual(originalBinding);
+      expect(resume.mock.calls[0]?.[0].policy.managedCli).toEqual(cliInvocation);
+      expect(resume.mock.calls[0]?.[0].systemPrompt).toContain(cliCommand);
     } finally {
       restarted.stop();
       await restarted.run();
@@ -1047,7 +1137,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nif [ "$3" = "auth" ]; then echo \'{"loggedIn":true}\'; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool acceptEdits --append-system-prompt\\n"; exit 0; fi\nif [ "$3" = "auth" ]; then echo \'{"loggedIn":true}\'; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -1177,6 +1267,35 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       handlers.onReconcileResultSendFailed({} as never, {} as never, new Error("send")),
     ).resolves.toBeUndefined();
     await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
+    const prepared = { sessionPrepared: vi.fn(), reconcileRejected: vi.fn() };
+    const withRecovery = createClientRuntimeHandlers(
+      custody as never,
+      reportOwner as never,
+      recovery as never,
+      prepared,
+    );
+    for (const [desired, status] of [
+      ["ready", "ready"],
+      ["ready", "running"],
+      ["ready", "recovery_required"],
+      ["ready", "rejected"],
+      ["stopped", "stopped"],
+    ] as const) {
+      await withRecovery.onReconciled(
+        { desired, sessionId: `${desired}-${status}` } as never,
+        { status, ...(status === "rejected" ? { reason: "session_binding_conflict" } : {}) } as never,
+      );
+    }
+    await withRecovery.onReconciled(
+      { desired: "ready", sessionId: "no-reason" } as never,
+      { status: "rejected" } as never,
+    );
+    // A ready Session releases waiting Session messages; so does a resumed Turn (`running`), to steer them in.
+    expect(prepared.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);
+    expect(prepared.reconcileRejected.mock.calls).toEqual([
+      ["ready-rejected", "session_binding_conflict"],
+      ["no-reason", "session_recovery_rejected"],
+    ]);
 
     const request = delivery(snapshot());
     const verifyAgent = vi.fn(async () => undefined);
@@ -1198,6 +1317,140 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     await expect(preflight(request)).resolves.toBe("configuration_unsupported");
   });
 
+  it("takes a fresh sample after an existing shared probe instead of relabeling it for a manual epoch", async () => {
+    const home = await temporaryDirectory("opentag-fresh-epoch-");
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 1)
+        return { ready: false as const, issues: [{ code: "temporarily_unavailable" as const, message: "cold" }] };
+      if (probe.mock.calls.length === 2) await gate;
+      return { ready: true as const, issues: [] };
+    });
+    let requestFresh!: () => void;
+    const reports: Array<Record<string, unknown>> = [];
+    const handleFrame = (socket: WebSocket, data: { toString(): string }) => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (frame.type === "auth") completeAuth(socket, frame, ["codex"]);
+      if (frame.type === "computer:register") {
+        const result = registrationResult(frame);
+        socket.send(JSON.stringify(result));
+        requestFresh = () =>
+          socket.send(
+            JSON.stringify({
+              type: "runtime:self-check",
+              requestId: randomUUID(),
+              connectionId: result.connectionId,
+            }),
+          );
+      }
+      if (frame.type === "heartbeat") socket.send(JSON.stringify(heartbeatResult(frame)));
+      if (frame.type === "runtime:self-check:report") reports.push(frame);
+    };
+    server.wss.on("connection", (socket) => socket.on("message", (data) => handleFrame(socket, data)));
+    const runtime = await createClientRuntime(connection, {
+      home,
+      clientVersion: "0.0.1",
+      factory: readyFactory("codex", probe),
+      environment: { HOME: home, PATH: process.env.PATH },
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
+    });
+    await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
+    const running = runtime.run();
+    const preparing = runtime.runtimeManager
+      .ensureRuntime("session-1", new AbortController().signal)
+      .catch(() => undefined);
+    try {
+      await connection.whenRegistered();
+      await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+      requestFresh();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(probe).toHaveBeenCalledTimes(2);
+      release();
+      await preparing;
+      await vi.waitFor(() => expect(reports).toHaveLength(1));
+      expect(probe).toHaveBeenCalledTimes(3);
+      expect(reports[0]).toMatchObject({ sequence: 1, providerReadiness: [{ provider: "codex", status: "ready" }] });
+    } finally {
+      release();
+      runtime.stop();
+      await running;
+    }
+  });
+
+  it("reports the self-check deadline without releasing actual probe ownership, and drains it on stop", async () => {
+    let receive!: (frame: unknown) => void;
+    let finishProbe!: () => void;
+    let finishRuntime!: () => void;
+    const probe = new Promise<void>((resolve) => {
+      finishProbe = resolve;
+    });
+    const runtimeGate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    const refreshCapability = vi.fn(() => probe);
+    const publishSelfCheck = vi.fn(async () => {
+      throw new Error("send failed");
+    });
+    const close = vi.fn(async () => undefined);
+    const runtime = new ComposedClientRuntime(
+      { run: () => runtimeGate, stop: vi.fn() } as never,
+      {
+        bindingStore: {},
+        custody: {},
+        collaboration: { close: vi.fn() },
+        reconciler: {},
+        workspace: {},
+        credentialEnvironment: { close: vi.fn(async () => undefined) },
+        sessionMessageInbox: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
+        runner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        reportOwner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        runtimeManager: { close },
+        capabilityAbort: new AbortController(),
+        refreshCapability,
+        capabilityRefreshIntervalMs: 30_000,
+        connection: {
+          supportsCapability: () => true,
+          publishSelfCheck,
+          subscribeBusinessFrames: (listener: (frame: unknown) => void) => {
+            receive = listener;
+            return () => undefined;
+          },
+        },
+      } as never,
+    );
+    const running = runtime.run();
+    const requestId = randomUUID();
+    receive({ type: "runtime:self-check", requestId });
+    try {
+      await vi.waitFor(
+        () =>
+          expect(publishSelfCheck).toHaveBeenCalledWith(requestId, 1, expect.any(String), [
+            { part: "runtime", reason: "check_timed_out" },
+          ]),
+        { timeout: 12_000, interval: 25 },
+      );
+      receive({ type: "runtime:self-check", requestId: randomUUID() });
+      expect(refreshCapability).toHaveBeenCalledOnce();
+      runtime.stop();
+      finishRuntime();
+      await Promise.resolve();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      finishProbe();
+      finishRuntime();
+      await running;
+    }
+    expect(close).toHaveBeenCalledOnce();
+  }, 20_000);
+
   it("covers ComposedClientRuntime monitor guards with deterministic component doubles", async () => {
     const runtime = { run: vi.fn(async () => undefined), stop: vi.fn() };
     const components = {
@@ -1208,6 +1461,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
       reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+      interruptedWork: { stop: () => undefined, settled: async () => undefined },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
       workspace: {},
@@ -1308,6 +1562,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
         reconciler: {},
         reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
         runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
         runtimeManager: { close: vi.fn(async () => undefined) },
         workspace: {},
@@ -1324,6 +1579,46 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     expect(reconcilerClose).toHaveBeenCalledOnce();
   });
 
+  it("holds an upgrade only for a registered connection to a Server without Session recovery", () => {
+    let version: number | undefined;
+    let state = "registered";
+    const runtimeFor = (connection: unknown) =>
+      new ComposedClientRuntime(
+        {} as never,
+        {
+          admission: {},
+          bindingStore: {},
+          custody: {},
+          credentialEnvironment: {},
+          reconciler: {},
+          sessionMessageInbox: {},
+          reportOwner: {},
+          interruptedWork: { stop: () => undefined, settled: async () => undefined },
+          runner: {},
+          runtimeManager: {},
+          workspace: {},
+          refreshCapability: async () => undefined,
+          capabilityRefreshIntervalMs: 10,
+          capabilityAbort: new AbortController(),
+          connection,
+        } as never,
+      );
+    const runtime = runtimeFor({
+      get state() {
+        return state;
+      },
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.sessionRecovery ? version : undefined,
+      subscribeBusinessFrames: () => () => undefined,
+    });
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(false);
+    version = 1;
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    version = undefined;
+    for (state of ["connecting", "stopped"]) expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    expect(runtimeFor(undefined).canInterruptWorkForUpgrade()).toBe(true);
+  });
+
   it("aggregates protected work from every authoritative owner", () => {
     const admission = { pause: vi.fn(), resume: vi.fn() };
     const runtime = new ComposedClientRuntime(
@@ -1336,6 +1631,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
         sessionMessageInbox: { pendingCount: 2 },
         reportOwner: { pendingCount: 3 },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
         runner: { activeCount: 4 },
         runtimeManager: {},
         workspace: {},
@@ -1443,7 +1739,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       binding,
       prompt: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
       followUp: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
-      steer: async () => undefined,
+      steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
       respond: async () => undefined,
       abort: async () => undefined,
       waitForIdle: async () => undefined,
@@ -1644,7 +1940,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       binding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
       prompt: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
       followUp: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
-      steer: async () => undefined,
+      steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
       respond: async () => undefined,
       abort: async () => undefined,
       waitForIdle: async () => undefined,
@@ -2638,7 +2934,7 @@ async function composeClaudeCodeRuntime(options: {
   const command = resolve(options.home, "claude-env-fixture");
   await writeFile(
     command,
-    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool acceptEdits --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
     "utf8",
   );
   await chmod(command, 0o755);

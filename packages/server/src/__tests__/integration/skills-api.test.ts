@@ -26,16 +26,22 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient, type DatabaseClient, type DatabaseTransaction } from "../../db/client.js";
+import { agentSkills } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
-import { SessionCliProofError, type SessionCliProofService } from "../../services/sessions/index.js";
+import {
+  SessionCliProofError,
+  type SessionCliProofService,
+  type SessionCliSourceContext,
+} from "../../services/sessions/index.js";
 import { SkillPresetService, SkillService } from "../../services/skills/index.js";
 import { RemoteSkillService } from "../../services/skills/source/remote-skill-service.js";
 import { SkillSourceFetcher } from "../../services/skills/source/source-fetcher.js";
 import { deferred } from "../support/deferred.js";
 import { FakeSkillObjectStore } from "../support/fake-skill-object-store.js";
 import { skillManifest, tarGz } from "../support/skill-archive-fixtures.js";
+import { createSkillHarness } from "../support/skill-service-harness.js";
 import { staticTransport } from "../support/skill-source-fixtures.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -63,6 +69,8 @@ afterEach(async () => {
 });
 
 interface Harness {
+  proofAuthority: SessionCliProofService;
+  runtimeSource: SessionCliSourceContext;
   accountId: string;
   agentId: string;
   computerId: string;
@@ -100,8 +108,11 @@ async function boot(): Promise<Harness> {
     runtimeProvider: "codex",
   });
 
+  const authorityHarness = createSkillHarness(client);
+  const runtimeSource = await authorityHarness.runtimeSource(agent.id);
+  const proofAuthority = authorityHarness.proofs;
   const store = new FakeSkillObjectStore();
-  const service = new SkillService({ database: client.database, store, keyPrefix: "skills" });
+  const service = new SkillService({ database: client.database, store, keyPrefix: "skills", proofs: proofAuthority });
   const authService = {
     getAuthenticatedUser: async () => ({
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
@@ -120,7 +131,8 @@ async function boot(): Promise<Harness> {
       if (proof !== "integration-proof") {
         throw new SessionCliProofError("invalid_proof", "The Session CLI proof is invalid or stale");
       }
-      return { agentId: agent.id };
+      await proofAuthority.assertCurrentSource(client.database, runtimeSource);
+      return runtimeSource;
     },
   } as unknown as Pick<SessionCliProofService, "authenticate">;
   const app = createApp({
@@ -130,6 +142,8 @@ async function boot(): Promise<Harness> {
   });
   openApps.push(app);
   return {
+    proofAuthority,
+    runtimeSource,
     accountId,
     agentId: agent.id,
     computerId: exchange.computerId,
@@ -541,7 +555,13 @@ describe("Skill admission across PostgreSQL connections", () => {
         openPools.push(client.sql);
       });
       const services = clients.map(
-        (client) => new SkillService({ database: client.database, store: h.store, keyPrefix: "skills" }),
+        (client) =>
+          new SkillService({
+            database: client.database,
+            store: h.store,
+            keyPrefix: "skills",
+            proofs: h.proofAuthority,
+          }),
       );
       const service = services[0];
       if (!service) throw new Error("Missing upload service");
@@ -563,7 +583,9 @@ describe("Skill admission across PostgreSQL connections", () => {
         services.map((writer, index) => {
           const input = inputs[index];
           if (!input) throw new Error("Missing upload input");
-          return index === 0 ? writer.upload(h.accountId, h.agentId, input) : writer.uploadForAgent(h.agentId, input);
+          return index === 0
+            ? writer.upload(h.accountId, h.agentId, input)
+            : writer.uploadForAgent(h.runtimeSource, input);
         }),
       );
       try {
@@ -610,7 +632,12 @@ describe("Skill admission across PostgreSQL connections", () => {
     const h = await boot();
     for (let i = 0; i < SKILL_MAX_PER_AGENT; i++) await seededRow(h.sql, h.agentId, `seed-${i}`);
     await h.sql`update agent_skills set enabled = false where agent_id = ${h.agentId}`;
-    const service = new SkillService({ database: h.database, store: h.store, keyPrefix: "skills" });
+    const service = new SkillService({
+      database: h.database,
+      store: h.store,
+      keyPrefix: "skills",
+      proofs: h.proofAuthority,
+    });
     await expect(service.upload(h.accountId, h.agentId, await skillInput("over-limit"))).rejects.toMatchObject({
       code: "SKILL_LIMIT_REACHED",
     });
@@ -640,7 +667,11 @@ it.each(["deleted", "transferred"] as const)("rechecks the Agent after PUT when 
     else {
       const accountId = randomUUID();
       await h.sql`insert into users (id, email, display_name) values (${accountId}, ${`${accountId}@example.test`}, 'New owner')`;
-      await lifecycle.transferToAccount({ agentId: h.agentId, targetAccountId: accountId, slack: "disable" });
+      await expect(
+        lifecycle.transferToAccount({ agentId: h.agentId, targetAccountId: accountId, slack: "disable" }),
+      ).rejects.toMatchObject({ reason: "configuration_immutable" });
+      // Historical ownership changes must still invalidate an in-flight upload.
+      await h.sql`update agents set created_by_user_id=${accountId}, computer_id=null, revision=revision+1 where id=${h.agentId}`;
     }
   } finally {
     resume.resolve();
@@ -661,10 +692,30 @@ it.each(["rollback", "commit acknowledgement lost", "commit and cleanup read los
         : new Proxy(h.database, {
             get(target, key) {
               if (key === "transaction")
-                return async (run: (transaction: DatabaseTransaction) => Promise<unknown>) => {
-                  await target.transaction(run);
-                  committed = true;
-                  throw new Error("Synthetic commit acknowledgement lost");
+                return async (run: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) => {
+                  let inserted = false;
+                  const result = await Reflect.apply(target.transaction, target, [
+                    (transaction: DatabaseTransaction) =>
+                      run(
+                        new Proxy(transaction, {
+                          get(executor, method) {
+                            const value = Reflect.get(executor, method);
+                            if (method === "insert")
+                              return (table: Parameters<DatabaseTransaction["insert"]>[0]) => {
+                                if (table === agentSkills) inserted = true;
+                                return executor.insert(table);
+                              };
+                            return typeof value === "function" ? value.bind(executor) : value;
+                          },
+                        }),
+                      ),
+                    options,
+                  ]);
+                  if (inserted) {
+                    committed = true;
+                    throw new Error("Synthetic commit acknowledgement lost");
+                  }
+                  return result;
                 };
               if (key === "select" && committed && failure === "commit and cleanup read lost")
                 return () => {
@@ -691,7 +742,12 @@ it.each(["rollback", "commit acknowledgement lost", "commit and cleanup read los
         await h.sql.unsafe("drop function fail_skill_admission()");
       }
     }
-    const fresh = new SkillService({ database: h.database, store: h.store, keyPrefix: "skills" });
+    const fresh = new SkillService({
+      database: h.database,
+      store: h.store,
+      keyPrefix: "skills",
+      proofs: h.proofAuthority,
+    });
     const listed = await fresh.list(h.accountId, h.agentId);
     if (failure === "rollback") {
       expect(listed.skills).toHaveLength(0);

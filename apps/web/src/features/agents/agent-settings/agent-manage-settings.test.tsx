@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import { queryKeys } from "../../../query/keys.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { projectAgentAvailability } from "../agent-model.js";
@@ -204,6 +204,69 @@ describe("Deleting an Agent", () => {
   });
 });
 
+describe("Deleting a running Agent", () => {
+  it("pauses it first and then deletes it in one confirmation", async () => {
+    stubEvidence();
+    const calls: string[] = [];
+    vi.spyOn(browserApi, "suspendAgent").mockImplementation(async () => {
+      calls.push("suspend");
+      return config;
+    });
+    vi.spyOn(browserApi, "deleteAgent").mockImplementation(async () => {
+      calls.push("delete");
+    });
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("button", { name: "Delete Agent" }).hasAttribute("disabled")).toBe(false);
+    await confirmDelete();
+    await waitFor(() => expect(calls).toEqual(["suspend", "delete"]));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says nothing was deleted when the pause fails", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("pause conflict"));
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockResolvedValue(undefined);
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Couldn’t pause this Agent first, so it wasn’t deleted. Try again.",
+    );
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("says the Agent is paused when the delete after the pause fails, and retries only the delete", async () => {
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockResolvedValue(config);
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockRejectedValueOnce(new Error("delete failed"));
+    remove.mockResolvedValueOnce(undefined);
+    const onAgentChanged = vi.fn();
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={onAgentChanged} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe("The Agent is paused but wasn’t deleted. Try again.");
+    expect(onAgentChanged).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+    expect(suspend).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a missing permission", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new ApiError(403, "Forbidden", "FORBIDDEN"));
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe("You don’t have permission to delete this Agent.");
+  });
+});
+
 describe("Agent lifecycle actions", () => {
   it("reports a failed pause and lets the viewer close its confirmation", async () => {
     vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("pause conflict"));
@@ -216,7 +279,7 @@ describe("Agent lifecycle actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toBe("Couldn’t pause this Agent. Try again.");
-    fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -228,6 +291,27 @@ describe("Agent lifecycle actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t pause this Agent. Try again.");
+  });
+
+  it("keeps focus on the lifecycle button while pausing and moves it to Resume", async () => {
+    let settle: ((value: typeof activeConfig) => void) | undefined;
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockReturnValue(new Promise((resolve) => (settle = resolve)));
+    await renderInRouter(
+      <AgentManageSettings agent={idleActiveAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+    const button = screen.getByRole("button", { name: "Pause Agent" }) as HTMLButtonElement;
+    button.focus();
+    fireEvent.click(button);
+
+    const busy = screen.getByRole("button", { name: "Pausing…" }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(false);
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(busy);
+    expect(suspend).toHaveBeenCalledOnce();
+
+    settle?.({ ...activeConfig, status: "suspended" });
+    const resume = await screen.findByRole("button", { name: "Resume Agent" });
+    expect(document.activeElement).toBe(resume);
   });
 
   it("does not make an unchanged peer list row newer than that peer's detail", async () => {

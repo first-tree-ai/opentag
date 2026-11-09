@@ -5,7 +5,7 @@ import { queryKeys } from "../../../query/keys.js";
 import { Button, buttonClassName, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { accountComputerLink } from "../agent-routes.js";
+import { accountComputerLink, connectAnotherComputerLink } from "../agent-routes.js";
 import { type ComputerConnection, ComputerIdentity } from "../computer-status.js";
 import { AgentSettingsPageHeader } from "./settings-layout.js";
 
@@ -44,11 +44,7 @@ export function AgentComputerSettings({
   const actionLabel = computerActionLabel(connection);
   return (
     <div className="grid w-full min-w-0 max-w-3xl gap-8 wrap-anywhere">
-      <AgentSettingsPageHeader
-        description={m.agent_settings_computer_description()}
-        id="computer-heading"
-        title={m.agents_status_computer()}
-      />
+      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
       {agent.computer ? (
         <section aria-label={m.computer_agent_location()} className="grid gap-4">
           <ComputerIdentity
@@ -59,12 +55,14 @@ export function AgentComputerSettings({
           {connection === "offline" ? (
             <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_agent_offline()}</p>
           ) : null}
-          <Link
-            {...accountComputerLink(agent.computer.computerId, agent.id)}
-            className={buttonClassName({ variant: "secondary", size: "compact", className: "w-fit" })}
-          >
-            {actionLabel}
-          </Link>
+          <div className="flex flex-wrap gap-3">
+            <Link
+              {...accountComputerLink(agent.computer.computerId, agent.id)}
+              className={buttonClassName({ variant: "secondary", size: "compact", className: "w-fit" })}
+            >
+              {actionLabel}
+            </Link>
+          </div>
         </section>
       ) : (
         <section aria-labelledby="computer-choice-heading" className="grid gap-4">
@@ -72,10 +70,30 @@ export function AgentComputerSettings({
             {m.agent_settings_computer_none_heading()}
           </Text>
           <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_agent_unbound()}</p>
-          <AgentComputerChoice agentId={agent.id} autoBindSole={false} onBound={onAgentChanged} />
+          <AgentComputerChoice
+            agentId={agent.id}
+            autoBindSole={false}
+            connectAnother={<ConnectAnotherComputerLink agentId={agent.id} />}
+            onBound={onAgentChanged}
+          />
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * A new machine is connected on the Account Computers page, through the same connection flow as
+ * everywhere else. Connecting it does not move this Agent; choosing it here is a separate step.
+ */
+function ConnectAnotherComputerLink({ agentId }: { agentId: string }) {
+  return (
+    <Link
+      {...connectAnotherComputerLink(agentId)}
+      className={buttonClassName({ variant: "secondary", size: "compact", className: "w-fit" })}
+    >
+      {m.computer_connect_another_action()}
+    </Link>
   );
 }
 
@@ -120,7 +138,7 @@ function computerConnection(agent: AgentDetailView): ComputerConnection {
 }
 
 function computerActionLabel(connection: ComputerConnection): string {
-  if (connection === "disconnected") return m.computer_reconnect();
-  if (connection === "offline") return m.computer_recovery_heading();
+  // One name for the one fix, whether the computer went offline or was disconnected.
+  if (connection === "disconnected" || connection === "offline") return m.computer_recovery_heading();
   return m.computer_manage();
 }

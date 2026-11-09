@@ -11,9 +11,9 @@ import { useRememberedState, useShellMemory } from "../features/shell/shell-memo
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, CLOUD_RUNTIME, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
+import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
@@ -38,7 +38,8 @@ const CREATE_STEPS: FlowState["steps"] = [
  * open the wrong Agent would be worse than no offer at all.
  */
 async function agentHoldingName(name: string): Promise<{ id: string; name: string } | undefined> {
-  const wanted = name.trim().toLowerCase();
+  // The Server stores names trimmed and NFC-normalized, and compares them without case.
+  const wanted = name.trim().normalize("NFC").toLowerCase();
   return browserApi.agents().then(
     ({ agents }) => {
       const holder = agents.find((candidate) => candidate.name.toLowerCase() === wanted);
@@ -102,7 +103,10 @@ interface PendingCreation {
 const CREATION_DRAFT_KEY = "agent-create";
 const CREATION_PENDING_KEY = "agent-create-pending";
 
-function creationErrorMessage(cause: unknown): string {
+export function creationErrorMessage(cause: unknown): string {
+  // A taken name is the reader's to fix, so it is said in their language rather than the Server's.
+  if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT")
+    return m.onboarding_v2_agent_name_taken_error();
   return cause instanceof Error && cause.message ? cause.message : m.agent_create_failed();
 }
 
@@ -194,6 +198,7 @@ export function AgentSetupSurface({
         agentId={agentId}
         brandControl={brandControl}
         computerAdapter={computerAdapter}
+        onBackToAgents={onBackToAgents}
         onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
         onPreviewViewChange={onSetupPreviewViewChange}
@@ -208,6 +213,7 @@ export function AgentSetupSurface({
   return (
     <AgentCreatePage
       accountControl={accountControl}
+      brandControl={brandControl}
       creationPreview={creationPreview}
       creationPreviewInitialView={creationPreviewInitialView}
       existingAgentNames={existingAgentNames}
@@ -229,6 +235,7 @@ async function creationRequest(selected: SelectedCreation, preview: boolean): Pr
 
 function AgentCreatePage({
   accountControl,
+  brandControl,
   creationPreview,
   creationPreviewInitialView = "destination",
   existingAgentNames = [],
@@ -237,6 +244,7 @@ function AgentCreatePage({
   onBackToAgents,
 }: {
   accountControl?: ReactNode;
+  brandControl?: ReactNode;
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
   existingAgentNames?: readonly string[];
@@ -259,7 +267,21 @@ function AgentCreatePage({
   );
   const { draft, destinationConfirmed } = creation;
   const setDraft = (next: AgentDraft) => setCreation({ ...creation, draft: next });
-  const setDestinationConfirmed = (next: boolean) => setCreation({ ...creation, destinationConfirmed: next });
+  const stepFrame = useRef<HTMLDivElement>(null);
+  const focusNextStep = useRef(false);
+  const confirmDestination = () => {
+    focusNextStep.current = true;
+    setCreation({ ...creation, destinationConfirmed: true });
+  };
+  // Moving to the next step replaces the form the keyboard was in, so focus follows to its heading.
+  useEffect(() => {
+    if (!destinationConfirmed || !focusNextStep.current) return;
+    focusNextStep.current = false;
+    const heading = stepFrame.current?.querySelector<HTMLElement>("h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus();
+  }, [destinationConfirmed]);
   const [pending, setPending] = useState<PendingCreation | undefined>(
     () => memory?.values.get(CREATION_PENDING_KEY) as PendingCreation | undefined,
   );
@@ -406,14 +428,13 @@ function AgentCreatePage({
       data-ui="agent-create"
     >
       {!embedded && (
-        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
-          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
+        <header className="flex items-center justify-between gap-2 p-6">
+          {brandControl ?? <SetupLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
             {/*
             Leaving for the Agent list is offered only to an Account that has somewhere to go. An
             Account with no Agent has nothing behind this page: that list would send it straight
-            back. Undoing a choice made here is Go back's job, one page at a time. Signing out is
-            the one exit that is always real, so it is offered regardless.
+            back. Signing out is the one exit that is always real, so it is offered regardless.
           */}
             {onBackToAgents ? (
               <Button disabled={submitting} onClick={onBackToAgents} variant="ghost">
@@ -426,7 +447,7 @@ function AgentCreatePage({
       )}
       <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 ${embedded ? "" : "p-6"}`}>
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}
-        <div className="flex w-full flex-col gap-4">
+        <div className="flex w-full flex-col gap-4" ref={stepFrame}>
           {error ? (
             <div className="flex flex-col items-start gap-2" data-ui="agent-create-error">
               <Banner description={error} role="alert" variant="error" />
@@ -445,7 +466,6 @@ function AgentCreatePage({
           {destinationConfirmed ? (
             <AgentStep
               draft={draft}
-              onBack={() => setDestinationConfirmed(false)}
               onChange={(next) => {
                 // Changing the name is the other way out of a refusal, so the refusal stops being
                 // shown the moment it is no longer about what the form says.
@@ -471,7 +491,7 @@ function AgentCreatePage({
               draft={draft}
               onChoose={(destination) => setDraft({ ...draft, destination })}
               onCloudRetry={readCloudAvailability}
-              onSubmit={() => setDestinationConfirmed(true)}
+              onSubmit={confirmDestination}
             />
           )}
         </div>

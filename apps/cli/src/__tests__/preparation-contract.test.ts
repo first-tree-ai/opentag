@@ -225,7 +225,9 @@ function mockScenarioWorld(scenario: Scenario) {
   return connect;
 }
 
-async function invokeCommand(json: boolean, noStart: boolean): Promise<void> {
+type OutputMode = "json" | "verbose" | "default";
+
+async function invokeCommand(mode: OutputMode, noStart: boolean): Promise<void> {
   await createProgram().parseAsync([
     "node",
     "opentag",
@@ -235,11 +237,11 @@ async function invokeCommand(json: boolean, noStart: boolean): Promise<void> {
     "--home",
     TEST_HOME,
     ...(noStart ? ["--no-start"] : []),
-    ...(json ? ["--json"] : []),
+    ...(mode === "json" ? ["--json"] : mode === "verbose" ? ["--verbose"] : []),
   ]);
 }
 
-async function run(scenario: Scenario, json: boolean): Promise<RunOutput> {
+async function run(scenario: Scenario, mode: OutputMode): Promise<RunOutput> {
   const previousExitCode = process.exitCode;
   process.exitCode = undefined;
   const stdout: string[] = [];
@@ -254,7 +256,7 @@ async function run(scenario: Scenario, json: boolean): Promise<RunOutput> {
   });
   let exitCode: number | undefined;
   try {
-    await invokeCommand(json, scenario.local.facts.daemon === "skipped-no-start");
+    await invokeCommand(mode, scenario.local.facts.daemon === "skipped-no-start");
   } finally {
     exitCode = process.exitCode ?? 0;
     process.exitCode = previousExitCode;
@@ -262,6 +264,29 @@ async function run(scenario: Scenario, json: boolean): Promise<RunOutput> {
     stderrSpy.mockRestore();
   }
   return { exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
+}
+
+/**
+ * Without `--verbose` the reader sees only the outcome line and, for an unfinished preparation, one
+ * `Next:` line naming the fixture's action. No check rows, verdict line, or guidance block.
+ */
+function expectDefaultOutput(scenario: Scenario, output: RunOutput): void {
+  const text = output.stdout + output.stderr;
+  const lines = text.trimEnd().split("\n");
+  expect(text).not.toMatch(
+    /\[(computer|runtime|im-cli)[^\]]*\]|NEEDS_ATTENTION|READY|Blocked by:|warning \(non-blocking\)/,
+  );
+  expect(text).not.toContain(SERVER_CONFIRMATION_GUIDANCE);
+  if (scenario.local.expected.localReady) {
+    expect(lines).toHaveLength(1);
+    expect(output.stderr).toBe("");
+    return;
+  }
+  expect(lines).toHaveLength(2);
+  expect(lines[1]).toMatch(/^Next: /);
+  const next = scenario.local.expected.nextAction;
+  const pin = next.commandTail ?? next.instruction;
+  if (pin) expect(lines[1]).toContain(pin);
 }
 
 function envelopeOf(output: RunOutput): CommandResultEnvelope {
@@ -429,14 +454,15 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     async (_scenarioId, scenario) => {
       mockScenarioWorld(scenario);
       const expected = scenario.local.expected;
-      const jsonRun = await run(scenario, true);
-      const humanRun = await run(scenario, false);
+      const jsonRun = await run(scenario, "json");
+      const humanRun = await run(scenario, "verbose");
+      const defaultRun = await run(scenario, "default");
 
       // The exchanged Runtime identity selects the probe in both output modes, including Claude
       // Code failures. The separate ensure boundary is called only for the IM Provider CLI set.
-      expect(runtimeProbeModule.probeRuntimeComponent).toHaveBeenCalledTimes(2);
-      expect(ensureModule.runProviderCliEnsure).toHaveBeenCalledTimes(2);
-      for (const call of [1, 2]) {
+      expect(runtimeProbeModule.probeRuntimeComponent).toHaveBeenCalledTimes(3);
+      expect(ensureModule.runProviderCliEnsure).toHaveBeenCalledTimes(3);
+      for (const call of [1, 2, 3]) {
         expect(runtimeProbeModule.probeRuntimeComponent).toHaveBeenNthCalledWith(
           call,
           expect.objectContaining({ provider: scenario.runtimeProvider }),
@@ -450,6 +476,8 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
       // One deterministic exit code in both projections.
       expect(humanRun.exitCode).toBe(expected.exitCode);
       expect(jsonRun.exitCode).toBe(expected.exitCode);
+      expect(defaultRun.exitCode).toBe(expected.exitCode);
+      expectDefaultOutput(scenario, defaultRun);
 
       const envelope = envelopeOf(jsonRun);
       const preparation = expectEnvelopeVerdict(scenario, envelope);
@@ -473,7 +501,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
   it("pins all admitted Runtime identities including Pi readiness in the local verdict", async () => {
     for (const scenario of successScenarios()) {
       mockScenarioWorld(scenario);
-      const jsonRun = await run(scenario, true);
+      const jsonRun = await run(scenario, "json");
       const envelope = envelopeOf(jsonRun);
       const preparation = envelope.result?.preparation;
       if (!preparation) throw new Error(`no preparation for ${scenario.id}`);
@@ -503,7 +531,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     const scenario = fixture.scenarios.find((candidate) => candidate.id === "runtime-missing-codex");
     if (!scenario) throw new Error("missing runtime-missing-codex scenario");
     mockScenarioWorld(scenario);
-    const jsonRun = await run(scenario, true);
+    const jsonRun = await run(scenario, "json");
     const envelope = envelopeOf(jsonRun);
     const preparation = envelope.result?.preparation;
     if (!preparation) throw new Error("no preparation");
@@ -541,7 +569,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     if (!autoRepair || !manual) throw new Error("missing repair scenarios");
 
     mockScenarioWorld(autoRepair);
-    const autoPreparation = envelopeOf(await run(autoRepair, true)).result?.preparation;
+    const autoPreparation = envelopeOf(await run(autoRepair, "json")).result?.preparation;
     if (!autoPreparation) throw new Error("no auto preparation");
     const autoLark = autoPreparation.components.find((component) => component.id === "im-cli:lark");
     if (!autoLark) throw new Error("missing lark row");
@@ -554,7 +582,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
 
     vi.restoreAllMocks();
     mockScenarioWorld(manual);
-    const manualPreparation = envelopeOf(await run(manual, true)).result?.preparation;
+    const manualPreparation = envelopeOf(await run(manual, "json")).result?.preparation;
     if (!manualPreparation) throw new Error("no manual preparation");
     const manualSlack = manualPreparation.components.find((component) => component.id === "im-cli:slack");
     if (!manualSlack) throw new Error("missing slack row");
@@ -571,7 +599,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     const scenario = fixture.scenarios.find((candidate) => candidate.id === "warning-non-blocking");
     if (!scenario) throw new Error("missing warning-non-blocking scenario");
     mockScenarioWorld(scenario);
-    const jsonRun = await run(scenario, true);
+    const jsonRun = await run(scenario, "json");
     const preparation = envelopeOf(jsonRun).result?.preparation;
     if (!preparation) throw new Error("no preparation");
     expect(preparation.localReady).toBe(true);
@@ -587,7 +615,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
         blocking: false,
       },
     ]);
-    const humanRun = await run(scenario, false);
+    const humanRun = await run(scenario, "verbose");
     expect(humanRun.stdout).toContain("warning (non-blocking): global_path_not_configured");
     expect(humanRun.exitCode).toBe(0);
   });
@@ -596,7 +624,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     const scenario = fixture.scenarios.find((candidate) => candidate.id === "checking-ownership");
     if (!scenario) throw new Error("missing checking-ownership scenario");
     mockScenarioWorld(scenario);
-    const jsonRun = await run(scenario, true);
+    const jsonRun = await run(scenario, "json");
     const preparation = envelopeOf(jsonRun).result?.preparation;
     if (!preparation) throw new Error("no preparation");
     const lark = preparation.components.find((component) => component.id === "im-cli:lark");
@@ -604,7 +632,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     expect(lark.status).toBe("checking");
     expect(lark.blocking).toBe(true);
     expect(lark.message).toContain("owned by another openTag process");
-    const humanRun = await run(scenario, false);
+    const humanRun = await run(scenario, "verbose");
     expect(humanRun.stderr).toContain("[im-cli:lark] checking (blocking)");
     expect(humanRun.stderr).toContain("owned by another openTag process");
   });
@@ -613,7 +641,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     const scenario = fixture.scenarios.find((candidate) => candidate.id === "daemon-skipped");
     if (!scenario) throw new Error("missing daemon-skipped scenario");
     mockScenarioWorld(scenario);
-    const jsonRun = await run(scenario, true);
+    const jsonRun = await run(scenario, "json");
     const envelope = envelopeOf(jsonRun);
     const preparation = envelope.result?.preparation;
     if (!preparation) throw new Error("no preparation");
@@ -631,7 +659,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
     expect(daemon.nextAction?.command).toContain("daemon install");
     expect(daemon.verifyAction?.command).toContain("daemon status");
     expect(daemon.nextAction?.command).not.toBe(daemon.verifyAction?.command);
-    const humanRun = await run(scenario, false);
+    const humanRun = await run(scenario, "verbose");
     expect(humanRun.stderr).toContain("[computer:daemon] skipped (blocking)");
     expect(humanRun.stderr).toContain("daemon install");
     expect(humanRun.stderr).toContain("daemon status");
@@ -640,7 +668,7 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
   it("never exchanges the one-time code twice or claims Server readiness for any scenario", async () => {
     for (const scenario of fixture.scenarios) {
       const connectSpy = mockScenarioWorld(scenario);
-      const jsonRun = await run(scenario, true);
+      const jsonRun = await run(scenario, "json");
       expect(jsonRun.exitCode).toBe(scenario.local.expected.exitCode);
       expect(connectSpy).toHaveBeenCalledTimes(1);
       expect(connectSpy).toHaveBeenCalledWith(expect.objectContaining({ code: CONNECT_CODE, home: TEST_HOME }));

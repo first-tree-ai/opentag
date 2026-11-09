@@ -26,10 +26,14 @@ import {
   CloudSessionCollaborationOwner,
   CloudSessionWorkTracker,
 } from "../services/sandboxes/cloud-session-collaboration-owner.js";
+import { SandboxIdleReclaimer } from "../services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
-import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
+import {
+  SandboxRunnerService,
+  WORKSPACE_RECOVERY_RETRY_DELAY_MS,
+} from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
@@ -114,6 +118,7 @@ interface Stack {
 function makeStack(
   options: {
     workspace?: boolean;
+    sleep?: (ms: number) => Promise<void>;
     capacity?: { accountLimit: number; platformLimit: number };
     sessionWorkBusy?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBusy"];
     sessionWorkBarrier?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBarrier"];
@@ -134,7 +139,7 @@ function makeStack(
     acceptanceTimeoutMs: 10_000,
     createConvergeTimeoutMs: 30_000,
     idleTimeoutMs: IDLE_TIMEOUT_MS,
-    sleep: () => Promise.resolve(),
+    sleep: options.sleep ?? (() => Promise.resolve()),
     now: () => current,
     ...(options.workspace === false ? {} : { workspace: { store } }),
     ...(options.capacity ? { capacity: options.capacity } : {}),
@@ -357,6 +362,16 @@ async function insertDelivery(
   });
 }
 
+function keepDeletionPending(stack: Stack) {
+  const deleteInstance = stack.fake.deleteInstance.bind(stack.fake);
+  return vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+    const result = await deleteInstance(name, uid);
+    const instance = stack.fake.instances.get(name);
+    if (instance && !result.alreadyGone) instance.gone = false;
+    return result;
+  });
+}
+
 describe("E7 automatic idle reclamation", () => {
   it("lets a previously verified READY Instance continue after a target upgrade and reclaims it normally", async () => {
     const accountId = await account();
@@ -419,6 +434,38 @@ describe("E7 automatic idle reclamation", () => {
       }
       healthy = await readySandbox(stack, accountId, "healthy", { reuseCapable: false });
       stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    });
+
+    it("bounds pending confirmations to one read per candidate and lets a healthy Session progress", async () => {
+      const rows = await unit.database.select().from(sandboxes);
+      for (const row of rows) {
+        stack.store.plant(
+          {
+            storageUri: row.storageUri,
+            sandboxId: row.id,
+            sessionId: row.sessionId,
+            environmentGeneration: row.environmentGeneration,
+          },
+          { saved: true, sealed: true, ownerGeneration: row.environmentGeneration },
+        );
+      }
+      const remove = stack.fake.deleteInstance.bind(stack.fake);
+      vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+        const result = await remove(name, uid);
+        if (name !== healthy.row.currentResourceName) {
+          const instance = stack.fake.instances.get(name);
+          if (instance) instance.gone = false;
+        }
+        return result;
+      });
+      expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ claimed: 25, released: 0, failed: 0 });
+      expect(stack.fake.deleteCalls).toHaveLength(25);
+      stack.advance(15_000);
+      const reads = vi.spyOn(stack.fake, "getInstance");
+      expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ claimed: 1, released: 1, failed: 0 });
+      expect(reads.mock.calls.filter(([name]) => name !== healthy.row.currentResourceName)).toHaveLength(25);
+      expect(stack.fake.deleteCalls).toHaveLength(26);
+      expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("unallocated");
     });
 
     it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
@@ -490,7 +537,33 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
-  it("retains the binding on seal failure, then converges on retry using the same budget", async () => {
+  it.each([true, false])("paces failed seal I/O across 15-second sweeps (Runner connected=%s)", async (connected) => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "issue1218", { seal: "fail" });
+    if (!connected) stack.hub.detach(ready.row.id, ready.socket);
+    const getInstance = vi.spyOn(stack.fake, "getInstance");
+    const seal = vi.spyOn(stack.hub, "requestWorkspaceSeal");
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lastErrorCode).toBe("workspace_save_failed");
+    const firstReads = getInstance.mock.calls.length;
+    const firstSeals = seal.mock.calls.length;
+    for (let index = 0; index < 4; index += 1) {
+      stack.advance(15_000);
+      await stack.service.reclaimIdleSandboxes();
+    }
+    expect({
+      cloudReads: getInstance.mock.calls.length - firstReads,
+      seals: seal.mock.calls.length - firstSeals,
+    }).toEqual({
+      cloudReads: 0,
+      seals: 0,
+    });
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("retains a failed seal through cooldown, then releases using the committed proof", async () => {
     const accountId = await account();
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-save-fail", { seal: "fail" });
@@ -502,7 +575,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(failed.idleReclaimAt).not.toBeNull();
     expect(stack.fake.liveInstanceCount()).toBe(1);
 
-    // A retry after the same budget short-circuits on the sealed proof and releases the resource.
+    // A retry after cooldown short-circuits on the sealed proof and releases the resource.
     stack.store.plant(
       {
         storageUri: ready.row.storageUri,
@@ -512,7 +585,7 @@ describe("E7 automatic idle reclamation", () => {
       },
       { saved: true, sealed: true, ownerGeneration: ready.row.environmentGeneration },
     );
-    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS);
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
     expect(stack.fake.liveInstanceCount()).toBe(0);
@@ -571,22 +644,225 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
-  it("retries an automatic releasing row after a delete failure without waiting out another budget", async () => {
+  it("defers slow deletion without polling or blocking the next idle candidate", async () => {
+    const accountId = await account();
+    const sleep = vi.fn(async (ms: number) => stack.advance(ms));
+    const stack = makeStack({ sleep });
+    const first = await readySandbox(stack, accountId, "room-slow-delete", { reuseCapable: false });
+    const second = await readySandbox(stack, accountId, "room-fast-delete", { reuseCapable: false });
+    const deleteInstance = stack.fake.deleteInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+      const result = await deleteInstance(name, uid);
+      if (name === first.row.currentResourceName) {
+        const instance = stack.fake.instances.get(name);
+        if (instance) instance.gone = false;
+      }
+      return result;
+    });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const startedAt = stack.now().getTime();
+    const result = await stack.service.reclaimIdleSandboxes();
+    expect(stack.now().getTime() - startedAt).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ claimed: 2, released: 1, failed: 0 });
+    expect(await sandboxRow(first.row.id)).toMatchObject({
+      lifecycle: "releasing",
+      currentResourceName: first.row.currentResourceName,
+      currentResourceUid: first.row.currentResourceUid,
+      lastErrorCode: "cloud_delete_pending",
+    });
+    expect((await sandboxRow(second.row.id)).lifecycle).toBe("unallocated");
+    expect(stack.fake.deleteCalls).toHaveLength(2);
+  });
+
+  it("confirms a pending deletion after restart with one read and no repeated DELETE or seal", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "room-pending-restart");
+    keepDeletionPending(stack);
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    expect((await stack.service.reclaimIdleSandboxes()).released).toBe(0);
+    const sealed = stack.store.stored(ready.row.storageUri);
+    expect(sealed).toMatchObject({ saved: true, sealed: true, ownerGeneration: ready.row.environmentGeneration });
+    const pending = await sandboxRow(ready.row.id);
+    const reads = vi.spyOn(stack.fake, "getInstance");
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(0);
+    expect(reads).not.toHaveBeenCalled();
+    stack.advance(15_000);
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(0);
+    expect(reads).toHaveBeenCalledOnce();
+    expect((await sandboxRow(ready.row.id)).lastErrorAt).toEqual(pending.lastErrorAt);
+    const instance = stack.fake.instances.get(ready.row.currentResourceName as string);
+    if (!instance) throw new Error("Missing fixture Instance");
+    instance.gone = true;
+    stack.advance(15_000);
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(1);
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(stack.fake.deleteCalls).toHaveLength(1);
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+    expect(stack.store.stored(ready.row.storageUri)).toEqual(sealed);
+  });
+
+  it("bounds pending confirmation to the original deadline, then uses the durable failure cooldown", async () => {
+    const accountId = await account();
+    const sleep = vi.fn(async (ms: number) => stack.advance(ms));
+    const stack = makeStack({ sleep });
+    const ready = await readySandbox(stack, accountId, "room-never-gone");
+    keepDeletionPending(stack);
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    for (let pass = 1; pass <= 4; pass += 1) {
+      stack.advance(15_000);
+      const result = await restartService(stack).reclaimIdleSandboxes();
+      expect(result).toMatchObject({ released: 0, failed: pass === 4 ? 1 : 0 });
+    }
+    expect(await sandboxRow(ready.row.id)).toMatchObject({
+      lifecycle: "releasing",
+      currentResourceUid: ready.row.currentResourceUid,
+      lastErrorCode: "cloud_delete_incomplete",
+    });
+    expect(stack.fake.deleteCalls).toHaveLength(1);
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS - 1);
+    await restartService(stack).reclaimIdleSandboxes();
+    expect(stack.fake.deleteCalls).toHaveLength(1);
+    stack.advance(1);
+    await restartService(stack).reclaimIdleSandboxes();
+    expect(stack.fake.deleteCalls).toHaveLength(2);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([20_000, 60_000])(
+    "includes a slow initial confirmation read in the original deadline (%s ms)",
+    async (readMs) => {
+      const accountId = await account();
+      const stack = makeStack();
+      const ready = await readySandbox(stack, accountId, `room-slow-initial-read-${readMs}`);
+      keepDeletionPending(stack);
+      const get = stack.fake.getInstance.bind(stack.fake);
+      vi.spyOn(stack.fake, "getInstance").mockImplementation(async (name) => {
+        if (stack.fake.deleteCalls.length === 1) stack.advance(readMs);
+        return get(name);
+      });
+      stack.advance(IDLE_TIMEOUT_MS + 1_000);
+      const acceptedAt = stack.now();
+      const result = await stack.service.reclaimIdleSandboxes();
+      expect(result).toMatchObject({ released: 0, failed: readMs === 60_000 ? 1 : 0 });
+      const pending = await sandboxRow(ready.row.id);
+      expect(pending.currentResourceUid).toBe(ready.row.currentResourceUid);
+      if (readMs === 20_000) {
+        expect(pending.lastErrorAt).toEqual(acceptedAt);
+        expect(pending.lastErrorCode).toBe("cloud_delete_pending");
+      } else expect(pending.lastErrorCode).not.toBe("cloud_delete_pending");
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+    },
+  );
+
+  it.each(["read failure", "replacement UID"])("retains ownership evidence after pending %s", async (failure) => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, `room-pending-${failure}`);
+    keepDeletionPending(stack);
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    if (failure === "read failure") stack.fake.getInstanceFailures = 1;
+    else stack.fake.replaceUid(ready.row.currentResourceName as string, "other-owner");
+    stack.advance(15_000);
+    const result = await restartService(stack).reclaimIdleSandboxes();
+    expect(result).toMatchObject({ released: 0, failed: 1 });
+    expect(await sandboxRow(ready.row.id)).toMatchObject({
+      lifecycle: "releasing",
+      currentResourceName: ready.row.currentResourceName,
+      currentResourceUid: ready.row.currentResourceUid,
+      lastErrorCode: "cloud_delete_incomplete",
+    });
+    expect(stack.fake.deleteCalls).toHaveLength(1);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("recovers an unknown DELETE response by the exact allocation after restart", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "room-delete-response-lost");
+    const deleteInstance = stack.fake.deleteInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "deleteInstance").mockImplementationOnce(async (name, uid) => {
+      await deleteInstance(name, uid);
+      throw new Error("DELETE response lost");
+    });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    expect((await stack.service.reclaimIdleSandboxes()).failed).toBe(1);
+    expect(await sandboxRow(ready.row.id)).toMatchObject({
+      lifecycle: "releasing",
+      currentResourceUid: ready.row.currentResourceUid,
+    });
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS);
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(1);
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+    expect(stack.store.stored(ready.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+  });
+
+  it("drains the current cloud request on stop and skips remaining candidates", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const first = await readySandbox(stack, accountId, "room-stop-first", { reuseCapable: false });
+    stack.advance(1);
+    const second = await readySandbox(stack, accountId, "room-stop-second", { reuseCapable: false });
+    let entered!: () => void;
+    const deleting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let finish!: () => void;
+    const response = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const deleteInstance = keepDeletionPending(stack).getMockImplementation();
+    vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+      entered();
+      await response;
+      if (!deleteInstance) throw new Error("Missing fixture delete");
+      return deleteInstance(name, uid);
+    });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const reclaimer = new SandboxIdleReclaimer({ service: stack.service });
+    reclaimer.start();
+    reclaimer.sweep();
+    await deleting;
+    let stopped = false;
+    const stopping = reclaimer.stop().then(() => {
+      stopped = true;
+    });
+    try {
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      finish();
+      await stopping;
+      expect(stopped).toBe(true);
+      expect(stack.fake.deleteCalls).toEqual([
+        { name: first.row.currentResourceName, uid: first.row.currentResourceUid },
+      ]);
+      expect((await sandboxRow(first.row.id)).lastErrorCode).toBe("cloud_delete_pending");
+      expect(await sandboxRow(second.row.id)).toMatchObject({ lifecycle: "ready", idleReclaimAt: null });
+    } finally {
+      finish();
+      await stopping;
+    }
+  });
+
+  it("retries an automatic releasing row after a delete failure after a durable cooldown across restart", async () => {
     const accountId = await account();
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-retry");
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
-    // Two failures: the ready-phase delete and the same-pass automatic-releasing retry.
-    stack.fake.deleteFailures = 2;
+    // The same-pass releasing scan must not retry this failure.
+    stack.fake.deleteFailures = 1;
     const first = await stack.service.reclaimIdleSandboxes();
     expect(first.released).toBe(0);
-    expect(first.failed).toBeGreaterThanOrEqual(2);
+    expect(first.failed).toBe(1);
     const releasing = await sandboxRow(ready.row.id);
     expect(releasing.lifecycle).toBe("releasing");
     expect(releasing.idleReclaimAt).not.toBeNull();
     expect(stack.fake.liveInstanceCount()).toBe(1);
-    // The budget was already spent before the transition: the durable marker alone authorizes the
-    // retry — here from a fresh Server process over the same database — without a second window.
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(0);
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS);
     const second = await restartService(stack).reclaimIdleSandboxes();
     expect(second.released).toBe(1);
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
@@ -598,7 +874,7 @@ describe("E7 automatic idle reclamation", () => {
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-stop-releasing");
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
-    stack.fake.deleteFailures = 3;
+    stack.fake.deleteFailures = 2;
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).idleReclaimAt).not.toBeNull();
     await expect(stack.service.stopForAccount(accountId, ready.row.id)).rejects.toMatchObject({ statusCode: 503 });
@@ -632,7 +908,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(0);
   });
 
-  it("uses lastActivityAt as the only budget clock for an abandoned claim", async () => {
+  it("requires the activity budget and retry cooldown for an abandoned claim", async () => {
     // Separate accounts: one account's second start would legitimately borrow the first sibling.
     const spentAccount = await account();
     const freshAccount = await account();
@@ -642,7 +918,11 @@ describe("E7 automatic idle reclamation", () => {
     const now = stack.now();
     await unit.database
       .update(sandboxes)
-      .set({ idleReclaimAt: now, lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000) })
+      .set({
+        idleReclaimAt: new Date(now.getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS),
+        updatedAt: new Date(now.getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS),
+        lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000),
+      })
       .where(eq(sandboxes.id, spent.row.id));
     await unit.database
       .update(sandboxes)
@@ -652,7 +932,7 @@ describe("E7 automatic idle reclamation", () => {
     const result = await stack.service.reclaimIdleSandboxes();
     expect(result.released).toBe(1);
     expect((await sandboxRow(spent.row.id)).lifecycle).toBe("unallocated");
-    // The fresh claim marker is NOT a new clock: the row's activity budget has not passed.
+    // A new claim is not eligible for a retry, even while another abandoned claim is due.
     expect((await sandboxRow(fresh.row.id)).lifecycle).toBe("ready");
     expect((await sandboxRow(fresh.row.id)).idleReclaimAt).not.toBeNull();
   });
@@ -962,6 +1242,63 @@ describe("E7 automatic idle reclamation", () => {
     const rowB = await sandboxRow(b.sandbox.sandboxId);
     expect(rowB.currentResourceName).toBe(replacement.row.currentResourceName);
     expect(rowB.currentResourceUid).toBe(replacement.row.currentResourceUid);
+  });
+
+  it("refuses idle reclaim and sibling borrow while a settlement ack is withheld on the exact allocation", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const stack = sessionWorkStack(work);
+    const ready = await readySandbox(stack, accountId, "room-settlement-custody");
+    // The creator notice is in flight (or its settling connection left before the ack): the
+    // durable row is already terminal and only the in-memory custody protects the Runner journal.
+    const messageId = randomUUID();
+    work.holdSettlement(ready.scope, ready.row.sessionId, messageId, "turn-settled");
+    const b = await ownedSandbox(accountId, "room-settlement-custody-borrower");
+
+    const createsBefore = stack.fake.createCalls.length;
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+    // The borrow skipped the custody-holding sibling and cold-allocated instead.
+    expect(stack.fake.createCalls.length).toBe(createsBefore + 1);
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("ready");
+    expect((await sandboxRow(ready.row.id)).currentResourceName).toBe(ready.row.currentResourceName);
+
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    const held = await sandboxRow(ready.row.id);
+    expect(held.lifecycle).toBe("ready");
+    expect(held.idleReclaimAt).toBeNull();
+
+    // The ack reached the exact Runner: custody is released and the same sweep reclaims normally.
+    work.releaseSettlement(ready.scope, messageId, "turn-settled");
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
+  it("refuses an idle claim through the durable barrier alone while settlement custody is held", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const owner = new CloudSessionCollaborationOwner({
+      assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+      database: unit.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      work,
+    });
+    // Without the fast pre-filter, the barrier evaluated inside the claim transaction still sees it.
+    const stack = makeStack({ sessionWorkBarrier: (input) => owner.hasUnsettledSessionWork(input) });
+    const ready = await readySandbox(stack, accountId, "room-settlement-custody-barrier");
+    const messageId = randomUUID();
+    work.holdSettlement(ready.scope, ready.row.sessionId, messageId, "turn-settled");
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    const held = await sandboxRow(ready.row.id);
+    expect(held.lifecycle).toBe("ready");
+    expect(held.idleReclaimAt).toBeNull();
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    work.releaseSettlement(ready.scope, messageId, "turn-settled");
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
   });
 
   it("clears a claimed binding that the provider confirms absent without a delete call", async () => {

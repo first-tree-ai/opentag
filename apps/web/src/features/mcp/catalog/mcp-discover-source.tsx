@@ -1,4 +1,4 @@
-import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogCategory, McpCatalogEntry, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { OverflowFilter } from "../../../components/kumo/overflow-filter/overflow-filter.js";
@@ -34,12 +34,12 @@ export function McpDiscoverSource({
   feedback,
 }: {
   categories: readonly McpCatalogCategory[];
-  entries: readonly McpInstallableCatalogEntry[];
+  entries: readonly McpCatalogEntry[];
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pending?: Record<string, { action: "add" | "connect" }>;
-  onAdd: (entry: McpInstallableCatalogEntry) => void;
+  onAdd: (entry: McpCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
@@ -116,12 +116,22 @@ export function McpDiscoverSource({
             <McpCatalogCard
               key={entry.id}
               entry={entry}
-              state={connectedIds.includes(entry.id) ? "added" : catalogEntryState(entry, servers, mounted)}
+              state={
+                connectedIds.includes(entry.id)
+                  ? "added"
+                  : entry.installable
+                    ? catalogEntryState(entry as McpInstallableCatalogEntry, servers, mounted)
+                    : "available"
+              }
               busy={busy || Boolean(pending[entry.id])}
               connecting={Boolean(pending[entry.id])}
               pendingAction={pending[entry.id]?.action}
               onAdd={onAdd}
-              feedback={catalogFeedback(entry, servers, mounted, feedback?.[entry.id])}
+              feedback={
+                entry.installable
+                  ? catalogFeedback(entry as McpInstallableCatalogEntry, servers, mounted, feedback?.[entry.id])
+                  : feedback?.[entry.id]
+              }
             />
           ))}
         </ul>
@@ -141,10 +151,10 @@ export function McpCatalogCard({
   pendingAction,
   feedback,
 }: {
-  entry: McpInstallableCatalogEntry;
+  entry: McpCatalogEntry;
   state?: McpCatalogEntryState;
   busy: boolean;
-  onAdd: (entry: McpInstallableCatalogEntry) => void;
+  onAdd: (entry: McpCatalogEntry) => void;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
   feedback?: McpCatalogFeedback;

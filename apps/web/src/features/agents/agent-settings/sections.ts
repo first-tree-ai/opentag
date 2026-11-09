@@ -3,6 +3,7 @@ import * as m from "../../../paraglide/messages.js";
 import type { IconName } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
+  agentRuntimeIssue,
   messagingChannelLabel,
   messagingConnectionLabel,
   platformLabel,
@@ -75,6 +76,9 @@ export function agentSettingsSummary(
   section: AgentSettingsSection,
 ): string {
   if (section === "execution") {
+    // A runtime problem the reader can fix reads as it does on the Agent list and home.
+    const issue = agentRuntimeIssue(agent);
+    if (issue?.action) return issue.label;
     const provider = runtimeProviderName(config.runtimeProvider);
     const defaultLabel = runtimeDefaultLabel(agent);
     if (!config.runtimeConfig.model && !config.runtimeConfig.reasoningEffort) {
@@ -104,6 +108,7 @@ export function agentSettingsSummary(
         : state === "action_required"
           ? m.agent_settings_computer_offline()
           : m.agent_settings_computer_unconfirmed();
+    if (agent.computerKind === "cloud") return `${m.agents_computer_cloud()} · ${status}`;
     return `${computer.displayName} · ${platformLabel(computer.platform)} · ${status}`;
   }
   return config.status === "active"

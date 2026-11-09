@@ -23,7 +23,7 @@ export async function nativeProxyChannel(root: string, adapter: ProviderProxyAda
     bindingId = randomUUID();
   const executions = new RuntimeExecutionRegistry();
   const capabilities = new RuntimeCapabilityStore();
-  const record = executions.open({
+  const parent = executions.open({
     runId: randomUUID(),
     accountId,
     agentId,
@@ -47,6 +47,13 @@ export async function nativeProxyChannel(root: string, adapter: ProviderProxyAda
         }),
       ],
     ]),
+  });
+  const target = { kind: "git" as const, repository: "team/code", path: ".", ref: "main" };
+  parent.services = [{ service: "context-tree", scopes: ["context-tree:git"] }];
+  const record = executions.open({
+    ...parent,
+    purpose: "context-tree",
+    contextTree: { ...target, parentExecutionId: parent.executionId },
   });
   const connection = {
     id: bindingId,
@@ -74,15 +81,28 @@ export async function nativeProxyChannel(root: string, adapter: ProviderProxyAda
   });
   const snapshot = {
     sessionId,
+    contextTrees: [target],
     sessionKind: "channel",
     sessionEnded: false,
     channelId: "fixture",
     threadKey: null,
-    binding: { id: bindingId, agentId, provider: "slack", status: "active", credentialGeneration: 1 },
+    binding: {
+      id: bindingId,
+      agentId,
+      provider: "slack",
+      status: "active",
+      credentialGeneration: 1,
+      externalAppId: null,
+      externalTeamId: null,
+      externalTeamBrand: null,
+      externalBotId: null,
+      slackInstallationId: null,
+    },
     agent: { id: agentId, status: "active", revision: 1, computerId, createdByUserId: accountId },
     placement: { computerId, generation: 1 },
     computer: { id: computerId, kind: cloud ? "cloud" : "local", ownerAccountId: accountId },
     sandbox: null,
+    slackInstallation: null,
   } as RuntimeScopeSnapshot;
   const broker = new RuntimeCredentialBroker({
     executions,
@@ -119,7 +139,12 @@ export async function nativeProxyChannel(root: string, adapter: ProviderProxyAda
     broker,
     tickets,
     executions,
-    adapters: new Map([["github", adapter]]),
+    adapters: new Map([
+      [
+        "github",
+        { handle: (request, authorization) => adapter.handle(request, { ...authorization, purpose: "execution" }) },
+      ],
+    ]),
   });
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const connections: ReturnType<typeof transport.attach>[] = [];

@@ -5,6 +5,7 @@ import {
   EmailSignUpRequestSchema,
   ErrorCodeSchema,
   HTTP_PATHS,
+  SIGN_IN_DESTINATION_MAX_LENGTH,
 } from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -22,7 +23,16 @@ import { AuthServiceError } from "../services/auth/errors.js";
 import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
+/**
+ * The destination bound every sign-in entry point shares.
+ *
+ * `validateOAuthNext` is the gate that decides where a sign-in may land; this schema only has to
+ * accept everything that gate would accept and refuse what a browser should not send. It used to
+ * carry its own 1024, which silently contradicted the allowlist: a generated MCP OAuth handoff runs
+ * past 1200 characters, so the provider start refused with a 400 the destination the login page had
+ * just validated. One exported bound keeps the two from drifting apart again.
+ */
+const StartQuerySchema = z.object({ next: z.string().max(SIGN_IN_DESTINATION_MAX_LENGTH).optional() }).strict();
 
 export interface BrowserAuthRoutesOptions {
   /** Better Auth owns every browser session; without it there is no way to sign in. */
@@ -196,7 +206,7 @@ function transientFailure(response: Response): AuthServiceError | undefined {
 /**
  * An OpenTag decision the library only carried, rather than one of its own.
  *
- * `onSessionCreating` raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
+ * The session hook raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
  * intact. Only codes that parse as OpenTag's own survive this: the library's vocabulary — `INVALID_EMAIL_OR_PASSWORD`
  * and the rest — does not, so nothing it decided leaks through here.
  */
@@ -223,6 +233,9 @@ async function signUpFailure(response: Response): Promise<AuthServiceError> {
   const preserved = preservedDecision(body, response.status);
   if (preserved) return preserved;
   const code = (body as { code?: unknown } | undefined)?.code;
+  if (code === "FAILED_TO_CREATE_USER") {
+    return new AuthServiceError("SERVICE_UNAVAILABLE", "transient", "Sign-in is temporarily unavailable", 503);
+  }
   const duplicate =
     response.status === 409 || (typeof code === "string" && code.toUpperCase().includes("ALREADY_EXISTS"));
   if (duplicate) {
@@ -315,6 +328,17 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: {},
     });
     if (!response.ok) {
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_in",
+          outcome: "failed",
+          code: "AUTH_DEV_USER_UNAVAILABLE",
+          errorCode: "AUTH_DEV_USER_UNAVAILABLE",
+          provider: "dev",
+        },
+        "Browser dev sign in failed",
+      );
       // Better Auth's error body is not OpenTag's envelope, so the failure is restated rather than forwarded.
       throw new AuthServiceError(
         "AUTH_DEV_USER_UNAVAILABLE",
@@ -323,12 +347,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
         503,
       );
     }
-    copyBetterAuthCookies(reply, response);
-    // The session cookie alone cannot write: every browser mutation also carries OpenTag's double-submit token.
-    setBrowserCsrfCookie(reply, {
-      maxAgeSeconds: options.sessionTtlSeconds,
-      secure: options.secureCookies,
-    });
+    establishBrowserSession(reply, response, "dev", request);
     return reply.header("Cache-Control", "no-store").redirect(destination, 302);
   });
 
@@ -350,6 +369,8 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       path: "/sign-in/social",
       body: { callbackURL: destination, provider: "google" },
     });
+    const transient = transientFailure(response);
+    if (transient) throw transient;
     const payload = (await response.json().catch(() => undefined)) as { url?: string } | undefined;
     if (!response.ok || !payload?.url) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
@@ -364,12 +385,26 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
    * Better Auth issues the session cookie; the double-submit token is OpenTag's and is minted here, because every
    * later mutation requires it and a browser that arrived with none would otherwise be able to read and nothing else.
    */
-  const establishBrowserSession = (reply: Parameters<typeof setBrowserCsrfCookie>[0], response: Response): void => {
+  const establishBrowserSession = (
+    reply: Parameters<typeof setBrowserCsrfCookie>[0],
+    response: Response,
+    provider: string,
+    request?: FastifyRequest,
+  ): void => {
     copyBetterAuthCookies(reply, response);
     setBrowserCsrfCookie(reply, {
       maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
+    request?.log.info(
+      {
+        module: "auth",
+        operation: "auth.session_created",
+        outcome: "success",
+        provider,
+      },
+      "Browser auth session created",
+    );
   };
 
   const requirePasswordAuth = (): NonNullable<BrowserAuthRoutesOptions["betterAuth"]> => {
@@ -396,9 +431,21 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: { email: body.email, name: body.displayName, password: body.password },
     });
     if (!response.ok) {
-      throw await signUpFailure(response);
+      const failure = await signUpFailure(response);
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_up",
+          outcome: "failed",
+          code: failure.code,
+          errorCode: failure.code,
+          statusCode: failure.statusCode,
+        },
+        "Browser email sign up failed",
+      );
+      throw failure;
     }
-    establishBrowserSession(reply, response);
+    establishBrowserSession(reply, response, "email", request);
     return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
@@ -419,9 +466,21 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: { email: body.email, password: body.password },
     });
     if (!response.ok) {
-      throw await signInFailure(response);
+      const failure = await signInFailure(response);
+      request.log.warn(
+        {
+          module: "auth",
+          operation: "auth.sign_in",
+          outcome: "failed",
+          code: failure.code,
+          errorCode: failure.code,
+          statusCode: failure.statusCode,
+        },
+        "Browser email sign in failed",
+      );
+      throw failure;
     }
-    establishBrowserSession(reply, response);
+    establishBrowserSession(reply, response, "email", request);
     return reply.header("Cache-Control", "no-store").code(204).send();
   });
 

@@ -1,10 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { SlackAutoConnect } from "./slack-auto-connect.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  window.localStorage.clear();
+  vi.restoreAllMocks();
+});
 it("links to the right workspace after confirmed submission and continues without another ticket", async () => {
   const api = vi
     .spyOn(browserApi, "autoSetupSlack")
@@ -244,4 +247,120 @@ it("ignores late setup results after the Agent form unmounts", async () => {
   resolve({ status: "connected" });
   await Promise.resolve();
   expect(connected).not.toHaveBeenCalled();
+});
+
+it("recovers an unverified code with a new authorization ticket, never silently resubmitting it", async () => {
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "first" })
+    .mockResolvedValueOnce({ status: "failed", code: "authorization_failed" })
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "replacement" });
+  const connected = vi.fn();
+  render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={connected} />);
+  fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "invalid-demo-code" } });
+  const form = screen.getByLabelText("Code").closest("form");
+  if (!form) throw new Error("Missing authorization form");
+  fireEvent.submit(form);
+  expect((await screen.findByRole("alert")).textContent).toContain("incorrect or expired");
+  expect(screen.queryByLabelText("Code")).toBeNull();
+  expect(connected).not.toHaveBeenCalled();
+  expect(api).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+  expect(await screen.findByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket replacement");
+  expect(screen.getByLabelText("Code")).toHaveProperty("value", "");
+  expect(api.mock.calls[2]?.[1]).toEqual({ action: "authorize", force: true });
+});
+
+it.each([new Error("network lost"), new ApiError(503, "upstream detail")])(
+  "treats a lost response as uncertain without offering an automatic setup replay",
+  async (failure) => {
+    const api = vi.spyOn(browserApi, "autoSetupSlack").mockRejectedValue(failure);
+    render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} />);
+    expect((await screen.findByRole("alert")).textContent).toContain("No request will be repeated automatically");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain(failure.message);
+  },
+);
+
+it("explains a slow request without inventing a timeout or dispatching a second operation", async () => {
+  vi.useFakeTimers();
+  try {
+    let resolve!: (value: { status: "authorization_required"; ticket: string }) => void;
+    const api = vi.spyOn(browserApi, "autoSetupSlack").mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const view = render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} />);
+    expect(screen.getByRole("status").textContent).toContain("Getting the authorization command");
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect(screen.getByRole("status").textContent).toContain("Still waiting for the computer");
+    expect(api).toHaveBeenCalledTimes(1);
+    await act(async () => resolve({ status: "authorization_required", ticket: "late-but-valid" }));
+    expect(screen.getByLabelText("Code")).toHaveProperty("disabled", false);
+    expect(screen.queryByText(/Still waiting for the computer/)).toBeNull();
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("restores approval_pending across a page reload and gates a lost Server state to manual setup instead of a new ticket", async () => {
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "ticket-1" })
+    .mockResolvedValueOnce({ status: "approval_pending", appId: "A1", teamId: "T1" })
+    .mockResolvedValueOnce({ status: "failed", code: "authorization_failed" });
+  const first = render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} />);
+  fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "code-1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  expect(await screen.findByText(/Request submitted/)).toBeTruthy();
+  first.unmount();
+
+  // Simulate a page reload after a Server restart: remounting restores A1's pending state without calling authorize.
+  const onResult = vi.fn();
+  render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} onResult={onResult} />);
+  expect(await screen.findByText(/Request submitted/)).toBeTruthy();
+  expect(screen.getByRole("link", { name: "View approval" })).toHaveProperty(
+    "href",
+    "https://app.slack.com/apps-manage/T1",
+  );
+  expect(api).toHaveBeenCalledTimes(2);
+
+  // If the Server container was wiped and returns authorization_failed with no appId on Continue, gate to manual_required for A1.
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Use manual setup for this App.");
+  expect(onResult).toHaveBeenLastCalledWith({
+    status: "failed",
+    code: "manual_required",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
+});
+
+it("gates fresh Cloud setup behind an explicit existing-App / manual-recovery choice before issuing a ticket", async () => {
+  window.localStorage.clear();
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "authorization_required", ticket: "cloud-ticket" });
+  const onManual = vi.fn();
+  render(<SlackAutoConnect agentId="agent" cloud onBusy={vi.fn()} onConnected={vi.fn()} onManual={onManual} />);
+
+  // With fresh browser state on Cloud, no ticket is requested on mount; the user sees View Apps and Manual setup first.
+  expect(screen.getByText("Check existing Apps before proceeding. Do not create another copy.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "View Apps" })).toHaveProperty("href", "https://api.slack.com/apps");
+  expect(api).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+  expect(onManual).toHaveBeenCalledTimes(1);
+  expect(api).not.toHaveBeenCalled();
+
+  // Only an explicit Create App click requests a ticket with force: true.
+  fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+  expect(await screen.findByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket cloud-ticket");
+  expect(api).toHaveBeenCalledExactlyOnceWith("agent", { action: "authorize", force: true });
 });

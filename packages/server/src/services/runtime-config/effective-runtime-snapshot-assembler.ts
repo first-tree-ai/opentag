@@ -6,6 +6,8 @@ import {
   EffectiveRuntimeSnapshotSchema,
   hashTuple,
   normalizeContextTrees,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
   renderPlatformInstructions,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
@@ -80,7 +82,7 @@ export class EffectiveRuntimeSnapshotAssembler {
         : config.reasoningEffort;
     const maxDurationMs =
       authority.sessionKind === "internal"
-        ? (authority.sessionRuntimeMaxDurationMs ?? config.maxDurationMs)
+        ? (authority.sessionRuntimeMaxDurationMs ?? internalSessionDefaultMaxDurationMs(config.maxDurationMs))
         : config.maxDurationMs;
     const agentRevisionId = revisionId("agent", [
       authority.agentId,
@@ -236,4 +238,12 @@ function renderAgentPlatformInstructions(agentName: string): string {
 
 function revisionId(layer: "agent" | "session", values: readonly unknown[]): string {
   return hashTuple(["opentag-runtime-revision", 1, layer, ...values]);
+}
+
+/** An internal Session without an explicit budget gets at least the internal default, never less than its Agent's. */
+function internalSessionDefaultMaxDurationMs(agentMaxDurationMs: number | null): number {
+  return Math.max(
+    agentMaxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
+    RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
+  );
 }

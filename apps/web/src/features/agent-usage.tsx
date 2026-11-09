@@ -10,7 +10,7 @@ import { browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { formatCompactNumber, formatDay, formatNumber, formatPercent } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { queryKeys } from "../query/keys.js";
+import { queryKeys, viewerTimezone } from "../query/keys.js";
 import { liveResourceQueryOptions } from "../query/live.js";
 import {
   observedAfter,
@@ -77,12 +77,33 @@ export function usageXAxisTickCount(days: AgentUsageWindowDays): number {
   return 3;
 }
 
-export function usageXAxisTickLabel(value: number, endedAt: string, windowDays: AgentUsageWindowDays): string {
+function formatDateInTimezone(value: string, timezone: string): string {
+  if (value.length === 10) return value;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return year && month && day ? `${year}-${month}-${day}` : value.slice(0, 10);
+}
+
+export function usageXAxisTickLabel(
+  value: number,
+  endedAt: string,
+  windowDays: AgentUsageWindowDays,
+  timezone = "UTC",
+): string {
   const timestamp = new Date(value).toISOString();
   const isBucketCenter = timestamp.slice(11, 19) === "12:00:00";
   // Time axes add calendar ticks as well as the data endpoints. Label a short window's
   // two day buckets once, and reserve the final day's label for its bar center.
-  if ((windowDays === 1 || timestamp.slice(0, 10) === endedAt.slice(0, 10)) && !isBucketCenter) return "";
+  if ((windowDays === 1 || timestamp.slice(0, 10) === formatDateInTimezone(endedAt, timezone)) && !isBucketCenter) {
+    return "";
+  }
   return formatDay(timestamp);
 }
 
@@ -143,13 +164,7 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
     <div className="@container/usage-tab grid gap-6" data-ui="usage-tab">
-      <PageHeader
-        description={m.usage_description()}
-        layout="title-actions"
-        spacing="relaxed"
-        title={m.usage_title()}
-        titleId="agent-usage-page-heading"
-      >
+      <PageHeader layout="title-actions" spacing="relaxed" title={m.usage_title()} titleId="agent-usage-page-heading">
         <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </PageHeader>
       <UsageSummaryState state={state} onRetry={retry} />
@@ -163,7 +178,8 @@ function useAgentUsage(
   { accountId, compact = false }: { accountId?: string; compact?: boolean } = {},
 ): { readonly retry: () => void; readonly state: UsageState } {
   const queryClient = useQueryClient();
-  const usageKey = queryKeys.agents.usage(agentId, windowDays);
+  const timezone = viewerTimezone();
+  const usageKey = queryKeys.agents.usage(agentId, windowDays, timezone);
   const canUseListSummary = Boolean(compact && windowDays === AGENT_USAGE_WINDOW_DAYS && accountId);
   const listKey = queryKeys.agents.list(accountId ?? "");
   const listQuery = useAgentListQuery(accountId ?? "", canUseListSummary);
@@ -197,7 +213,7 @@ function useAgentUsage(
   const usageAuthoritative = observedAfter(usageSuccess, listSuccess) || refusalOutranks(usageRefusal, listSuccess);
   const query = useQuery({
     queryKey: usageKey,
-    queryFn: () => browserApi.agentUsage(agentId, windowDays),
+    queryFn: () => browserApi.agentUsage(agentId, windowDays, timezone),
     enabled: !waitingForList && (!listSummary || usageAuthoritative || listRefreshFailed),
     ...liveResourceQueryOptions,
   });
@@ -374,25 +390,14 @@ function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: Us
   );
 }
 
+/** How many Tasks reported no usage, said quietly under the totals they are missing from. */
 function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
-  if (usage.tasks === usage.measuredTasks) return null;
-  const noCoverage = usage.measuredTasks === 0;
+  const unreported = usage.tasks - usage.measuredTasks;
+  if (unreported <= 0) return null;
   return (
-    <Banner
-      className="text-kumo-default"
-      data-ui="usage-coverage"
-      description={
-        noCoverage
-          ? m.usage_coverage_none_description({ tasks: formatNumber(usage.tasks) })
-          : m.usage_coverage_partial_description({
-              measuredTasks: formatNumber(usage.measuredTasks),
-              tasks: formatNumber(usage.tasks),
-            })
-      }
-      role="status"
-      size="sm"
-      variant="alert"
-    />
+    <p className="m-0 text-sm text-kumo-subtle" data-ui="usage-coverage">
+      {m.usage_tasks_unreported({ count: formatNumber(unreported) })}
+    </p>
   );
 }
 
@@ -482,6 +487,7 @@ export function TokenTrendChart({
   if (!nonEmpty) {
     return <UsageEmpty />;
   }
+  const timezone = viewerTimezone();
   const chart = (
     <LazyTimeseriesChart
       ariaDescription={m.usage_chart_description({
@@ -499,7 +505,7 @@ export function TokenTrendChart({
       tooltipValueFormat={(value) => m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
       type="bar"
       xAxisTickCount={usageXAxisTickCount(usage.windowDays)}
-      xAxisTickFormat={(value) => usageXAxisTickLabel(value, usage.endedAt, usage.windowDays)}
+      xAxisTickFormat={(value) => usageXAxisTickLabel(value, usage.endedAt, usage.windowDays, timezone)}
       yAxisTickFormat={(value) => formatCompactNumber(value)}
     />
   );

@@ -1,3 +1,4 @@
+import type { RuntimeImSteerRequest } from "@opentag/shared";
 import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
@@ -8,12 +9,15 @@ export const STEER_TARGET_UNPLACEABLE_ERROR_CODE = "IM_DELIVERY_STEER_TARGET_UNP
 
 const STEER_TARGET_UNPLACEABLE_REASON = "steer_target_ended_unplaceable";
 
-type SessionEnsurer = Pick<SessionService, "ensureChatSessionInTransaction">;
+export type SessionEnsurer = Pick<SessionService, "ensureChatSessionInTransaction">;
 
 type Candidate = {
   id: string;
   messageId: string;
+  attemptOrdinal: number;
   sourceSessionId: string;
+  targetDeliveryId: string;
+  frozenBatch: RuntimeImSteerRequest["batch"] | null;
 };
 
 type RecoveryRoute = { kind: "pending"; sessionId: string; placementGeneration: number } | { kind: "terminal" };
@@ -69,7 +73,7 @@ export async function requeueSteeredDeliveries(
   now: Date,
   sessionService: SessionEnsurer,
 ): Promise<{ recoveredIds: string[]; terminalizedIds: string[] }> {
-  const candidates = await readSteeredCandidates(transaction, targetDeliveryId);
+  const candidates = wholeFrozenBatches(await readSteeredCandidates(transaction, targetDeliveryId), targetDeliveryId);
   if (candidates.length === 0) return { recoveredIds: [], terminalizedIds: [] };
   const routes = await resolveRecoveryRoutes(transaction, candidates, now, sessionService);
   const recoveredIds: string[] = [];
@@ -77,7 +81,7 @@ export async function requeueSteeredDeliveries(
     const recoveredId = await transitionSteeredDelivery(
       transaction,
       candidate,
-      targetDeliveryId,
+      candidate.targetDeliveryId,
       routes.get(candidate.sourceSessionId),
       now,
       index,
@@ -102,12 +106,25 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
     .select({
       id: imMessageDeliveries.id,
       messageId: imMessageDeliveries.messageId,
+      attemptOrdinal: imMessageDeliveries.attemptOrdinal,
       sourceSessionId: imMessageDeliveries.sessionId,
+      targetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
+      frozenBatch: sql<RuntimeImSteerRequest["batch"] | null>`case
+        when ${imMessageDeliveries.state} in ('pending', 'expired') and ${imMessageDeliveries.dispatchPayload} ->> 'type' = 'im:steer'
+        then ${imMessageDeliveries.dispatchPayload} -> 'batch' else null end`,
     })
     .from(imMessageDeliveries)
     .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
     .where(
-      and(eq(imMessageDeliveries.state, "steered"), eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId)),
+      sql`(
+        (${imMessageDeliveries.steerTargetDeliveryId} = ${targetDeliveryId}::uuid and (
+          (${imMessageDeliveries.state} = 'steered' and coalesce(${imMessageDeliveries.reason}, '') <> 'batch_initial')
+          or (${imMessageDeliveries.state} in ('pending', 'expired') and ${imMessageDeliveries.dispatchPayload} ->> 'type' = 'im:steer')
+        )) or (${imMessageDeliveries.state} in ('pending', 'expired') and ${imMessageDeliveries.dispatchRequestId} is null and ${imMessageDeliveries.steerTargetDeliveryId} in (
+          select frozen.id from im_message_deliveries frozen where frozen.steer_target_delivery_id = ${targetDeliveryId}::uuid
+            and frozen.state in ('pending', 'expired') and frozen.dispatch_payload ->> 'type' = 'im:steer'
+        ))
+      )`,
     )
     .orderBy(
       asc(imMessages.occurredAt),
@@ -116,6 +133,33 @@ async function readSteeredCandidates(transaction: DatabaseTransaction, targetDel
       asc(imMessageDeliveries.id),
     )
     .for("update", { of: imMessageDeliveries, skipLocked: true })) as Candidate[];
+}
+
+function wholeFrozenBatches(rows: Candidate[], executionRootId: string): Candidate[] {
+  const locked = new Map(rows.map((row) => [row.id, row]));
+  const complete = new Set(
+    rows
+      .filter((root) =>
+        root.frozenBatch?.every((member) => {
+          const child = locked.get(member.deliveryId);
+          return (
+            child?.targetDeliveryId === root.id &&
+            child.messageId === member.imMessageId &&
+            child.sourceSessionId === root.sourceSessionId
+          );
+        }),
+      )
+      .map((root) => root.id),
+  );
+  const members = new Set(
+    rows
+      .filter((row) => complete.has(row.id))
+      .flatMap((row) => row.frozenBatch?.map((member) => member.deliveryId) ?? []),
+  );
+  return rows.filter((row) => {
+    if (row.frozenBatch) return complete.has(row.id);
+    return row.targetDeliveryId === executionRootId || members.has(row.id);
+  });
 }
 
 async function resolveRecoveryRoutes(
@@ -155,6 +199,7 @@ async function transitionSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.messageId, candidate.messageId),
+        eq(imMessageDeliveries.attemptOrdinal, candidate.attemptOrdinal),
         eq(imMessageDeliveries.sessionId, route.sessionId),
         ne(imMessageDeliveries.id, candidate.id),
       ),
@@ -191,7 +236,7 @@ async function transitionSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.id, candidate.id),
-        eq(imMessageDeliveries.state, "steered"),
+        inArray(imMessageDeliveries.state, ["steered", "pending", "expired"]),
         eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
       ),
     )
@@ -228,7 +273,7 @@ async function terminalizeSteeredDelivery(
     .where(
       and(
         eq(imMessageDeliveries.id, deliveryId),
-        eq(imMessageDeliveries.state, "steered"),
+        inArray(imMessageDeliveries.state, ["steered", "pending", "expired"]),
         eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
       ),
     )

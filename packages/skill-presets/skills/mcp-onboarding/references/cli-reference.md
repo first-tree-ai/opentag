@@ -1,8 +1,9 @@
 # MCP command reference
 
-Two surfaces exist. The **Agent surface** authenticates with this Agent's Session proof and can only
-touch this Agent's own mounts. The **Account surface** authenticates with a human operator's login
-and owns Server definitions and credentials.
+Two surfaces exist. The **Agent surface** authenticates with this Agent's Session proof and can
+reach this Agent's own mounts, register definitions it creates, and write its own credentials. The
+**Account surface** authenticates with a human operator's login and reaches every Agent's mount and
+credential.
 
 Both print one JSON document on stdout with `--json`. Diagnostics that a human must read — such as
 an OAuth URL — go to stderr so `--json` stays parseable.
@@ -12,19 +13,40 @@ has `opentag-staging`; substitute the binary this workspace actually has.
 
 ## Agent surface — `opentag agent self`
 
+`opentag self` is the same command group at the top level. Inside a managed Session the Agent is
+implied by the proof, so the shorter form is what to type.
+
 | Command | Effect | Flags |
 | --- | --- | --- |
-| `agent self show` | This Agent's configuration, including its id | `--json` |
-| `agent self update` | Instructions, model, reasoning effort | `--model`, `--clear-model`, `--reasoning-effort`, `--clear-reasoning-effort`, `--instructions`, `--instructions-file`, `--json` |
-| `agent self mcp list` | The MCP Servers this Agent mounts | `--json` |
-| `agent self mcp available` | Account definitions this Agent does not mount | `--json` |
-| `agent self mcp attach <server>` | Mount an Account definition on this Agent | `--disabled`, `--json` |
-| `agent self mcp detach <server>` | Unmount it, dropping this Agent's credential | `--json` |
-| `agent self mcp enable <server>` | Enable a mounted Server | `--json` |
-| `agent self mcp disable <server>` | Disable it, keeping the mount and credential | `--json` |
+| `self show` | This Agent's configuration, including its id | `--json` |
+| `self update` | Instructions, model, reasoning effort | `--model`, `--clear-model`, `--reasoning-effort`, `--clear-reasoning-effort`, `--instructions`, `--instructions-file`, `--json` |
+| `self mcp search <query>` | Search the connector catalog; needs no network and no definition | `--limit`, `--json` |
+| `self mcp add <name> <url> [auth_kind]` | Register a definition and mount it on this Agent | `auth_kind` is `oauth` or `bearer`; `--api-key-stdin`, `--api-key` (**UNSAFE**), `--json` |
+| `self mcp use <server>` | Write a Bearer key onto a Server this Agent already mounts. Does not create a definition | `--api-key-stdin`, `--api-key` (**UNSAFE**), `--json` |
+| `self mcp delete <server>` | Unmount the Server and drop this Agent's credential; retains the Account definition | `--json` |
+| `self mcp generate_oauth_url <server>` | Start the flow; prints the URL a human must open | `--scopes a,b`, `--json` |
+| `self mcp check_oauth_status <server>` | Authorization and probe state, with the tool names | `--wait [seconds]`, `--json` |
+| `self mcp list` | The MCP Servers this Agent mounts | `--page`, `--limit`, `--json` |
+| `self mcp available` | Account definitions this Agent does not mount | `--json` |
+| `self mcp attach <server>` | Mount an Account definition on this Agent | `--disabled`, `--json` |
+| `self mcp detach <server>` | Unmount it, dropping this Agent's credential | `--json` |
+| `self mcp enable <server>` | Enable a mounted Server | `--json` |
+| `self mcp disable <server>` | Disable it, keeping the mount and credential | `--json` |
 
 `<server>` is a name or an id. There is no `--agent` flag on this surface: the Session proof names
 the Agent, so no command can address another one.
+
+`mcp add` refuses `none`. An anonymous mount is usable the instant it exists, with no step a human
+reviews, so declaring one stays an operator decision. `--api-key` only accompanies `bearer`, and
+`--api-key-stdin` is preferred for the same reason `--bearer-key-stdin` is. `self mcp use` is the
+command that writes a key onto a mount that already exists. `add` is only for a new definition.
+
+`generate_oauth_url` replaces any pending flow, which invalidates a link the user may still be
+opening. A status of `pending` means that link is still the one to finish.
+
+`check_oauth_status` reports `authKind`, `authStatus`, `probeState`, `toolsCount`, `probeError`,
+`failureCode`, and the tool `name`/`description` pairs. It never carries an OAuth token or a Bearer
+key, and it omits each tool's input schema so a poll stays small.
 
 ## Account surface — `opentag mcp`
 

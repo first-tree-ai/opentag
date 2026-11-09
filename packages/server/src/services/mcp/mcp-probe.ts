@@ -126,12 +126,34 @@ export class McpProbe {
   }
 
   async probe(input: McpProbeInput): Promise<McpProbeResult> {
-    const deadline = this.#now().getTime() + this.#budgetMs;
+    const startedAtMs = this.#now().getTime();
+    const deadline = startedAtMs + this.#budgetMs;
     try {
-      return input.cachedEra === "legacy"
-        ? await this.#probeLegacy(input, deadline)
-        : await this.#probeModern(input, deadline);
+      const result =
+        input.cachedEra === "legacy"
+          ? await this.#probeLegacy(input, deadline)
+          : await this.#probeModern(input, deadline);
+      this.#logger?.info(
+        {
+          accountId: input.accountId,
+          endpoint: endpointOrigin(input.url),
+          cachedEra: input.cachedEra,
+          protocolEra: result.protocolEra,
+          protocolVersion: result.protocolVersion,
+          toolsCount: result.toolsCount,
+          toolsTruncated: result.toolsTruncated,
+          toolsSkipped: result.toolsSkipped,
+          durationMs: Math.max(0, this.#now().getTime() - startedAtMs),
+        },
+        "MCP probe succeeded",
+      );
+      return result;
     } catch (error) {
+      // A local per-Account concurrency slot refusal never contacted the peer; let the caller retry
+      // rather than recording a false upstream probe failure.
+      if (error instanceof McpServiceError && error.detail?.cause === "concurrency_limit") {
+        throw error;
+      }
       /*
        * The probe API answers 200 whether or not the probe succeeded, and the upstream status never
        * reaches the response, so this line is the only place that shows what the Server really sent.
@@ -145,6 +167,7 @@ export class McpProbe {
           errorCode: error instanceof McpServiceError ? error.code : undefined,
           upstreamStatus: error instanceof McpTransportError ? error.status : undefined,
           rpcCode: error instanceof McpTransportError ? error.rpcError?.code : undefined,
+          durationMs: Math.max(0, this.#now().getTime() - startedAtMs),
         },
         "MCP probe failed",
       );
@@ -230,15 +253,13 @@ export class McpProbe {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const { sessionId, result } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     const payload = asRecord(result);
-    if (sessionId) {
-      await transport.notifyLegacy(
-        input.accountId,
-        input.url,
-        "notifications/initialized",
-        input.authHeaders,
-        sessionId,
-      );
-    }
+    /*
+     * Sent unconditionally, because it is the notification that closes the handshake rather than a
+     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
+     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
+     * call covers both peers, and no `tools/list` is dispatched if it fails.
+     */
+    await transport.notifyLegacy(input.accountId, input.url, "notifications/initialized", input.authHeaders, sessionId);
     /*
      * The version the peer negotiated, checked against the *legacy* list.
      *

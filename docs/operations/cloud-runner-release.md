@@ -11,6 +11,14 @@ records the verified image digest, channel, version and source SHA as a GitHub A
 succeeds. A version tag is never overwritten; a retry can reuse an existing image only after its identity is verified.
 `Runner Toolchain` remains the independent, offline-only PR build check.
 
+Pinned Runner tool downloads retry only HTTP 408, 429, 500, 502, 503 and 504 and selected transient connection errors.
+Each artifact has at most four download attempts, with waits of 5, 10 and 20 seconds inside one 120-second deadline covering
+requests, redirects and body reads. Cancellation stops requests and waits. Permanent errors, size violations and digest
+mismatches fail immediately; retries never relax the reviewed versions, sizes or SHA256 checks. Provider CLI installation
+owns its download retries, with no additional retry loop in Runner assembly. The Native Proxy workflow uses the same
+Provider CLI fetcher for its bounded official gh archive and checksum downloads, then verifies the selected SHA256 before
+extraction. A failed or partial download is not written to the destination file.
+
 ## Publishing configuration
 
 Reuse the portable workflow's `OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER` and
@@ -46,11 +54,17 @@ merging/enabling this workflow: missing publishing configuration fails before np
 
 ### Failed release recovery
 
-A publish run that claims a version tag (Runner image pushed) but fails before npm publication leaves an orphaned image
-tag. Staging versions derive from the published npm sequence, so every later commit recomputes the same version and the
-workflow fails the tag identity check instead of overwriting it. Recovery: add a quarantine tag to the claimed image and
-then delete the exact version tag in Artifact Registry, then re-run the workflow (it rebuilds the version from clean
-source). Never overwrite the existing tag with a different build.
+A publish run that pushes the Runner image but fails before npm publication can leave a version tag absent from npm.
+Staging version selection reads both npm versions and reserved Runner tags, so a later release steps past that claimed
+coordinate; see [Staging release coordinates](releasing.md#staging). Keep the existing staging tag immutable. A retry can
+reuse an image only after verifying its identity; a tag owned by another source is not overwritten.
+
+For a non-staging release with a confirmed identity mismatch, `scripts/runner/release.mjs` retains a manual recovery
+path: add a quarantine tag to the claimed image so its digest remains available, delete only the exact conflicting
+`<image>:<version>` tag in Artifact Registry, then rerun the workflow to rebuild that version from the clean intended
+source. This is an operator recovery procedure, not an automatic overwrite. Inconclusive registry reads, including
+authorization, rate-limit, network, digest, or JSON failures, do not justify deleting a tag. Never overwrite an existing
+tag with a different build.
 
 The CapRover App Token still deploys the Server image. It cannot update environment variables, so Runner activation
 retrieves the existing administrator credential through workload identity, keeps it in memory and changes only the two
@@ -96,6 +110,12 @@ and requires a final not-found response. It verifies purpose/target/environment 
 command, arguments, absence of environment credentials, UID and etag before deleting. It checks leadership again before
 create/delete. A matching previous-digest probe is deleted before importing the new digest. Foreign or replaced resources
 are rejected rather than deleted; create responses of uncertain outcome are reconciled without blindly repeating POST.
+
+Idempotent GET reads during preparation and cleanup retry HTTP 429, 500, 502, 503 and 504 and fetch transport failures
+at the existing two-second polling cadence, within that phase's original deadline. A read failure never counts as
+not-found or readiness. Other HTTP errors, credential failures, invalid JSON and ownership mismatches fail immediately.
+Preparation cancellation interrupts reads and retry waits; cleanup still uses its independent budget. POST and DELETE
+are not retried.
 
 Graceful shutdown aborts preparation, drains bounded cleanup, then closes the dedicated lock connection. A forced kill
 can interrupt cleanup; the next leader recovers the same named, strictly owned probe. A change to project, identity,

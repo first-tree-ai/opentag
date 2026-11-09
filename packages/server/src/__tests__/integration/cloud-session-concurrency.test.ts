@@ -177,6 +177,7 @@ async function fixture() {
     modelGrants: grants,
     modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
   });
+  const diagnostics: string[] = [];
   const worker = (options: { afterClaimRowLocked?: () => Promise<void> } = {}) => {
     const instance = new ImDeliveryWorker({
       database: client.database,
@@ -190,12 +191,13 @@ async function fixture() {
         },
         ensureEnvironmentAllocated: async () => "ready",
       },
+      onDiagnostic: (code) => diagnostics.push(code),
       ...options,
     });
     cleanup.push(async () => instance.stop());
     return instance;
   };
-  return { accountId, agent, cloud, a, b, enqueue, hub, fence, grants, owner, worker };
+  return { accountId, agent, cloud, a, b, enqueue, hub, fence, grants, owner, worker, diagnostics };
 }
 
 type Stack = Awaited<ReturnType<typeof fixture>>;
@@ -347,6 +349,10 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     expect((await b.wait("delivery:report:ack", after)).status).toBe("already_recorded");
     await a.finish(activeA.request, activeA.turnId);
     const aAfter = a.frames.length;
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(imMessageDeliveries.id, a2));
     await worker.runOnce();
     expect((await a.wait("delivery:run", aAfter)).delivery.deliveryId).toBe(a2);
   });
@@ -402,8 +408,12 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     const a1 = await stack.enqueue(stack.a);
     const a2 = await stack.enqueue(stack.a);
     const b1 = await stack.enqueue(stack.b);
-    await Promise.all(Array.from({ length: 4 }, () => stack.worker().runOnce()));
-    const [activeA, activeB] = await Promise.all([a.start(), b.start()]);
+    const workers = Array.from({ length: 4 }, () => stack.worker());
+    for (const worker of workers) worker.start();
+    const [activeA, activeB] = await Promise.all([a.start(), b.start()]).finally(() =>
+      Promise.all(workers.map((worker) => worker.stop())),
+    );
+    expect(stack.diagnostics).not.toContain("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
     expect(activeA.request.deliveryId).toBe(a1);
     expect(activeB.request.deliveryId).toBe(b1);
     expect((await row(a2)).dispatchRequestId).toBeNull();
@@ -460,6 +470,27 @@ describe("E6 Cloud Session concurrency on PostgreSQL and WebSockets", { timeout:
     const after = a.frames.length;
     await stack.worker().runOnce();
     expect((await a.wait("delivery:run", after)).delivery.deliveryId).toBe(older);
+  });
+
+  it("admits lifecycle Cloud cancellation against the committed Agent revision", async () => {
+    const stack = await fixture(),
+      a = await runner(stack, stack.a);
+    await stack.enqueue(stack.a);
+    await stack.worker().runOnce();
+    const active = await a.start();
+    if (!active.model) throw new Error("Missing model grant");
+    const service = new AgentService(client.database, {
+      cloudIdentitiesEnabled: true,
+      stopSessions: async (targets) => {
+        for (const target of targets) await stack.owner.cancelSessionDeliveries(target.sessionId, target);
+      },
+    });
+    expect((await service.suspendById(stack.accountId, stack.agent.id)).status).toBe("suspended");
+    expect((await a.wait("delivery:cancel")).deliveryId).toBe(active.request.deliveryId);
+    expect(await stack.grants.verify(active.model.token)).toBeUndefined();
+    expect((await row(active.request.deliveryId)).state).toBe("accepted");
+    await a.finish(active.request, active.turnId);
+    expect((await row(active.request.deliveryId)).reportedAt).not.toBeNull();
   });
 
   it("cancels and disconnects A without revoking B's model authority or completion", async () => {

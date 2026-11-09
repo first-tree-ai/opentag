@@ -1,3 +1,5 @@
+import { AGENT_NAME_PATTERN } from "@opentag/shared/browser";
+
 export const RUNTIMES = ["codex", "claude-code", "pi"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 export type Destination = "local" | "cloud";
@@ -5,8 +7,8 @@ export type Destination = "local" | "cloud";
 /** Cloud Agents always run the managed Pi runtime; the reader never picks a runtime for Cloud. */
 export const CLOUD_RUNTIME: Runtime = "pi";
 
-export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-export const AGENT_NAME_MAX_LENGTH = 64;
+/** In UTF-8 bytes, as the Server counts it: 64 ASCII characters or 21 Chinese characters. */
+export const AGENT_NAME_MAX_BYTES = 64;
 export const DEFAULT_AGENT_NAME = "opentag";
 
 export interface AgentDraft {
@@ -51,9 +53,10 @@ export function emptyDraft(existingNames: readonly string[] = []): AgentDraft {
 export type AgentNameError = "empty" | "too-long" | "charset";
 
 export function validateAgentName(value: string): AgentNameError | undefined {
-  const trimmed = value.trim();
+  // Same order as `AgentNameSchema`: trim, NFC-normalize, then match and bound.
+  const trimmed = value.trim().normalize("NFC");
   if (trimmed.length === 0) return "empty";
-  if (trimmed.length > AGENT_NAME_MAX_LENGTH) return "too-long";
+  if (new TextEncoder().encode(trimmed).byteLength > AGENT_NAME_MAX_BYTES) return "too-long";
   if (!AGENT_NAME_PATTERN.test(trimmed)) return "charset";
   return undefined;
 }

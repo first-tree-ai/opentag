@@ -17,9 +17,23 @@ export function registerAgentUpdateCommand(agent: Command): void {
     .addOption(
       new Option("--clear-reasoning-effort", "let the runtime manage reasoning effort").conflicts("reasoningEffort"),
     )
-    .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))
     .addOption(
-      new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),
+      new Option("--instructions <text>", "Agent runtime instructions").conflicts([
+        "instructionsFile",
+        "clearInstructions",
+      ]),
+    )
+    .addOption(
+      new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts([
+        "instructions",
+        "clearInstructions",
+      ]),
+    )
+    .addOption(
+      new Option("--clear-instructions", "Clear custom instructions and revert to defaults").conflicts([
+        "instructions",
+        "instructionsFile",
+      ]),
     )
     .addOption(
       new Option("--max-duration-ms <integer>", "maximum duration of one Turn in milliseconds").conflicts(
@@ -39,6 +53,7 @@ export function registerAgentUpdateCommand(agent: Command): void {
             clearReasoningEffort: options.clearReasoningEffort,
             instructions: options.instructions,
             instructionsFile: options.instructionsFile,
+            clearInstructions: options.clearInstructions,
             maxDurationMs: options.maxDurationMs,
             clearMaxDuration: options.clearMaxDuration,
           }),

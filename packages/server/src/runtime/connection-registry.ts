@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import {
   AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
@@ -10,16 +11,21 @@ import {
   parseSemVer,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
   RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
+  RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS,
+  RUNTIME_SELF_CHECK_STALE_MS,
   type RuntimeClientCapabilities,
   type RuntimeImCliReadinessCollection,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
+  type RuntimeSelfCheckReport,
+  type RuntimeSelfCheckRequest,
   runtimeFrameByteLength,
 } from "@opentag/shared";
 import WebSocket from "ws";
@@ -29,6 +35,7 @@ export class RuntimeRegistrySendError extends Error {
   constructor(
     readonly code: "frame_too_large" | "instance_replaced" | "unavailable",
     message: string,
+    readonly mayHaveSent = false,
   ) {
     super(message);
     this.name = "RuntimeRegistrySendError";
@@ -47,6 +54,7 @@ export interface ProviderCliArtifactObservation {
 }
 
 export interface ProviderCliCredentialObservation {
+  timedOut?: boolean;
   agentId: string;
   integrationId: string;
   observedAt: number;
@@ -79,6 +87,16 @@ export interface RuntimeConnectionEntry {
   control?: RuntimeControlIdentity;
   instanceId: string;
   lastHeartbeatAt: number;
+  lastHeartbeatMonotonicAt?: number;
+  selfCheckId?: string;
+  selfCheckSequence?: number;
+  selfCheckHash?: string;
+  selfCheckStartedAt?: number;
+  selfCheckStartedMonotonicAt?: number;
+  selfCheckReceivedAt?: number;
+  selfCheckMonotonicAt?: number;
+  selfCheckCheckedAt?: string;
+  selfCheckProblems?: RuntimeSelfCheckReport["problems"];
   protocolVersion?: RuntimeProtocolVersion;
   providerReadiness?: RuntimeProviderReadinessCollection;
   providerReadinessObservedAt?: number;
@@ -111,15 +129,29 @@ export const COMPUTER_DELETED_CLOSE: RuntimeCloseReason = { code: 4401, reason: 
 
 export interface ConnectionRegistryOptions {
   logger?: ServiceLogger;
+  monotonicNow?: () => number;
 }
+
+/**
+ * How long past the check interval a ready answer stands. A recheck can start late, because the
+ * shared pump works through bindings one at a time, and may then use its whole grant budget. An
+ * answer older than this means rechecks stopped answering, which is overdue rather than a verdict.
+ */
+const CREDENTIAL_ANSWER_GRACE_MS = 4 * RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS;
 
 export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
   readonly #registrationTails = new Map<string, Promise<void>>();
   readonly #logger?: ServiceLogger;
+  readonly #monotonicNow: () => number;
+  readonly #retainedCredentials = new Map<
+    string,
+    { installationId: string; observations: ProviderCliCredentialObservation[] }
+  >();
 
   constructor(options: ConnectionRegistryOptions = {}) {
     this.#logger = options.logger;
+    this.#monotonicNow = options.monotonicNow ?? (() => performance.now());
   }
 
   async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
@@ -133,6 +165,19 @@ export class ConnectionRegistry {
     try {
       await persist();
       const previous = this.#entries.get(entry.computerId);
+      if (previous) this.#retainCredentials(previous, entry.lastHeartbeatAt);
+      const retained = this.#retainedCredentials.get(entry.computerId);
+      if (selfChecking(entry) && retained?.installationId === entry.installationId) {
+        entry.providerCliCredential = retained.observations.filter(
+          (observation) => entry.lastHeartbeatAt - observation.observedAt < RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+        );
+      }
+      this.#retainedCredentials.delete(entry.computerId);
+      entry.lastHeartbeatMonotonicAt = this.#monotonicNow();
+      if (selfChecking(entry)) {
+        entry.selfCheckStartedAt = entry.lastHeartbeatAt;
+        entry.selfCheckStartedMonotonicAt = entry.lastHeartbeatMonotonicAt;
+      }
       this.#entries.set(entry.computerId, entry);
       if (previous && previous.socket !== entry.socket) {
         previous.socket.close(4001, "Replaced by a newer daemon instance");
@@ -155,6 +200,96 @@ export class ConnectionRegistry {
   isCurrentConnection(computerId: string, instanceId: string, connectionId: string): boolean {
     const current = this.#entries.get(computerId);
     return current?.instanceId === instanceId && current.active !== false && current.connectionId === connectionId;
+  }
+
+  connectionStatus(computerId: string): "online" | "offline" {
+    const entry = this.#entries.get(computerId);
+    return entry &&
+      entry.active !== false &&
+      entry.socket.readyState === WebSocket.OPEN &&
+      this.#monotonicNow() - (entry.lastHeartbeatMonotonicAt ?? Number.NEGATIVE_INFINITY) < 90_000
+      ? "online"
+      : "offline";
+  }
+
+  selfCheckState(computerId: string):
+    | {
+        checkedAt?: string;
+        receivedAt?: number;
+        startedAt?: number;
+        stale: boolean;
+        problems: RuntimeSelfCheckReport["problems"];
+      }
+    | undefined {
+    const entry = this.#entries.get(computerId);
+    if (!entry || !selfChecking(entry)) return undefined;
+    return {
+      checkedAt: entry.selfCheckCheckedAt,
+      receivedAt: entry.selfCheckReceivedAt,
+      startedAt: entry.selfCheckStartedAt,
+      problems: [...(entry.selfCheckProblems ?? [])],
+      stale:
+        this.#monotonicNow() -
+          (entry.selfCheckMonotonicAt ?? entry.selfCheckStartedMonotonicAt ?? Number.NEGATIVE_INFINITY) >=
+        RUNTIME_SELF_CHECK_STALE_MS,
+    };
+  }
+
+  requestSelfCheck(computerId: string, instanceId: string, now = Date.now()): RuntimeSelfCheckRequest | undefined {
+    const entry = this.#currentWritable(computerId, instanceId);
+    if (!entry || !selfChecking(entry)) return undefined;
+    const requestId = randomUUID();
+    entry.selfCheckId = requestId;
+    entry.selfCheckSequence = 0;
+    delete entry.selfCheckHash;
+    entry.selfCheckStartedAt = now;
+    entry.selfCheckStartedMonotonicAt ??= this.#monotonicNow();
+    return { type: "runtime:self-check", requestId };
+  }
+
+  recordSelfCheck(
+    computerId: string,
+    instanceId: string,
+    connectionId: string | undefined,
+    report: RuntimeSelfCheckReport,
+    receivedAt = Date.now(),
+    receivedMonotonicAt = this.#monotonicNow(),
+  ): boolean {
+    const entry = this.#currentWritable(computerId, instanceId);
+    if (
+      !entry ||
+      !selfChecking(entry) ||
+      entry.connectionId !== connectionId ||
+      entry.selfCheckId !== report.selfCheckId
+    )
+      return false;
+    if (report.providerReadiness.some(({ provider }) => !entry.providerReadinessProviders?.includes(provider)))
+      return false;
+    if (
+      report.providerReadiness.some(({ status }) => status === "checking") ||
+      report.imCliReadiness.some(({ status }) => status === "checking")
+    )
+      return false;
+    const { requestId: _requestId, ...sample } = report;
+    const hash = createHash("sha256").update(JSON.stringify(sample)).digest("hex");
+    if (report.sequence <= (entry.selfCheckSequence ?? 0)) {
+      return report.sequence === entry.selfCheckSequence && hash === entry.selfCheckHash;
+    }
+    entry.selfCheckSequence = report.sequence;
+    entry.selfCheckHash = hash;
+    entry.selfCheckReceivedAt = receivedAt;
+    entry.selfCheckMonotonicAt = receivedMonotonicAt;
+    entry.selfCheckCheckedAt = report.checkedAt;
+    entry.selfCheckProblems = [...report.problems];
+    if (preparationIsSealed(entry)) {
+      refreshPreparationTtl(entry, receivedAt);
+      return true;
+    }
+    entry.providerReadiness = report.providerReadiness.map((observation) => ({ ...observation }));
+    entry.providerReadinessObservedAt = receivedAt;
+    entry.imCliReadiness = report.imCliReadiness.map((observation) => ({ ...observation }));
+    entry.imCliReadinessObservedAt = receivedAt;
+    return true;
   }
 
   currentInstanceId(computerId: string): string | undefined {
@@ -231,6 +366,14 @@ export class ConnectionRegistry {
     const current = this.#entries.get(computerId);
     if (current?.active === false) return [];
     const observedAt = current?.providerReadinessObservedAt;
+    if (current && selfChecking(current)) {
+      if (!current.providerReadiness || observedAt === undefined) return [];
+      const stale = this.selfCheckState(computerId)?.stale === true;
+      return current.providerReadiness.map((observation) => ({
+        observation: { ...observation, ...(stale ? { status: "unavailable" as const } : {}) },
+        observedAt,
+      }));
+    }
     if (current?.providerReadinessProviders) {
       if (
         !current.providerReadiness ||
@@ -264,6 +407,14 @@ export class ConnectionRegistry {
   ): readonly { observation: RuntimeImCliReadinessCollection[number]; observedAt: number }[] {
     const current = this.#entries.get(computerId);
     const observedAt = current?.imCliReadinessObservedAt;
+    if (current && current.active !== false && selfChecking(current)) {
+      if (!current.imCliReadiness || observedAt === undefined) return [];
+      const stale = this.selfCheckState(computerId)?.stale === true;
+      return current.imCliReadiness.map((observation) => ({
+        observation: { ...observation, ...(stale ? { status: "unavailable" as const } : {}) },
+        observedAt,
+      }));
+    }
     if (
       !current ||
       current.active === false ||
@@ -352,6 +503,10 @@ export class ConnectionRegistry {
       current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
     }
     current.providerReadinessObservedAt = now;
+    if (selfChecking(current) && !options.quarantine) {
+      current.selfCheckReceivedAt = now;
+      current.selfCheckMonotonicAt = this.#monotonicNow();
+    }
     if (result.providers !== undefined) {
       current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
       current.imCliReadinessObservedAt = now;
@@ -366,6 +521,26 @@ export class ConnectionRegistry {
   ): readonly { observation: ProviderCliArtifactObservation; observedAt: number }[] {
     const current = this.#entries.get(computerId);
     if (!current || current.active === false || !current.providerCliArtifact) return [];
+    if (selfChecking(current)) {
+      const local = new Map(this.imCliReadiness(computerId, now).map((value) => [value.observation.provider, value]));
+      return current.providerCliArtifact.map((observation) => {
+        const latest = local.get(observation.provider);
+        const status = latest?.observation.status;
+        return {
+          observation: {
+            ...observation,
+            status:
+              observation.status === "checking"
+                ? ("checking" as const)
+                : status === "install" || status === undefined
+                  ? ("unavailable" as const)
+                  : status,
+            ...(status === "ready" ? { reason: undefined } : {}),
+          },
+          observedAt: latest?.observedAt ?? observation.observedAt,
+        };
+      });
+    }
     return current.providerCliArtifact.flatMap((observation) =>
       observation.status !== "unavailable" && now - observation.observedAt > RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS
         ? []
@@ -380,6 +555,23 @@ export class ConnectionRegistry {
     const current = this.#entries.get(computerId);
     if (!current || current.active === false || !current.providerCliCredential) return [];
     return current.providerCliCredential.flatMap((observation) => {
+      if (selfChecking(current)) {
+        return [
+          {
+            observation:
+              now - observation.observedAt > RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS + CREDENTIAL_ANSWER_GRACE_MS &&
+              observation.status === "ready"
+                ? {
+                    ...observation,
+                    status: "needs_attention" as const,
+                    reason: "provider_unreachable" as const,
+                    timedOut: true,
+                  }
+                : { ...observation },
+            observedAt: observation.observedAt,
+          },
+        ];
+      }
       if (observation.status === "needs_attention") {
         return [{ observation: { ...observation }, observedAt: observation.observedAt }];
       }
@@ -399,6 +591,14 @@ export class ConnectionRegistry {
     const current = this.#currentWritable(computerId, instanceId);
     if (!current) return false;
     const next: ProviderCliArtifactObservation = { ...observation, observedAt: now };
+    if (selfChecking(current) && next.status === "checking") {
+      const previous = current.providerCliArtifact?.find(
+        (item) =>
+          artifactObservationKey(item) === artifactObservationKey(next) &&
+          item.credentialGeneration === next.credentialGeneration,
+      );
+      if (previous?.status === "ready" || previous?.status === "unavailable") return true;
+    }
     current.providerCliArtifact = upsertProviderCliObservation(
       current.providerCliArtifact,
       next,
@@ -416,6 +616,14 @@ export class ConnectionRegistry {
     const current = this.#currentWritable(computerId, instanceId);
     if (!current) return false;
     const next: ProviderCliCredentialObservation = { ...observation, observedAt: now };
+    if (selfChecking(current) && ["checking", "unconfirmed", "retrying"].includes(next.status)) {
+      const previous = current.providerCliCredential?.find(
+        (item) =>
+          credentialObservationKey(item) === credentialObservationKey(next) &&
+          item.credentialGeneration === next.credentialGeneration,
+      );
+      if (previous?.status === "ready" || previous?.status === "needs_attention") return true;
+    }
     current.providerCliCredential = upsertProviderCliObservation(
       current.providerCliCredential,
       next,
@@ -487,16 +695,45 @@ export class ConnectionRegistry {
     await new Promise<void>((resolve, reject) => {
       socket.send(serialized, (error) => {
         if (error) {
-          reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent"));
+          reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent", true));
           return;
         }
         if (!this.isCurrent(computerId, instanceId, socket)) {
-          reject(new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send"));
+          reject(
+            new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send", true),
+          );
           return;
         }
         resolve();
       });
     });
+  }
+
+  recordHeartbeatReceipt(input: {
+    computerId: string;
+    installationId: string;
+    instanceId: string;
+    connectionId: string | undefined;
+    socket: WebSocket;
+    receivedAt: number;
+    receivedMonotonicAt: number;
+  }): boolean {
+    const current = this.#entries.get(input.computerId);
+    if (
+      !current ||
+      current.active === false ||
+      current.socket !== input.socket ||
+      current.instanceId !== input.instanceId ||
+      current.installationId !== input.installationId ||
+      current.connectionId !== input.connectionId
+    )
+      return false;
+    current.lastHeartbeatAt = Math.max(current.lastHeartbeatAt, input.receivedAt);
+    current.lastHeartbeatMonotonicAt = Math.max(
+      current.lastHeartbeatMonotonicAt ?? input.receivedMonotonicAt,
+      input.receivedMonotonicAt,
+    );
+    return true;
   }
 
   touch(
@@ -507,16 +744,22 @@ export class ConnectionRegistry {
     capabilities?: RuntimeClientCapabilities,
     providerReadiness?: RuntimeProviderReadinessCollection,
     imCliReadiness?: RuntimeImCliReadinessCollection,
+    receivedMonotonicAt = this.#monotonicNow(),
   ): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket || current.active === false) {
       return false;
     }
-    current.lastHeartbeatAt = now;
+    current.lastHeartbeatAt = Math.max(current.lastHeartbeatAt, now);
+    current.lastHeartbeatMonotonicAt = Math.max(
+      current.lastHeartbeatMonotonicAt ?? receivedMonotonicAt,
+      receivedMonotonicAt,
+    );
     if (capabilities) {
       current.capabilities = { ...capabilities };
       current.capabilitiesUpdatedAt = now;
     }
+    if (selfChecking(current)) return true;
     if (preparationIsSealed(current)) {
       refreshPreparationTtl(current, now);
       return true;
@@ -553,13 +796,41 @@ export class ConnectionRegistry {
     if (!this.isCurrent(computerId, instanceId, socket)) {
       return false;
     }
+    const entry = this.#entries.get(computerId);
+    if (entry) this.#retainCredentials(entry, Date.now());
     return this.#entries.delete(computerId);
   }
 
+  #retainCredentials(entry: RuntimeConnectionEntry, now: number): void {
+    if (!selfChecking(entry)) return;
+    const observations = (entry.providerCliCredential ?? [])
+      .filter(
+        (observation) =>
+          ["ready", "needs_attention"].includes(observation.status) &&
+          now - observation.observedAt < RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+      )
+      .map((observation) => ({ ...observation }));
+    if (observations.length)
+      this.#retainedCredentials.set(entry.computerId, { installationId: entry.installationId, observations });
+  }
+
   terminateStale(cutoff: number, onSweep?: (count: number) => void): number {
+    for (const [computerId, retained] of this.#retainedCredentials) {
+      if (
+        retained.observations.every(
+          (observation) => Date.now() - observation.observedAt >= RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+        )
+      ) {
+        this.#retainedCredentials.delete(computerId);
+      }
+    }
     let count = 0;
     for (const entry of this.#entries.values()) {
-      if (entry.lastHeartbeatAt < cutoff) {
+      if (
+        !selfChecking(entry) || entry.lastHeartbeatMonotonicAt === undefined
+          ? entry.lastHeartbeatAt < cutoff
+          : this.#monotonicNow() - entry.lastHeartbeatMonotonicAt >= 90_000
+      ) {
         entry.socket.terminate();
         count += 1;
       }
@@ -583,6 +854,7 @@ export class ConnectionRegistry {
     close: RuntimeCloseReason = CREDENTIAL_ROTATED_CLOSE,
     credentialIds?: readonly string[],
   ): Promise<boolean> {
+    this.#retainedCredentials.delete(computerId);
     let closed = false;
     let closeFailure: { error: unknown } | undefined;
     try {
@@ -606,6 +878,7 @@ export class ConnectionRegistry {
   }
 
   closeAll(): void {
+    this.#retainedCredentials.clear();
     for (const entry of this.#entries.values()) {
       entry.socket.close(1001, "Server shutting down");
     }
@@ -648,6 +921,10 @@ function clearPreparationFence(current: RuntimeConnectionEntry): void {
 function refreshPreparationTtl(current: RuntimeConnectionEntry, now: number): void {
   if (current.providerReadiness) current.providerReadinessObservedAt = now;
   if (current.imCliReadiness) current.imCliReadinessObservedAt = now;
+}
+
+function selfChecking(entry: RuntimeConnectionEntry): boolean {
+  return entry.negotiatedCapabilities?.[RUNTIME_CAPABILITY.selfCheckHeartbeat] === 1;
 }
 
 function artifactObservationKey(observation: ProviderCliArtifactObservation): string {

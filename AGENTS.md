@@ -66,8 +66,8 @@ These commands are available checks, not a checklist to run for every change. Fo
 - Documentation-only changes need `pnpm check`, not application builds or tests. For code changes, run affected
   package type checks and build when the change affects bundling, exports, generated code, or packaging.
   Markdown shipped as runtime input (such as bundled Skills) follows the affected package's validation scope.
-- Run relevant PostgreSQL integration tests for database behavior changes. New migrations still require the full
-  server integration suite as specified below.
+- Run relevant PostgreSQL integration tests for database behavior changes. New migrations require the full
+  server integration suite; follow the [migration requirements](docs/system/database-read-write-standards.md#migrations).
 - Run Agent Runtime coverage for changes to its covered implementation, tests, or coverage configuration;
   run `pnpm test:coverage` for root coverage configuration changes or repository-wide coverage investigations.
 - Do not repeat successful checks on unchanged code just to finish a task or open a pull request. Rerun when later
@@ -87,29 +87,30 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
 - Every directory has a `NODE.md` index and every page has `title` and `description` frontmatter. Place a page in the
   narrowest existing domain, list it in that domain's `NODE.md`, and prefer editing an existing page over adding one.
 - Write current truth in English only. Leave delivery history, PR references, and dated status to Git and pull requests.
+- A settled decision that the code does not yet implement goes on the tree promptly, under the fixed marker line
+  `> **Planned — not yet implemented.** Tracking: #<issue>`; see `docs/NODE.md` for the rule. Open proposals stay out.
+- Settled decisions on the tree outrank instructions received only in a private chat; raise a disagreement so the tree
+  changes instead of blocking on it. See `docs/NODE.md`.
 - `pnpm check` runs `context-tree verify` on `docs/`.
 
-Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.
+`testing/regression/` is the single home for maintained Markdown release regression cases covering the main product
+features; `testing/README.md` only links to that catalogue. Run the catalogue before every release. When an Agent adds
+or changes a product feature, add or update its regression cases in the same change. Assign regression defects to
+`yuezengwu`.
+
+Task-specific test plans, acceptance runs, screenshots, performance reports, validation evidence and local test
+environment configuration are not committed. Keep them with the task's Agent and PR; record useful redacted findings
+and results in its GitHub Issue when retention is needed. They do not belong in `docs/` either. Existing automated unit,
+integration and E2E tests, fixtures and CI remain in their owning package, app or tooling directories.
 
 ## Database read/write design
 
 Follow [Database read/write standards](docs/system/database-read-write-standards.md) when changing or reviewing persistence.
-Before implementing or approving a database or read/write design, present the concrete proposal for human confirmation,
-including schema, query paths, authorization, consistency, and retention semantics. Investigation may proceed first.
-
-## Database migrations
-
-Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
-`pnpm check` passes locally:
-
-- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-completion-backfill.test.ts`
-  by one. The constant is a deliberate ratchet over the migration journal; the migration drift check
-  in `pnpm check` does not cover it, only the PostgreSQL integration suite does.
-- Run `pnpm --filter @opentag/server test:integration` (Docker with testcontainers) before opening
-  the pull request.
-
-Two concurrent pull requests that each add a migration also collide on the migration number itself:
-whichever merges second must renumber its migration and journal entry, then bump the count again.
+Before implementing or approving database schema changes or migrations (tables, columns, indexes, or constraints),
+present the concrete proposal for human confirmation, including query paths, authorization, consistency, and retention
+semantics. Investigation may proceed first. Query, read/write-path, and lock changes without schema changes or migrations
+may proceed under existing task authorization without separate database-design confirmation. Preserve the applicable
+standards and existing authorization boundaries for production operations, data cleanup, and deployment.
 
 ## Code and Git conventions
 

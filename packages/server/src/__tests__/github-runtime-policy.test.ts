@@ -3,8 +3,10 @@ import type { GitHubConnectionStatus, RuntimeExecutionSource } from "@opentag/sh
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
+import { AgentGitHubAuthorizationError } from "../services/github/agent-github-credential-service.js";
 import type { GitHubManagementService } from "../services/github/github-management-service.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
+import { deferred } from "./support/deferred.js";
 
 const ACCOUNT = randomUUID(),
   AGENT = randomUUID(),
@@ -47,19 +49,31 @@ function fixture() {
       }
     | undefined;
   let configs: { agentId: string; contextTrees: { repository: string }[] }[] = [];
+  const beforeRead = vi.fn(async () => undefined);
   const database = {
     select: (projection: Record<string, unknown>) => {
       const chain = {
         from: () => chain,
         innerJoin: () => chain,
         where: () => ("contextTrees" in projection ? Promise.resolve(configs) : chain),
-        limit: async () =>
-          "scheduledOrigin" in projection ? (message ? [message] : []) : delivery ? [{ id: source.deliveryId }] : [],
+        limit: async () => {
+          await beforeRead();
+          return "scheduledOrigin" in projection
+            ? message
+              ? [message]
+              : []
+            : delivery
+              ? [{ id: source.deliveryId }]
+              : [];
+        },
       };
       return chain;
     },
   } as unknown as DatabaseClient;
-  const getOverview = vi.fn(async () => ({ connection }));
+  const getOverview = vi.fn(async () => ({
+    connection:
+      connection.status === "active" && Date.parse(connection.accessExpiresAt ?? "") > Date.now() ? connection : null,
+  }));
   const resolveRepository = vi.fn(async () => ({
     installationId: "100",
     repositoryId: "200",
@@ -75,10 +89,12 @@ function fixture() {
   const input = () => ({ accountId: ACCOUNT, agentId: AGENT, sessionId: SESSION, source: execution.source });
   return {
     policy,
+    beforeRead,
     input,
     connection,
     execution,
     resolveRepository,
+    getOverview,
     setDelivery: (value: boolean) => {
       delivery = value;
     },
@@ -92,6 +108,19 @@ function fixture() {
 }
 const target = { fullName: "acme/explicit", access: "read" as const };
 describe("GitHub user-task authority", () => {
+  it.each(["github_connector_disabled", "github_connector_unsupported"] as const)(
+    "denies %s without reporting a retryable owner failure",
+    async (code) => {
+      const f = fixture();
+      f.getOverview.mockRejectedValue(new AgentGitHubAuthorizationError(code));
+      expect(await f.policy.admit(f.input())).toBeUndefined();
+    },
+  );
+  it("preserves infrastructure failures instead of misclassifying them as missing authorization", async () => {
+    const f = fixture();
+    f.getOverview.mockRejectedValue(new Error("database unavailable"));
+    await expect(f.policy.admit(f.input())).rejects.toThrow("database unavailable");
+  });
   it("admits an accepted human task without discovering or recording any repositories", async () => {
     const f = fixture();
     expect(await f.policy.admit(f.input())).toEqual({
@@ -161,3 +190,34 @@ describe("GitHub user-task authority", () => {
     await expect(f.policy.admit({ ...f.input(), signal: abort.signal })).rejects.toThrow();
   });
 });
+
+it.each([false, true])(
+  "cancels after provenance SQL before another authority query (recursive: %s)",
+  async (recursive) => {
+    const f = fixture(),
+      abort = new AbortController(),
+      entered = deferred(),
+      resume = deferred();
+    if (recursive) {
+      const root = f.execution.source;
+      f.execution.source = { kind: "session-message", messageId: randomUUID() };
+      f.setMessage({
+        scheduledOrigin: null,
+        sourceSessionId: SESSION,
+        userTaskSource: { sessionId: SESSION, source: root },
+      });
+    }
+    f.beforeRead.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+    });
+    const operation = f.policy.admit({ ...f.input(), signal: abort.signal });
+    const result = expect(operation).rejects.toThrow();
+    await entered.promise;
+    abort.abort();
+    resume.resolve();
+    await result;
+    expect(f.beforeRead).toHaveBeenCalledTimes(1);
+    expect(f.getOverview).not.toHaveBeenCalled();
+  },
+);

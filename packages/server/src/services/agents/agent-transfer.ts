@@ -19,9 +19,12 @@ export type AgentTransferRejection =
   | "same_account"
   | "name_conflict"
   | "sessions_blocked"
-  | "im_binding_keep_unsupported";
+  | "im_binding_keep_unsupported"
+  | "configuration_immutable";
 
 const REJECTION_MESSAGES: Record<AgentTransferRejection, string> = {
+  configuration_immutable:
+    "An Agent with a Computer or messaging identity cannot be transferred. Create a new Agent instead.",
   agent_not_found: "The Agent does not exist or is deleted",
   agent_not_suspended: "An Agent must be suspended before it can be transferred",
   target_account_not_found: "The target Account does not exist",

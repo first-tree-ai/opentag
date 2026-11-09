@@ -4,9 +4,11 @@ import {
   formatSessionCommandError,
   formatSessionCommandResult,
   formatSessionList,
+  formatSessionStopResult,
   runSessionCreate,
   runSessionList,
   runSessionSend,
+  runSessionStop,
   SessionCommandRequestError,
 } from "../../core/session/index.js";
 
@@ -17,7 +19,7 @@ interface OutputOptions {
 export function registerSessionCommand(program: Command): void {
   const session = program
     .command("session")
-    .description("Create, message, and list internal Sessions using the implicit managed source Session");
+    .description("Create, message, stop, and list internal Sessions using the implicit managed source Session");
 
   session
     .command("create")
@@ -27,7 +29,11 @@ export function registerSessionCommand(program: Command): void {
     .option("--message-id <uuid>", "idempotency key for an explicit retry")
     .option("--model <model>", "override the internal Session model")
     .option("--reasoning-effort <effort>", "override the internal Session reasoning effort")
-    .option("--max-duration-ms <milliseconds>", "override the maximum Run duration", parsePositiveInteger)
+    .option(
+      "--max-duration-ms <milliseconds>",
+      "maximum Run duration (default: the larger of 2 hours and the Agent budget)",
+      parsePositiveInteger,
+    )
     .option("--json", "print JSON")
     .action(async (options) => runCommand(() => runSessionCreate(options), options));
 
@@ -42,9 +48,31 @@ export function registerSessionCommand(program: Command): void {
     .action(async (targetSessionId, options) => runCommand(() => runSessionSend(targetSessionId, options), options));
 
   session
+    .command("stop")
+    .description(
+      "Stop an internal Session this Session created, directly or through its children, and all Sessions below it: for good, without their cooperation",
+    )
+    .argument("<target-session-id>", "internal Session ID")
+    .option("--json", "print JSON")
+    .action(async (targetSessionId, options) => {
+      try {
+        const result = await runSessionStop(targetSessionId);
+        process.stdout.write(`${options.json ? JSON.stringify(result) : formatSessionStopResult(result)}\n`);
+        if (result.status !== "stopped") process.exitCode = 1;
+      } catch (error) {
+        const commandError = toCommandError(error, "request");
+        process.exitCode = presentCommand(
+          { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+          { json: options.json === true },
+        );
+      }
+    });
+
+  session
     .command("list")
     .description("List internal Sessions created by the implicit managed source Session")
     .option("--recursive", "include all descendant internal Sessions")
+    .option("--include-stopped", "also list stopped Sessions, with when they stopped")
     .option("--limit <count>", "page size (maximum 100)", parsePositiveInteger)
     .option("--cursor <cursor>", "opaque cursor returned by the previous page")
     .option("--since <timestamp>", "include Sessions active since this ISO-8601 timestamp")

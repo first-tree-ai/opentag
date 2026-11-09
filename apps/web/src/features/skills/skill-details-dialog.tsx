@@ -7,6 +7,7 @@ import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, buttonClassName, Dialog, Empty, Icon, Loader, Select } from "../../ui/design-system.js";
 import { focusSkillHeading, SkillReaderMarkdown } from "./skill-reader-markdown.js";
 import { type SkillFileNode, skillFileTree, splitSkillFrontmatter } from "./skill-reader-model.js";
+import { skillSummary } from "./skill-summary.js";
 import { formatArchiveBytes } from "./skills-page-model.js";
 import { useSkillFile } from "./skills-queries.js";
 import "./skill-reader.css";
@@ -108,7 +109,7 @@ function SkillReader({ skill, onUnavailable }: { skill: Skill; onUnavailable: ()
           file.data.preview.content &&
           skill.description ? (
             <p className="skill-reader-summary ui-text text-kumo-subtle" data-text-size="sm">
-              <span className="font-semibold">{m.skills_details_description()}</span> {skill.description}
+              <span className="font-semibold">{m.skills_details_description()}</span> {skillSummary(skill)}
             </p>
           ) : null}
           {file.isPending ? (

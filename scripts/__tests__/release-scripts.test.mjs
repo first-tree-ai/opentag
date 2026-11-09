@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { classifyRegistryLookup } from "../check-npm-version.mjs";
+import {
+  classifyRegistryLookup,
+  NPM_PUBLISH_WAIT_DEADLINE_MS,
+  NPM_PUBLISH_WAIT_INTERVAL_MS,
+  parseCheckNpmArguments,
+  verifyPublishedCoordinate,
+} from "../check-npm-version.mjs";
 import { assertCurrentStagingRevision } from "../check-staging-revision.mjs";
 import { prepareCliRelease } from "../prepare-cli-release.mjs";
 import {
@@ -257,9 +263,150 @@ test("classifies npm registry lookups without treating errors as absence", () =>
     /expected "abc"/,
   );
   assert.throws(
+    () =>
+      classifyRegistryLookup({
+        status: 0,
+        stdout: '{"version":"0.0.2-staging.1.1","gitHead":"abc"}',
+        stderr: "",
+        expectedGitHead: "abc",
+        expectedVersion: "0.0.2-staging.1.2",
+      }),
+    /published version is "0\.0\.2-staging\.1\.1", expected "0\.0\.2-staging\.1\.2"/,
+  );
+  assert.throws(
+    () =>
+      classifyRegistryLookup({
+        status: 0,
+        stdout: '{"gitHead":"abc"}',
+        stderr: "",
+        expectedGitHead: "abc",
+        expectedVersion: "0.0.2-staging.1.2",
+      }),
+    /published version is "missing", expected "0\.0\.2-staging\.1\.2"/,
+  );
+  assert.throws(
     () => classifyRegistryLookup({ status: 1, stdout: "", stderr: "ECONNRESET", expectedGitHead: "abc" }),
     /registry lookup failed/,
   );
+});
+
+test("parses check-npm-version arguments including --require-published", () => {
+  assert.deepEqual(
+    parseCheckNpmArguments(["--package", "open-tag-staging", "--version", "0.0.2-staging.1.1", "--git-head", "abc"]),
+    { packageName: "open-tag-staging", version: "0.0.2-staging.1.1", gitHead: "abc", requirePublished: false },
+  );
+  assert.deepEqual(
+    parseCheckNpmArguments([
+      "--package",
+      "open-tag-staging",
+      "--version",
+      "0.0.2-staging.1.1",
+      "--git-head",
+      "abc",
+      "--require-published",
+    ]),
+    { packageName: "open-tag-staging", version: "0.0.2-staging.1.1", gitHead: "abc", requirePublished: true },
+  );
+  assert.throws(() => parseCheckNpmArguments(["--package", "open-tag-staging"]), /required/);
+  assert.throws(() => parseCheckNpmArguments(["--package", "--require-published"]), /invalid argument sequence/);
+});
+
+test("verifyPublishedCoordinate waits for async npm visibility and fails closed on persistent E404 or mismatches", async () => {
+  assert.equal(NPM_PUBLISH_WAIT_DEADLINE_MS, 30 * 60 * 1000);
+  assert.equal(NPM_PUBLISH_WAIT_INTERVAL_MS, 15_000);
+
+  const immediateCalls = [];
+  const immediateSleep = [];
+  await verifyPublishedCoordinate({
+    packageName: "open-tag-staging",
+    version: "0.0.2-staging.51.1",
+    expectedGitHead: "abc",
+    npmView(args) {
+      immediateCalls.push(args);
+      return { status: 0, stdout: '{"version":"0.0.2-staging.51.1","gitHead":"abc"}', stderr: "" };
+    },
+    async sleep(ms) {
+      immediateSleep.push(ms);
+    },
+  });
+  assert.deepEqual(immediateCalls, [["open-tag-staging@0.0.2-staging.51.1", "--json"]]);
+  assert.deepEqual(immediateSleep, []);
+
+  // Transient E404 while npm finishes async publication is retried until visible.
+  let clock = 1_000;
+  const retrySleeps = [];
+  let attempts = 0;
+  await verifyPublishedCoordinate({
+    packageName: "open-tag-staging",
+    version: "0.0.2-staging.51.1",
+    expectedGitHead: "abc",
+    deadlineMs: 60_000,
+    intervalMs: 15_000,
+    now: () => clock,
+    npmView() {
+      attempts += 1;
+      if (attempts < 3) {
+        return { status: 1, stdout: "", stderr: "npm error code E404" };
+      }
+      return { status: 0, stdout: '{"version":"0.0.2-staging.51.1","gitHead":"abc"}', stderr: "" };
+    },
+    async sleep(ms) {
+      retrySleeps.push(ms);
+      clock += ms;
+    },
+  });
+  assert.equal(attempts, 3);
+  assert.deepEqual(retrySleeps, [15_000, 15_000]);
+
+  // Persistent E404 fails closed once the deadline expires.
+  let expiredClock = 0;
+  const expiredSleeps = [];
+  await assert.rejects(
+    verifyPublishedCoordinate({
+      packageName: "open-tag-staging",
+      version: "0.0.2-staging.51.1",
+      expectedGitHead: "abc",
+      deadlineMs: 25_000,
+      intervalMs: 15_000,
+      now: () => expiredClock,
+      npmView: () => ({ status: 1, stdout: "", stderr: "npm error code E404" }),
+      async sleep(ms) {
+        expiredSleeps.push(ms);
+        expiredClock += ms;
+      },
+    }),
+    /npm coordinate open-tag-staging@0\.0\.2-staging\.51\.1 is still absent \(E404\) after waiting 25000ms/,
+  );
+  assert.deepEqual(expiredSleeps, [15_000, 10_000]);
+
+  // gitHead mismatch, version mismatch, and non-E404 registry errors fail immediately without sleeping.
+  for (const [response, expectedPattern] of [
+    [{ status: 0, stdout: '{"version":"0.0.2-staging.51.1","gitHead":"other"}', stderr: "" }, /expected "abc"/],
+    [
+      { status: 0, stdout: '{"version":"0.0.2-staging.50.1","gitHead":"abc"}', stderr: "" },
+      /published version is "0\.0\.2-staging\.50\.1", expected "0\.0\.2-staging\.51\.1"/,
+    ],
+    [
+      { status: 0, stdout: '{"gitHead":"abc"}', stderr: "" },
+      /published version is "missing", expected "0\.0\.2-staging\.51\.1"/,
+    ],
+    [{ status: 1, stdout: "", stderr: "ECONNRESET" }, /registry lookup failed/],
+  ]) {
+    let slept = false;
+    await assert.rejects(
+      verifyPublishedCoordinate({
+        packageName: "open-tag-staging",
+        version: "0.0.2-staging.51.1",
+        expectedGitHead: "abc",
+        npmView: () => response,
+        async sleep() {
+          slept = true;
+        },
+      }),
+      expectedPattern,
+    );
+    assert.equal(slept, false);
+  }
 });
 
 test("generates complete notices for bundled CLI dependencies", async () => {

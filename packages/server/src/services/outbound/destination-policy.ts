@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isBlockedAddress, isIpLiteral, isLoopbackHostname } from "@opentag/shared";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 
 /**
  * The address-resolution half of the outbound rules.
@@ -50,6 +51,13 @@ function familyOf(address: string): number {
   return address.includes(":") ? 6 : 4;
 }
 
+export type ClassifyOutboundDestinationResolver = (hostname: string) => Promise<string[]>;
+
+export interface ClassifyOutboundDestinationOptions {
+  resolveAddresses?: ClassifyOutboundDestinationResolver;
+  logger?: ServiceLogger;
+}
+
 /**
  * Refuse a hostname that resolves to a private address.
  *
@@ -64,8 +72,17 @@ function familyOf(address: string): number {
  */
 export async function classifyOutboundDestination(
   url: URL,
-  resolveAddresses: (hostname: string) => Promise<string[]> = resolveAllAddresses,
+  resolverOrOptions?: ClassifyOutboundDestinationResolver | ClassifyOutboundDestinationOptions,
+  options?: { logger?: ServiceLogger },
 ): Promise<OutboundDestinationVerdict> {
+  const resolveAddresses =
+    typeof resolverOrOptions === "function"
+      ? resolverOrOptions
+      : (resolverOrOptions?.resolveAddresses ?? resolveAllAddresses);
+  const logger =
+    typeof resolverOrOptions === "object" && resolverOrOptions !== null
+      ? (resolverOrOptions.logger ?? options?.logger)
+      : options?.logger;
   const bare = url.hostname.replace(/^\[|\]$/g, "");
   // A literal was already judged by the URL rules, and a loopback literal only got here because the
   // deployment opted into loopback.
@@ -85,7 +102,21 @@ export async function classifyOutboundDestination(
   const [first] = addresses;
   if (first === undefined) return { ok: false, failure: { kind: "unreachable", host: bare } };
   for (const address of addresses) {
-    if (isBlockedAddress(address)) return { ok: false, failure: { kind: "blocked", host: bare } };
+    if (isBlockedAddress(address)) {
+      logger?.warn(
+        {
+          module: "outbound-security",
+          operation: "security.destination_blocked",
+          outcome: "blocked",
+          code: "DESTINATION_BLOCKED",
+          errorCode: "DESTINATION_BLOCKED",
+          host: bare,
+          blockedAddress: address,
+        },
+        "Outbound destination blocked by security policy",
+      );
+      return { ok: false, failure: { kind: "blocked", host: bare } };
+    }
   }
   return { ok: true, pin: { address: first, family: familyOf(first) } };
 }

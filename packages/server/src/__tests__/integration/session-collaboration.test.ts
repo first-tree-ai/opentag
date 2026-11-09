@@ -6,10 +6,11 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
@@ -22,10 +23,22 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { stopEndedInternalSessions } from "../../runtime/agent-session-stopper.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
-import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import {
+  type InternalSessionStopTarget,
+  SessionCliProofService,
+  SessionCollaborationService,
+  type SessionCollaborationServiceOptions,
+  SessionService,
+} from "../../services/sessions/index.js";
+import type { RunOutcomeNoticeInput } from "../../services/sessions/session-collaboration-service.js";
+import {
+  runOutcomeNoticeMessageId,
+  sessionStoppedNoticeMessageId,
+} from "../../services/sessions/session-run-outcome-notice.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -53,6 +66,115 @@ beforeEach(async () => {
 });
 
 describe("Session collaboration authority", () => {
+  it("persists one notice before answering retry, then records acceptance outside the reporting frame", async () => {
+    const fixture = await createFixture();
+    const gate = deferred<void>();
+    const stack = await createCollaborationFixture(fixture, { beforeReconcileResult: () => gate.promise });
+    const input = outcomeNoticeInput(fixture, stack);
+    const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+    const notice = async () =>
+      (await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId)))[0];
+    try {
+      await expect(stack.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+      expect(await notice()).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+      await Promise.all(Array.from({ length: 8 }, () => stack.service.notifyRunOutcomeInBackground(input)));
+      expect(await notice()).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+      expect(stack.frames).not.toContain("message");
+      gate.resolve();
+      await expect.poll(notice).toMatchObject({ lastOutcome: "accepted", attemptCount: 1 });
+      await expect.poll(() => stack.service.notifyRunOutcomeInBackground(input)).toBe("notified");
+      expect(stack.frames).toEqual(["ready", "message"]);
+      expect(await fixture.database.select().from(sessionMessages)).toHaveLength(2);
+    } finally {
+      gate.resolve();
+      await stack.service.close();
+      await fixture.sql.end();
+    }
+  });
+
+  it("replays an unfinished notice after Server shutdown and a reporting connection replacement", async () => {
+    const fixture = await createFixture();
+    const gate = deferred<void>();
+    const stack = await createCollaborationFixture(fixture, {
+      assemble: async () => {
+        await gate.promise;
+        return runtimeSnapshot(fixture.agentId);
+      },
+    });
+    const input = outcomeNoticeInput(fixture, stack);
+    let restarted: SessionCollaborationService | undefined;
+    try {
+      await expect(stack.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+      const closing = stack.service.close();
+      gate.resolve();
+      await closing;
+      expect(stack.frames).toEqual([]);
+      fixture.connectionInstanceId = randomUUID();
+      await fixture.database
+        .update(computers)
+        .set({ currentInstanceId: fixture.connectionInstanceId })
+        .where(eq(computers.id, fixture.computerId));
+      const next = await createCollaborationFixture(fixture);
+      restarted = next.service;
+      const current = { ...input, source: { ...input.source, connectionInstanceId: fixture.connectionInstanceId } };
+      await expect(restarted.notifyRunOutcomeInBackground(current)).resolves.toBe("retry");
+      await expect.poll(() => restarted?.notifyRunOutcomeInBackground(current)).toBe("notified");
+      const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+      expect(
+        await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId)),
+      ).toMatchObject([{ lastOutcome: "accepted", attemptCount: 2 }]);
+      expect(next.frames).toEqual(["ready", "message"]);
+    } finally {
+      gate.resolve();
+      await stack.service.close();
+      await restarted?.close();
+      await fixture.sql.end();
+    }
+  });
+
+  it.each(["authorization", "outcome"] as const)(
+    "reconciles a committed %s whose database response was lost",
+    async (stage) => {
+      const fixture = await createFixture();
+      const stack = await createCollaborationFixture(fixture);
+      const input = outcomeNoticeInput(fixture, stack);
+      const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+      const notice = async () =>
+        (await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId)))[0];
+      const method = stage === "authorization" ? "authorizeAndRecordMessage" : "recordMessageOutcome";
+      if (method === "authorizeAndRecordMessage") {
+        const original = fixture.sessions.authorizeAndRecordMessage.bind(fixture.sessions);
+        vi.spyOn(fixture.sessions, method).mockImplementationOnce(async (request) => {
+          await original(request);
+          throw new Error("COMMIT response lost");
+        });
+      } else {
+        const original = fixture.sessions.recordMessageOutcome.bind(fixture.sessions);
+        vi.spyOn(fixture.sessions, method).mockImplementationOnce(async (request) => {
+          await original(request);
+          throw new Error("COMMIT response lost");
+        });
+      }
+      try {
+        await expect(stack.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        if (stage === "authorization") {
+          expect(stack.frames).toEqual([]);
+          expect(await notice()).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+          await expect(stack.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        }
+        await expect.poll(notice).toMatchObject({ lastOutcome: "accepted" });
+        await expect.poll(() => stack.service.notifyRunOutcomeInBackground(input)).toBe("notified");
+        expect(stack.frames).toEqual(["ready", "message"]);
+        expect(
+          await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId)),
+        ).toHaveLength(1);
+      } finally {
+        await stack.service.close();
+        await fixture.sql.end();
+      }
+    },
+  );
+
   it("creates the internal Session, placement, and initial durable fact atomically and idempotently", async () => {
     const fixture = await createFixture();
     try {
@@ -232,10 +354,11 @@ describe("Session collaboration authority", () => {
         select descendant_session_id
         from session_descendants
         where ancestor_session_id = ${root.session.id}::uuid
+          and descendant_active
         order by last_message_created_at desc, last_message_id desc, descendant_session_id desc
         limit 11
       `;
-      expect(JSON.stringify(plan)).toContain("session_descendants_ancestor_activity_idx");
+      expect(JSON.stringify(plan)).toContain("session_descendants_ancestor_activity_active_idx");
 
       const ancestorCopyPlan = await fixture.sql`
         explain (format json)
@@ -319,6 +442,347 @@ describe("Session collaboration authority", () => {
     } finally {
       await fixture.sql.end();
     }
+  });
+
+  describe("stopping an internal Session", () => {
+    /** The root stops; `child` was created by the root and `grandchild` by the child. */
+    async function stopFixture(fixture: Awaited<ReturnType<typeof createFixture>>) {
+      const stopEnded = vi.fn(
+        async (targets: InternalSessionStopTarget[]) =>
+          new Map(targets.map(({ sessionId }) => [sessionId, "stopped" as const])),
+      );
+      const collaboration = await createCollaborationFixture(fixture, { stopEnded });
+      const child = collaboration.targetSessionId;
+      const [placement] = await fixture.database
+        .select()
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, child));
+      if (!placement) throw new Error("Child placement fixture was not created");
+      const grandchild = await fixture.sessions.createInternalSessionWithMessage({
+        creatorSessionId: child,
+        creatorInstallationId: fixture.installationId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
+        creatorComputerId: fixture.computerId,
+        creatorPlacementGeneration: placement.generation,
+        messageId: randomUUID(),
+        initialMessage: "nested task",
+      });
+      return { ...collaboration, child, grandchild: grandchild.session.id, stopEnded, childPlacement: placement };
+    }
+
+    it("ends the Session and its descendants for good, with no notice for any of them, and repeats harmlessly", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await expect(service.stop({ targetSessionId: child }, source)).resolves.toEqual({
+          status: "stopped",
+          sessionId: child,
+          execution: "stopped",
+          alreadyStopped: false,
+          stoppedDescendantCount: 1,
+        });
+        const told = stopEnded.mock.calls[0]?.[0] ?? [];
+        expect(told.map(({ sessionId }) => sessionId).sort()).toEqual([child, grandchild].sort());
+        expect(told.find(({ sessionId }) => sessionId === grandchild)).toMatchObject({
+          computerKind: "local",
+          creatorSessionId: child,
+        });
+        const rows = await fixture.database
+          .select()
+          .from(sessions)
+          .where(inArray(sessions.id, [child, grandchild]));
+        expect(rows.map(({ endedAt }) => endedAt).every((at) => at instanceof Date)).toBe(true);
+        const active = await fixture.sessions.listInternalSessions(source.sessionId, { recursive: true, limit: 10 });
+        expect(active.items).toEqual([]);
+        const all = await fixture.sessions.listInternalSessions(source.sessionId, {
+          recursive: true,
+          limit: 10,
+          includeStopped: true,
+        });
+        expect(all.items.map((item) => item.sessionId).sort()).toEqual([child, grandchild].sort());
+        expect(all.items.every((item) => item.stoppedAt)).toBe(true);
+        // One notice at most for a tree, and here the caller is the creator: none at all.
+        const notices = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(inArray(sessionMessages.id, [child, grandchild].map(sessionStoppedNoticeMessageId)));
+        expect(notices).toEqual([]);
+
+        await expect(
+          service.send({ messageId: randomUUID(), targetSessionId: grandchild, message: "come back" }, source),
+        ).resolves.toMatchObject({ status: "rejected", code: "target_unavailable" });
+        await expect(service.stop({ targetSessionId: child }, source)).resolves.toMatchObject({
+          status: "stopped",
+          alreadyStopped: true,
+          stoppedDescendantCount: 0,
+        });
+        expect(stopEnded.mock.calls[1]?.[0]).toHaveLength(2);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("does not stop a child because its parent's Run ended, even without completing", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, child, grandchild, stopEnded, childPlacement } = await stopFixture(fixture);
+        const [message] = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.targetSessionId, child));
+        if (!message) throw new Error("Child message fixture was not created");
+        await service.notifyRunOutcome({
+          childSessionId: child,
+          messageId: message.id,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+          source: {
+            computerId: fixture.computerId,
+            connectionInstanceId: fixture.connectionInstanceId,
+            placementGeneration: childPlacement.generation,
+          },
+        });
+        const rows = await fixture.database
+          .select()
+          .from(sessions)
+          .where(inArray(sessions.id, [child, grandchild]));
+        expect(rows.map(({ endedAt }) => endedAt)).toEqual([null, null]);
+        expect(stopEnded).not.toHaveBeenCalled();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("tells only the target's creator, once, when an ancestor stops a tree below that creator", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, childPlacement } = await stopFixture(fixture);
+        const greatGrandchild = await fixture.sessions.createInternalSessionWithMessage({
+          creatorSessionId: grandchild,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.connectionInstanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: childPlacement.generation,
+          messageId: randomUUID(),
+          initialMessage: "deeper task",
+        });
+        await expect(service.stop({ targetSessionId: grandchild }, source)).resolves.toMatchObject({
+          status: "stopped",
+          stoppedDescendantCount: 1,
+        });
+        const header = SESSION_RUN_OUTCOME_NOTICE_HEADER;
+        const notices = (await fixture.database.select().from(sessionMessages)).filter(({ content }) =>
+          content.startsWith(header),
+        );
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({
+          id: sessionStoppedNoticeMessageId(grandchild),
+          sourceSessionId: source.sessionId,
+          targetSessionId: child,
+        });
+        expect(notices[0]?.content).toContain("The 1 descendant Session(s) below it were stopped with it.");
+        expect(greatGrandchild.session.id).not.toBe(child);
+        // Repeating cannot add a notice, or conflict with the first: its text does not depend on what is left.
+        await service.stop({ targetSessionId: grandchild }, source);
+        const again = (await fixture.database.select().from(sessionMessages)).filter(({ content }) =>
+          content.startsWith(header),
+        );
+        expect(again).toHaveLength(1);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("takes away the stopped Session's own authority", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, childPlacement } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: child }, source);
+        await expect(
+          service.send(
+            { messageId: randomUUID(), targetSessionId: source.sessionId, message: "still here" },
+            { ...source, sessionId: child, sessionKind: "internal", placementGeneration: childPlacement.generation },
+          ),
+        ).resolves.toMatchObject({ status: "rejected", code: "source_unavailable" });
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("tells the creator when an ancestor above it stopped its child", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, frames } = await stopFixture(fixture);
+        const before = frames.length;
+        await expect(service.stop({ targetSessionId: grandchild }, source)).resolves.toMatchObject({
+          status: "stopped",
+          stoppedDescendantCount: 0,
+        });
+        const [notice] = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.id, sessionStoppedNoticeMessageId(grandchild)));
+        expect(notice).toMatchObject({ sourceSessionId: source.sessionId, targetSessionId: child });
+        expect(notice?.content).toContain(SESSION_RUN_OUTCOME_NOTICE_HEADER);
+        expect(notice?.content).toContain("cannot receive messages");
+        expect(frames.slice(before)).toContain("message");
+        // A repeated stop converges on the same notice.
+        await service.stop({ targetSessionId: grandchild }, source);
+        const notices = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.targetSessionId, child));
+        expect(notices.filter(({ id }) => id === notice?.id)).toHaveLength(1);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("refuses anyone outside the creation chain above the target", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, childPlacement, stopEnded } = await stopFixture(fixture);
+        const asChild = {
+          ...source,
+          sessionId: child,
+          sessionKind: "internal" as const,
+          placementGeneration: childPlacement.generation,
+        };
+        for (const [targetSessionId, actor] of [
+          [child, asChild], // itself
+          [source.sessionId, asChild], // its parent
+          [source.sessionId, source], // a visible Session
+          [randomUUID(), source], // nothing at all
+        ] as const) {
+          await expect(service.stop({ targetSessionId }, actor)).resolves.toEqual({
+            status: "rejected",
+            sessionId: targetSessionId,
+            code: "not_ancestor",
+          });
+        }
+        const sibling = await fixture.sessions.createInternalSessionWithMessage({
+          creatorSessionId: source.sessionId,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.connectionInstanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: source.placementGeneration,
+          messageId: randomUUID(),
+          initialMessage: "sibling task",
+        });
+        await expect(service.stop({ targetSessionId: sibling.session.id }, asChild)).resolves.toMatchObject({
+          status: "rejected",
+          code: "not_ancestor",
+        });
+        expect(stopEnded).not.toHaveBeenCalled();
+        const live = await fixture.database.select().from(sessions).where(eq(sessions.id, grandchild));
+        expect(live[0]?.endedAt).toBeNull();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("sends the stop reconcile under the ended-Session authority and reports how far it reached", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: grandchild }, source);
+        const target = stopEnded.mock.calls[0]?.[0][0];
+        if (!target) throw new Error("Stop target was not captured");
+        const statuses: SessionReconcileResult["status"][] = ["stopped", "busy"];
+        const requests: SessionReconcileRequest[] = [];
+        const revokeProof = vi.fn(async () => undefined);
+        const dependencies = {
+          currentInstanceId: () => fixture.connectionInstanceId as string | undefined,
+          revokeProof,
+          requestReconcile: async (
+            _computerId: string,
+            _instanceId: string,
+            request: SessionReconcileRequest,
+            _onDispatched?: () => void,
+            admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+          ) =>
+            withAdmission(admission, async (dispatched) => {
+              requests.push(request);
+              dispatched();
+              return {
+                type: "session:reconcile:result" as const,
+                requestId: request.requestId,
+                sessionId: request.sessionId,
+                placementGeneration: request.placementGeneration,
+                status: statuses.shift() ?? "stopped",
+              };
+            }),
+        };
+        await expect(stopEndedInternalSessions(fixture.database, [target], dependencies)).resolves.toEqual(
+          new Map([[grandchild, "stopped"]]),
+        );
+        expect(requests[0]).toMatchObject({
+          desired: "stopped",
+          sessionKind: "internal",
+          creatorSessionId: child,
+          sessionId: grandchild,
+        });
+        expect(revokeProof).toHaveBeenCalledWith(grandchild);
+        await expect(stopEndedInternalSessions(fixture.database, [target], dependencies)).resolves.toEqual(
+          new Map([[grandchild, "not_interrupted"]]),
+        );
+        expect(revokeProof).toHaveBeenCalledOnce();
+        await expect(
+          stopEndedInternalSessions(fixture.database, [target], {
+            ...dependencies,
+            currentInstanceId: () => undefined,
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "pending"]]));
+        // A live Session never passes the ended-Session authority.
+        requests.length = 0;
+        await expect(
+          stopEndedInternalSessions(fixture.database, [{ ...target, sessionId: child }], dependencies),
+        ).resolves.toEqual(new Map([[child, "pending"]]));
+        expect(requests).toEqual([]);
+        // Cloud goes through the Runner owner, and only a sent cancellation counts as requested.
+        const cancelSessionMessages = vi.fn(async () => [{ messageId: randomUUID(), status: "requested" as const }]);
+        const cloudTarget = { ...target, computerKind: "cloud" as const };
+        await expect(
+          stopEndedInternalSessions(fixture.database, [cloudTarget], {
+            ...dependencies,
+            cloudSession: { cancelSessionMessages },
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "requested"]]));
+        expect(cancelSessionMessages).toHaveBeenCalledWith(grandchild);
+        cancelSessionMessages.mockResolvedValueOnce([
+          { messageId: randomUUID(), status: "no_connection" as "requested" },
+        ]);
+        await expect(
+          stopEndedInternalSessions(fixture.database, [cloudTarget], {
+            ...dependencies,
+            cloudSession: { cancelSessionMessages },
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "pending"]]));
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("repeats recent stops when the Computer registers, and only those", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: grandchild }, source);
+        await service.stop({ targetSessionId: child }, source);
+        stopEnded.mockClear();
+        await fixture.database
+          .update(sessions)
+          .set({ endedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) })
+          .where(eq(sessions.id, child));
+        await service.redeliverStops(fixture.computerId);
+        expect(stopEnded.mock.calls[0]?.[0].map(({ sessionId }) => sessionId)).toEqual([grandchild]);
+        stopEnded.mockClear();
+        await service.redeliverStops(randomUUID());
+        expect(stopEnded).not.toHaveBeenCalled();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
   });
 
   it("rejects stale, ended, and cross-scope requests before recording a business message", async () => {
@@ -643,34 +1107,38 @@ describe("Session collaboration authority", () => {
     }
   });
 
-  it("admits ready before suspension but fences the later SessionMessage frame", async () => {
-    const fixture = await createFixture();
-    try {
-      const reconcileDispatched = deferred<void>();
-      const continueReconcile = deferred<void>();
-      const collaboration = await createCollaborationFixture(fixture, {
-        onReconcileDispatched: () => reconcileDispatched.resolve(),
-        beforeReconcileResult: () => continueReconcile.promise,
-      });
-      const sending = collaboration.service.send(
-        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race suspension" },
-        collaboration.source,
-      );
-      await reconcileDispatched.promise;
+  it.each([false, true])(
+    "fences the later SessionMessage frame after suspension (combined request: %s)",
+    async (inlineMessages) => {
+      const fixture = await createFixture();
+      try {
+        const reconcileDispatched = deferred<void>();
+        const continueReconcile = deferred<void>();
+        const collaboration = await createCollaborationFixture(fixture, {
+          inlineMessages,
+          onReconcileDispatched: () => reconcileDispatched.resolve(),
+          beforeReconcileResult: () => continueReconcile.promise,
+        });
+        const sending = collaboration.service.send(
+          { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race suspension" },
+          collaboration.source,
+        );
+        await reconcileDispatched.promise;
 
-      await new AgentService(fixture.database, {
-        stopSessions: async () => {
-          collaboration.frames.push("stopped");
-        },
-      }).suspendById(fixture.userId, fixture.agentId);
-      continueReconcile.resolve();
+        await new AgentService(fixture.database, {
+          stopSessions: async () => {
+            collaboration.frames.push("stopped");
+          },
+        }).suspendById(fixture.userId, fixture.agentId);
+        continueReconcile.resolve();
 
-      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
-      expect(collaboration.frames).toEqual(["ready", "stopped"]);
-    } finally {
-      await fixture.sql.end();
-    }
-  });
+        await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+        expect(collaboration.frames).toEqual([inlineMessages ? "ready+message" : "ready", "stopped"]);
+      } finally {
+        await fixture.sql.end();
+      }
+    },
+  );
 
   it("does not deliver to an ended target when IM binding disable commits between frames", async () => {
     const fixture = await createFixture();
@@ -705,33 +1173,48 @@ describe("Session collaboration authority", () => {
     }
   });
 
-  it("does not dispatch ready after the source placement generation advances", async () => {
-    const fixture = await createFixture();
-    try {
-      const assemblyStarted = deferred<void>();
-      const continueAssembly = deferred<void>();
-      const collaboration = await createCollaborationFixture(fixture, {
-        assemble: async () => {
-          assemblyStarted.resolve();
-          await continueAssembly.promise;
-          return runtimeSnapshot(fixture.agentId);
-        },
-      });
-      const sending = collaboration.service.send(
-        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "stale source placement" },
-        collaboration.source,
-      );
-      await assemblyStarted.promise;
+  it.each([
+    { inlineMessages: false, placement: "source" },
+    { inlineMessages: true, placement: "source" },
+    { inlineMessages: true, placement: "target" },
+  ])(
+    "fences a dispatch after $placement placement advances (combined request: $inlineMessages)",
+    async ({ inlineMessages, placement }) => {
+      const fixture = await createFixture();
+      try {
+        const assemblyStarted = deferred<void>();
+        const continueAssembly = deferred<void>();
+        const collaboration = await createCollaborationFixture(fixture, {
+          inlineMessages,
+          assemble: async () => {
+            assemblyStarted.resolve();
+            await continueAssembly.promise;
+            return runtimeSnapshot(fixture.agentId);
+          },
+        });
+        const sending = collaboration.service.send(
+          {
+            messageId: randomUUID(),
+            targetSessionId: collaboration.targetSessionId,
+            message: "stale source placement",
+          },
+          collaboration.source,
+        );
+        await assemblyStarted.promise;
 
-      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.computerId);
-      continueAssembly.resolve();
+        await fixture.sessions.movePlacement(
+          placement === "source" ? collaboration.source.sessionId : collaboration.targetSessionId,
+          fixture.computerId,
+        );
+        continueAssembly.resolve();
 
-      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
-      expect(collaboration.frames).toEqual([]);
-    } finally {
-      await fixture.sql.end();
-    }
-  });
+        await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
+        expect(collaboration.frames).toEqual([]);
+      } finally {
+        await fixture.sql.end();
+      }
+    },
+  );
 
   it("does not dispatch ready after the source connection is replaced", async () => {
     const fixture = await createFixture();
@@ -890,11 +1373,13 @@ function runtimeSnapshot(agentId: string) {
 }
 
 interface CollaborationRuntimeOptions {
+  inlineMessages?: boolean;
   assemble?: () => Promise<ReturnType<typeof runtimeSnapshot>>;
   beforeDeliveryAdmission?: () => Promise<void>;
   beforeReconcileResult?: () => Promise<void>;
   onDeliveryRequested?: () => void;
   onReconcileDispatched?: () => void;
+  stopEnded?: SessionCollaborationServiceOptions["stopEnded"];
 }
 
 async function createCollaborationFixture(
@@ -925,7 +1410,7 @@ async function createCollaborationFixture(
       admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     ): Promise<SessionReconcileResult> =>
       withAdmission(admission, async (admissionDispatched) => {
-        frames.push("ready");
+        frames.push(request.sessionMessage ? "ready+message" : "ready");
         admissionDispatched();
         onDispatched?.();
         options.onReconcileDispatched?.();
@@ -936,6 +1421,7 @@ async function createCollaborationFixture(
           sessionId: request.sessionId,
           placementGeneration: request.placementGeneration,
           status: "ready",
+          ...(request.sessionMessage ? { sessionMessage: "deferred" as const } : {}),
         };
       }),
     requestSessionMessageDelivery: async (
@@ -968,13 +1454,16 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
-        capabilityVersion: () => 2,
+        capabilityVersion: (_computer, _instance, capability) =>
+          capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },
       sessions: fixture.sessions,
+      ...(options.stopEnded ? { stopEnded: options.stopEnded } : {}),
     }),
     source: {
+      proofId: crypto.randomUUID(),
       agentId: fixture.agentId,
       computerId: fixture.computerId,
       connectionInstanceId: instanceId,
@@ -984,6 +1473,24 @@ async function createCollaborationFixture(
       sessionKind: source.session.kind,
     },
     targetSessionId: target.session.id,
+    taskMessageId: target.message.id,
+  };
+}
+
+function outcomeNoticeInput(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  stack: Awaited<ReturnType<typeof createCollaborationFixture>>,
+): RunOutcomeNoticeInput {
+  return {
+    childSessionId: stack.targetSessionId,
+    messageId: stack.taskMessageId,
+    outcome: "timed_out",
+    reason: "turn_timeout",
+    source: {
+      computerId: fixture.computerId,
+      connectionInstanceId: fixture.connectionInstanceId,
+      placementGeneration: 1,
+    },
   };
 }
 

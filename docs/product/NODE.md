@@ -9,6 +9,17 @@ Product decisions define what people see and do: how they work with Agents in
 IM, what the Account owner can inspect, and what the hosted Cloud offering
 provides.
 
+## Positioning
+
+openTag is a team tool. A team's admin sets up a Workspace bound to the team's
+Feishu or Slack organization, and the Workspace is managed by admins rather than
+by each member. People work with Agents in Feishu or Slack; the Web is the admin
+console for configuring Agents and judging whether they are healthy. Agent
+creation stays a guided Web flow rather than moving into chat configuration.
+Why: the people who set Agents up are team admins managing several Agents for
+everyone, and moving creation into chat would be a larger change than current
+use justifies.
+
 ## Pages
 
 - **[Agent collaboration model](agent-collaboration.md)** — Agent identity,

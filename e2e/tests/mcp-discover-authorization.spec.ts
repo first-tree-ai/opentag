@@ -135,7 +135,7 @@ test("mobile keeps a long connector card's height stable while preparing authori
   const agentId = await createAgent(page, "Discover mobile");
   const fixture = await mcpFixture(page);
   fixture.holdOAuth();
-  const { dialog } = await openDiscover(page, agentId, "Communication");
+  const { dialog } = await openDiscover(page, agentId, "Communication & Meetings");
   const card = dialog.getByRole("listitem").filter({ has: page.getByText("Google Calendar", { exact: true }) });
   await card.scrollIntoViewIfNeeded();
   const height = (await card.boundingBox())?.height;
@@ -162,7 +162,7 @@ test("Discover failure offers Authorize in the original action area and reuses t
   const height = (await card.boundingBox())?.height;
   if (!height) throw new Error("Missing card geometry");
   await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
-  await expect(card.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(card.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
   await expect(card.getByRole("button", { name: "Authorize: Airtable", exact: true })).toBeEnabled();
   await expect(dialog).not.toContainText("Private upstream detail");
   await expectHeight(card, height);

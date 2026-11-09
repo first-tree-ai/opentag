@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Icon, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { skillSummary } from "./skill-summary.js";
 import { skillErrorMessage } from "./skills-page-model.js";
 import { useUpdateSkill } from "./skills-queries.js";
 
@@ -53,7 +54,7 @@ export function SkillRow({
           </Button>
         </Text>
         <p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm">
-          {skill.description}
+          {skillSummary(skill)}
         </p>
         <Icon name="chevron-right" className="skill-row-chevron text-kumo-subtle" />
       </div>
@@ -62,7 +63,9 @@ export function SkillRow({
           className="skill-row-toggle"
           aria-label={m.skills_toggle_label({ name: skill.name })}
           checked={skill.enabled}
-          disabled={update.isPending}
+          // Not disabled while the write is pending: disabling the focused switch would drop keyboard
+          // focus to the page. `toggle` already ignores input until the write settles.
+          aria-busy={update.isPending || undefined}
           onCheckedChange={(next) => void toggle(next)}
           transitioning={update.isPending}
         />

@@ -1,5 +1,9 @@
 # actionlint 1.7.12 predates GitHub Actions' supported `concurrency.queue` key.
 paths:
+  .github/workflows/ownership-gate.yml:
+    ignore:
+      # The concurrency regression test validates this queue's exact configuration.
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
   .github/workflows/publish-npm-package.yml:
     ignore:
       # Ignore only actionlint's unknown-key diagnostic for this one supported key.

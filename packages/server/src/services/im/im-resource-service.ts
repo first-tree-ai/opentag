@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -14,12 +15,14 @@ import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
 import { ImBindingServiceError } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
+import { AvatarCache } from "./avatar-cache.js";
 import { getAvatarTransport } from "./avatar-destination.js";
 import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 const ALLOWED_AVATAR_MEDIA_TYPES = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
+const MISSING_AVATAR_STATUSES = new Set([403, 404, 410]);
 
 export interface AuthorizedImResource extends ReadableResource {
   kind: "image" | "file" | "audio" | "video";
@@ -33,6 +36,7 @@ export class ImResourceService {
   readonly #database: DatabaseClient;
   readonly #resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
   readonly #policy: ExternalCallPolicy;
+  readonly #avatars = new AvatarCache();
 
   constructor(
     database: DatabaseClient,
@@ -48,7 +52,11 @@ export class ImResourceService {
 
   async openAvatar(callerUserId: string, agentId: string): Promise<AuthorizedAgentAvatar> {
     const [binding] = await this.#database
-      .select({ providerUrl: imBindings.botAvatarUrl })
+      .select({
+        bindingId: imBindings.id,
+        generation: imBindings.credentialGeneration,
+        providerUrl: imBindings.botAvatarUrl,
+      })
       .from(agents)
       .innerJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
@@ -57,6 +65,15 @@ export class ImResourceService {
       throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found");
     }
 
+    const cacheKey = createHash("sha256")
+      .update(JSON.stringify([callerUserId, agentId, binding.bindingId, binding.generation, binding.providerUrl]))
+      .digest("hex");
+    const cached = this.#avatars.get(cacheKey);
+    if (cached) {
+      return { stream: Readable.from(cached.body), mediaType: cached.mediaType, sizeBytes: cached.body.byteLength };
+    }
+
+    const upstreamHost = safeUpstreamHost(binding.providerUrl);
     let response: Response;
     try {
       response = await this.#policy.fetch(
@@ -76,8 +93,15 @@ export class ImResourceService {
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
-        { cause: error },
+        { cause: wrapAvatarUpstreamError(upstreamHost, agentId, error) },
       );
+    }
+
+    if (MISSING_AVATAR_STATUSES.has(response.status)) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found", "deterministic", {
+        cause: new Error(`Avatar upstream (${upstreamHost}) answered ${response.status} for agent ${agentId}`),
+      });
     }
 
     if (!response.ok || !response.body) {
@@ -87,7 +111,7 @@ export class ImResourceService {
         503,
         "The Agent avatar is temporarily unavailable",
         "transient",
-        { cause: new Error(`Avatar upstream answered ${response.status}`) },
+        { cause: new Error(`Avatar upstream (${upstreamHost}) answered ${response.status} for agent ${agentId}`) },
       );
     }
 
@@ -102,7 +126,8 @@ export class ImResourceService {
       );
     }
 
-    const body = await readAvatarBody(response.body);
+    const body = await readAvatarBody(response.body, upstreamHost, agentId);
+    if (body.byteLength > 0) this.#avatars.set(cacheKey, { body, mediaType });
 
     return {
       stream: Readable.from(body),
@@ -218,6 +243,35 @@ export class ImResourceService {
   }
 }
 
+function safeUpstreamHost(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname || "invalid-url";
+  } catch {
+    return "invalid-url";
+  }
+}
+
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  const head = code && !error.message.includes(code) ? `${code}: ${error.message}` : error.message;
+  if (error.cause instanceof Error) {
+    const causeCode = "code" in error.cause && typeof error.cause.code === "string" ? error.cause.code : undefined;
+    const causeText =
+      causeCode && !error.cause.message.includes(causeCode)
+        ? `${causeCode}: ${error.cause.message}`
+        : error.cause.message;
+    return `${head} (${causeText})`;
+  }
+  return head;
+}
+
+function wrapAvatarUpstreamError(upstreamHost: string, agentId: string, error: unknown): Error {
+  return new Error(`Avatar upstream (${upstreamHost}) request failed for agent ${agentId}: ${describeError(error)}`, {
+    cause: error,
+  });
+}
+
 function imageMediaType(value: string | null): string | undefined {
   const mediaType = value?.split(";", 1)[0]?.trim().toLowerCase();
   return mediaType && ALLOWED_AVATAR_MEDIA_TYPES.has(mediaType) ? mediaType : undefined;
@@ -231,7 +285,11 @@ async function discardResponseBody(response: Response): Promise<void> {
   }
 }
 
-async function readAvatarBody(body: ReadableStream<Uint8Array>): Promise<Buffer> {
+async function readAvatarBody(
+  body: ReadableStream<Uint8Array>,
+  upstreamHost: string,
+  agentId: string,
+): Promise<Buffer> {
   const stream = Readable.fromWeb(body);
   const chunks: Buffer[] = [];
   let totalBytes = 0;
@@ -252,6 +310,7 @@ async function readAvatarBody(body: ReadableStream<Uint8Array>): Promise<Buffer>
       503,
       "The Agent avatar is temporarily unavailable",
       "transient",
+      { cause: wrapAvatarUpstreamError(upstreamHost, agentId, error) },
     );
   }
   return Buffer.concat(chunks, totalBytes);

@@ -5,6 +5,7 @@ import {
   type ChannelName,
   type ComputerConnectCodeMode,
   type ComputerConnectCodeStatus,
+  type ComputerConnectOutcome,
   clientSupportsComputerRuntimeProvider,
   getChannelConfig,
 } from "@opentag/shared";
@@ -22,6 +23,8 @@ const TARGETED_CONNECT_CODE_RANDOM_BYTES = 16;
 const TARGETED_CONNECT_CODE_PAYLOAD_BYTES = 16 + TARGETED_CONNECT_CODE_RANDOM_BYTES;
 const MACHINE_TOKEN_PREFIX = "otmc_";
 const CREDENTIAL_ROTATION_CLOSE_TIMEOUT_MS = 1_000;
+/** Matches the Account inventory's presence window (ComputerService), so "online" means the same thing. */
+const DEFAULT_PRESENCE_TIMEOUT_MS = 90_000;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LEGACY_TARGETED_CONNECT_CODE_PATTERN =
@@ -64,16 +67,31 @@ export interface ComputerConnectExchangeInput {
   platform: "darwin" | "linux" | "win32";
   arch: string;
   clientVersion: string;
+  /** The Client's current credential for this home, when it has one. Invalid tokens are ignored. */
+  machineToken?: string;
+  /** The Client understands `outcome` and a token-less `already_connected` result. */
+  reportOutcome?: true;
 }
 
 export interface ComputerConnectExchangeResult extends ComputerAuthContext {
   agentId?: string;
   machineToken: string;
+  /** Present only when the Client asked for it with `reportOutcome`. */
+  outcome?: Exclude<ComputerConnectOutcome, "already_connected">;
   /**
    * The exact Runtime of the bound target Agent, present only for a marked Client and only when the
    * code itself targeted an Agent. Unmarked legacy Clients keep the old strict response shape.
    */
   runtimeProvider?: AgentRuntimeProvider;
+}
+
+/**
+ * Answered only to a Client that sent `reportOutcome` and proved it holds the online Computer's current
+ * credential: the credential is kept, so no new token exists, and the code is consumed by this Computer
+ * so the issuing page reaches its connected state.
+ */
+export interface ComputerConnectAlreadyConnectedResult extends ComputerAuthContext {
+  outcome: "already_connected";
 }
 
 export interface ComputerAuthVerifier {
@@ -84,6 +102,7 @@ export interface MachineAuthServiceOptions {
   now?: () => Date;
   onCredentialRotated?: (computerId: string, revokedCredentialIds: readonly string[]) => Promise<void> | void;
   logger?: ServiceLogger;
+  presenceTimeoutMs?: number;
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
@@ -97,12 +116,14 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   readonly #now: () => Date;
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
   readonly #logger?: ServiceLogger;
+  readonly #presenceTimeoutMs: number;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onCredentialRotated = options.onCredentialRotated;
     this.#logger = options.logger;
+    this.#presenceTimeoutMs = options.presenceTimeoutMs ?? DEFAULT_PRESENCE_TIMEOUT_MS;
   }
 
   async issueForAccount(
@@ -171,42 +192,51 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     return { connectCodeId: connectCode.id, state: "pending", computerId: null, redeemedAt: null };
   }
 
-  async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
+  async exchangeConnectCode(
+    input: ComputerConnectExchangeInput & { reportOutcome?: undefined },
+  ): Promise<ComputerConnectExchangeResult>;
+  async exchangeConnectCode(
+    input: ComputerConnectExchangeInput,
+  ): Promise<ComputerConnectExchangeResult | ComputerConnectAlreadyConnectedResult>;
+  async exchangeConnectCode(
+    input: ComputerConnectExchangeInput,
+  ): Promise<ComputerConnectExchangeResult | ComputerConnectAlreadyConnectedResult> {
     const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
     const tokenHash = hashSecret(input.code);
-    const { result, revokedCredentialIds } = await this.#database.transaction(async (transaction) => {
-      // All access mutations lock Account before code and Computer. Read the immutable issuer first,
-      // then re-read and validate under the code lock: disconnect/reset cannot race a redemption.
-      const [issuer] = await transaction
-        .select({ accountId: computerConnectCodes.issuedByAccountId })
-        .from(computerConnectCodes)
-        .where(eq(computerConnectCodes.tokenHash, tokenHash))
-        .limit(1);
-      if (!issuer) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-      await lockActiveAccount(transaction, issuer.accountId);
-      const now = this.#now();
-      const [connectCode] = await transaction
-        .select()
-        .from(computerConnectCodes)
-        .where(eq(computerConnectCodes.tokenHash, tokenHash))
-        .limit(1)
-        .for("update");
-      if (!connectCode || connectCode.revokedAt) {
-        throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-      }
-      if (connectCode.consumedAt) {
-        throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
-      }
-      if (connectCode.expiresAt <= now) {
-        throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
-      }
+    const { result, revokedCredentialIds } = await this.#database.transaction<{
+      result:
+        | (ComputerConnectExchangeResult & { outcome: Exclude<ComputerConnectOutcome, "already_connected"> })
+        | ComputerConnectAlreadyConnectedResult;
+      revokedCredentialIds: readonly string[];
+    }>(async (transaction) => {
+      const { connectCode, now } = await lockRedeemableConnectCode(transaction, tokenHash, this.#now);
 
       const targetAgentId = targetAgentIdFromConnectCode(input.code);
       const targetAgent = await lockConnectTargetAgent(transaction, targetAgentId);
-      const computer =
-        connectCode.mode === "repair"
-          ? await this.#repairComputer(transaction, connectCode, input, now)
-          : await this.#createComputer(transaction, connectCode, input, now);
+      let computer: { id: string };
+      let outcome: ComputerConnectOutcome;
+      if (connectCode.mode === "repair") {
+        computer = await this.#repairComputer(transaction, connectCode, input, now);
+        outcome = "repaired";
+      } else {
+        const resolved = await this.#resolveCreateTarget(transaction, connectCode, input, targetAgentId, now);
+        if (resolved.outcome === "already_connected") {
+          // The Client keeps its current credential (no rotation, no reconnect). The code is still
+          // redeemed by this exact Computer, so the issuing page sees its ordinary connected verdict.
+          await consumeConnectCode(transaction, connectCode.id, resolved.computerId, now);
+          return {
+            revokedCredentialIds: [],
+            result: {
+              credentialId: resolved.credentialId,
+              computerId: resolved.computerId,
+              installationId: input.installationId,
+              outcome: "already_connected" as const,
+            },
+          };
+        }
+        computer = { id: resolved.computerId };
+        outcome = resolved.outcome;
+      }
       const boundRuntimeProvider = await bindTargetAgentWhenTargeted(
         transaction,
         {
@@ -219,14 +249,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         targetAgent,
       );
       const credential = await rotateComputerCredentials(transaction, computer.id, connectCode.issuedByAccountId, now);
-      const [consumed] = await transaction
-        .update(computerConnectCodes)
-        .set({ consumedComputerId: computer.id, consumedAt: now })
-        .where(and(eq(computerConnectCodes.id, connectCode.id), isNull(computerConnectCodes.consumedAt)))
-        .returning({ id: computerConnectCodes.id });
-      if (!consumed) {
-        throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
-      }
+      await consumeConnectCode(transaction, connectCode.id, computer.id, now);
       return {
         revokedCredentialIds: credential.revokedCredentialIds,
         result: {
@@ -235,11 +258,91 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           computerId: computer.id,
           installationId: input.installationId,
           machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
+          outcome,
         },
       };
     });
-    await this.#closeRotatedConnection(result.computerId, revokedCredentialIds);
-    return result;
+    if (result.outcome !== "already_connected")
+      await this.#closeRotatedConnection(result.computerId, revokedCredentialIds);
+    if (input.reportOutcome || result.outcome === "already_connected") return result;
+    const { outcome: _outcome, ...legacy } = result;
+    return legacy;
+  }
+
+  /**
+   * Create-mode redemption is idempotent per installation. Under the Account and code locks (and the
+   * target Agent lock, when targeted), the installation's live Computer is locked and classified:
+   * none → create; another Account → refuse without consuming; same Account, online, and the Client
+   * holds its current credential → already connected (untargeted codes only, because a targeted code
+   * must still bind its Agent); otherwise → repair in place under the same Computer ID. A presented
+   * token that belongs to another Account's Computer is refused too, so a code can never move a
+   * machine between Accounts even when its local identity file is gone.
+   */
+  async #resolveCreateTarget(
+    transaction: DatabaseTransaction,
+    connectCode: ConnectCodeRow,
+    input: ComputerConnectExchangeInput,
+    targetAgentId: string | undefined,
+    now: Date,
+  ): Promise<
+    | { outcome: "already_connected"; computerId: string; credentialId: string }
+    | { outcome: "created" | "repaired"; computerId: string }
+  > {
+    const accountId = connectCode.issuedByAccountId;
+    const presented = input.machineToken ? await readPresentedCredential(transaction, input.machineToken) : undefined;
+    if (presented && presented.ownerAccountId !== accountId) throw computerAccountConflict();
+    const [existing] = await transaction
+      .select({
+        id: computers.id,
+        ownerAccountId: computers.ownerAccountId,
+        kind: computers.kind,
+        disconnectedAt: computers.disconnectedAt,
+        currentInstanceId: computers.currentInstanceId,
+        lastSeenAt: computers.lastSeenAt,
+        clientVersion: computers.clientVersion,
+      })
+      .from(computers)
+      .where(and(eq(computers.currentInstallationId, input.installationId), isNull(computers.deletedAt)))
+      .limit(1)
+      .for("update");
+    if (!existing) {
+      return { outcome: "created", computerId: (await this.#createComputer(transaction, connectCode, input, now)).id };
+    }
+    if (existing.ownerAccountId !== accountId) throw computerAccountConflict();
+    if (existing.kind !== "local") {
+      throw new AuthServiceError(
+        "COMPUTER_IDENTITY_CONFLICT",
+        "deterministic",
+        "This installation is already bound to a Computer",
+        409,
+      );
+    }
+    const online =
+      existing.disconnectedAt === null &&
+      existing.currentInstanceId !== null &&
+      (existing.lastSeenAt?.getTime() ?? 0) >= now.getTime() - this.#presenceTimeoutMs;
+    // A running daemon of another version (the command just upgraded the install) is not "nothing to
+    // do": repairing rotates the credential, so the Client restarts the daemon on the new version.
+    const sameVersion = releaseVersion(existing.clientVersion) === releaseVersion(input.clientVersion);
+    if (online && sameVersion && !targetAgentId && input.reportOutcome && presented?.computerId === existing.id) {
+      return { outcome: "already_connected", computerId: existing.id, credentialId: presented.credentialId };
+    }
+    const [repaired] = await transaction
+      .update(computers)
+      .set({
+        disconnectedAt: null,
+        displayName: input.displayName,
+        platform: input.platform,
+        arch: input.arch,
+        clientVersion: input.clientVersion,
+        currentInstanceId: null,
+        connectedAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(computers.id, existing.id), eq(computers.ownerAccountId, accountId), eq(computers.kind, "local")))
+      .returning({ id: computers.id });
+    if (!repaired) throw new Error("The reconnected Computer does not match its issuing Account");
+    return { outcome: "repaired", computerId: repaired.id };
   }
 
   async #closeRotatedConnection(computerId: string, revokedCredentialIds: readonly string[]): Promise<void> {
@@ -409,7 +512,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           clientVersion: input.clientVersion,
           currentInstanceId: null,
           connectedAt: null,
-          lastSeenAt: null,
           updatedAt: now,
         })
         .where(
@@ -615,6 +717,105 @@ async function rotateComputerCredentials(
   return { id: credentialId, secret, revokedCredentialIds: revoked.map((credential) => credential.id) };
 }
 
+/**
+ * All access mutations lock Account before code and Computer. Reads the immutable issuer first, then
+ * re-reads and validates under the code lock: disconnect/reset cannot race a redemption.
+ */
+async function lockRedeemableConnectCode(
+  transaction: DatabaseTransaction,
+  tokenHash: string,
+  clock: () => Date,
+): Promise<{ connectCode: ConnectCodeRow; now: Date }> {
+  const [issuer] = await transaction
+    .select({ accountId: computerConnectCodes.issuedByAccountId })
+    .from(computerConnectCodes)
+    .where(eq(computerConnectCodes.tokenHash, tokenHash))
+    .limit(1);
+  if (!issuer) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  await lockActiveAccount(transaction, issuer.accountId);
+  const now = clock();
+  const [connectCode] = await transaction
+    .select()
+    .from(computerConnectCodes)
+    .where(eq(computerConnectCodes.tokenHash, tokenHash))
+    .limit(1)
+    .for("update");
+  if (!connectCode || connectCode.revokedAt) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  if (connectCode.consumedAt) {
+    throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
+  }
+  if (connectCode.expiresAt <= now) {
+    throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
+  }
+  return { connectCode, now };
+}
+
+/** Conditional, so a code two callers reach at once is redeemed by exactly one of them. */
+async function consumeConnectCode(
+  transaction: DatabaseTransaction,
+  connectCodeId: string,
+  computerId: string,
+  now: Date,
+): Promise<void> {
+  const [consumed] = await transaction
+    .update(computerConnectCodes)
+    .set({ consumedComputerId: computerId, consumedAt: now })
+    .where(and(eq(computerConnectCodes.id, connectCodeId), isNull(computerConnectCodes.consumedAt)))
+    .returning({ id: computerConnectCodes.id });
+  if (!consumed) {
+    throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
+  }
+}
+
+/** The live local Computer a presented machine token currently authenticates, or undefined. */
+async function readPresentedCredential(
+  transaction: DatabaseTransaction,
+  machineToken: string,
+): Promise<{ credentialId: string; computerId: string; ownerAccountId: string } | undefined> {
+  const parsed = MACHINE_TOKEN_PATTERN.exec(machineToken);
+  if (!parsed?.[1] || !parsed[2]) return undefined;
+  const [credential] = await transaction
+    .select({
+      credentialId: computerCredentials.id,
+      computerId: computers.id,
+      ownerAccountId: computers.ownerAccountId,
+      secretHash: computerCredentials.secretHash,
+    })
+    .from(computerCredentials)
+    .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
+    .where(
+      and(
+        eq(computerCredentials.id, parsed[1]),
+        isNull(computerCredentials.revokedAt),
+        eq(computers.kind, "local"),
+        isNull(computers.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!credential || !matchesSecretHash(credential.secretHash, parsed[2])) return undefined;
+  return {
+    credentialId: credential.credentialId,
+    computerId: credential.computerId,
+    ownerAccountId: credential.ownerAccountId,
+  };
+}
+
+/** A Client version without SemVer build metadata (capability markers do not change the release). */
+function releaseVersion(version: string): string {
+  return version.split("+", 1)[0] ?? version;
+}
+
+function computerAccountConflict(): AuthServiceError {
+  return new AuthServiceError(
+    "COMPUTER_ACCOUNT_CONFLICT",
+    "deterministic",
+    "This computer is connected to a different openTag account",
+    409,
+  );
+}
+
 function matchesSecretHash(expectedHash: string, secret: string): boolean {
   const expected = Buffer.from(expectedHash, "hex");
   const actual = Buffer.from(hashSecret(secret), "hex");
@@ -630,10 +831,17 @@ export function buildComputerConnectCommand(options: {
   downloadBaseUrl: string;
   environment: ChannelName;
   publicUrl: string;
+  /**
+   * The Computer a repair code restores. The CLI checks it against this machine's local identity and
+   * stops with a plain message on the wrong machine, so the copied text needs no "make sure you are on
+   * the right computer" instructions around the command.
+   */
+  targetComputerId?: string | null;
 }): string {
   const channel = getChannelConfig(options.environment);
   if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
-  const connectArgs = `connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
+  const target = options.targetComputerId ? ` --computer ${shellArg(options.targetComputerId)}` : "";
+  const connectArgs = `connect --server ${shellArg(options.publicUrl)}${target} -- ${shellArg(options.code)}`;
   const connect = `PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
   if (options.environment === "dev") return `./scripts/dev-install.sh && ${connect}`;
   const downloadBaseUrl = options.downloadBaseUrl.replace(/\/+$/, "");
@@ -646,8 +854,10 @@ export function buildComputerConnectCommand(options: {
    * Some execution tools reject the entire submitted command if it contains explicit deletion.
    * Leave this public installer in the OS temporary directory for independent cleanup, so deletion
    * neither blocks setup at preflight nor becomes a prerequisite of connect or replaces its status.
+   * `--quiet` keeps the installer to one result line (and errors), so connect's own outcome is the
+   * message the reader sees.
    */
-  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" && ${connect}`;
+  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" --quiet && ${connect}`;
 }
 
 function shellArg(value: string): string {

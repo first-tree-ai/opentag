@@ -10,7 +10,11 @@ import {
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
-export type DurableWorkKind = "session-message" | "turn-report";
+/**
+ * `session-message-outcome` holds Run outcome reports for creator notices. It is a Local-only kind:
+ * the reporter always uses a local store, never the Server durable-work API.
+ */
+export type DurableWorkKind = "session-message" | "session-message-outcome" | "turn-report";
 export type DurableWorkStatus = "accepted" | "running" | "succeeded" | "retryable" | "failed" | "dead-letter";
 /** The durable state machine stores taxonomy retry policy, not a second retry enum. */
 export type DurableRetryability = ErrorRetryability;
@@ -143,6 +147,32 @@ export interface DurableWorkRecord<T = unknown> {
   readonly kind: DurableWorkKind;
   readonly lastError?: DurableFailure;
   readonly nextAttemptAt?: number;
+  /**
+   * Session-message only: the creator-notice intent written in the SAME record write as the
+   * terminal `failed`/`dead-letter` transition. `pending` means the Run outcome has not yet been
+   * handed to the durable outcome reporter; hydration re-derives the report from the terminal
+   * record. `published` means the reporter owns it. Absent on records written before the marker
+   * existed, which are deliberately not backfilled.
+   */
+  readonly outcomeReport?: "pending" | "published";
+  /**
+   * Session-message only: the recoverable interruption that the record's one automatic retry
+   * continues from. Its presence makes the next Run start with the continuation notice.
+   */
+  /** Session-message only: actual run time of its own Runs, against the Run's duration limit. */
+  readonly ranMs?: number;
+  /** Session-message only: actual run time of its latest retry; long enough, and `attempts` resets. */
+  readonly retryRanMs?: number;
+  /** Session-message only: the Run this message was steered into, whose retry count it shares. */
+  readonly joinedRunId?: string;
+  /**
+   * Session-message only: this message is durably in the conversation of the provider session named by
+   * this binding, so resuming that session must not inject it again.
+   */
+  readonly steerInConversation?: string;
+  /** Session-message only: the provider conversation this message's own Run last ran in. */
+  readonly runConversation?: string;
+  readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;
   readonly updatedAt: number;
@@ -186,8 +216,11 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       await ensurePrivateDirectory(dirname(this.#directory), this.#directory);
       const path = durabilityPath(this.#directory, record.kind);
       const records = (await readDurableJson(path, (value) => parseRecords(value, record.kind))) ?? [];
-      const next = records.filter((candidate) => candidate.key !== record.key);
-      next.push(record as DurableWorkRecord);
+      // Replace an existing record in place: list order is the durable FIFO that hydration restores.
+      const index = records.findIndex((candidate) => candidate.key === record.key);
+      const next = [...records];
+      if (index === -1) next.push(record as DurableWorkRecord);
+      else next[index] = record as DurableWorkRecord;
       await writeDurableJson(path, next);
     });
   }

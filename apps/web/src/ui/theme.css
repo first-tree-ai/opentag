@@ -29,6 +29,14 @@
   --on-dark: #ffffff;
   --opentag-button-danger-bg: #b42318;
   --opentag-button-danger-hover: #88180f;
+  --connection-accent: #00cbb4;
+  --connection-accent-hover: #00b69f;
+  --connection-surface: #ffffff;
+  --connection-foreground: #25282d;
+  --connection-secondary: #696c73;
+  --connection-border: #dfe2e6;
+  --connection-hover: #f4f5f7;
+  --connection-on-accent: #25282d;
   --ui-font: "Manrope", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
   --ui-control-radius: 0.625rem;
   --ui-surface-radius: 1rem;
@@ -104,4 +112,12 @@
   --on-dark: #ffffff;
   --opentag-button-danger-bg: #b42318;
   --opentag-button-danger-hover: #88180f;
+  --connection-accent: #00cbb4;
+  --connection-accent-hover: #00b69f;
+  --connection-surface: #232127;
+  --connection-foreground: #f7f4fa;
+  --connection-secondary: #d0cbd8;
+  --connection-border: #59545f;
+  --connection-hover: #33303a;
+  --connection-on-accent: #181818;
 }

@@ -15,6 +15,7 @@ import type { UserAuthService } from "../services/auth/index.js";
 import { loadCloudBilling } from "../services/cloud-billing-module.js";
 import { CloudCallStore } from "../services/cloud-call-store.js";
 import { CloudModelService } from "../services/cloud-model-service.js";
+import type { CloudUsageService } from "../services/cloud-usage.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
@@ -45,13 +46,18 @@ function moduleFixture() {
     close: vi.fn<CloudBilling["close"]>().mockResolvedValue(),
   };
 }
-function accountApp(billing?: CloudBilling) {
+function accountApp(billing?: CloudBilling, cloudUsage?: CloudUsageService) {
   const readiness = new BootstrapReadiness();
   for (const stage of ["configuration", "migration", "application", "listen"] as const) readiness.complete(stage);
   const auth = {
     getAuthenticatedUser: vi.fn().mockResolvedValue({ me: { user: { id: ACCOUNT } } }),
   } as unknown as UserAuthService;
-  const app = createApp({ readiness, authService: auth, ...(billing ? { cloudBilling: billing } : {}) });
+  const app = createApp({
+    readiness,
+    authService: auth,
+    ...(billing ? { cloudBilling: billing } : {}),
+    ...(cloudUsage ? { cloudUsage } : {}),
+  });
   cleanups.push(() => app.close());
   return app;
 }
@@ -133,10 +139,21 @@ describe("in-process cloud billing", () => {
   });
   it("derives Account ownership from authentication for balance, usage and checkout", async () => {
     const billing = moduleFixture();
-    const app = accountApp(billing);
+    const usage = {
+      read: vi.fn<CloudUsageService["read"]>().mockResolvedValue({ enabled: false }),
+    } as unknown as CloudUsageService;
+    const app = accountApp(billing, usage);
     expect((await app.inject({ url: CLOUD_BILLING_PATH, headers })).statusCode).toBe(200);
     expect(billing.summary).toHaveBeenCalledWith(ACCOUNT);
     expect((await app.inject({ url: `${CLOUD_USAGE_PATH}?windowDays=7`, headers })).statusCode).toBe(200);
+    expect(usage.read).toHaveBeenCalledWith(ACCOUNT, 7, "UTC");
+    expect(
+      (await app.inject({ url: `${CLOUD_USAGE_PATH}?windowDays=7&timezone=Asia%2FShanghai`, headers })).statusCode,
+    ).toBe(200);
+    expect(usage.read).toHaveBeenCalledWith(ACCOUNT, 7, "Asia/Shanghai");
+    expect(
+      (await app.inject({ url: `${CLOUD_USAGE_PATH}?windowDays=7&timezone=%2B08%3A00`, headers })).statusCode,
+    ).toBe(400);
     expect(billing.beginCall).not.toHaveBeenCalled();
     const input = { amountCents: 1234, idempotencyKey: SESSION };
     expect(

@@ -24,6 +24,7 @@ import {
   classifySlackAuthTest,
   classifySpawnFailure,
   extractBoundedJson,
+  isFeishuRateLimitCode,
   type ProviderCliValidationClassification,
 } from "./validation-classify.js";
 
@@ -295,6 +296,7 @@ export class ProviderCliValidationRunner {
       );
     }
     if (provider === "feishu" && request.expectedIdentity.provider === "feishu") {
+      env.LARKSUITE_CLI_REMOTE_META = "off";
       return this.#runProcess(
         request.targetPath,
         ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson", ...extraArguments],
@@ -359,6 +361,7 @@ export class ProviderCliValidationRunner {
     env.LARKSUITE_CLI_CONFIG_DIR = join(workDir, "config");
     env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
     env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
+    env.LARKSUITE_CLI_REMOTE_META = "off";
     delete env.LARKSUITE_CLI_APP_SECRET;
     delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
     return this.#runProcess(
@@ -623,8 +626,13 @@ export async function exchangeFeishuTenantToken(
     );
     throw new FeishuTokenExchangeError(response.status >= 500 ? "provider_unreachable" : "invalid");
   }
-  if (!response.ok) throw new FeishuTokenExchangeError("credential_rejected");
-  if (!isRecord(body) || body.code !== 0 || typeof body.tenant_access_token !== "string") {
+  return tenantTokenFromBody(body, response.ok);
+}
+
+function tenantTokenFromBody(body: unknown, ok: boolean): string {
+  if (!isRecord(body)) throw new FeishuTokenExchangeError("credential_rejected");
+  if (isFeishuRateLimitCode(body.code)) throw new FeishuTokenExchangeError("rate_limited");
+  if (!ok || body.code !== 0 || typeof body.tenant_access_token !== "string") {
     throw new FeishuTokenExchangeError("credential_rejected");
   }
   return body.tenant_access_token;

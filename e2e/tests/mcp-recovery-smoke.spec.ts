@@ -32,7 +32,7 @@ test("custom OAuth retries a failed tool probe without replacing the completed a
   await expect(consent.getByRole("link", { name: "Finish authorization" })).toBeVisible();
   fixture.completeOAuth(agentId);
   await consent.getByRole("link", { name: "Finish authorization" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("Couldn't load tools");
+  await expect(dialog.getByRole("alert")).toHaveText("Couldn't load tools. Try again.");
   const oauthPath = `/api/v1/agents/${agentId}/mcp-servers/${fixture.servers[0]?.id}/authorization/oauth`;
   expect(fixture.writes.filter((write) => write.path === oauthPath)).toHaveLength(1);
   fixture.failProbe(false);
@@ -64,7 +64,7 @@ test("a failed key-to-OAuth switch remains a preset and reopens with the submitt
   const details = page.getByRole("dialog", { name: "Exa", exact: true });
   await chooseAuthentication(page, "Account sign-in");
   await details.getByRole("button", { name: "Authorize", exact: true }).click();
-  await expect(details.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(details.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
   await expect(details.getByRole("button", { name: "Advanced settings", exact: true })).toHaveCount(0);
   await expect(details.getByRole("radio")).toHaveCount(0);
   await expect(details.getByRole("textbox", { name: "Connector address" })).toHaveCount(0);
@@ -159,10 +159,12 @@ for (const width of [1440, 320]) {
     const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
     await details.getByRole("button", { name: "Authorize", exact: true }).click();
     const feedback = details.getByRole("alert");
-    await expect(feedback).toHaveText("Authorization failed");
+    await expect(feedback).toHaveText("Authorization didn't finish. Try again.");
     const actionRow = details.locator(".mcp-preset-auth-row");
     await expect(actionRow.getByRole("button", { name: "Authorize", exact: true })).toBeVisible();
-    await expect(details.locator(".mcp-preset-feedback").getByRole("alert")).toHaveText("Authorization failed");
+    await expect(details.locator(".mcp-preset-feedback").getByRole("alert")).toHaveText(
+      "Authorization didn't finish. Try again.",
+    );
     const buttonBox = await actionRow.getByRole("button").boundingBox();
     const errorBox = await feedback.boundingBox();
     if (!buttonBox || !errorBox) throw new Error("Missing feedback geometry");
@@ -206,7 +208,7 @@ for (const width of [1440, 768, 390, 320]) {
     const feedback = details.locator(".mcp-preset-feedback");
     const address = details.getByRole("region", { name: "Connector address" });
     const primary = details.locator(".mcp-preset-account-action");
-    await expect(feedback.getByRole("alert")).toHaveText("Couldn't load tools");
+    await expect(feedback.getByRole("alert")).toHaveText("Couldn't load tools. Try again.");
     const anchors = await Promise.all(
       [details.getByRole("heading"), address, primary].map((item) => item.boundingBox()),
     );

@@ -19,6 +19,8 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
+import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
@@ -282,6 +284,49 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
+  it("journals and replays the worker's timeout reason with a failed Session settlement", async () => {
+    const h = harness({
+      worker: async () => ({
+        code: 1,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" },
+        })}\n`,
+      }),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)[0]).toMatchObject({ outcome: "failed", reason: "turn_timeout" });
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      phase: "reported",
+      settlement: { outcome: "failed", reason: "turn_timeout" },
+    });
+    h.sent.length = 0;
+    await h.runner.reconcile();
+    expect(settledOf(h.sent)[0]).toMatchObject({ outcome: "failed", reason: "turn_timeout" });
+    await h.runner.close();
+  });
+
+  it("drops the worker's reason when a checkpoint failure replaces the settlement outcome", async () => {
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new Error("session workspace save failed");
+        },
+        onPersistenceError: () => undefined,
+      },
+      worker: async () => cancelledExec(),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(settledOf(h.sent)[0]?.reason).toBeUndefined();
+    await h.runner.close();
+  });
+
   it("journals, executes, and settles a Session message, forwarding the open proof via stdin", async () => {
     const h = harness({ proof: PROOF });
     await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));
@@ -362,6 +407,91 @@ describe("CloudTurnRunner Session collaboration", () => {
     expect(settledOf(h.sent)[0]?.outcome).toBe("completed");
     await h.runner.close();
   });
+
+  it.each(["delivery", "session-message"] as const)(
+    "holds the mixed-kind FIFO through %s interruption, cleanup and durable terminal evidence",
+    async (firstKind) => {
+      const sessionId = randomUUID();
+      const message = sessionMessage({ targetSessionId: sessionId });
+      const delivery = cloudDeliveryFixture({ sessionId });
+      const firstWorker = deferred<ExecResult>();
+      const reset = deferred<void>();
+      const events: string[] = [];
+      const sent: RunnerClientFrame[] = [];
+      let workers = 0;
+      const open = async (kind: string) => {
+        events.push(`open:${kind}`);
+        return {
+          executionDir: `/run/opentag-execution/${kind}`,
+          close: async () => {
+            events.push(`close:${kind}`);
+          },
+        };
+      };
+      const h = harness({
+        message,
+        worker: async () => (++workers === 1 ? firstWorker.promise : completedExec()),
+        runnerOptions: {
+          openExecution: () => open("delivery"),
+          openSessionExecution: () => open("session-message"),
+          sandboxReset: async () => {
+            events.push("reset:start");
+            await reset.promise;
+            events.push("reset:end");
+          },
+          send: (frame) => {
+            sent.push(frame);
+            if (frame.type === "delivery:report") events.push("terminal:delivery");
+            if (frame.type === "session:message:settled") events.push("terminal:session-message");
+          },
+        },
+      });
+      const enqueueDelivery = async () => {
+        await h.runner.handleDeliveryRun(deliveryRunFrame(delivery));
+        await h.runner.handleVerified(deliveryVerifiedFrame(delivery.requestId));
+      };
+      const enqueueSession = async () => {
+        await h.runner.handleSessionMessageRun(sessionRunFrame(message));
+        await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(message.requestId));
+      };
+      const secondKind = firstKind === "delivery" ? "session-message" : "delivery";
+      try {
+        await (firstKind === "delivery" ? enqueueDelivery() : enqueueSession());
+        await waitFor(() => workers === 1, "first worker");
+        await (firstKind === "delivery" ? enqueueSession() : enqueueDelivery());
+        firstWorker.resolve(cancelledExec());
+        await waitFor(() => events.includes("reset:start"), "interrupted namespace reset");
+        expect(workers).toBe(1);
+        expect(events).toEqual([`open:${firstKind}`, `close:${firstKind}`, "reset:start"]);
+        expect(sent.some((frame) => frame.type === "delivery:report" || frame.type === "session:message:settled")).toBe(
+          false,
+        );
+        reset.resolve();
+        await waitFor(
+          () => events.filter((event) => event.startsWith("terminal:")).length === 2,
+          "both terminal records",
+        );
+        expect(events).toEqual([
+          `open:${firstKind}`,
+          `close:${firstKind}`,
+          "reset:start",
+          "reset:end",
+          `terminal:${firstKind}`,
+          `open:${secondKind}`,
+          `close:${secondKind}`,
+          `terminal:${secondKind}`,
+        ]);
+        expect(
+          sent.find((frame) => frame.type === "delivery:report" && firstKind === "delivery") ??
+            sent.find((frame) => frame.type === "session:message:settled" && firstKind === "session-message"),
+        ).toMatchObject(firstKind === "delivery" ? { report: { outcome: "cancelled" } } : { outcome: "cancelled" });
+      } finally {
+        firstWorker.resolve(cancelledExec());
+        reset.resolve();
+        await h.runner.close();
+      }
+    },
+  );
 
   it("shares the single FIFO slot with IM deliveries and preserves dispatch order", async () => {
     const sessionId = randomUUID();
@@ -1307,6 +1437,53 @@ describe("CloudTurnRunner Session collaboration", () => {
     });
     await h.runner.close();
   });
+
+  it("logs a deterministic Session save failure while retaining the report channel", async () => {
+    const log = vi.fn();
+    const failed = vi.fn();
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new CloudWorkspaceError("save_failed", false, {
+            cause: new WorkspaceArchiveError("unsafe-entry", "private workspace filename"),
+          });
+        },
+        log,
+        onPersistenceError: failed,
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(log).toHaveBeenCalledWith("cloud workspace checkpoint failed: Cloud workspace save_failed (unsafe-entry)");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private workspace filename");
+    expect(failed).not.toHaveBeenCalled();
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it.each([401, 403, 409, 412])(
+    "surfaces a non-retryable Session HTTP %s checkpoint failure through onPersistenceError",
+    async (status) => {
+      const failed = vi.fn();
+      const h = harness({
+        runnerOptions: {
+          checkpoint: async () => {
+            throw new CloudWorkspaceError("save_failed", false, { httpStatus: status });
+          },
+          onPersistenceError: failed,
+        },
+      });
+      await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+      await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+      await h.runner.waitForActive();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.close();
+    },
+  );
 
   it("anchors the worker timeout and the parent exec backstop to one execution deadline", async () => {
     const budgetMs = 60_000;

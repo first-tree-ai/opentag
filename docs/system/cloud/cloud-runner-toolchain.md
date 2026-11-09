@@ -10,7 +10,7 @@ This is the openTag **Cloud Runner image**: a linux/amd64 Linux environment cons
 covers image construction and local toolchain acceptance; E3 documents the native Cloud path.
 
 The Runner is owned by `@opentag/client`. It shares the **CLI release coordinate**
-(`apps/cli`, currently `0.0.5`). Private Client `0.0.0` is not a Runner version.
+in `apps/cli/package.json`. Private Client `0.0.0` is not a Runner version.
 
 Publication follows the CLI workflow; environment activation and rollback are described in
 [Cloud Runner releases](../../operations/cloud-runner-release.md).
@@ -32,7 +32,7 @@ Binaries on `PATH` stay root-owned and the unprivileged `runner` user keeps dedi
 | --- | --- |
 | `node` | `v24.19.0` (`scripts/portable/node-version.txt`), image digest-pinned |
 | `pi` | `@earendil-works/pi-coding-agent@0.84.2` (locked under `scripts/runner/pi/`) |
-| `context-tree` | `@first-tree-ai/context-tree@1.0.1` from `apps/cli` (not a second pin) |
+| `context-tree` | `@first-tree-ai/context-tree@1.1.1` from `apps/cli` (not a second pin) |
 | `git` | inherited from the digest-pinned Node image (`2.39.5`, asserted at build; no apt download) |
 | `gh` | GitHub CLI `2.100.0`, checksum-verified linux/amd64 release |
 | `slack` / `lark-cli` | Reviewed Provider CLI catalog (Slack `4.10.0`, Lark `1.0.92`) with skip-update env/args |
@@ -48,8 +48,25 @@ the six packaged Context Tree skills plus four source-owned tool skills (`git`, 
 and catalog pins. Host skills are never copied. Real acceptance verifies the skills Pi actually
 loaded via a dedicated Pi RPC `get_commands` query (exactly those ten names, never contents).
 
+The image precompiles the pinned `pi-mcp-adapter` TypeScript modules to native ESM, preserving
+lazy imports. The entry is
+`/opt/opentag/pi/node_modules/pi-mcp-adapter/opentag-runtime.mjs`. Cloud workers load that entry
+through Node's native ESM loading in the existing gateway wrapper. A dynamic `import()` inside
+a Pi extension is also transformed by Jiti, even for `.mjs`; the wrapper uses `createRequire`
+for the compiled entry to avoid this runtime transformation. Bare dependencies remain external
+and retain their locked versions. Pi SDK, TUI, and TypeBox imports use relative paths to the
+SDK-owned dependencies, matching Pi's extension aliases even when those packages are absent
+from the install root. Adjacent adapter assets keep their original locations. Pi RPC budgets
+and Local Pi resource discovery are unchanged.
+
 Runtime credentials are supplied separately. The real acceptance harness injects only a filtered
 Pi configuration through `docker cp`; credentials are never Docker build args.
+
+The execution-local loopback adapter generates a fresh ECDSA P-256 certificate and private key
+for each execution. Its subject names, two-day validity, private-key permissions, and explicit
+CLI trust remain execution-scoped. The public certificate reaches the Sandbox; the private key
+stays in the trusted parent's disposable material directory. Certificates and keys are not reused
+across executions or saved with Session files.
 
 ## Build
 

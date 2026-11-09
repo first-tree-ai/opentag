@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -6,7 +7,6 @@ import { promisify } from "node:util";
 import {
   AgentRuntimeOptionsSchema,
   hashTuple,
-  MCP_GATEWAY_SERVER_NAME,
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
 } from "@opentag/shared";
@@ -20,6 +20,18 @@ import {
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
 import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import type { Deferred } from "../../agent-runtime/provider-utils.js";
+import {
+  deferred,
+  isNonNegativeNumber,
+  parseHttpMcpGateway,
+  protocolError,
+  toJsonValue as protocolJsonValue,
+  providerConfiguration,
+  record,
+  requireProtocolString,
+  requireRecord,
+} from "../../agent-runtime/provider-utils.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -32,6 +44,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentQuestionResponse,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
@@ -54,6 +67,7 @@ import {
   assertHostedTools,
   assertJsonValue,
   assertSystemPrompt,
+  runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
 import { prepareCodexPermissionRules } from "../native-permissions.js";
@@ -92,51 +106,11 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
   "--stdio",
   "--disable",
-  "apps",
-  "--disable",
-  "auth_elicitation",
-  "--disable",
-  "browser_use",
-  "--disable",
-  "browser_use_external",
-  "--disable",
-  "browser_use_full_cdp_access",
-  "--disable",
-  "computer_use",
-  "--disable",
-  "goals",
-  "--disable",
-  "hooks",
-  "--disable",
-  "image_generation",
-  "--disable",
-  "in_app_browser",
-  "--disable",
-  "multi_agent",
-  "--disable",
-  "plugins",
-  "--disable",
-  "remote_plugin",
-  "--disable",
   "shell_snapshot",
-  "--disable",
-  "skill_mcp_dependency_install",
-  "-c",
-  "mcp_servers={}",
-  "-c",
-  'web_search="disabled"',
-  "-c",
-  "tools.view_image=true",
-  "-c",
-  "memories.use_memories=false",
-  "-c",
-  "memories.generate_memories=false",
   "-c",
   "allow_login_shell=false",
   "-c",
   'shell_environment_policy.inherit="all"',
-  "-c",
-  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include", OPENTAG_EXECUTION_ID = "include" }',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
@@ -202,15 +176,17 @@ export interface CodexAgentRuntimeFactoryOptions {
   }>;
 }
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (error: Error) => void;
-}
-
 type CodexEnvelope =
   | { readonly type: "notification"; readonly message: CodexAppServerMessage }
   | { readonly type: "request"; readonly request: CodexAppServerRequest };
+
+const CODEX_COMPACTION_STOP_MS = 5_000;
+
+interface CodexCompaction {
+  readonly completed: ReturnType<typeof deferred<ParsedTurn>>;
+  stopping?: boolean;
+  turnId?: string;
+}
 
 interface ParsedTurn {
   readonly error?: string;
@@ -221,6 +197,7 @@ interface ParsedTurn {
 }
 
 export class CodexAgentRuntime extends BaseAgentRuntime {
+  readonly #gatewayServerName = `g${randomBytes(5).toString("hex")}`;
   readonly #client: InteractiveCodexAppServerClient;
   #threadId: string;
   readonly #workspace: AgentRuntimeWorkspace;
@@ -231,6 +208,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #threadStartParams: Readonly<Record<string, unknown>>;
   /** Codex writes a thread's rollout only once a turn starts; until then it cannot be resumed. */
   #threadPersisted: boolean;
+  #compaction?: CodexCompaction;
   readonly #mcpAttachTimeoutMs: number;
   /**
    * Whether the loaded thread may hold MCP state other than "none": a gateway catalogue, or an
@@ -253,7 +231,6 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #buffering = false;
   #buffered: CodexEnvelope[] = [];
-  #context?: AgentProviderRunContext;
   #providerTurnId?: string;
   #turnIdReady?: Deferred<string>;
   #terminal?: Deferred<ParsedTurn>;
@@ -290,7 +267,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     request: AgentPromptRequest,
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
-    this.#context = context;
+    this.providerContext = context;
     this.#providerTurnId = undefined;
     this.#providerFailure = undefined;
     this.#latestUsage = undefined;
@@ -309,7 +286,9 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#preTurnAbort = preTurnAbort;
     try {
       try {
-        await this.#attachRunConfiguration(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
+        const preTurnSignal = AbortSignal.any([context.signal, preTurnAbort.signal]);
+        await this.#attachRunConfiguration(request, context, preTurnSignal);
+        if (request.compactContext && this.#threadPersisted) await this.#compactContext(context, preTurnSignal);
       } catch (error) {
         if (!preTurnAbort.signal.aborted) throw error;
       }
@@ -348,7 +327,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#preTurnAbort = undefined;
       this.#buffering = false;
       this.#buffered = [];
-      this.#context = undefined;
+      this.providerContext = undefined;
       this.#providerTurnId = undefined;
       this.#turnIdReady = undefined;
       this.#terminal = undefined;
@@ -357,7 +336,13 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  /**
+   * `turn/steer` answers after the App Server appended the input to the expected native Turn. The
+   * protocol exposes no per-input start signal, so the acknowledged input counts as possibly started,
+   * and a Run that does not complete reports it `interrupted`. The rollout already holds it by then
+   * (measured on 0.163.0: killed right after the answer, a resumed thread still had it).
+   */
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -370,6 +355,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (requireString(response.turnId, "turn/steer returned no turnId") !== turnId) {
       throw protocolError("turn/steer accepted another turn");
     }
+    return { started: () => true, inConversation: Promise.resolve() };
   }
 
   protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
@@ -393,23 +379,94 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
     const turnId = await this.#activeTurnId();
     /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
-    if (request.expectedRunId !== this.#context?.runId) {
+    if (request.expectedRunId !== this.providerContext?.runId) {
       throw new AgentRuntimeError("run_mismatch", "abort no longer belongs to the active Codex turn");
     }
     await this.#client.interrupt(this.#threadId, turnId);
   }
 
   protected async closeProvider(): Promise<void> {
-    if (this.#context) {
+    if (this.providerContext) {
       const failure = new AgentProviderError("provider_error", "Codex runtime is closing");
       this.#providerFailure ??= failure;
       this.#terminal?.reject(failure);
       this.#turnIdReady?.reject(failure);
+      this.#compaction?.completed.reject(failure);
     }
     this.#unsubscribeRequests();
     this.#unsubscribeNotifications();
     this.#client.setDynamicToolHandler?.(undefined);
     await this.#client.close();
+  }
+
+  /**
+   * `thread/compact/start` answers at once and compacts in a Turn of its own on the same thread;
+   * `turn/start` is refused until that Turn completes. Its notifications are consumed here and never
+   * reach the Run. A failed compaction is a warning: the Run continues on the uncompacted thread.
+   */
+  async #compactContext(context: AgentProviderRunContext, signal: AbortSignal): Promise<void> {
+    const compaction: CodexCompaction = { completed: deferred<ParsedTurn>() };
+    void compaction.completed.promise.catch(() => undefined);
+    this.#compaction = compaction;
+    let failure: string | undefined;
+    try {
+      await this.#client.request("thread/compact/start", { threadId: this.#threadId }, signal);
+      const turn = await settleUnlessAborted(compaction.completed.promise, signal);
+      if (turn.status !== "completed") failure = turn.error ?? `Codex compaction ended as ${turn.status}`;
+    } catch (error) {
+      if (signal.aborted) {
+        await this.#stopCompaction(compaction);
+        throw error;
+      }
+      failure = error instanceof Error ? error.message : "Codex compaction failed";
+    } finally {
+      this.#compaction = undefined;
+    }
+    if (failure) await context.emit({ type: "provider_warning", code: "codex_compaction_failed", message: failure });
+    else logger.info({ runId: context.runId }, "Codex compacted the Session context");
+  }
+
+  /**
+   * An abandoned compaction Turn would refuse the next `turn/start`, and cancelling the request does
+   * not stop one still starting, so this keeps ownership until the Turn ends. If it cannot be stopped
+   * in time, the runtime closes and the next Run gets a new App Server rather than a busy thread.
+   */
+  async #stopCompaction(compaction: CodexCompaction): Promise<void> {
+    compaction.stopping = true;
+    if (compaction.turnId) this.#interruptCompaction(compaction, compaction.turnId);
+    try {
+      await settleUnlessAborted(compaction.completed.promise, AbortSignal.timeout(CODEX_COMPACTION_STOP_MS));
+    } catch (error) {
+      logger.warn({ code: "compaction_stop_failed", error: String(error) }, "Codex compaction did not stop in time");
+      this.closeForProviderFailure();
+    }
+  }
+
+  #interruptCompaction(compaction: CodexCompaction, turnId: string): void {
+    void this.#client.interrupt(this.#threadId, turnId).catch((cause: unknown) => {
+      compaction.completed.reject(
+        new AgentProviderError("provider_error", "Codex compaction was not interrupted", { cause }),
+      );
+    });
+  }
+
+  /** True when the compaction Turn owns the notification, or it describes that Turn ending. */
+  #consumeCompactionNotification(compaction: CodexCompaction, message: CodexAppServerMessage): boolean {
+    const params = record(message.params);
+    if (message.method === "opentag/processError" || message.method === "thread/closed") {
+      compaction.completed.reject(new AgentProviderError("provider_error", "Codex stopped during compaction"));
+      return false;
+    }
+    if (message.method === "turn/started") {
+      compaction.turnId = parseTurn(params?.turn, "turn/started").id;
+      if (compaction.stopping) this.#interruptCompaction(compaction, compaction.turnId);
+      return true;
+    }
+    if (message.method === "turn/completed") {
+      compaction.completed.resolve(parseTurn(params?.turn, "turn/completed"));
+      return true;
+    }
+    return compaction.turnId !== undefined && params?.turnId === compaction.turnId;
   }
 
   /**
@@ -425,8 +482,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    *
    * One deadline covers the whole rebind, attach and restore alike. The attach may use only part of
    * it, so a timed-out attach still leaves the restore time to finish. Losing the gateway never costs
-   * the Agent its turn: an unconfirmed attach leaves the thread with no MCP server rather than with
-   * the run's bearer attached to a catalogue it did not confirm. Only a thread Codex cannot reload at
+   * the Agent its turn: an unconfirmed attach removes the platform entry while retaining native
+   * servers, rather than keeping the run's bearer on an unconfirmed catalogue. Only a thread Codex cannot reload at
    * all within the deadline fails the run, because there is no thread left to start the turn on.
    */
   async #attachRunConfiguration(
@@ -448,7 +505,15 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
     try {
       await this.#rebindThread(
-        { ...codexMcpServersConfig(endpoint, this.#policy.approvals), ...socketConfig },
+        {
+          ...codexMcpServersConfig(
+            this.#gatewayServerName,
+            endpoint,
+            this.#policy.approvals,
+            Math.min(CODEX_MCP_STARTUP_TIMEOUT_SEC, attachBudgetMs / 2000),
+          ),
+          ...socketConfig,
+        },
         context,
         AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
       );
@@ -462,7 +527,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       if (signal.aborted) throw error;
       logger.warn(
         { code: "provider_launch_attach_failed", error: String(error), durationMs: Date.now() - startedAt },
-        "Codex could not attach execution services; retrying required permissions without MCP tools",
+        "Codex could not attach execution services; retrying required permissions without the platform gateway",
       );
     }
     // An unpersisted thread is only ever replaced, so the loaded one kept its previous MCP state.
@@ -471,7 +536,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     // Socket attachment/removal is mandatory. Failure must never run with stale permissions.
-    await this.#rebindThread({ ...codexMcpServersConfig(undefined), ...socketConfig }, context, deadline);
+    await this.#rebindThread(
+      { ...codexMcpServersConfig(this.#gatewayServerName, undefined), ...socketConfig },
+      context,
+      deadline,
+    );
     this.#mcpThreadDirty = false;
   }
 
@@ -489,7 +558,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       await this.#client.request(
         "thread/resume",
         {
-          ...codexThreadPermissions(this.#threadParams, config.permissions ? config : undefined),
+          ...codexThreadPermissions(this.#threadParams, config),
           threadId: this.#threadId,
           excludeTurns: true,
           config,
@@ -514,36 +583,59 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     context: AgentProviderRunContext,
     signal: AbortSignal,
   ): Promise<void> {
-    const response = requireRecord(
-      await this.#client.request(
-        "thread/start",
-        { ...codexThreadPermissions(this.#threadStartParams, config.permissions ? config : undefined), config },
-        signal,
-      ),
-      "thread/start returned an invalid response",
-    );
-    assertCodexSocketProfile(response, config);
-    const thread = requireRecord(response.thread, "thread/start returned no thread");
-    const threadId = requireString(thread.id, "thread/start returned no thread id");
-    const previous = this.#threadId;
-    /* v8 ignore next -- a runtime always has a binding once its factory has opened the thread. */
-    const payload = record(this.binding?.payload) ?? {};
-    const binding: AgentRuntimeBinding = {
-      providerId: CODEX_PROVIDER_ID,
-      schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
-      payload: { ...(payload as Record<string, JsonValue>), threadId },
-    };
-    assertBinding(binding, this.manifest);
-    await context.updateBinding(binding);
-    this.#threadId = threadId;
-    // Unloading the replaced thread is housekeeping, so it stays off the turn's critical path; the
-    // rebind signal still releases it on the deadline or on cancellation.
-    void this.#client.request("thread/unsubscribe", { threadId: previous }, signal).catch((error: unknown) => {
-      logger.debug(
-        { code: "replaced_thread_unsubscribe_failed", error: String(error) },
-        "Codex did not unload a replaced thread",
-      );
+    signal.throwIfAborted();
+    // Local cancellation must not hide a successful native creation and its thread ID.
+    const pending = this.#client.request("thread/start", {
+      ...codexThreadPermissions(this.#threadStartParams, config),
+      config,
     });
+    let adopted = false;
+    try {
+      const response = requireRecord(
+        await runWithAbortSignal(() => pending, signal),
+        "thread/start returned an invalid response",
+      );
+      assertCodexSocketProfile(response, config);
+      const thread = requireRecord(response.thread, "thread/start returned no thread");
+      const threadId = requireString(thread.id, "thread/start returned no thread id");
+      const previous = this.#threadId;
+      /* v8 ignore next -- a runtime always has a binding once its factory has opened the thread. */
+      const payload = record(this.binding?.payload) ?? {};
+      const binding: AgentRuntimeBinding = {
+        providerId: CODEX_PROVIDER_ID,
+        schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
+        payload: { ...(payload as Record<string, JsonValue>), threadId },
+      };
+      assertBinding(binding, this.manifest);
+      await context.updateBinding(binding);
+      this.#threadId = threadId;
+      adopted = true;
+      this.#unsubscribeThread(previous);
+    } finally {
+      if (!adopted) {
+        void pending
+          .then((value) => {
+            const response = requireRecord(value, "thread/start returned an invalid response");
+            const thread = requireRecord(response.thread, "thread/start returned no thread");
+            this.#unsubscribeThread(requireString(thread.id, "thread/start returned no thread id"));
+          })
+          .catch((error: unknown) => {
+            logger.debug({ error: String(error) }, "Codex replacement did not yield a thread to unload");
+          });
+      }
+    }
+  }
+
+  #unsubscribeThread(threadId: string): void {
+    // Cleanup outlives the cancelled Run, while the native transport still bounds every request.
+    void this.#client
+      .request("thread/unsubscribe", { threadId }, AbortSignal.timeout(this.#mcpAttachTimeoutMs))
+      .catch((error: unknown) => {
+        logger.debug(
+          { code: "replaced_thread_unsubscribe_failed", error: String(error) },
+          "Codex did not unload a replaced thread",
+        );
+      });
   }
 
   async #handleHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
@@ -566,7 +658,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #executeHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
-    const context = this.#context;
+    const context = this.providerContext;
     const hostedTools = this.#hostedTools;
     if (!context || !hostedTools || call.namespace !== null || call.threadId !== this.#threadId) {
       return { success: false, text: "OpenTag tool request is not authorized for this run." };
@@ -600,7 +692,13 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #enqueue(envelope: CodexEnvelope): void {
     this.#claimTerminalAtIngress(envelope);
     const next = this.#eventTail.then(async () => {
-      if (!this.#context) return;
+      if (!this.providerContext) return;
+      if (
+        this.#compaction &&
+        envelope.type === "notification" &&
+        this.#consumeCompactionNotification(this.#compaction, envelope.message)
+      )
+        return;
       if (this.#buffering) {
         this.#buffered.push(envelope);
         return;
@@ -623,7 +721,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         : new AgentProviderError("provider_error", "Codex process failed");
     }
     if (typeof method !== "string") throw protocolError("Codex emitted a notification without a method");
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const params = record(message.params);
 
     if (method === "warning" || method === "configWarning") {
@@ -711,7 +809,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #handleItem(method: "item/completed" | "item/started", item: Record<string, unknown>): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const id = requireString(item.id, `${method} item has no id`);
     const type = requireString(item.type, `${method} item has no type`);
     if (type === "agentMessage") {
@@ -750,7 +848,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (this.#activeMessages.has(messageId)) return;
     if (this.#completedMessages.has(messageId)) throw protocolError("Codex reused a completed agent message ID");
     this.#activeMessages.set(messageId, "");
-    await this.#requireContext().emit({ type: "message_started", messageId });
+    await this.requireProviderContext().emit({ type: "message_started", messageId });
   }
 
   async #ensureToolStarted(toolCallId: string, name: string, input: Record<string, unknown>): Promise<void> {
@@ -760,11 +858,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     this.#activeTools.set(toolCallId, name);
-    await this.#requireContext().emit({ type: "tool_started", toolCallId, name, input: toJsonValue(input) });
+    await this.requireProviderContext().emit({ type: "tool_started", toolCallId, name, input: toJsonValue(input) });
   }
 
   async #completeOpenLifecycles(turn: ParsedTurn): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const terminalItems = new Map(
       turn.items.filter((item) => typeof item.id === "string").map((item) => [item.id as string, item] as const),
     );
@@ -794,7 +892,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #handleServerRequest(request: CodexAppServerRequest): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const params = requireRecord(request.params, `${request.method} has invalid params`);
     if (params.threadId !== undefined && params.threadId !== this.#threadId) {
       throw protocolError("Codex server request belongs to another thread");
@@ -894,24 +992,18 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (turnId !== this.#providerTurnId) throw protocolError("Codex turn identity changed during a run");
   }
 
-  #requireContext(): AgentProviderRunContext {
-    /* v8 ignore next -- #enqueue drops envelopes before a Run context exists. */
-    if (!this.#context) throw protocolError("Codex event arrived without an active run");
-    return this.#context;
-  }
-
   #claimTerminalAtIngress(envelope: CodexEnvelope): void {
     if (
       envelope.type !== "notification" ||
       envelope.message.method !== "turn/completed" ||
       this.#buffering ||
-      !this.#context
+      !this.providerContext
     ) {
       return;
     }
     try {
       this.#parseCompletedTurn(record(envelope.message.params));
-      this.#context.claimTerminal();
+      this.providerContext.claimTerminal();
     } catch (error) {
       logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
       // The serial event queue preserves the authoritative fail-closed error path.
@@ -1229,8 +1321,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   ): Promise<CodexAgentRuntime> {
     validateFactoryRequest(request);
     validateConfiguration(request.configuration);
-    if (request.policy.approvals !== "never" && request.policy.allowedCommands !== undefined)
-      await prepareCodexPermissionRules(request.workspace.cwd, request.policy.allowedCommands);
+    if (request.policy.approvals !== "never")
+      await prepareCodexPermissionRules(
+        request.workspace.cwd,
+        request.policy.allowedCommands,
+        request.policy.managedCli,
+      );
     const providerConfiguration = parseProviderConfiguration(request.configuration?.provider);
     const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
     if (binding) assertBinding(binding, this.manifest);
@@ -1332,29 +1428,7 @@ export function codexBindingRequiresHostedToolReplacement(
 }
 
 export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const keys = [
-    "CODEX_HOME",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LOGNAME",
-    "OPENTAG_PROVIDER_ENV_FILE",
-    "OPENTAG_HOME",
-    "OPENTAG_SESSION_PROOF_FILE",
-    "OPENTAG_EXECUTION_ID",
-    "PATH",
-    "PATHEXT",
-    "SHELL",
-    "SystemRoot",
-    "TMPDIR",
-    "USER",
-    "WINDIR",
-  ] as const;
-  const environment: NodeJS.ProcessEnv = {};
-  for (const key of keys) {
-    if (source[key] !== undefined) environment[key] = source[key];
-  }
-  return environment;
+  return { ...source };
 }
 
 function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] | undefined {
@@ -1431,11 +1505,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   }
 }
 
-function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
-  if (!configuration) return;
-  assertConfigurationStrings(configuration);
-  parseProviderConfiguration(configuration.provider);
-}
+const { validate: validateConfiguration, merge: mergeConfiguration } =
+  providerConfiguration(parseProviderConfiguration);
 
 function parseProviderConfiguration(value: JsonValue | undefined): CodexProviderConfiguration {
   if (value === undefined) return {};
@@ -1468,45 +1539,27 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
  * would otherwise present the execution bearer to whatever it names.
  */
 function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint | undefined {
-  if (value === undefined) return undefined;
-  const object = record(value);
-  if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway must be an object");
-  const { url, token } = object;
-  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway requires a url and a token");
-  }
-  let protocol: string;
-  try {
-    protocol = new URL(url).protocol;
-  } catch {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be absolute");
-  }
-  if (protocol !== "https:" && protocol !== "http:") {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be http or https");
-  }
-  return { url, token };
+  return parseHttpMcpGateway(value, "Codex");
 }
 
 /**
- * The thread `config` override naming a run's MCP servers: the gateway alone, or none.
- *
- * It replaces the whole `mcp_servers` table, so the user's own Codex servers stay excluded exactly as
- * the launch arguments exclude them. Gateway tools are pre-approved as a server, matching the Claude
- * Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+ * Override only the private gateway key; native direct and plugin MCP entries remain intact.
  */
 function codexMcpServersConfig(
+  serverName: string,
   endpoint: CodexMcpGatewayEndpoint | undefined,
   approvals: AgentRuntimePolicy["approvals"] = "never",
+  startupTimeoutSec = CODEX_MCP_STARTUP_TIMEOUT_SEC,
 ): Record<string, unknown> {
-  if (!endpoint) return { mcp_servers: {} };
+  if (!endpoint) return {};
   return {
-    mcp_servers: {
-      [MCP_GATEWAY_SERVER_NAME]: {
-        url: endpoint.url,
-        http_headers: { Authorization: `Bearer ${endpoint.token}` },
-        default_tools_approval_mode: approvals === "never" ? "approve" : "writes",
-        startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
-      },
+    [`mcp_servers.${serverName}`]: {
+      url: endpoint.url,
+      http_headers: { Authorization: `Bearer ${endpoint.token}` },
+      default_tools_approval_mode: approvals === "never" ? "approve" : "writes",
+      startup_timeout_sec: startupTimeoutSec,
+      // Confirm this attach before starting a Turn; failure falls back to native-only configuration.
+      required: true,
     },
   };
 }
@@ -1543,29 +1596,6 @@ function hostedToolsHash(definitions: AgentHostedTools["definitions"]): string {
     1,
     [...definitions].sort((left, right) => left.name.localeCompare(right.name)).map(codexDynamicToolDefinition),
   ]);
-}
-
-function mergeConfiguration(
-  base: AgentRunConfiguration | undefined,
-  override: AgentRunConfiguration | undefined,
-): AgentRunConfiguration | undefined {
-  if (!base) {
-    validateConfiguration(override);
-    return override;
-  }
-  if (!override) return base;
-  // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
-  const provider = {
-    ...parseProviderConfiguration(base.provider),
-    ...parseProviderConfiguration(override.provider),
-  } as JsonValue;
-  const merged: AgentRunConfiguration = {
-    ...base,
-    ...override,
-    provider,
-  };
-  validateConfiguration(merged);
-  return merged;
 }
 
 function codexInput(items: readonly { readonly type: "text"; readonly text: string }[]): Array<Record<string, string>> {
@@ -1760,6 +1790,15 @@ function codexQuestionResult(method: string, response: AgentQuestionResponse): u
   return { answers: response.decision === "answer" ? (response.value ?? {}) : {} };
 }
 
+function settleUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    signal.throwIfAborted();
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 function parseTurnResponse(value: unknown, source: string): ParsedTurn {
   const response = requireRecord(value, `${source} returned an invalid response`);
   return parseTurn(response.turn, source);
@@ -1834,49 +1873,11 @@ function wireInteractionId(id: number | string): string {
 }
 
 function toJsonValue(value: unknown): JsonValue {
-  assertJsonValue(value, "Codex event payload");
-  return value as JsonValue;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolveValue!: (value: T) => void;
-  let rejectValue!: (error: Error) => void;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolveValue = resolve;
-    rejectValue = reject;
-  });
-  return { promise, resolve: resolveValue, reject: rejectValue };
-}
-
-function protocolError(message: string): AgentProviderError {
-  return new AgentProviderError("provider_protocol_error", message);
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
-  const result = record(value);
-  if (!result) throw protocolError(message);
-  return result;
+  return protocolJsonValue(value, "Codex event payload");
 }
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
-  if (
-    typeof value !== "string" ||
-    (!allowEmpty && value.length === 0) ||
-    Buffer.byteLength(value, "utf8") > 1024 * 1024
-  ) {
-    throw protocolError(message);
-  }
-  return value;
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return requireProtocolString(value, message, allowEmpty, 1024 * 1024);
 }
 
 function codexRunFailure(error: Error): Error {

@@ -3,7 +3,8 @@ import { type FormEvent, useId, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
-import { Button, Icon, KumoInputControl, Text } from "../ui/design-system.js";
+import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import {
   type AgentDraft,
@@ -57,31 +58,23 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   );
 }
 
+/*
+ * Steps move forward only. Leaving setup is the header's job (the Agent list, or the logo), so the
+ * flow carries no second, step-by-step way back.
+ */
 function StepNav({
-  back,
-  backDisabled = false,
   label = m.onboarding_v2_nav_next(),
   nextDisabled = false,
   onNext,
   submit = false,
 }: {
-  back?: () => void;
-  backDisabled?: boolean;
   label?: string;
   nextDisabled?: boolean;
   onNext?: () => void;
   submit?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
-      <div data-ui="onboarding-v2-nav-back">
-        {back ? (
-          <Button disabled={backDisabled} onClick={back} variant="ghost">
-            <Icon name="arrow-left" />
-            <span>{m.onboarding_v2_nav_back()}</span>
-          </Button>
-        ) : null}
-      </div>
+    <div className="flex items-center justify-end gap-3" data-ui="onboarding-v2-nav">
       <div data-ui="onboarding-v2-nav-next">
         <Button disabled={nextDisabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
@@ -98,7 +91,7 @@ export function CardCopy({
   title,
 }: {
   badge?: string;
-  description: string;
+  description?: string;
   disabled?: boolean;
   title: string;
 }) {
@@ -113,7 +106,7 @@ export function CardCopy({
           <em className="rounded bg-kumo-recessed px-2 py-1 text-xs uppercase text-kumo-subtle">{badge}</em>
         ) : null}
       </span>
-      <span className="text-sm text-kumo-subtle">{description}</span>
+      {description ? <span className="text-sm text-kumo-subtle">{description}</span> : null}
     </span>
   );
 }
@@ -138,7 +131,7 @@ function DestinationCard({
   title,
 }: {
   badge?: string;
-  description: string;
+  description?: string;
   disabled?: boolean;
   icon: "laptop" | "model";
   onChoose: () => void;
@@ -155,10 +148,11 @@ function DestinationCard({
 
 /*
  * Three Cloud cards, one per read state: the unanswered read describes the destination and says it
- * is checking; the failed read says the check failed and offers the retry; only an answered "no"
- * claims the deployment cannot offer Cloud.
+ * is checking; the failed read says the check failed and offers the retry; an answered "no" keeps
+ * the disabled card with its "unavailable" badge alone, because the reason is the deployment's and
+ * the reader can do nothing about it.
  */
-function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; description: string } {
+function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; description?: string } {
   if (cloud.kind === "failed") {
     return {
       badge: m.onboarding_v2_destination_cloud_check_failed_badge(),
@@ -168,7 +162,6 @@ function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; de
   if (cloud.kind === "ready" && !cloud.available) {
     return {
       badge: m.onboarding_v2_destination_cloud_unavailable_badge(),
-      description: m.onboarding_v2_destination_cloud_unavailable_description(),
     };
   }
   return {
@@ -249,7 +242,10 @@ function AgentNameField({
   const nameId = useId();
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
-  const error = showError ? validateAgentName(draft.name) : undefined;
+  const problem = validateAgentName(draft.name);
+  // A name past the limit can't become valid by typing more, so say so while typing. Other
+  // problems wait for blur or Create, so an empty field isn't flagged before anyone types.
+  const error = showError || problem === "too-long" ? problem : undefined;
   const errorText =
     error === "empty"
       ? m.onboarding_v2_agent_name_empty_error()
@@ -319,8 +315,7 @@ function RuntimePicker({
   if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
-      <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-      <p className={HINT}>{m.onboarding_v2_agent_runtime_hint()}</p>
+      <legend className="mb-2 font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
@@ -337,21 +332,18 @@ function RuntimePicker({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }
 
 export function AgentStep({
   draft,
-  onBack,
   onChange,
   onSubmit,
   submitLabel,
   submitting = false,
 }: {
   draft: AgentDraft;
-  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
   submitLabel?: string;
@@ -383,8 +375,6 @@ export function AgentStep({
         />
         <RuntimePicker disabled={submitting} draft={draft} onChange={change} />
         <StepNav
-          back={onBack}
-          backDisabled={submitting}
           label={submitLabel}
           nextDisabled={submitting || (draft.destination !== "cloud" && draft.runtime === undefined)}
           submit
@@ -394,17 +384,82 @@ export function AgentStep({
   );
 }
 
+function doneDescription(name: string, provider?: ImProvider): string {
+  return provider === "slack"
+    ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
+    : provider
+      ? spaceScriptBoundary(
+          m.onboarding_v2_done_description({ mention: name, provider: messagingProviderLabel(provider) }),
+        )
+      : m.onboarding_v2_done_description_any_app({ name });
+}
+
+function deliveryCheckDescription(provider: ImProvider | undefined, fallback: string): string {
+  if (provider === "slack") return m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") });
+  if (provider === "feishu")
+    return m.onboarding_v2_connection_feishu_test({ provider: messagingProviderLabel("feishu") });
+  return fallback;
+}
+
 export function DoneStep({
   action,
   completion,
   name,
   provider,
+  presentation = "default",
 }: {
   action?: { label: string; onClick: () => void };
   completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
   name: string;
   provider?: ImProvider;
+  presentation?: "default" | "settings";
 }) {
+  const description = doneDescription(name, provider);
+  const finishAction = completion ? (
+    <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
+      {completion.state === "ready"
+        ? m.onboarding_v2_done_finish_reboard()
+        : completion.state === "pending"
+          ? m.onboarding_v2_done_finishing()
+          : m.onboarding_v2_done_retry_finish()}
+    </Button>
+  ) : action ? (
+    <Button onClick={action.onClick}>{action.label}</Button>
+  ) : null;
+
+  if (presentation === "settings") {
+    return (
+      <section className="otv2-connection-done" data-ui="onboarding-v2-step-done">
+        <header className={`${HEADER} otv2-messaging-heading`}>
+          <Text as="h1" headingSize="section" variant="heading">
+            {m.onboarding_v2_done_title({ name })}
+          </Text>
+        </header>
+        <div className="otv2-connection-card">
+          <div className="otv2-connection-card__body">
+            <div className="otv2-connection-card__identity">
+              {provider ? (
+                <span className="otv2-connection-card__provider">
+                  <ProviderIcon className="size-6" provider={provider} />
+                  <strong>{messagingProviderLabel(provider)}</strong>
+                </span>
+              ) : (
+                <Icon name="check" aria-hidden="true" />
+              )}
+              <StatusIndicator label={m.im_connected()} tone="success" />
+            </div>
+            <p role="status" className={HINT}>
+              {m.onboarding_v2_connection_ready_checks()}
+            </p>
+            <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>
+          </div>
+          {finishAction ? (
+            <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -417,30 +472,9 @@ export function DoneStep({
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_done_title({ name })}
         </Text>
-        <p className="text-kumo-subtle m-0">
-          {provider === "slack"
-            ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
-            : provider
-              ? spaceScriptBoundary(
-                  m.onboarding_v2_done_description({
-                    mention: name,
-                    provider: messagingProviderLabel(provider),
-                  }),
-                )
-              : m.onboarding_v2_done_description_any_app({ name })}
-        </p>
+        <p className="text-kumo-subtle m-0">{description}</p>
       </header>
-      {completion ? (
-        <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
-          {completion.state === "ready"
-            ? m.onboarding_v2_done_finish_reboard()
-            : completion.state === "pending"
-              ? m.onboarding_v2_done_finishing()
-              : m.onboarding_v2_done_retry_finish()}
-        </Button>
-      ) : action ? (
-        <Button onClick={action.onClick}>{action.label}</Button>
-      ) : null}
+      {finishAction}
     </section>
   );
 }

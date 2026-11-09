@@ -85,13 +85,10 @@ describe("agent setup lab model", () => {
     if (!target) throw new Error("The rebind scenario needs an owned Computer target");
     expect(initial.computerId).not.toBe(target.computerId);
 
-    await rebind.computerAdapter.inventory.bindComputer(LAB_AGENT_ID, target.computerId);
-
-    expect(rebind.inspect().snapshot.computer).toMatchObject({
-      kind: "bound",
-      computerId: target.computerId,
-      displayName: "Review Mac",
-    });
+    await expect(rebind.computerAdapter.inventory.bindComputer(LAB_AGENT_ID, target.computerId)).rejects.toThrow(
+      /cannot be replaced/,
+    );
+    expect(rebind.inspect().snapshot.computer).toEqual(initial);
   });
 
   it("covers waiting, checking, install, and sign-in Runtime states directly", () => {

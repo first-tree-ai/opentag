@@ -15,6 +15,8 @@ interface MountSpec {
   probeState?: "succeeded" | "failed" | "pending";
   tools?: { name: string; description?: string | null; inputSchema?: unknown }[];
   url?: string;
+  extraHeaders?: Record<string, string>;
+  extraHeadersOverride?: Record<string, string> | null;
 }
 
 /**
@@ -24,7 +26,18 @@ interface MountSpec {
 function mount(spec: MountSpec): McpJoinedBinding {
   const id = `server-${spec.name}`;
   return {
-    binding: { agentId: AGENT, mcpServerId: id, enabled: spec.enabled ?? true } as McpJoinedBinding["binding"],
+    agent: { id: AGENT, name: "agent", displayName: "Agent" },
+    localAuthorization: null,
+    credentialAuthorization: null,
+    binding: {
+      agentId: AGENT,
+      mcpServerId: id,
+      enabled: spec.enabled ?? true,
+      urlOverride: null,
+      authHeaderOverride: null,
+      authSchemeOverride: null,
+      extraHeadersOverride: spec.extraHeadersOverride ?? null,
+    } as McpJoinedBinding["binding"],
     server: {
       id,
       name: spec.name,
@@ -32,7 +45,7 @@ function mount(spec: MountSpec): McpJoinedBinding {
       url: spec.url ?? `https://${spec.name}.example.com/mcp`,
       authHeader: "authorization",
       authScheme: "Bearer",
-      extraHeaders: {},
+      extraHeaders: spec.extraHeaders ?? {},
     } as McpJoinedBinding["server"],
     authorization: {
       mcpServerId: id,
@@ -89,6 +102,76 @@ function build(
 }
 
 describe("catalog", () => {
+  it.each([
+    { label: "root", schema: { type: "string", "x-mcp-header": "Owner" } },
+    { label: "items", schema: { properties: { owners: { items: { type: "string", "x-mcp-header": "Owner" } } } } },
+    ...["oneOf", "anyOf", "allOf", "prefixItems"].map((keyword) => ({
+      label: keyword,
+      schema: { [keyword]: [{ properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }] },
+    })),
+    ...["if", "then", "else", "not", "$ref"].map((keyword) => ({
+      label: keyword,
+      schema: { [keyword]: { properties: { owner: { type: "string", "x-mcp-header": "Owner" } } } },
+    })),
+    {
+      label: "referenced definition",
+      schema: {
+        properties: { owner: { $ref: "#/$defs/owner" } },
+        $defs: { owner: { type: "string", "x-mcp-header": "Owner" } },
+      },
+    },
+    { label: "empty name", schema: { properties: { owner: { type: "string", "x-mcp-header": "" } } } },
+    { label: "unsafe name", schema: { properties: { owner: { type: "string", "x-mcp-header": "Owner\r\n" } } } },
+    {
+      label: "duplicate name",
+      schema: {
+        properties: {
+          owner: { type: "string", "x-mcp-header": "Owner" },
+          repo: { type: "string", "x-mcp-header": "owner" },
+        },
+      },
+    },
+    ...["object", "array", "number", "null"].map((type) => ({
+      label: type,
+      schema: { properties: { owner: { type, "x-mcp-header": "Owner" } } },
+    })),
+  ])("withholds an invalid modern tool from stored snapshots and call resolution: $label", async ({ schema }) => {
+    const { service, upstreamCall } = build([
+      mount({ name: "github", tools: [{ name: "valid" }, { name: "invalid", inputSchema: schema }] }),
+    ]);
+    const catalog = await service.catalog(ACCOUNT, AGENT);
+    expect(catalog.tools.map((tool) => tool.name)).toEqual(["github__valid"]);
+    expect(catalog.notes).toEqual([expect.stringContaining('"github__invalid" was excluded')]);
+    await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "github__invalid" })).rejects.toThrow(
+      /No MCP tool named/,
+    );
+    expect(upstreamCall).not.toHaveBeenCalled();
+  });
+
+  it("ignores literal annotation data and schema-map keys with the annotation's name", async () => {
+    const inputSchema = {
+      properties: { "x-mcp-header": { type: "string" }, value: { type: "string", "x-mcp-header": "Value" } },
+      $defs: { "x-mcp-header": { type: "string" } },
+      default: { "x-mcp-header": "literal" },
+      examples: [{ "x-mcp-header": "literal" }],
+      dependentRequired: { "x-mcp-header": ["value"] },
+    };
+    const { service } = build([mount({ name: "example", tools: [{ name: "valid", inputSchema }] })]);
+    expect(await service.catalog(ACCOUNT, AGENT)).toMatchObject({ tools: [{ name: "example__valid" }], notes: [] });
+  });
+
+  it("retains legacy tools whose unused header annotations are invalid", async () => {
+    const row = mount({
+      name: "legacy",
+      tools: [{ name: "tool", inputSchema: { "x-mcp-header": "Owner", type: "string" } }],
+    });
+    if (row.authorization) row.authorization.protocolEra = "legacy";
+    const { service, upstreamCall } = build([row]);
+    expect(await service.catalog(ACCOUNT, AGENT)).toMatchObject({ tools: [{ name: "legacy__tool" }], notes: [] });
+    await service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "legacy__tool" });
+    expect(upstreamCall).toHaveBeenCalledWith(expect.objectContaining({ cachedEra: "legacy" }));
+  });
+
   it("namespaces every upstream tool with its Server name", async () => {
     const { service } = build([
       mount({ name: "linear", tools: [{ name: "create_issue" }] }),
@@ -222,6 +305,26 @@ describe("callTool", () => {
     );
   });
 
+  it("passes the latest authorized tool schema to the upstream caller", async () => {
+    const row = mount({ name: "github", tools: [{ name: "issue_write" }] });
+    const inputSchema = { type: "object", properties: { owner: { type: "string", "x-mcp-header": "owner" } } };
+    const { service, upstreamCall } = build([row], {
+      resolveActiveCredential: (async () => ({
+        ...row,
+        authorization: { ...row.authorization, tools: [{ name: "issue_write", description: null, inputSchema }] },
+      })) as unknown as McpAuthorizationService["resolveActiveCredential"],
+    });
+    await service.callTool({
+      accountId: ACCOUNT,
+      agentId: AGENT,
+      name: "github__issue_write",
+      arguments: { owner: "first-tree-ai" },
+    });
+    expect(upstreamCall).toHaveBeenCalledWith(
+      expect.objectContaining({ inputSchema, params: { name: "issue_write", arguments: { owner: "first-tree-ai" } } }),
+    );
+  });
+
   it("refuses a name no mount produces", async () => {
     const { service } = build([mount({ name: "linear", tools: [{ name: "x" }] })]);
     await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "notion__search" })).rejects.toThrow(
@@ -268,6 +371,77 @@ describe("callTool", () => {
     expect(upstreamCall).toHaveBeenCalledWith(
       expect.objectContaining({ cachedEra: "modern", cachedVersion: "2026-07-28" }),
     );
+  });
+
+  it("enforces X-Lark-MCP-Allowed-Tools six-tool restriction at both catalog discovery and callTool time", async () => {
+    const allowedSix = ["search-user", "fetch-file", "search-doc", "create-doc", "fetch-doc", "update-doc"];
+    const feishuMount = mount({
+      name: "feishu",
+      url: "https://mcp.feishu.cn/mcp",
+      extraHeaders: {
+        "X-Lark-MCP-Allowed-Tools": allowedSix.join(", "),
+      },
+      tools: [
+        ...allowedSix.map((name) => ({ name, description: `Feishu ${name}` })),
+        { name: "delete-doc", description: "Forbidden write tool" },
+        { name: "create-bitable-record", description: "Forbidden bitable write tool" },
+        { name: "send-message", description: "Forbidden IM write tool" },
+      ],
+    });
+    const { service, upstreamCall } = build([feishuMount]);
+
+    const catalog = await service.catalog(ACCOUNT, AGENT);
+    expect(catalog.tools.map((tool) => tool.name)).toEqual(allowedSix.map((name) => `feishu__${name}`));
+    expect(catalog.notes).toEqual([]);
+
+    for (const forbidden of ["feishu__delete-doc", "feishu__create-bitable-record", "feishu__send-message"]) {
+      await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: forbidden })).rejects.toMatchObject({
+        code: "MCP_BINDING_NOT_FOUND",
+      });
+    }
+    expect(upstreamCall).not.toHaveBeenCalled();
+
+    await service.callTool({
+      accountId: ACCOUNT,
+      agentId: AGENT,
+      name: "feishu__fetch-doc",
+      arguments: { doc_id: "doccn123" },
+    });
+    expect(upstreamCall).toHaveBeenCalledTimes(1);
+    expect(upstreamCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://mcp.feishu.cn/mcp",
+        name: "fetch-doc",
+        params: { name: "fetch-doc", arguments: { doc_id: "doccn123" } },
+      }),
+    );
+  });
+
+  it("rejects a forbidden write tool at callTool time when agent binding extraHeadersOverride narrows X-Lark-MCP-Allowed-Tools", async () => {
+    const initialMount = mount({
+      name: "feishu",
+      url: "https://mcp.feishu.cn/mcp",
+      extraHeaders: {
+        "x-lark-mcp-allowed-tools": "fetch-doc,update-doc",
+      },
+      tools: [{ name: "fetch-doc" }, { name: "update-doc" }],
+    });
+    const { service, upstreamCall } = build([initialMount], {
+      resolveActiveCredential: (async () => ({
+        ...initialMount,
+        binding: {
+          ...initialMount.binding,
+          extraHeadersOverride: { "x-lark-mcp-allowed-tools": "fetch-doc" },
+        },
+      })) as unknown as McpAuthorizationService["resolveActiveCredential"],
+    });
+
+    await expect(
+      service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "feishu__update-doc" }),
+    ).rejects.toMatchObject({
+      code: "MCP_BINDING_NOT_FOUND",
+    });
+    expect(upstreamCall).not.toHaveBeenCalled();
   });
 });
 

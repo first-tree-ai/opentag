@@ -56,13 +56,14 @@ on:
   schedule:
     - cron: "17,47 * * * *"
 
-# Serialize per commit. Runs are never cancelled: each one posts its own verdict,
-# and cancelling one mid-flight would leave the required status on whatever the
-# previous run wrote. The sweep is serialized against itself rather than against
-# a pull request.
+# One writer across every trigger and head. Hold the slot from checkout through
+# the last status POST retry, so a throttled sweep cannot overwrite a newer
+# event-driven verdict. Queue pending runs instead of replacing one another;
+# each reads current state after acquiring the slot. See docs/operations/ownership-gate.md.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || 'sweep' }}
+  group: ownership-gate-writer
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

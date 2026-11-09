@@ -1,6 +1,6 @@
 import { type Command, Option } from "commander";
 import {
-  formatAgentSchedule,
+  FULL_SCHEDULE_PRESENTATION,
   formatAgentScheduleList,
   formatAgentSchedulePreview,
   runAgentSelfScheduleCreate,
@@ -41,10 +41,12 @@ function addPromptOptions(command: Command): Command {
 }
 
 export function registerAgentSelfScheduleCommands(self: Command): void {
-  const schedule = self.command("schedule").description("Manage this Agent's schedules for a fixed IM Chat or thread");
+  const schedule = self
+    .command("schedule")
+    .description("Manage this Agent's schedules, each fixed to the Session that created it");
 
   addRuleOptions(
-    addPromptOptions(schedule.command("create").description("Create a schedule for this Session's visible IM target")),
+    addPromptOptions(schedule.command("create").description("Create a schedule that fires back into this Session")),
   )
     .requiredOption("--name <name>", "schedule name")
     .requiredOption("--timezone <iana>", "IANA timezone")
@@ -57,7 +59,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
           }
           return runAgentSelfScheduleCreate({ ...options, name: options.name, timezone: options.timezone });
         },
-        { json: options.json === true, formatValue: formatAgentSchedule, phase: "request" },
+        { json: options.json === true, ...FULL_SCHEDULE_PRESENTATION },
       );
     });
 
@@ -82,8 +84,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
     .action(async (id: string, options: ScheduleOptions) => {
       process.exitCode = await executeCommand(() => runAgentSelfScheduleShow(id), {
         json: options.json === true,
-        formatValue: formatAgentSchedule,
-        phase: "request",
+        ...FULL_SCHEDULE_PRESENTATION,
       });
     });
 
@@ -96,8 +97,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
     .action(async (id: string, options: ScheduleOptions) => {
       process.exitCode = await executeCommand(() => runAgentSelfScheduleUpdate(id, options), {
         json: options.json === true,
-        formatValue: formatAgentSchedule,
-        phase: "request",
+        ...FULL_SCHEDULE_PRESENTATION,
       });
     });
 
@@ -112,8 +112,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
       .action(async (id: string, options: ScheduleOptions) => {
         process.exitCode = await executeCommand(() => action(id), {
           json: options.json === true,
-          formatValue: formatAgentSchedule,
-          phase: "request",
+          ...FULL_SCHEDULE_PRESENTATION,
         });
       });
   }

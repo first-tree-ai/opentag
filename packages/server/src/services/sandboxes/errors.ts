@@ -1,13 +1,9 @@
 import type { ErrorCategory, ErrorCode } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
-export class SandboxServiceError extends Error {
-  constructor(
-    readonly code: ErrorCode,
-    readonly category: ErrorCategory,
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
+export class SandboxServiceError extends DomainServiceError<ErrorCode, ErrorCategory, number> {
+  constructor(code: ErrorCode, category: ErrorCategory, message: string, statusCode: number) {
+    super({ code, category, message, statusCode });
     this.name = "SandboxServiceError";
   }
 }
@@ -61,5 +57,12 @@ export class WorkspaceRestoreRequiredError extends SandboxServiceError {
       409,
     );
     this.name = "WorkspaceRestoreRequiredError";
+  }
+}
+
+export class WorkspaceSaveFailedError extends SandboxServiceError {
+  constructor(message: string) {
+    super("SERVICE_UNAVAILABLE", "transient", message, 503);
+    this.name = "WorkspaceSaveFailedError";
   }
 }

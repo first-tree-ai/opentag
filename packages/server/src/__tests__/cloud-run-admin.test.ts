@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { cloudLatencySessions } from "@opentag/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudRunAdmin } from "../services/cloud-run/cloud-run-admin.js";
 import { CloudRunAdminError } from "../services/cloud-run/errors.js";
 import {
@@ -12,7 +13,7 @@ const CONFIG = {
   project: "opentag-test",
   region: "us-west1",
   serviceAccount: "runner-sa@opentag-test.iam.gserviceaccount.com",
-  image: "us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:" + "a".repeat(64),
+  image: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
   vpc: { network: "opentag-net", subnetwork: "opentag-subnet", executionTag: "opentag-runner" },
   apiTimeoutMs: 5_000,
 };
@@ -72,7 +73,7 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
         image: CONFIG.image,
         sandboxLauncher: true,
         args: ["opentag-runner", "serve"],
-        resources: { limits: { cpu: "1", memory: "1Gi" } },
+        resources: { limits: { cpu: "1", memory: "2Gi" } },
         ports: [{ containerPort: 8080 }],
       },
     ],
@@ -88,11 +89,15 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function admin(fetchImpl: typeof fetch, options: { sleep?: (ms: number) => Promise<void> } = {}) {
+function admin(
+  fetchImpl: typeof fetch,
+  options: { sleep?: (ms: number) => Promise<void>; diagnosticSessionIds?: readonly string[] } = {},
+) {
   return new CloudRunAdmin(CONFIG, {
     fetchImpl,
     tokenProvider: createStaticTokenProvider("unit-access-token"),
     sleep: options.sleep ?? (() => Promise.resolve()),
+    diagnosticSessionIds: options.diagnosticSessionIds,
   });
 }
 
@@ -110,6 +115,218 @@ describe("runner instance identity", () => {
   it("rejects non-positive generations and malformed identities", () => {
     expect(() => runnerInstanceId({ ...IDENTITY, environmentGeneration: 0 })).toThrow(CloudRunAdminError);
     expect(() => runnerInstanceId({ ...IDENTITY, sandboxId: "not-a-uuid" })).toThrow(CloudRunAdminError);
+  });
+});
+
+describe.each(["instance", "operation"] as const)("CloudRunAdmin %s read retries", (resource) => {
+  afterEach(() => vi.useRealTimers());
+  const name =
+    resource === "instance" ? instanceBody().name : "projects/opentag-test/locations/us-west1/operations/op-1";
+  const success = resource === "instance" ? instanceBody() : { name, done: true };
+  const read = (cloud: CloudRunAdmin, timeoutMs?: number, signal?: AbortSignal) =>
+    resource === "instance" ? cloud.getInstance(name, timeoutMs, signal) : cloud.getOperation(name, timeoutMs, signal);
+
+  it.each([502, 503, 504, "transport"])("recovers from one transient %s without a business retry", async (failure) => {
+    const { calls, fetchImpl } = fakeFetch(() => {
+      if (calls.length > 1) return { status: 200, body: success };
+      if (failure === "transport") throw new TypeError("fetch failed with private transport details");
+      return { status: failure as number };
+    });
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }))).resolves.toMatchObject(
+      resource === "instance" ? { uid: instanceBody().uid } : { done: true },
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+    expect(sleep.mock.calls).toEqual([[150, expect.any(AbortSignal)]]);
+  });
+
+  it("caps a persistent 503 at three attempts and releases every rejected body", async () => {
+    const cancellations: ReturnType<typeof vi.fn>[] = [];
+    const fetchImpl = vi.fn(async () => {
+      const cancel = vi.fn();
+      cancellations.push(cancel);
+      return new Response(new ReadableStream({ cancel }), { status: 503 });
+    });
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }))).rejects.toMatchObject({ kind: "unavailable", status: 503 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([
+      [150, expect.any(AbortSignal)],
+      [300, expect.any(AbortSignal)],
+    ]);
+    expect(cancellations.every((cancel) => cancel.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("caps persistent transport failures and keeps private causes out of the error", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("private transport details");
+    });
+    const error = await read(admin(fetchImpl)).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ kind: "unknown", message: "Cloud Run Admin GET transport failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([400, 401, 403, 404, 409, 429, 500, 501])("does not retry HTTP %s", async (status) => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status }));
+    const sleep = vi.fn(async () => undefined);
+    const result = read(admin(fetchImpl, { sleep }));
+    if (status === 404 && resource === "instance") await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ status });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([403, 404])("stops retrying when a transient 503 is followed by HTTP %s", async (status) => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: calls.length === 1 ? 503 : status }));
+    const sleep = vi.fn(async () => undefined);
+    const result = read(admin(fetchImpl, { sleep }));
+    if (status === 404 && resource === "instance") await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ status });
+    expect(calls).toHaveLength(2);
+    expect(sleep.mock.calls).toEqual([[150, expect.any(AbortSignal)]]);
+  });
+
+  it.each(["AbortError", "TimeoutError"])("does not retry transport cancellation %s", async (name) => {
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException("private cancellation reason", name);
+    });
+    await expect(read(admin(fetchImpl))).rejects.toMatchObject({ kind: "unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not sleep or retry without enough remaining budget", async () => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: 503 }));
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }), 100)).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("shares one deadline across retries and aborts an in-flight retry at the original deadline", async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("Missing deadline signal");
+      signals.push(signal);
+      if (signals.length === 1) return new Response("", { status: 503 });
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const cloud = new CloudRunAdmin(CONFIG, {
+      fetchImpl,
+      tokenProvider: createStaticTokenProvider("unit-token"),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    const result = read(cloud, 800);
+    const failed = expect(result).rejects.toMatchObject({ kind: "unknown" });
+    let settled = false;
+    void result.catch(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(799);
+    expect(settled).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(signals[0]).toBe(signals[1]);
+    await vi.advanceTimersByTimeAsync(1);
+    await failed;
+    expect(signals[1]?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds stalled credentials without submitting a late GET", async () => {
+    vi.useFakeTimers();
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => {
+      resolveToken = resolve;
+    });
+    const tokenProvider = vi.fn(() => token);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(success)));
+    const cloud = new CloudRunAdmin({ ...CONFIG, apiTimeoutMs: 120_000 }, { fetchImpl, tokenProvider });
+    const failed = expect(read(cloud, 20)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    resolveToken("late-unit-token");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("caps the complete read by apiTimeoutMs even when the caller allows more time", async () => {
+    vi.useFakeTimers();
+    const tokenProvider = vi.fn(() => new Promise<string>(() => undefined));
+    const cloud = new CloudRunAdmin({ ...CONFIG, apiTimeoutMs: 20 }, { tokenProvider });
+    const failed = expect(read(cloud, 120_000)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+  });
+
+  it("bounds response-body reads without retrying a partially received response", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream()));
+    const failed = expect(read(admin(fetchImpl), 20)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["before", "credentials", "fetch", "backoff"])("honors cancellation during %s", async (phase) => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => {
+      resolveToken = resolve;
+    });
+    const tokenProvider = vi.fn(() => (phase === "credentials" ? token : Promise.resolve("unit-token")));
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (phase === "fetch")
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      return new Response("", { status: 503 });
+    });
+    const cloud = new CloudRunAdmin(CONFIG, { fetchImpl, tokenProvider });
+    if (phase === "before") controller.abort();
+    const failed = expect(read(cloud, undefined, controller.signal)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort(new Error("private cancellation reason"));
+    await failed;
+    resolveToken("late-unit-token");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(phase === "fetch" || phase === "backoff" ? 1 : 0);
+    expect(tokenProvider).toHaveBeenCalledTimes(phase === "before" ? 0 : 1);
+  });
+
+  it("does not retry credential failures", async () => {
+    const tokenProvider = vi.fn(async () => {
+      throw new Error("private credential failure");
+    });
+    const fetchImpl = vi.fn();
+    await expect(read(new CloudRunAdmin(CONFIG, { fetchImpl, tokenProvider }))).rejects.toMatchObject({
+      kind: "credential",
+      createRejected: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1])("does not submit a GET with an exhausted %s ms budget", async (timeoutMs) => {
+    const fetchImpl = vi.fn();
+    await expect(read(admin(fetchImpl), timeoutMs)).rejects.toMatchObject({ kind: "unknown" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not retry malformed successful responses or identity mismatches", async () => {
+    const invalidJson = vi.fn(async () => new Response("invalid JSON"));
+    await expect(read(admin(invalidJson))).rejects.toMatchObject({ kind: "unknown" });
+    expect(invalidJson).toHaveBeenCalledTimes(1);
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: 200, body: { ...success, name: "different" } }));
+    await expect(read(admin(fetchImpl))).rejects.toMatchObject({ kind: "ownership_mismatch" });
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -134,7 +351,7 @@ describe("CloudRunAdmin create", () => {
     }
   });
 
-  it("creates the pinned 1CPU/1GiB sandbox-launcher instance with Direct VPC and hardened surface", async () => {
+  it("creates the pinned 1CPU/2GiB sandbox-launcher instance with Direct VPC and hardened surface", async () => {
     const { calls, fetchImpl } = fakeFetch((call) => {
       if (call.method === "POST")
         return { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } };
@@ -168,7 +385,7 @@ describe("CloudRunAdmin create", () => {
       image: CONFIG.image,
       sandboxLauncher: true,
       args: ["opentag-runner", "serve"],
-      resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
+      resources: { limits: { cpu: "1", memory: "2Gi" }, cpuIdle: false },
       ports: [{ containerPort: 8080 }],
     });
     const env = Object.fromEntries(
@@ -181,6 +398,92 @@ describe("CloudRunAdmin create", () => {
     expect(labels["opentag-sandbox"]).toBe(IDENTITY.sandboxId.replaceAll("-", ""));
     expect(labels["opentag-gen"]).toBe("3");
     expect(labels["managed-by"]).toBe("opentag");
+  });
+
+  it("adds only the three diagnostic variables to selected Staging births", async () => {
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : { status: 200, body: instanceBody() },
+    );
+    const spec = { ...SPEC, controlToken: "unit-control-token", workspacePersistence: true };
+    await admin(fetchImpl).createInstance(spec);
+    const ids = [IDENTITY.sessionId, "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"];
+    await admin(fetchImpl, { diagnosticSessionIds: ids }).createInstance(spec);
+    const [before, after] = calls
+      .filter((call) => call.method === "POST")
+      .map(
+        (call) =>
+          call.body as {
+            containers: { env: { name: string; value: string }[] }[];
+          },
+      );
+    if (!before || !after || !before.containers[0] || !after.containers[0]) throw new Error("Missing create body");
+    expect(after.containers[0]).toEqual({
+      ...before.containers[0],
+      env: [
+        ...before.containers[0].env,
+        { name: "OPENTAG_ENV", value: "staging" },
+        { name: "OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", value: "true" },
+        { name: "OPENTAG_CLOUD_LATENCY_SESSION_IDS", value: ids.join(",") },
+      ],
+    });
+    expect({ ...after, containers: before.containers }).toEqual(before);
+    expect([
+      ...cloudLatencySessions(Object.fromEntries(after.containers[0].env.map(({ name, value }) => [name, value]))),
+    ]).toEqual(ids);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET", "POST", "GET"]);
+  });
+
+  it.each([
+    { name: "default", ids: undefined, environment: "staging" as const },
+    { name: "empty", ids: [], environment: "staging" as const },
+    { name: "invalid", ids: ["invalid"], environment: "staging" as const },
+    {
+      name: "comma injection",
+      ids: [`${IDENTITY.sessionId},aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa`],
+      environment: "staging" as const,
+    },
+    { name: "over limit", ids: Array(17).fill(IDENTITY.sessionId) as string[], environment: "staging" as const },
+    { name: "not selected", ids: ["aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"], environment: "staging" as const },
+    { name: "production", ids: [IDENTITY.sessionId], environment: "prod" as const },
+    { name: "development", ids: [IDENTITY.sessionId], environment: "dev" as const },
+  ])("keeps the creation environment unchanged when diagnostics are $name", async ({ ids, environment }) => {
+    const spec = { ...SPEC, environment };
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : {
+            status: 200,
+            body: instanceBody({
+              name: runnerInstanceResourceName(CONFIG.project, CONFIG.region, runnerInstanceId(spec)),
+              labels: runnerInstanceLabels(spec),
+            }),
+          },
+    );
+    await admin(fetchImpl, { diagnosticSessionIds: ids }).createInstance(spec);
+    const body = calls[0]?.body as { containers: { env: { name: string; value: string }[] }[] };
+    expect(body.containers[0]?.env).toEqual([
+      { name: "OPENTAG_RUNNER_BACKEND_URL", value: SPEC.backendUrl },
+      { name: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN", value: SPEC.bootstrapToken },
+      { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
+    ]);
+  });
+
+  it("snapshots validated diagnostic selection instead of retaining a mutable caller list", async () => {
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : { status: 200, body: instanceBody() },
+    );
+    const ids = [IDENTITY.sessionId];
+    const service = admin(fetchImpl, { diagnosticSessionIds: ids });
+    ids[0] = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    await service.createInstance(SPEC);
+    const body = calls[0]?.body as { containers: { env: { name: string; value: string }[] }[] };
+    expect(body.containers[0]?.env.find((entry) => entry.name === "OPENTAG_CLOUD_LATENCY_SESSION_IDS")?.value).toBe(
+      IDENTITY.sessionId,
+    );
   });
 
   it("sets the workspace persistence env flag only for workspace-enabled allocations", async () => {
@@ -214,16 +517,19 @@ describe("CloudRunAdmin create", () => {
     expect(env.OPENTAG_RUNNER_BACKEND_URL).toBe(SPEC.backendUrl);
   });
 
-  it("adopts the existing owned resource on 409 instead of duplicating", async () => {
+  it.each([false, true])("adopts the existing owned resource without patching it: diagnostics=%s", async (enabled) => {
     const { calls, fetchImpl } = fakeFetch((call) =>
       call.method === "POST"
         ? { status: 409, body: { error: { message: "already exists" } } }
         : { status: 200, body: instanceBody() },
     );
-    const result = await admin(fetchImpl).createInstance(SPEC);
+    const result = await admin(fetchImpl, {
+      diagnosticSessionIds: enabled ? [IDENTITY.sessionId] : undefined,
+    }).createInstance(SPEC);
     expect(result.outcome).toBe("adopted");
     expect(result.instance.uid).toBe("uid-1234-5678");
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET"]);
   });
 
   it("refuses to adopt a resource without this sandbox's ownership labels", async () => {
@@ -235,47 +541,65 @@ describe("CloudRunAdmin create", () => {
     await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "ownership_mismatch" });
   });
 
-  it("uses the narrow documented v1 compatibility create only for the networkInterfaces rejection", async () => {
-    const { calls, fetchImpl } = fakeFetch((call) => {
-      if (call.method === "POST" && call.url.includes("/v2/")) {
-        return {
-          status: 400,
-          body: {
-            error: {
-              message:
-                "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.",
+  it.each([false, true])(
+    "uses the narrow v1 compatibility create with the same diagnostic selection: %s",
+    async (enabled) => {
+      const { calls, fetchImpl } = fakeFetch((call) => {
+        if (call.method === "POST" && call.url.includes("/v2/")) {
+          return {
+            status: 400,
+            body: {
+              error: {
+                message:
+                  "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.",
+              },
             },
-          },
-        };
-      }
-      if (call.method === "POST" && call.url.includes("/apis/run.googleapis.com/v1/")) {
-        return { status: 200, body: { metadata: { uid: "uid-1234-5678" } } };
-      }
-      return { status: 200, body: instanceBody() };
-    });
-    const result = await admin(fetchImpl).createInstance(SPEC);
-    expect(result.outcome).toBe("created");
-    const v1 = calls.find((call) => call.url.includes("/apis/run.googleapis.com/v1/"));
-    expect(v1?.url).toBe(
-      "https://us-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/opentag-test/instances",
-    );
-    const body = v1?.body as {
-      metadata: { annotations: Record<string, string>; name: string };
-      spec: { serviceAccountName: string; containers: Record<string, unknown>[] };
-    };
-    expect(body.metadata.name).toBe(runnerInstanceId(IDENTITY));
-    expect(JSON.parse(body.metadata.annotations["run.googleapis.com/network-interfaces"] as string)).toEqual([
-      { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
-    ]);
-    expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
-    expect(body.metadata.annotations["run.googleapis.com/cpu-throttling"]).toBe("false");
-    expect(result.operationName).toBeUndefined(); // v1 returns an Instance, not an LRO
-    expect(body.spec.containers[0]).toMatchObject({
-      sandboxLauncher: true,
-      image: CONFIG.image,
-      ports: [{ containerPort: 8080 }],
-    });
-  });
+          };
+        }
+        if (call.method === "POST" && call.url.includes("/apis/run.googleapis.com/v1/")) {
+          return { status: 200, body: { metadata: { uid: "uid-1234-5678" } } };
+        }
+        return { status: 200, body: instanceBody() };
+      });
+      const result = await admin(fetchImpl, {
+        diagnosticSessionIds: enabled ? [IDENTITY.sessionId] : undefined,
+      }).createInstance(SPEC);
+      expect(result.outcome).toBe("created");
+      const v1 = calls.find((call) => call.url.includes("/apis/run.googleapis.com/v1/"));
+      expect(v1?.url).toBe(
+        "https://us-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/opentag-test/instances",
+      );
+      const body = v1?.body as {
+        metadata: { annotations: Record<string, string>; name: string };
+        spec: { serviceAccountName: string; containers: Record<string, unknown>[] };
+      };
+      expect(body.metadata.name).toBe(runnerInstanceId(IDENTITY));
+      expect(JSON.parse(body.metadata.annotations["run.googleapis.com/network-interfaces"] as string)).toEqual([
+        { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
+      ]);
+      expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
+      expect(body.metadata.annotations["run.googleapis.com/cpu-throttling"]).toBe("false");
+      expect(result.operationName).toBeUndefined(); // v1 returns an Instance, not an LRO
+      const env = body.spec.containers[0]?.env as { name: string; value: string }[];
+      expect(
+        env.filter((entry) => entry.name === "OPENTAG_ENV" || entry.name.startsWith("OPENTAG_CLOUD_LATENCY_")),
+      ).toEqual(
+        enabled
+          ? [
+              { name: "OPENTAG_ENV", value: "staging" },
+              { name: "OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", value: "true" },
+              { name: "OPENTAG_CLOUD_LATENCY_SESSION_IDS", value: IDENTITY.sessionId },
+            ]
+          : [],
+      );
+      expect(calls.every((call) => call.method === "POST" || call.method === "GET")).toBe(true);
+      expect(body.spec.containers[0]).toMatchObject({
+        sandboxLauncher: true,
+        image: CONFIG.image,
+        ports: [{ containerPort: 8080 }],
+      });
+    },
+  );
 
   it("never falls back to default egress for other 400 rejections", async () => {
     const { calls, fetchImpl } = fakeFetch(() => ({
@@ -296,12 +620,34 @@ describe("CloudRunAdmin create", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("accepts 2 GiB and existing 1 GiB Instances but rejects other memory limits", async () => {
+    const [container] = instanceBody().containers as Record<string, unknown>[];
+    const verify = async (memory: string) => {
+      const { fetchImpl } = fakeFetch(() => ({
+        status: 200,
+        body: instanceBody({
+          containers: [{ ...container, resources: { limits: { cpu: "1", memory } } }],
+        }),
+      }));
+      const api = admin(fetchImpl);
+      const view = await api.getInstance(instanceBody().name);
+      if (!view) throw new Error("Missing test Instance");
+      return () => api.verifyInstance(view, IDENTITY);
+    };
+    for (const memory of ["2Gi", "2048Mi", "1Gi", "1024Mi"]) {
+      expect(await verify(memory)).not.toThrow();
+    }
+    for (const memory of ["512Mi", "4Gi"]) {
+      expect(await verify(memory)).toThrow(CloudRunAdminError);
+    }
+  });
+
   it("permits ownership verification for cleanup but rejects unsafe execution policy", async () => {
     const [container] = instanceBody().containers as Record<string, unknown>[];
     for (const override of [
       { command: ["/bin/sh"] },
       { volumeMounts: [{ name: "unexpected", mountPath: "/opt/opentag" }] },
-      { resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: true } },
+      { resources: { limits: { cpu: "1", memory: "2Gi" }, cpuIdle: true } },
     ]) {
       const { fetchImpl } = fakeFetch(() => ({
         status: 200,
@@ -424,6 +770,7 @@ describe("CloudRunAdmin create", () => {
     await expect(admin(failing as unknown as typeof fetch).createInstance(SPEC)).rejects.toMatchObject({
       kind: "unknown",
     });
+    expect(failing).toHaveBeenCalledTimes(1);
   });
 
   it("sanitizes error bodies instead of echoing payloads", async () => {
@@ -472,6 +819,16 @@ describe("CloudRunAdmin delete", () => {
     });
     expect(calls.map((call) => call.method)).toEqual(["GET", "DELETE"]);
     expect(new URL(calls[1]?.url ?? "").searchParams.get("etag")).toBe('"revision-1"');
+  });
+
+  it.each([503, "transport"])("does not retry an uncertain DELETE %s", async (failure) => {
+    const { calls, fetchImpl } = fakeFetch((call) => {
+      if (call.method === "GET") return { status: 200, body: instanceBody() };
+      if (failure === "transport") throw new TypeError("private transport details");
+      return { status: failure as number };
+    });
+    await expect(admin(fetchImpl).deleteInstance(name, "uid-1234-5678")).rejects.toBeInstanceOf(CloudRunAdminError);
+    expect(calls.map((call) => call.method)).toEqual(["GET", "DELETE"]);
   });
 
   it("rejects resource names outside the configured project/region", async () => {

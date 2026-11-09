@@ -12,7 +12,8 @@ export type TaskStatusGroup = (typeof TASK_STATUS_GROUPS)[number];
 
 /*
  * A withdrawn Task and one whose conversation ended both stopped without anything going wrong, so
- * they read as completed. An expired Task never reported an outcome, so it reads as failed. `idle`
+ * they filter as completed. A withdrawn Task still says Cancelled where it is shown: reading
+ * "Completed" for work that never ran would tell the owner the opposite of what happened. An expired Task never reported an outcome, so it reads as failed. `idle`
  * cannot occur for a listed Task and falls back to completed rather than to an alarming state.
  */
 const groupByStatus: Record<TaskStatus, TaskStatusGroup> = {
@@ -46,4 +47,15 @@ export function taskStatusGroupLabel(group: TaskStatusGroup): string {
   if (group === "running") return m.tasks_status_running();
   if (group === "completed") return m.tasks_status_completed();
   return m.tasks_status_failed();
+}
+
+/** What one Task reads as: its group's label and tone, except a cancelled Task, which says so. */
+export function taskStatusLabel(status: TaskStatus): string {
+  if (status === "cancelled") return m.tasks_status_cancelled();
+  return taskStatusGroupLabel(taskStatusGroup(status));
+}
+
+export function taskStatusTone(status: TaskStatus): StatusTone {
+  if (status === "cancelled") return "neutral";
+  return taskStatusGroupTone(taskStatusGroup(status));
 }

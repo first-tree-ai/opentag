@@ -160,7 +160,7 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-readiness", "flex-direction")).toBe("column");
     expect(declarationValue(".otv2-readiness", "gap")).toBe("0");
     expect(declarationValue(".otv2-readiness", "overflow")).toBe("hidden");
-    expect(declarationValue(".otv2-readiness__line", "align-items")).toBe("center");
+    expect(declarationValue(".otv2-readiness__line", "align-items")).toBe("flex-start");
     expect(declarationValue(".otv2-readiness__line", "padding")).toBe("1rem");
     expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
     expect(declarationValue(".otv2-readiness__line", "border-top")).toBe("1px solid var(--color-kumo-line)");
@@ -199,5 +199,11 @@ describe("onboarding flow layout", () => {
         expect(declaration.prop).not.toMatch(/^(height|min-height|max-height|padding|border-width)$/);
       });
     });
+  });
+
+  it("keeps the pending spinner neutral and still for readers who ask for reduced motion", () => {
+    expect(declarationValue(".otv2-pending-spinner", "border")).toContain("currentColor");
+    expect(declarationValue(".otv2-pending-spinner", "animation")).toContain("otv2-pending-spin");
+    expect(mediaDeclarationValue("prefers-reduced-motion: reduce", ".otv2-pending-spinner", "animation")).toBe("none");
   });
 });

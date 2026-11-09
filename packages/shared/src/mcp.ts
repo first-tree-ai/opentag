@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentDisplayNameSchema } from "./agent.js";
+import { AgentDisplayNameSchema, AgentNameSchema } from "./agent.js";
 
 /**
  * MCP (Model Context Protocol) management contract.
@@ -14,9 +14,9 @@ import { AgentDisplayNameSchema } from "./agent.js";
  * credential ciphertext or key IDs, no OAuth state/PKCE material, no bearer key values, and no
  * access or refresh tokens. A caller learns only whether a credential exists.
  *
- * Authorization is scoped strictly per Agent. One Server may be authorized differently for two
- * Agents of the same Account — Agent A with a bearer key, Agent B with OAuth — and there is no
- * Account-level fallback.
+ * Each Agent must have its own explicit authorization relationship. Compatible OAuth mounts may
+ * reference one authentication root; Bearer and anonymous authorizations remain independent. There
+ * is no implicit Account-level fallback.
  */
 
 const UuidSchema = z.string().uuid();
@@ -353,6 +353,8 @@ export type MCPServer = z.infer<typeof MCPServerSchema>;
 export const ListMCPServersResponseSchema = z.object({ servers: z.array(MCPServerSchema) }).strict();
 export type ListMCPServersResponse = z.infer<typeof ListMCPServersResponseSchema>;
 
+export const ReusableMCPInstallationResponseSchema = z.object({ server: MCPServerSchema.nullable() }).strict();
+
 /** The Agent-level overrides. Each is independent; `null` means inherit the shared definition. */
 export const MCPBindingOverridesSchema = z
   .object({
@@ -473,7 +475,8 @@ export type ListAgentMCPServersResponse = z.infer<typeof ListAgentMCPServersResp
 export const MCPServerAgentSchema = z
   .object({
     agentId: UuidSchema,
-    agentName: MCPServerNameSchema,
+    // Agent names follow the Agent name rule, not the lowercase Server name rule.
+    agentName: AgentNameSchema,
     agentDisplayName: AgentDisplayNameSchema,
     enabled: z.boolean(),
     effective: MCPEffectiveConfigSchema,
@@ -657,6 +660,10 @@ export const StartMCPOAuthRequestSchema = z
   .strict();
 export type StartMCPOAuthRequest = z.infer<typeof StartMCPOAuthRequestSchema>;
 
+export const FindReusableMCPInstallationRequestSchema = CreateMCPServerRequestSchema.safeExtend({
+  scopes: StartMCPOAuthRequestSchema.shape.scopes,
+});
+
 export const StartMCPOAuthResponseSchema = z
   .object({
     authorizationUrl: z.string().url().max(8192),
@@ -834,7 +841,7 @@ export function isCanvaDeveloperPortalMcpEndpoint(url: string): boolean {
  * `tokenEndpointAuthMethod` is what the provider's authorization server accepts; presenting the
  * other method is rejected by it, so it is data here, not a default.
  */
-export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom"] as const;
+export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom", "github", "feishu"] as const;
 
 export type McpStaticOAuthBrand = (typeof MCP_STATIC_OAUTH_BRANDS)[number];
 
@@ -873,6 +880,18 @@ export const MCP_STATIC_OAUTH_PROVIDERS: readonly McpStaticOAuthProvider[] = [
     origins: ["https://mcp.zoom.us"],
     issuer: "https://zoom.us",
     tokenEndpointAuthMethod: "client_secret_basic",
+  },
+  {
+    brand: "github",
+    origins: ["https://api.githubcopilot.com"],
+    issuer: "https://github.com/login/oauth",
+    tokenEndpointAuthMethod: "client_secret_post",
+  },
+  {
+    brand: "feishu",
+    origins: ["https://mcp.feishu.cn"],
+    issuer: "https://open.feishu.cn",
+    tokenEndpointAuthMethod: "client_secret_post",
   },
 ];
 
@@ -932,3 +951,5 @@ function isAllowedMcpOrigin(url: string, origins: readonly string[]): boolean {
   if (parsed.port.length > 0) return false;
   return origins.includes(parsed.origin);
 }
+
+export const ConnectMCPOAuthResponseSchema = z.object({ connected: z.boolean() }).strict();

@@ -20,8 +20,11 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const INTERNAL = new Set([
   "constructor",
   "request",
+  "requestAccount",
   "requestOptional",
+  "requestOptionalAccount",
   "requestNoContent",
+  "requestNoContentAccount",
   "fetchWithRefresh",
   "apiError",
   "parseResponse",
@@ -55,8 +58,12 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   authProviders: [],
   completeSetup: [ID],
   agents: [],
+  agentStatuses: [[ID]],
   tasks: [{}],
-  task: [ID],
+  taskDetail: [ID],
+  taskTurns: [ID],
+  taskInternalSessions: [ID],
+  taskCollaborationMessages: [ID],
   taskReplies: [ID],
   agent: [ID],
   agentSetup: [ID],
@@ -76,6 +83,9 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   deleteAgent: [ID],
   deleteComputer: [ID],
   disconnectComputer: [ID],
+  imFeedback: [ID],
+  imFeedbackList: [ID],
+  imFeedbackAction: [ID, { kind: "retry_task", revision: 1, confirmation: "signed" }],
   imBinding: [ID],
   imBindingHandoff: [ID],
   imBindingConfig: [ID],
@@ -102,13 +112,14 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   cloudCreditCheckout: [{ amountCents: 1000, idempotencyKey: ID }],
   ensureCloudComputer: [],
   agentCloudOverview: [ID],
-  internalNavigationVisibility: [],
-  updateInternalNavigationVisibility: [{ tasks: true }],
+  cloudWorkspaceStatus: [ID],
+  releaseCloudWorkspace: [ID, { environmentGeneration: 1 }],
   updateTaskTitle: [ID, { title: "A task" }],
   cancelTask: [ID],
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],
+  contextTreeAvailability: [ID],
   contextTreeOperation: [
     ID,
     {
@@ -129,6 +140,11 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   mcpServers: [],
   mcpCatalogEndpoints: [],
   mcpServer: [ID],
+  reusableMcpInstallation: [
+    ID,
+    { name: "github", url: "https://api.githubcopilot.com/mcp/", defaultAuthKind: "oauth" },
+  ],
+  connectMcpOAuth: [ID, ID, ["repo"]],
   createMcpServer: [{ name: "linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" }],
   updateMcpServer: [ID, { expectedRevision: 1, description: "Issue tracking" }],
   removeMcpServer: [ID],
@@ -216,6 +232,18 @@ describe("BrowserApi mutations", () => {
     }
 
     expect(missing).toEqual([]);
+  });
+
+  it.each(["reusableMcpInstallation", "connectMcpOAuth"])("declares the JSON request body for %s", async (name) => {
+    setDocumentCookie("opentag_csrf=probe-token");
+    const fetchImpl = vi.fn(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    const api = new BrowserApi(fetchImpl);
+    await (api as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)
+      [name]?.(...(INVOCATIONS[name] ?? []))
+      .catch(() => undefined);
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(new Headers(init.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toBeTypeOf("object");
   });
 
   it("builds the skill bundle download URL from the shared path template", () => {

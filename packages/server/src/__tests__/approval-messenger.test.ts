@@ -3,6 +3,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApprovalMessenger } from "../runtime/approval-messenger.js";
 import type { PendingApproval } from "../runtime/approval-store.js";
 
+const publicUrl = "https://opentag.example.com";
+const agentId = randomUUID();
+const modelSettingsUrl = `${publicUrl}/agents/${agentId}/settings/execution`;
+const slackFooter = {
+  type: "context",
+  elements: [
+    {
+      type: "mrkdwn",
+      text: `Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
+    },
+  ],
+};
+const feishuFooter = {
+  tag: "note",
+  elements: [
+    {
+      tag: "lark_md",
+      content: `Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
+    },
+  ],
+};
+
 const sdk = vi.hoisted(() => ({
   post: vi.fn(async (_input: unknown) => ({ ts: "card" })),
   update: vi.fn(async (_input: unknown) => ({ ok: true })),
@@ -69,14 +91,16 @@ describe("ApprovalMessenger", () => {
       const messenger = new ApprovalMessenger(
         {
           getFeishuConnectionMaterial: async () => ({
+            agentId,
             generation: 1,
             appId: "app",
             appSecret: "secret",
             teamBrand: "feishu",
           }),
-          getSlackConnectionMaterial: async () => ({ generation: 1, botAccessToken: "token" }),
+          getSlackConnectionMaterial: async () => ({ agentId, generation: 1, botAccessToken: "token" }),
         } as never,
         { run: async (_operation: string, action: () => unknown) => action() } as never,
+        publicUrl,
       );
       const posted = await messenger.post(approval);
       expect(posted).toEqual({ messageId: "card", channelId: "sender-dm" });
@@ -99,6 +123,7 @@ describe("ApprovalMessenger", () => {
           { approvalId: approval.id, decision: "accept" },
           { approvalId: approval.id, decision: "decline" },
         ]);
+        expect(card.elements.at(-1)).toEqual(feishuFooter);
       } else {
         const input = sdk.post.mock.calls.at(-1)?.[0] as {
           text: string;
@@ -108,10 +133,11 @@ describe("ApprovalMessenger", () => {
         expect(input.text).toBe("Approve command\n\nPublish the changes?\n\ngit push");
         expect(input.channel).toBe("sender-dm");
         expect(sdk.open).toHaveBeenCalledWith({ users: "sender" });
-        expect(input.blocks.at(-1)?.elements).toMatchObject([
+        expect(input.blocks.at(-2)?.elements).toMatchObject([
           { action_id: "opentag_approval_accept", text: { text: "Approve" }, value: approval.id },
           { action_id: "opentag_approval_decline", text: { text: "Deny" }, value: approval.id },
         ]);
+        expect(input.blocks.at(-1)).toEqual(slackFooter);
       }
 
       for (const [status, text, buttonType, slackText] of [
@@ -143,6 +169,7 @@ describe("ApprovalMessenger", () => {
                 }
               : { tag: "div", text: { tag: "plain_text", content: text } },
           );
+          expect(card.elements.at(-1)).toEqual(feishuFooter);
         } else {
           const input = sdk.update.mock.calls.at(-1)?.[0] as {
             channel: string;
@@ -153,10 +180,11 @@ describe("ApprovalMessenger", () => {
           expect(input.channel).toBe("sender-dm");
           expect(input.ts).toBe("card");
           expect(input.text).toBe(`Approve command\n\nPublish the changes?\n\ngit push\n\n${text}`);
-          expect(input.blocks.at(-1)?.text).toEqual({
+          expect(input.blocks.at(-2)?.text).toEqual({
             type: "mrkdwn",
             text: slackText,
           });
+          expect(input.blocks.at(-1)).toEqual(slackFooter);
           expect(input.blocks.some((block) => block.type === "actions")).toBe(false);
         }
       }
@@ -173,8 +201,9 @@ describe("ApprovalMessenger", () => {
       approval.request.description = `${reason}\n\n${command}`;
       approval.request.commandPresentation = { command, reason };
       const messenger = new ApprovalMessenger(
-        { getSlackConnectionMaterial: async () => ({ generation: 1, botAccessToken: "token" }) } as never,
+        { getSlackConnectionMaterial: async () => ({ agentId, generation: 1, botAccessToken: "token" }) } as never,
         { run: async (_operation: string, action: () => unknown) => action() } as never,
+        publicUrl,
       );
       const posted = await messenger.post(approval);
       await messenger.finish({ ...approval, messageId: posted.messageId, messageChannelId: posted.channelId });
@@ -194,6 +223,7 @@ describe("ApprovalMessenger", () => {
               elements: [{ type: "rich_text_preformatted", elements: [{ type: "text", text: command }] }],
             },
             status === "pending" ? { type: "actions" } : { type: "section" },
+            slackFooter,
           ],
         });
       }
@@ -206,12 +236,13 @@ describe("ApprovalMessenger", () => {
     approval.request.description = command;
     approval.request.commandPresentation = { command, reason: "" };
     const messenger = new ApprovalMessenger(
-      { getSlackConnectionMaterial: async () => ({ generation: 1, botAccessToken: "token" }) } as never,
+      { getSlackConnectionMaterial: async () => ({ agentId, generation: 1, botAccessToken: "token" }) } as never,
       { run: async (_operation: string, action: () => unknown) => action() } as never,
+      publicUrl,
     );
     await messenger.post(approval);
     const input = sdk.post.mock.calls.at(-1)?.[0] as { blocks: { type: string; elements?: unknown[] }[] };
-    expect(input.blocks).toHaveLength(3);
+    expect(input.blocks).toHaveLength(4);
     expect(input.blocks[1]).toMatchObject({
       type: "rich_text",
       elements: [{ type: "rich_text_preformatted", elements: [{ text: command }] }],
@@ -227,11 +258,12 @@ describe("ApprovalMessenger", () => {
             getFeishuConnectionMaterial: async () =>
               generation === undefined
                 ? undefined
-                : { generation, appId: "app", appSecret: "secret", teamBrand: "feishu" },
+                : { agentId, generation, appId: "app", appSecret: "secret", teamBrand: "feishu" },
             getSlackConnectionMaterial: async () =>
-              generation === undefined ? undefined : { generation, botAccessToken: "token" },
+              generation === undefined ? undefined : { agentId, generation, botAccessToken: "token" },
           } as never,
           { run: async (_operation: string, action: () => unknown) => action() } as never,
+          publicUrl,
         );
         const approval = {
           ...approvalFor(provider),

@@ -1,9 +1,9 @@
 import type { registerApp } from "@larksuiteoapi/node-sdk";
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-
 import { safeFeishuSetupErrorCode } from "../services/im-bindings/feishu/errors.js";
 import { DefaultFeishuRegistrationGateway } from "../services/im-bindings/feishu/registration.js";
+import { deferred } from "./support/deferred.js";
 
 interface RegistrationOptions {
   appId?: string;
@@ -148,4 +148,50 @@ describe("Feishu registration", () => {
       "FEISHU_SETUP_CANCELED",
     );
   });
+});
+
+it("retains actual SDK settlement after caller cancellation has returned", async () => {
+  const entered = deferred(),
+    resume = deferred();
+  const register = vi.fn(async (raw: unknown) => {
+    const input = raw as RegistrationOptions;
+    input.onQRCodeReady({ url: "https://open.feishu.cn/qr/late", expireIn: 60 });
+    entered.resolve();
+    await resume.promise;
+    return { client_id: "late", client_secret: "late" };
+  });
+  const flow = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
+    profile: { name: "Drain", description: "Drain" },
+    intent: "create",
+    receiveMode: "all_message",
+  });
+  const result = flow.result.catch((error: unknown) => error);
+  await entered.promise;
+  await flow.qrReady;
+  let settled = false;
+  const actual = flow.settled?.then(() => {
+    settled = true;
+  });
+  flow.abort();
+  expect(await result).toBeInstanceOf(Error);
+  expect(settled).toBe(false);
+  resume.resolve();
+  await actual;
+  expect(settled).toBe(true);
+});
+
+it("does not start the SDK when cancellation wins before the policy action", async () => {
+  const register = vi.fn(async () => ({ client_id: "unused", client_secret: "unused" }));
+  const flow = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
+    profile: { name: "Drain", description: "Drain" },
+    intent: "create",
+    receiveMode: "all_message",
+  });
+  const qr = flow.qrReady.catch(() => undefined),
+    result = flow.result.catch(() => undefined);
+  flow.abort();
+  await result;
+  await qr;
+  await flow.settled;
+  expect(register).not.toHaveBeenCalled();
 });

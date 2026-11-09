@@ -53,12 +53,14 @@ import {
   type FeishuRegistration,
   type FeishuRegistrationGateway,
   FeishuSetupService,
+  normalizeFeishuMessage,
 } from "../../services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
 import { SlackConfigurationService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { AccountSetupService } from "../../services/setup/index.js";
+import { abortableMockFeishuRegistration } from "../support/abortable-feishu-registration.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -251,7 +253,7 @@ async function seedPendingDeliveries(
         sessionId,
         attention,
         placementGeneration: 1,
-        expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+        expiresAt: new Date(Date.now() + 7 * 86_400_000),
       })),
     )
     .returning({ id: imMessageDeliveries.id });
@@ -493,10 +495,11 @@ async function respondingRuntime(input: {
       async () => undefined,
     );
   await register();
-  domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(input.database), {
+  const custody = new PostgresRuntimeCustodyStore(input.database);
+  domain = new RuntimeDomainOwner(registry, custody, {
     requestTimeoutMs: input.requestTimeoutMs,
   });
-  return { context, domain, frames, registry, register };
+  return { context, custody, domain, frames, registry, register };
 }
 
 function turnReportFor(input: {
@@ -557,6 +560,7 @@ function revisionEvent(input: {
   operation: "created" | "edited" | "deleted";
   occurredAt: string;
   revisionKey: string;
+  text?: string;
 }): NormalizedInboundImEvent {
   const event = inbound(input.providerEventId, input.operation);
   return {
@@ -568,8 +572,8 @@ function revisionEvent(input: {
       revisionKey: input.revisionKey,
       content: {
         version: 1,
-        fallbackText: input.operation,
-        blocks: [{ type: "text", text: input.operation }],
+        fallbackText: input.text ?? input.operation,
+        blocks: [{ type: "text", text: input.text ?? input.operation }],
         truncated: false,
       },
     },
@@ -738,7 +742,7 @@ describe("IM binding persistence", () => {
         value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId)),
       ).resolves.toEqual([expect.objectContaining({ state: "terminal_rejected", reason: "computer_owner_mismatch" })]);
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1125,7 +1129,7 @@ describe("IM binding persistence", () => {
       expect(runtime.frames).toEqual([expect.objectContaining({ type: "session:reconcile", desired: "stopped" })]);
     } finally {
       releaseSuspend.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1197,7 +1201,7 @@ describe("IM binding persistence", () => {
       expect(runtime.frames.at(-1)).toMatchObject({ type: "session:reconcile", desired: "stopped" });
     } finally {
       releaseDelivery.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1233,8 +1237,7 @@ describe("IM binding persistence", () => {
           await releaseOldStop.promise;
           await stopAgentSessions(value.database, targets, {
             currentInstanceId: () => instanceId,
-            requestReconcile: (computerId, currentInstanceId, request, onDispatched) =>
-              runtime.domain.requestReconcile(computerId, currentInstanceId, request, onDispatched),
+            requestReconcile: runtime.domain.requestReconcile.bind(runtime.domain),
           });
         },
       });
@@ -1264,7 +1267,7 @@ describe("IM binding persistence", () => {
     } finally {
       releaseOldStop.resolve();
       releaseDelivery.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1331,7 +1334,7 @@ describe("IM binding persistence", () => {
     } finally {
       releaseFirstAdmission.resolve();
       releaseSecondClaim.resolve();
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1404,7 +1407,7 @@ describe("IM binding persistence", () => {
         status: "recorded",
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -1799,6 +1802,7 @@ describe("IM binding persistence", () => {
           1,
           revisionEvent({
             providerEventId: `under-capacity-${index}`,
+            text: `under-capacity-${index}`,
             externalMessageId: `under-capacity-message-${index}`,
             operation: "created",
             occurredAt: "2026-08-19T00:00:01.000Z",
@@ -1810,8 +1814,9 @@ describe("IM binding persistence", () => {
       expect(overflowPasses).toBe(0);
       expect(
         queries.filter((query) => query.includes("count(*)") && query.includes("im_message_deliveries")),
-      ).toHaveLength(20);
-      expect(queries.filter((query) => /offset/i.test(query))).toHaveLength(0);
+      ).toHaveLength(0);
+      expect(queries.filter((query) => /offset/i.test(query))).toHaveLength(20);
+      expect(await value.database.select().from(imMessageDeliveries)).toHaveLength(20);
     } finally {
       await value.sql.end();
     }
@@ -1833,6 +1838,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "queued-overflow-first",
+          text: "queued-overflow-first",
           externalMessageId: "queued-overflow-first-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:01.000Z",
@@ -1851,6 +1857,7 @@ describe("IM binding persistence", () => {
             1,
             revisionEvent({
               providerEventId: `queued-overflow-${suffix}`,
+              text: `queued-overflow-${suffix}`,
               externalMessageId: `queued-overflow-${suffix}-message`,
               operation: "created",
               occurredAt: "2026-08-19T00:00:02.000Z",
@@ -1880,7 +1887,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("preserves in-flight custody when capacity eviction commits before acceptance", async () => {
+  it("protects in-flight dispatch from capacity eviction before acceptance", async () => {
     const value = await fixture();
     try {
       const inbox = new ImMessageInbox(value.database);
@@ -1889,6 +1896,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "capacity-first",
+          text: "capacity-first",
           externalMessageId: "capacity-first-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:01.000Z",
@@ -1932,6 +1940,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "capacity-second",
+          text: "capacity-second",
           externalMessageId: "capacity-second-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:02.000Z",
@@ -1939,14 +1948,13 @@ describe("IM binding persistence", () => {
         }),
       );
       await expect
-        .poll(async () => {
-          const [row] = await value.database
-            .select()
-            .from(imMessageDeliveries)
-            .where(eq(imMessageDeliveries.id, deliveryId));
-          return row;
-        })
-        .toMatchObject({ state: "expired", reason: "capacity" });
+        .poll(
+          async () =>
+            (await value.database.select().from(imMessageDeliveries)).filter(
+              (delivery) => delivery.reason === "capacity",
+            ).length,
+        )
+        .toBe(1);
       const [evicted] = await value.database
         .select()
         .from(imMessageDeliveries)
@@ -1957,8 +1965,9 @@ describe("IM binding persistence", () => {
         .from(imMessageDeliveries)
         .where(inArray(imMessageDeliveries.id, [...fillerDeliveryIds, ...second.deliveryIds]));
       expect(retained).toHaveLength(100);
-      expect(retained.every((delivery) => delivery.state === "pending" && delivery.reason === null)).toBe(true);
-      expect(evicted).toMatchObject({ state: "expired", reason: "capacity" });
+      expect(retained.filter((delivery) => delivery.state === "pending" && delivery.reason === null)).toHaveLength(99);
+      expect(retained.filter((delivery) => delivery.reason === "capacity")).toHaveLength(1);
+      expect(evicted).toMatchObject({ state: "pending", reason: null, dispatchRequestId: expect.any(String) });
       const turnId = `turn-${deliveryId}`;
       deliveryGate.resolve();
       await deliveryRun;
@@ -1987,13 +1996,14 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("expires ambient deliveries beyond capacity and preserves the 500 retained entries", async () => {
+  it("expires ambient deliveries beyond capacity and preserves the newest 99 eligible entries", async () => {
     const value = await fixture();
     try {
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const inbox = new ImMessageInbox(value.database);
       const firstEvent = revisionEvent({
         providerEventId: "ambient-capacity-first",
+        text: "ambient-capacity-first",
         externalMessageId: "ambient-capacity-first-message",
         operation: "created",
         occurredAt: "2026-08-19T00:00:01.000Z",
@@ -2009,12 +2019,13 @@ describe("IM binding persistence", () => {
         value.database,
         value.imBindingId,
         session.id,
-        499,
+        98,
         "ambient-capacity-filler",
         "ambient",
       );
       const secondEvent = revisionEvent({
         providerEventId: "ambient-capacity-second",
+        text: "ambient-capacity-second",
         externalMessageId: "ambient-capacity-second-message",
         operation: "created",
         occurredAt: "2026-08-19T00:00:02.000Z",
@@ -2037,7 +2048,7 @@ describe("IM binding persistence", () => {
         .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
         .from(imMessageDeliveries)
         .where(inArray(imMessageDeliveries.id, [...fillerIds, ...second.deliveryIds]));
-      expect(retained).toHaveLength(500);
+      expect(retained).toHaveLength(99);
       expect(retained.every((delivery) => delivery.state === "pending" && delivery.reason === null)).toBe(true);
     } finally {
       await value.sql.end();
@@ -2061,6 +2072,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "async-overflow-first",
+          text: "async-overflow-first",
           externalMessageId: "async-overflow-first-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:01.000Z",
@@ -2078,6 +2090,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "async-overflow-second",
+          text: "async-overflow-second",
           externalMessageId: "async-overflow-second-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:02.000Z",
@@ -2101,6 +2114,7 @@ describe("IM binding persistence", () => {
         1,
         revisionEvent({
           providerEventId: "async-overflow-third",
+          text: "async-overflow-third",
           externalMessageId: "async-overflow-third-message",
           operation: "created",
           occurredAt: "2026-08-19T00:00:03.000Z",
@@ -2636,6 +2650,99 @@ describe("IM binding persistence", () => {
       );
       const pendingThread = pendingScopes.find((scope) => scope.kind === "thread");
       expect((pendingThread?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps a normalized Feishu quote reply in the Channel Session and routes only a real thread to a Thread Session", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_quote",
+        teamId: "workspace_quote",
+        botOpenId: "ou_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const feishuMessage = (
+        messageId: string,
+        createTime: number,
+        thread: { rootId?: string; threadId?: string; replyToMessageId?: string },
+      ) => {
+        const [event] = normalizeFeishuMessage({
+          appId: "cli_quote",
+          teamId: "workspace_quote",
+          message: {
+            messageId,
+            chatId: "oc_quote_group",
+            chatType: "group",
+            senderId: "ou_human",
+            content: "@_user_1 please check",
+            rawContentType: "text",
+            resources: [],
+            mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Assistant", isBot: true }],
+            mentionAll: false,
+            mentionedBot: true,
+            ...thread,
+            createTime,
+            raw: { header: { event_id: `ev_${messageId}`, tenant_key: "workspace_quote" } },
+          },
+        });
+        if (!event) throw new Error("Missing normalized Feishu event");
+        return event;
+      };
+      const sessionOf = async (deliveryIds: string[]) => {
+        expect(deliveryIds).toHaveLength(1);
+        const [delivery] = await value.database
+          .select({ sessionId: imMessageDeliveries.sessionId })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryIds[0] as string));
+        const [session] = await value.database
+          .select()
+          .from(sessions)
+          .where(eq(sessions.id, delivery?.sessionId as string));
+        return session;
+      };
+
+      const root = await inbox.ingest(imBindingId, 1, feishuMessage("om_quote_root", 1_787_000_001_000, {}));
+      const channel = await sessionOf(root.deliveryIds);
+      expect(channel).toMatchObject({ kind: "channel", threadKey: null });
+
+      const quote = await inbox.ingest(
+        imBindingId,
+        1,
+        feishuMessage("om_quote_reply", 1_787_000_002_000, {
+          rootId: "om_quote_root",
+          replyToMessageId: "om_quote_root",
+        }),
+      );
+      expect(await sessionOf(quote.deliveryIds)).toMatchObject({ id: channel?.id, kind: "channel" });
+      const [stored] = await value.database
+        .select()
+        .from(imMessages)
+        .where(eq(imMessages.externalMessageId, "om_quote_reply"));
+      expect(stored).toMatchObject({ threadKey: null, replyToExternalId: "om_quote_root" });
+
+      const threaded = await inbox.ingest(
+        imBindingId,
+        1,
+        feishuMessage("om_thread_reply", 1_787_000_003_000, {
+          rootId: "om_quote_root",
+          threadId: "omt_quote_thread",
+          replyToMessageId: "om_quote_root",
+        }),
+      );
+      expect(await sessionOf(threaded.deliveryIds)).toMatchObject({ kind: "thread", threadKey: "omt_quote_thread" });
+      expect(
+        await value.database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(and(eq(sessions.channelId, "oc_quote_group"), eq(sessions.kind, "thread"))),
+      ).toHaveLength(1);
     } finally {
       await value.sql.end();
     }
@@ -3550,7 +3657,12 @@ describe("IM binding persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
-      const registry = { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId };
+      const registry = {
+        canReceiveSnapshot: () => true,
+        capabilityVersion: () => 1,
+        currentInstanceId: () => instanceId,
+        supportsCapability: () => false,
+      };
       const failedDomain = {
         requestReconcile: dispatchedRuntimeFailure(new Error("runtime unavailable")),
         requestDelivery: vi.fn(),
@@ -3688,6 +3800,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId,
         steerResult: "rejected",
+        steerReason: "invalid_input",
         installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
@@ -3708,7 +3821,7 @@ describe("IM binding persistence", () => {
         .where(eq(imMessageDeliveries.id, admitted.deliveryIds[0] as string));
       expect(rejected).toMatchObject({
         state: "terminal_rejected",
-        reason: "input_conflict",
+        reason: "invalid_input",
         lastErrorCode: "IM_DELIVERY_TERMINAL",
       });
       runtime.domain.close();
@@ -3801,9 +3914,10 @@ describe("IM binding persistence", () => {
   it.each([
     ["target_mismatch", "rejected", "target_mismatch", undefined],
     ["stale_generation", "rejected", "stale_generation", undefined],
+    ["input_conflict", "rejected", "input_conflict", undefined],
     ["steer_state_unknown", "deferred", undefined, "steer_state_unknown"],
   ] as const)(
-    "keeps a %s steer outcome pending and executes it after the root reports",
+    "preserves %s steer evidence and replays only a known no-effect input after the root reports",
     async (_caseName, steerResult, steerReason, steerDeferredReason) => {
       const value = await fixture();
       try {
@@ -3847,7 +3961,8 @@ describe("IM binding persistence", () => {
         expect(deferred).toMatchObject({
           state: "pending",
           steerTargetDeliveryId: root.id,
-          lastErrorCode: "IM_DELIVERY_STEER_DEFERRED",
+          lastErrorCode:
+            steerDeferredReason === "steer_state_unknown" ? "IM_DELIVERY_STEER_UNKNOWN" : "IM_DELIVERY_STEER_DEFERRED",
         });
 
         await expect(
@@ -3869,6 +3984,22 @@ describe("IM binding persistence", () => {
         const frameCount = runtime.frames.length;
         await worker.runOnce();
 
+        if (steerDeferredReason === "steer_state_unknown") {
+          expect(runtime.frames.slice(frameCount)).toEqual([]);
+          const [unknown] = await value.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, deliveryId));
+          expect(unknown).toMatchObject({
+            state: "terminal_rejected",
+            reason: "steer_state_unknown",
+            dispatchRequestId: deferred?.dispatchRequestId,
+            dispatchInputHash: deferred?.dispatchInputHash,
+            dispatchPayload: deferred?.dispatchPayload,
+          });
+          runtime.domain.close();
+          return;
+        }
         expect(runtime.frames.slice(frameCount)).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ type: "session:reconcile", sessionId: root.sessionId }),
@@ -3887,7 +4018,7 @@ describe("IM binding persistence", () => {
     },
   );
 
-  it("retires a persisted steer correlation after the root completes and falls back to a new Turn", async () => {
+  it("retains an unconfirmed steer correlation after the root completes without starting another Turn", async () => {
     const value = await fixture();
     try {
       const instanceId = crypto.randomUUID();
@@ -3970,20 +4101,19 @@ describe("IM binding persistence", () => {
 
       const frameCount = runtime.frames.length;
       await worker.runOnce();
-      expect(runtime.frames.slice(frameCount)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: "session:reconcile", sessionId: pending.sessionId }),
-          expect.objectContaining({ type: "im:deliver", deliveryId: pending.id }),
-        ]),
-      );
-      expect(runtime.frames.slice(frameCount)).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ type: "im:steer", deliveryId: pending.id })]),
-      );
+      expect(runtime.frames.slice(frameCount)).toEqual([]);
       const [accepted] = await value.database
         .select()
         .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.id, pending.id));
-      expect(accepted).toMatchObject({ state: "accepted", steerTargetDeliveryId: null });
+      expect(accepted).toMatchObject({
+        state: "terminal_rejected",
+        reason: "steer_state_unknown",
+        steerTargetDeliveryId: root.id,
+        dispatchRequestId: steerRequest.requestId,
+        dispatchInputHash: computeRuntimeImSteerInputHash(steerRequest),
+        dispatchPayload: steerRequest,
+      });
       runtime.domain.close();
     } finally {
       await value.sql.end();
@@ -4168,7 +4298,7 @@ describe("IM binding persistence", () => {
         previousSequence = snapshot.revision.session.sequence;
       }
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -4354,7 +4484,7 @@ describe("IM binding persistence", () => {
         updatedAgent.runtimeConfig.revision,
       );
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -4431,10 +4561,11 @@ describe("IM binding persistence", () => {
         value.imBindingId,
         1,
         revisionEvent({
+          // Runtime revision is newer; provider time is earlier so the input is claimable in order.
           providerEventId: "Ev-agent-claim-race-pending",
           externalMessageId: "agent-claim-race-pending",
           operation: "created",
-          occurredAt: "2026-08-19T00:00:02.000Z",
+          occurredAt: "2026-08-19T00:00:00.000Z",
           revisionKey: "1",
         }),
       );
@@ -4452,7 +4583,12 @@ describe("IM binding persistence", () => {
         },
       };
       const oldDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
-      const oldRegistry = { canReceiveSnapshot: () => true, currentInstanceId: () => firstInstanceId };
+      const oldRegistry = {
+        canReceiveSnapshot: () => true,
+        capabilityVersion: () => 1,
+        currentInstanceId: () => firstInstanceId,
+        supportsCapability: () => false,
+      };
       const racingRun = new ImDeliveryWorker({
         assembler: guardedAssembler,
         database: value.database,
@@ -4587,7 +4723,7 @@ describe("IM binding persistence", () => {
         expect.objectContaining({ type: "im:deliver", deliveryId: secondDeliveryId }),
       ]);
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -4623,7 +4759,12 @@ describe("IM binding persistence", () => {
       };
       const firstWorker = imDeliveryWorker({
         database: value.database,
-        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId } as never,
+        registry: {
+          canReceiveSnapshot: () => true,
+          capabilityVersion: () => 1,
+          currentInstanceId: () => instanceId,
+          supportsCapability: () => false,
+        } as never,
         domain: firstDomain as never,
         claimLeaseMs: 300,
         claimRenewMs: 50,
@@ -4663,7 +4804,12 @@ describe("IM binding persistence", () => {
       const secondDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       const secondWorker = imDeliveryWorker({
         database: value.database,
-        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => undefined } as never,
+        registry: {
+          canReceiveSnapshot: () => true,
+          capabilityVersion: () => 1,
+          currentInstanceId: () => undefined,
+          supportsCapability: () => false,
+        } as never,
         domain: secondDomain as never,
       });
       await secondWorker.runOnce();
@@ -4721,7 +4867,12 @@ describe("IM binding persistence", () => {
       const domain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       await imDeliveryWorker({
         database: value.database,
-        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => staleInstanceId } as never,
+        registry: {
+          canReceiveSnapshot: () => true,
+          capabilityVersion: () => 1,
+          currentInstanceId: () => staleInstanceId,
+          supportsCapability: () => false,
+        } as never,
         domain: domain as never,
       }).runOnce();
 
@@ -4773,7 +4924,12 @@ describe("IM binding persistence", () => {
 
       const worker = imDeliveryWorker({
         database: value.database,
-        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId } as never,
+        registry: {
+          canReceiveSnapshot: () => true,
+          capabilityVersion: () => 1,
+          currentInstanceId: () => instanceId,
+          supportsCapability: () => false,
+        } as never,
         domain: {
           requestReconcile: dispatchedRuntimeResult({ status: "ready" }),
           requestDelivery: dispatchedRuntimeResult({
@@ -4873,7 +5029,12 @@ describe("IM binding persistence", () => {
         requestReconcile: dispatchedRuntimeFailure(new Error("reconcile failed before dispatch")),
         requestDelivery: vi.fn(),
       };
-      const registry = { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId };
+      const registry = {
+        canReceiveSnapshot: () => true,
+        capabilityVersion: () => 1,
+        currentInstanceId: () => instanceId,
+        supportsCapability: () => false,
+      };
       const worker = imDeliveryWorker({
         database: value.database,
         registry: registry as never,
@@ -5018,7 +5179,7 @@ describe("IM binding persistence", () => {
         third.domain.handle({ ...report, requestId: crypto.randomUUID() }, third.context),
       ).resolves.toMatchObject({ status: "already_recorded" });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5116,7 +5277,7 @@ describe("IM binding persistence", () => {
       expect(ownerFrame).toBeDefined();
       expect(ownerFrame).not.toHaveProperty("replyRole");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5179,7 +5340,7 @@ describe("IM binding persistence", () => {
       ]);
       expect(second.frames[0]).not.toHaveProperty("runtime");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5209,6 +5370,7 @@ describe("IM binding persistence", () => {
           },
         });
         owners.push(first.domain);
+        const releaseDispatch = vi.spyOn(first.custody, "releaseDeliveryDispatch");
         const firstWorker = imDeliveryWorker({
           database: value.database,
           registry: first.registry,
@@ -5218,6 +5380,7 @@ describe("IM binding persistence", () => {
         const firstFrame = await dispatched.promise;
         first.domain.close();
         await firstRun;
+        await expect(releaseDispatch.mock.results[0]?.value).resolves.toBe("released");
         const turnId = `turn-${durableState}-retained`;
         const report = turnReportFor({
           agentId: firstFrame.agentId,
@@ -5306,7 +5469,7 @@ describe("IM binding persistence", () => {
           turnId,
         });
       } finally {
-        for (const owner of owners) owner.close();
+        for (const owner of owners) await owner.close();
         await value.sql.end();
       }
     },
@@ -5412,7 +5575,7 @@ describe("IM binding persistence", () => {
         turnId: `turn-${firstFrame.deliveryId}`,
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5706,7 +5869,7 @@ describe("IM binding persistence", () => {
         status: "stale_generation",
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5801,7 +5964,7 @@ describe("IM binding persistence", () => {
         ),
       ).resolves.toBe("stale_generation");
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5848,7 +6011,7 @@ describe("IM binding persistence", () => {
         generation: 2,
       });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -5972,7 +6135,7 @@ describe("IM binding persistence", () => {
       ).resolves.toMatchObject({ generation: 2 });
       expect((await clientStore.read(dispatched.agentId, dispatched.sessionId))?.unresolvedTurn).toBeUndefined();
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await rm(clientHome, { recursive: true, force: true });
       await value.sql.end();
     }
@@ -6086,7 +6249,7 @@ describe("IM binding persistence", () => {
           turnId,
         });
       } finally {
-        for (const owner of owners) owner.close();
+        for (const owner of owners) await owner.close();
         await value.sql.end();
       }
     },
@@ -6152,7 +6315,7 @@ describe("IM binding persistence", () => {
         (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, pending.id)))[0],
       ).toMatchObject({ attemptCount: 0, state: "pending" });
     } finally {
-      for (const owner of owners) owner.close();
+      for (const owner of owners) await owner.close();
       await value.sql.end();
     }
   });
@@ -6263,7 +6426,7 @@ describe("IM binding persistence", () => {
         teamBrand: "feishu";
       }>();
       let aborted = false;
-      const registration: FeishuRegistration = {
+      const registration: FeishuRegistration = abortableMockFeishuRegistration({
         qrReady: Promise.resolve({
           url: "https://open.feishu.cn/qr/example",
           expiresAt: new Date(Date.now() + 60_000),
@@ -6272,7 +6435,7 @@ describe("IM binding persistence", () => {
         abort: () => {
           aborted = true;
         },
-      };
+      });
       const gateway: FeishuRegistrationGateway = { start: () => registration };
       let validations = 0;
       const instanceId = crypto.randomUUID();
@@ -6383,14 +6546,15 @@ describe("IM binding persistence", () => {
       instanceId,
       imBindings: value.imBindingService,
       registrations: {
-        start: () => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/read-only",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: () =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/read-only",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: completion.promise,
+            abort: () => undefined,
           }),
-          result: completion.promise,
-          abort: () => undefined,
-        }),
       },
       activation: { activateAtomicAttempt: vi.fn() },
     });
@@ -6461,14 +6625,15 @@ describe("IM binding persistence", () => {
       instanceId: crypto.randomUUID(),
       imBindings: value.imBindingService,
       registrations: {
-        start: () => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/failure",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: () =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/failure",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: completion.promise,
+            abort: () => undefined,
           }),
-          result: completion.promise,
-          abort: () => undefined,
-        }),
       },
       activation: {
         activateAtomicAttempt: vi.fn().mockRejectedValue(new Error("FEISHU_CONNECTION_ERROR")),
@@ -6665,7 +6830,9 @@ describe("IM binding persistence", () => {
         bindingState: "reauthorization_required",
         handoffReady: false,
       });
-      await expect(value.imBindingService.listFeishuConnectionIds(undefined)).resolves.toContain(legacy.id);
+      expect((await value.imBindingService.listFeishuConnectionIds(undefined)).map((row) => row.imBindingId)).toContain(
+        legacy.id,
+      );
       await expect(value.imBindingService.getFeishuConnectionMaterial(legacy.id)).resolves.toMatchObject({
         appSecret: "legacy-secret",
         generation: 1,
@@ -6815,14 +6982,15 @@ describe("IM binding persistence", () => {
         instanceId,
         imBindings: value.imBindingService,
         registrations: {
-          start: () => ({
-            qrReady: Promise.resolve({
-              url: "https://open.feishu.cn/qr/already-bound",
-              expiresAt: new Date(Date.now() + 60_000),
+          start: () =>
+            abortableMockFeishuRegistration({
+              qrReady: Promise.resolve({
+                url: "https://open.feishu.cn/qr/already-bound",
+                expiresAt: new Date(Date.now() + 60_000),
+              }),
+              result: completion.promise,
+              abort: () => undefined,
             }),
-            result: completion.promise,
-            abort: () => undefined,
-          }),
         },
         activation: manager,
       });
@@ -6890,53 +7058,26 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("keeps a replacement Feishu ImBinding Workspace unset until its own verified event arrives", async () => {
+  it("rejects Feishu App replacement and preserves its verified Workspace", async () => {
     const value = await unboundFixture();
     try {
-      const scopes = [...FEISHU_REQUIRED_TENANT_SCOPES];
-      const oldImBindingId = await value.imBindingService.activateFeishu({
+      const input = {
         agentId: value.agent.id,
         appId: "cli_old",
         teamId: "workspace_old",
         botOpenId: "ou_old",
-        teamBrand: "feishu",
+        teamBrand: "feishu" as const,
         appSecret: "secret-old",
-        grantedScopes: scopes,
-      });
-      const replacementId = await value.imBindingService.activateFeishu({
-        agentId: value.agent.id,
-        appId: "cli_new",
-        teamId: null,
-        botOpenId: "ou_new",
-        teamBrand: "feishu",
-        appSecret: "secret-new",
-        grantedScopes: scopes,
-      });
-      expect(replacementId).not.toBe(oldImBindingId);
-      const [replacementBeforeEvent] = await value.database
-        .select()
-        .from(imBindings)
-        .where(eq(imBindings.id, replacementId));
-      expect(replacementBeforeEvent?.externalTeamId).toBeNull();
-      const event = revisionEvent({
-        providerEventId: "new-workspace-event",
-        externalMessageId: "new-workspace-message",
-        operation: "created",
-        occurredAt: "2026-08-19T00:00:01.000Z",
-        revisionKey: "1",
-      });
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      };
+      const oldImBindingId = await value.imBindingService.activateFeishu(input);
+      const before = await value.database.select().from(imBindings).where(eq(imBindings.id, oldImBindingId));
       await expect(
-        new ImMessageInbox(value.database).ingest(replacementId, 1, {
-          ...event,
-          externalAppId: "cli_new",
-          externalTeamId: "workspace_new",
-        }),
-      ).resolves.toMatchObject({ duplicate: false });
-      const [replacementAfterEvent] = await value.database
-        .select()
-        .from(imBindings)
-        .where(eq(imBindings.id, replacementId));
-      expect(replacementAfterEvent?.externalTeamId).toBe("workspace_new");
+        value.imBindingService.activateFeishu({ ...input, appId: "cli_new", teamId: null, botOpenId: "ou_new" }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+      expect(await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id))).toEqual(
+        before,
+      );
     } finally {
       await value.sql.end();
     }
@@ -7078,10 +7219,10 @@ describe("IM binding persistence", () => {
       );
 
       const first = await value.imBindingService.listFeishuConnectionIds(undefined, 100);
-      const second = await value.imBindingService.listFeishuConnectionIds(first.at(-1), 100);
+      const second = await value.imBindingService.listFeishuConnectionIds(first.at(-1)?.imBindingId, 100);
       expect(first).toHaveLength(100);
       expect(second).toHaveLength(1);
-      expect(new Set([...first, ...second]).size).toBe(101);
+      expect(new Set([...first, ...second].map((candidate) => candidate.imBindingId)).size).toBe(101);
     } finally {
       await value.sql.end();
     }
@@ -7094,11 +7235,13 @@ describe("IM binding persistence", () => {
       appSecret: string;
       teamBrand: "feishu";
     }>();
-    const start = vi.fn(() => ({
-      qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/cancel", expiresAt: new Date(Date.now() + 60_000) }),
-      result: completion.promise,
-      abort: vi.fn(),
-    }));
+    const start = vi.fn(() =>
+      abortableMockFeishuRegistration({
+        qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/cancel", expiresAt: new Date(Date.now() + 60_000) }),
+        result: completion.promise,
+        abort: vi.fn(),
+      }),
+    );
     const activateAtomicAttempt = vi.fn();
     const setup = new FeishuSetupService({
       database: value.database,
@@ -7140,11 +7283,15 @@ describe("IM binding persistence", () => {
   it("admits a fresh Feishu attempt after the slot of a canceled one is released", async () => {
     const value = await unboundFixture();
     // Neither registration finishes authorizing: the Account cancels the first and starts again.
-    const openRegistration = () => ({
-      qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/release", expiresAt: new Date(Date.now() + 60_000) }),
-      result: new Promise<never>(() => undefined),
-      abort: vi.fn(),
-    });
+    const openRegistration = () =>
+      abortableMockFeishuRegistration({
+        qrReady: Promise.resolve({
+          url: "https://open.feishu.cn/qr/release",
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+        result: new Promise<never>(() => undefined),
+        abort: vi.fn(),
+      });
     const setup = new FeishuSetupService({
       database: value.database,
       cipher: value.cipher,
@@ -7245,14 +7392,16 @@ describe("IM binding persistence", () => {
       instanceId: crypto.randomUUID(),
       imBindings: value.imBindingService,
       registrations: {
-        start: vi.fn(() => ({
-          qrReady: Promise.resolve({
-            url: "https://open.feishu.cn/qr/cross-provider",
-            expiresAt: new Date(Date.now() + 60_000),
+        start: vi.fn(() =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/cross-provider",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: new Promise<never>(() => undefined),
+            abort: vi.fn(),
           }),
-          result: new Promise<never>(() => undefined),
-          abort: vi.fn(),
-        })),
+        ),
       },
       activation: { activateAtomicAttempt: vi.fn() },
     });
@@ -7576,7 +7725,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("fences Slack configuration revisions across same-installation reauth and authoritative cutover", async () => {
+  it("fences same-identity Slack reauthorization and rejects identity cutover", async () => {
     const value = await unboundFixture();
     const inspectInstallation = vi.fn(async (token: string) => ({
       appId: null,
@@ -7614,59 +7763,38 @@ describe("IM binding persistence", () => {
       const [session] = await value.database.select().from(sessions).where(eq(sessions.imBindingId, firstId)).limit(1);
       if (!session) throw new Error("Configured Slack Session was not created");
 
-      const cutover = await service.configure(value.bootstrap.userId, value.agent.id, {
-        intent: "reauthorize",
-        expectedBinding: {
-          id: firstGuide.id,
-          credentialGeneration: firstGuide.credentialGeneration,
-        },
-        appId: "A_OPENTAG",
-        botAccessToken: "xoxb-replacement",
-        signingSecret: "replacement-secret",
-      });
-      expect(cutover).toMatchObject({ credentialGeneration: 1, appId: "A_OPENTAG", botUserId: "U_REPLACEMENT" });
-      expect(cutover.imBindingId).not.toBe(firstId);
-      const installations = await value.database.select().from(slackInstallations);
-      const currentInstallation = installations.find((row) => row.status === "active");
-      expect(installations.find((row) => row.id === firstInstallation.id)).toMatchObject({
-        status: "disabled",
-        encryptedCredential: null,
-        replacementSlackInstallationId: currentInstallation?.id,
-      });
-      expect(currentInstallation).toMatchObject({ externalAppId: "A_OPENTAG", externalBotId: "U_REPLACEMENT" });
-      await expect(value.database.select().from(imBindings).where(eq(imBindings.id, firstId))).resolves.toEqual([
-        expect.objectContaining({ status: "disabled", replacementImBindingId: cutover.imBindingId }),
-      ]);
-      expect((await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]).toMatchObject({
-        endedAt: expect.any(Date),
-        revision: 2,
-      });
-
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
           intent: "reauthorize",
-          expectedBinding: {
-            id: firstGuide.id,
-            credentialGeneration: firstGuide.credentialGeneration,
-          },
+          expectedBinding: firstGuide,
           appId: "A_OPENTAG",
           botAccessToken: "xoxb-replacement",
+          signingSecret: "replacement-secret",
+        }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+      expect(await value.database.select().from(slackInstallations)).toEqual([firstInstallation]);
+      expect((await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]).toMatchObject({
+        endedAt: null,
+        revision: 1,
+      });
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
+          expectedBinding: firstGuide,
+          appId: "A_CONFIG",
+          botAccessToken: "xoxb-first",
+          signingSecret: "rotated-secret",
+        }),
+      ).resolves.toMatchObject({ imBindingId: firstId, credentialGeneration: 2 });
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
+          expectedBinding: firstGuide,
+          appId: "A_CONFIG",
+          botAccessToken: "xoxb-first",
           signingSecret: "stale-secret",
         }),
       ).rejects.toMatchObject({ code: "SLACK_CONFIGURATION_CONFLICT" });
-
-      const currentGuide = await service.currentBinding(value.bootstrap.userId, value.agent.id);
-      if (!currentGuide) throw new Error("Reauthorized Slack binding was not projected");
-      expect(currentGuide).toMatchObject({ id: cutover.imBindingId, credentialGeneration: 1 });
-      await expect(
-        service.configure(value.bootstrap.userId, value.agent.id, {
-          intent: "reauthorize",
-          expectedBinding: currentGuide,
-          appId: "A_OPENTAG",
-          botAccessToken: "xoxb-replacement",
-          signingSecret: "rotated-secret",
-        }),
-      ).resolves.toMatchObject({ imBindingId: cutover.imBindingId, credentialGeneration: 2 });
     } finally {
       await value.sql.end();
     }

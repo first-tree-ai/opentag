@@ -315,6 +315,49 @@ describe("span helpers", () => {
   });
 });
 
+describe("server diagnostics", () => {
+  it("writes the structured context into the JSON payload beside the code", () => {
+    const error = vi.fn();
+    const report = createServerDiagnosticReporter(() => ({ error }) as never);
+    report("IM_DELIVERY_OPERATION_TIMEOUT", {
+      phase: "deliver",
+      deliveryId: "delivery-1",
+      agentId: "agent-1",
+      computerId: "computer-1",
+      attemptCount: 3,
+    });
+    expect(error).toHaveBeenCalledWith(
+      {
+        phase: "deliver",
+        deliveryId: "delivery-1",
+        agentId: "agent-1",
+        computerId: "computer-1",
+        attemptCount: 3,
+        code: "IM_DELIVERY_OPERATION_TIMEOUT",
+        errorCode: "IM_DELIVERY_OPERATION_TIMEOUT",
+      },
+      "Server diagnostic",
+    );
+  });
+
+  it("keeps a diagnostic context free of secrets and message bodies", () => {
+    const error = vi.fn();
+    const report = createServerDiagnosticReporter(() => ({ error }) as never);
+    report("IM_DELIVERY_RUNTIME_UNAVAILABLE", {
+      phase: "recover",
+      deliveryId: "delivery-2",
+      agentId: "agent-2",
+      computerId: "computer-2",
+      attemptCount: 1,
+      authorization: "Bearer top-secret",
+      messageBody: "PRIVATE_MESSAGE_BODY",
+    } as never);
+    const payload = error.mock.calls[0]?.[0];
+    expect(JSON.stringify(payload)).not.toContain("top-secret");
+    expect(JSON.stringify(payload)).not.toContain("PRIVATE_MESSAGE_BODY");
+  });
+});
+
 describe("background and WebSocket tracing", () => {
   it("supervises the Feishu maintenance timer with one event and counter", async () => {
     const events: unknown[] = [];
@@ -364,7 +407,7 @@ describe("background and WebSocket tracing", () => {
     });
     const diagnosticWrites: Array<Record<string, unknown>> = [];
     const loggerCodes: string[] = [];
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }]];
+    const selectRows = [[], [], [{ displayName: "Agent", receiveMode: "direct_only" }]];
     const database = {
       select: vi.fn(() => resolvedQuery(selectRows.shift() ?? [])),
       transaction: vi.fn(async (run: (transaction: unknown) => Promise<unknown>) =>
@@ -442,7 +485,7 @@ describe("background and WebSocket tracing", () => {
     const qrReady = new Promise<never>((_resolve, reject) => {
       rejectQr = reject;
     });
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
+    const selectRows = [[], [], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
     const startRegistration = vi.fn().mockReturnValue({
       abort: vi.fn(),
       qrReady,
@@ -635,24 +678,34 @@ describe("background and WebSocket tracing", () => {
     const databaseFailure = Object.assign(new Error("PRIVATE_FEISHU_DATABASE_BODY"), {
       code: "PRIVATE_FEISHU_DATABASE_SENDER",
     });
+    const computerId = randomUUID();
+    const ownerAccountId = randomUUID();
     const fenceTransaction = {
+      execute: vi.fn().mockResolvedValue([]),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })) })),
-      select: vi.fn(() =>
-        resolvedQuery([
-          {
-            agent: { computerId: randomUUID() },
-            imBinding: {
-              connectionFencingEpoch: 1,
-              connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
-              connectionOwnerInstanceId: "another-instance",
-              externalAppId: "app-1",
-              externalBotId: "bot-test",
-              externalTeamId: null,
-              provider: "feishu",
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => resolvedQuery([{ agentId }]))
+        .mockImplementationOnce(() =>
+          resolvedQuery([{ computerId, createdByUserId: ownerAccountId, status: "active" }]),
+        )
+        .mockImplementationOnce(() => resolvedQuery([{ ownerAccountId }]))
+        .mockImplementationOnce(() =>
+          resolvedQuery([
+            {
+              agent: { computerId },
+              imBinding: {
+                connectionFencingEpoch: 1,
+                connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
+                connectionOwnerInstanceId: "another-instance",
+                externalAppId: "app-1",
+                externalBotId: "bot-test",
+                externalTeamId: null,
+                provider: "feishu",
+              },
             },
-          },
-        ]),
-      ),
+          ]),
+        ),
     };
     const inbox = new ImMessageInbox({
       transaction: vi
@@ -926,7 +979,7 @@ describe("background and WebSocket tracing", () => {
     const custody = {
       beginDeliveryDispatch: vi.fn().mockResolvedValue("dispatched"),
       acceptDelivery: vi.fn().mockResolvedValue("accepted"),
-      claimRetainedReports: vi.fn().mockResolvedValue(undefined),
+      claimRetainedReports: vi.fn().mockResolvedValue([]),
       getDelivery: vi.fn().mockResolvedValue(undefined),
       getDeliveryByTurn: vi.fn().mockResolvedValue(undefined),
       getTurn: vi.fn().mockResolvedValue(undefined),
@@ -990,9 +1043,6 @@ describe("background and WebSocket tracing", () => {
     expect(() =>
       owner.requestReconcile(computerId, instanceId, { ...conflictRequest, sessionId: randomUUID() }),
     ).toThrow();
-    owner.close();
-    await expect(pendingConflict).resolves.toBeInstanceOf(Error);
-
     const reportBody = {
       deliveryId: acceptedRequest.deliveryId,
       turnId: randomUUID(),
@@ -1015,10 +1065,13 @@ describe("background and WebSocket tracing", () => {
       context,
     );
 
+    await owner.close();
+    await expect(pendingConflict).resolves.toBeInstanceOf(Error);
+
     const timeoutOwner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 2 });
     const timeoutRequest = runtimeReconcileRequest(computerId);
     await expect(timeoutOwner.requestReconcile(computerId, instanceId, timeoutRequest)).rejects.toThrow();
-    timeoutOwner.close();
+    await timeoutOwner.close();
 
     const failingRegistry = new ConnectionRegistry();
     const failingComputerId = randomUUID();
@@ -1040,7 +1093,7 @@ describe("background and WebSocket tracing", () => {
     await expect(
       failingOwner.requestReconcile(failingComputerId, failingInstanceId, sendFailureRequest),
     ).rejects.toThrow();
-    failingOwner.close();
+    await failingOwner.close();
 
     const typedRegistryFailures = [
       [new RuntimeRegistrySendError("instance_replaced", "PRIVATE_REPLACED_RUNTIME_BODY"), "RUNTIME_INSTANCE_REPLACED"],
@@ -1057,7 +1110,7 @@ describe("background and WebSocket tracing", () => {
       await expect(typedFailureOwner.requestReconcile(request.installationId, randomUUID(), request)).rejects.toBe(
         error,
       );
-      typedFailureOwner.close();
+      await typedFailureOwner.close();
     }
 
     const capacityOwner = new RuntimeDomainOwner(registry, custody as never, {
@@ -1070,7 +1123,7 @@ describe("background and WebSocket tracing", () => {
       .catch((error: unknown) => error);
     const capacityRejectedRequest = runtimeReconcileRequest(computerId);
     expect(() => capacityOwner.requestReconcile(computerId, instanceId, capacityRejectedRequest)).toThrow();
-    capacityOwner.close();
+    await capacityOwner.close();
     await expect(capacityPending).resolves.toBeInstanceOf(Error);
 
     const spans = exporter.getFinishedSpans();

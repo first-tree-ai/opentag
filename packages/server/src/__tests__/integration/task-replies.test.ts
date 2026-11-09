@@ -3,7 +3,7 @@ import { count, eq, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
+import { createDatabaseClient, type DatabaseClient, type DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   computers,
@@ -19,6 +19,8 @@ import {
   OUTBOUND_CREATED_REVISION_KEY,
   type OutboundCaptureEvent,
 } from "../../services/im/im-outbound-capture.js";
+import { ImMessageInbox } from "../../services/im/index.js";
+import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/index.js";
 import { TaskService } from "../../services/tasks/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -132,26 +134,66 @@ async function outboundRows(database: DatabaseClient, bindingId: string) {
   return database.select().from(imMessages).where(eq(imMessages.imBindingId, bindingId));
 }
 
-/** The runtime tables a reply read must never consult, however it resolves its scope. */
+/**
+ * The runtime tables a reply read must never consult. It reads chat Sessions, because a Task is one,
+ * but never a Sandbox, a collaboration message, or runtime execution state.
+ */
 const RUNTIME_TABLE_READ =
-  /\b(?:from|join)\s+(?:"?\w+"?\.)?"?(?:sessions|sandboxes|session_messages|cloud_runs|runtime_instances)\b/i;
+  /\b(?:from|join)\s+(?:"?\w+"?\.)?"?(?:sandboxes|session_messages|cloud_runs|runtime_instances)\b/i;
+
+/** Chat Sessions exist before any message these tests store, so ownership by time is unambiguous. */
+const SESSION_CREATED_AT = new Date("2026-09-01T00:00:00.000Z");
+
+async function chatSession(
+  database: DatabaseClient,
+  input: {
+    bindingId: string;
+    channelId: string;
+    conversationKind?: "channel" | "dm";
+    threadKey?: string;
+    createdAt?: Date;
+  },
+) {
+  const [session] = await database
+    .insert(sessions)
+    .values({
+      imBindingId: input.bindingId,
+      channelId: input.channelId,
+      conversationKind: input.conversationKind ?? "channel",
+      kind: input.threadKey ? "thread" : "channel",
+      threadKey: input.threadKey ?? null,
+      createdAt: input.createdAt ?? SESSION_CREATED_AT,
+    })
+    .returning();
+  if (!session) throw new Error("Session fixture was not created");
+  return session;
+}
 
 /** A TaskService whose reads record their SQL, so a test can prove what the query touches. */
 function tracedService(database: DatabaseClient) {
   const statements: string[] = [];
   const dialect = new PgDialect();
-  const traced = new Proxy(database, {
-    get(target, property, receiver) {
-      if (property === "execute") {
-        return (query: SQL) => {
-          statements.push(dialect.sqlToQuery(query).sql);
-          return target.execute(query);
-        };
-      }
-      return Reflect.get(target, property, receiver);
-    },
-  }) as DatabaseClient;
-  return { service: new TaskService(traced), statements };
+  const traced = (executor: DatabaseClient | DatabaseTransaction): DatabaseClient | DatabaseTransaction =>
+    new Proxy(executor, {
+      get(target, property) {
+        if (property === "execute") {
+          return (query: SQL) => {
+            statements.push(dialect.sqlToQuery(query).sql);
+            return target.execute(query);
+          };
+        }
+        const value = Reflect.get(target, property);
+        if (property === "transaction") {
+          return (read: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) =>
+            Reflect.apply(value, target, [
+              (transaction: DatabaseTransaction) => read(traced(transaction) as DatabaseTransaction),
+              options,
+            ]);
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return { service: new TaskService(traced(database) as DatabaseClient), statements };
 }
 
 describe("ImOutboundCapture persistence", () => {
@@ -277,7 +319,12 @@ describe("Task replies subresource", () => {
   async function dmTask() {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "slack", "B0BOT");
-    // A private chat is one Task from stored IM context alone; no Session exists for it here.
+    // A private chat is one Task: its channel Session.
+    const session = await chatSession(value.database, {
+      bindingId: binding.id,
+      channelId: "D0DM",
+      conversationKind: "dm",
+    });
     const anchor = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "D0DM",
@@ -285,7 +332,7 @@ describe("Task replies subresource", () => {
       providerContext: { provider: "slack", channelType: "im" },
       occurredAt: new Date("2026-09-22T01:00:00.000Z"),
     });
-    return { ...value, binding, anchor, service: new TaskService(value.database) };
+    return { ...value, binding, anchor, session, service: new TaskService(value.database) };
   }
 
   async function captureOutbound(
@@ -326,9 +373,11 @@ describe("Task replies subresource", () => {
       parentId?: string;
       threadId?: string;
       createTime?: string;
+      observedAt?: Date;
     },
   ) {
-    const capture = new ImOutboundCapture(database, { now: () => OBSERVED_AT });
+    const observedAt = input.observedAt ?? OBSERVED_AT;
+    const capture = new ImOutboundCapture(database, { now: () => observedAt });
     await capture.capture({
       provider: "feishu",
       operationId: "feishu.im.messages.reply",
@@ -349,7 +398,7 @@ describe("Task replies subresource", () => {
           body: { content: JSON.stringify({ text: input.text }) },
         },
       },
-      observedAt: OBSERVED_AT,
+      observedAt,
     });
   }
 
@@ -372,11 +421,15 @@ describe("Task replies subresource", () => {
     });
 
     const firstPage = await value.service.listReplies(value.bootstrap.userId, value.anchor.id, { limit: 2 });
+    // Reading creates nothing: the only Session is the fixture's, and no delivery exists.
     const [sessionRow] = await value.database.select({ value: count() }).from(sessions);
     const [deliveryRow] = await value.database.select({ value: count() }).from(imMessageDeliveries);
-    expect(sessionRow?.value).toBe(0);
+    expect(sessionRow?.value).toBe(1);
     expect(deliveryRow?.value).toBe(0);
+    // The Session id and the anchor message id name the same Task.
+    const bySession = await value.service.listReplies(value.bootstrap.userId, value.session.id, { limit: 2 });
     expect(firstPage.items.map((item) => item.fallbackText)).toEqual(["Third reply", "Second reply"]);
+    expect(bySession.items.map((item) => item.fallbackText)).toEqual(["Third reply", "Second reply"]);
     expect(firstPage.nextCursor).not.toBeNull();
     expect(firstPage.items[0]).toMatchObject({
       provider: "slack",
@@ -398,9 +451,10 @@ describe("Task replies subresource", () => {
     await value.sql.end();
   });
 
-  it("resolves the scope and reads replies from stored IM data only", async () => {
+  it("resolves the scope and reads replies without touching runtime state", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    await chatSession(value.database, { bindingId: binding.id, channelId: "oc_trace_group" });
     const anchor = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "oc_trace_group",
@@ -425,9 +479,10 @@ describe("Task replies subresource", () => {
     await value.sql.end();
   });
 
-  it("shows a first Feishu thread reply under its captured native root", async () => {
+  it("keeps a thread reply with the channel Session until that thread's Session exists", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    const channel = await chatSession(value.database, { bindingId: binding.id, channelId: "oc_group" });
     const rootAnchor = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "oc_group",
@@ -435,14 +490,7 @@ describe("Task replies subresource", () => {
       providerContext: { provider: "feishu", chatType: "group" },
       occurredAt: new Date("2026-09-22T01:00:00.000Z"),
     });
-    const otherAnchor = await inboundMessage(value.database, {
-      bindingId: binding.id,
-      channelId: "oc_group",
-      externalMessageId: "om_other_root",
-      providerContext: { provider: "feishu", chatType: "group" },
-      occurredAt: new Date("2026-09-22T01:05:00.000Z"),
-    });
-    // Only the inbound roots exist; the captured replies carry the native thread/root context.
+    // The channel Session answers in a new thread before anybody replied there.
     await captureFeishuReply(value.database, binding.id, {
       messageId: "om_first_reply",
       chatId: "oc_group",
@@ -450,14 +498,6 @@ describe("Task replies subresource", () => {
       rootId: "om_root",
       parentId: "om_root",
       threadId: "omt_first_topic",
-    });
-    await captureFeishuReply(value.database, binding.id, {
-      messageId: "om_other_reply",
-      chatId: "oc_group",
-      text: "Other thread reply",
-      rootId: "om_other_root",
-      parentId: "om_other_root",
-      threadId: "omt_other_topic",
     });
 
     const service = new TaskService(value.database);
@@ -470,10 +510,13 @@ describe("Task replies subresource", () => {
       timeSource: "observed",
     });
 
-    const others = await service.listReplies(value.bootstrap.userId, otherAnchor.id, { limit: 20 });
-    expect(others.items.map((item) => item.externalMessageId)).toEqual(["om_other_reply"]);
-
-    // A later child in the same thread resolves to the same ambient root.
+    // Somebody answers in the thread: its Session now owns the thread's later replies.
+    const thread = await chatSession(value.database, {
+      bindingId: binding.id,
+      channelId: "oc_group",
+      threadKey: "omt_first_topic",
+      createdAt: new Date(OBSERVED_AT.getTime() + 60_000),
+    });
     const followup = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "oc_group",
@@ -482,14 +525,181 @@ describe("Task replies subresource", () => {
       providerContext: { provider: "feishu", chatType: "group", threadId: "omt_first_topic", rootId: "om_root" },
       occurredAt: new Date("2026-09-22T01:10:00.000Z"),
     });
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_second_reply",
+      chatId: "oc_group",
+      text: "Second thread reply",
+      rootId: "om_root",
+      parentId: "om_followup",
+      threadId: "omt_first_topic",
+      observedAt: new Date(OBSERVED_AT.getTime() + 120_000),
+    });
     const viaChild = await service.listReplies(value.bootstrap.userId, followup.id, { limit: 20 });
-    expect(viaChild.items.map((item) => item.externalMessageId)).toEqual(["om_first_reply"]);
+    expect(viaChild.items.map((item) => item.externalMessageId)).toEqual(["om_second_reply"]);
+    const viaThread = await service.listReplies(value.bootstrap.userId, thread.id, { limit: 20 });
+    expect(viaThread.items.map((item) => item.externalMessageId)).toEqual(["om_second_reply"]);
+    const viaChannel = await service.listReplies(value.bootstrap.userId, channel.id, { limit: 20 });
+    expect(viaChannel.items.map((item) => item.externalMessageId)).toEqual(["om_first_reply"]);
+    await value.sql.end();
+  });
+
+  it("keeps the captured reply to a Feishu quote reply without thread_id in the channel Session's Task", async () => {
+    const value = await accountFixture();
+    const [binding] = await value.database
+      .insert(imBindings)
+      .values({
+        agentId: value.agent.id,
+        provider: "feishu",
+        status: "active",
+        externalAppId: "cli_quote",
+        externalTeamId: "workspace_quote",
+        externalBotId: "ou_bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "synthetic",
+        activatedAt: new Date("2026-09-22T00:00:00.000Z"),
+      })
+      .returning();
+    if (!binding) throw new Error("IM Binding fixture was not created");
+    const inbox = new ImMessageInbox(value.database);
+    const ingest = async (messageId: string, createTime: number, thread: { rootId?: string; parentId?: string }) => {
+      const [event] = normalizeFeishuMessage({
+        appId: "cli_quote",
+        teamId: "workspace_quote",
+        message: {
+          messageId,
+          chatId: "oc_quote_group",
+          chatType: "group",
+          senderId: "ou_human",
+          content: `@_user_1 ${messageId}`,
+          rawContentType: "text",
+          resources: [],
+          mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Atlas", isBot: true }],
+          mentionAll: false,
+          mentionedBot: true,
+          ...(thread.rootId ? { rootId: thread.rootId } : {}),
+          ...(thread.parentId ? { replyToMessageId: thread.parentId } : {}),
+          createTime,
+          raw: { header: { event_id: `ev_${messageId}`, tenant_key: "workspace_quote" } },
+        },
+      });
+      if (!event) throw new Error("Missing normalized Feishu event");
+      const result = await inbox.ingest(binding.id, 1, event);
+      expect(result.deliveryIds).toHaveLength(1);
+      const [delivery] = await value.database
+        .select({ kind: sessions.kind, threadKey: sessions.threadKey })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, result.deliveryIds[0] as string));
+      expect(delivery).toEqual({ kind: "channel", threadKey: null });
+      const [stored] = await value.database
+        .select()
+        .from(imMessages)
+        .where(eq(imMessages.externalMessageId, messageId));
+      if (!stored) throw new Error(`Inbound ${messageId} was not stored`);
+      return stored;
+    };
+    const root = await ingest("om_quoted_root", Date.parse("2026-09-22T01:00:00.000Z"), {});
+    const quote = await ingest("om_quote", Date.parse("2026-09-22T01:01:00.000Z"), {
+      rootId: "om_quoted_root",
+      parentId: "om_quoted_root",
+    });
+    expect(quote.threadKey).toBeNull();
+
+    // Feishu answers an unthreaded reply with the quote chain's root_id and the target as parent_id.
+    // The inbox created the channel Session at wall-clock time, so the capture is stored after it.
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_agent_reply",
+      chatId: "oc_quote_group",
+      text: "Answer to the quote reply",
+      rootId: "om_quoted_root",
+      parentId: "om_quote",
+      observedAt: new Date(Date.now() + 60_000),
+    });
+    const [captured] = await value.database
+      .select()
+      .from(imMessages)
+      .where(eq(imMessages.externalMessageId, "om_agent_reply"));
+    // Keyed by the message it answers, never by the quote chain's root_id; no thread Session has it.
+    expect(captured?.threadKey).toBe("om_quote");
+    const chatSessions = await value.database
+      .select({ id: sessions.id, kind: sessions.kind })
+      .from(sessions)
+      .where(eq(sessions.imBindingId, binding.id));
+    expect(chatSessions).toHaveLength(1);
+    const channelSessionId = chatSessions[0]?.id as string;
+    expect(chatSessions[0]?.kind).toBe("channel");
+
+    const service = new TaskService(value.database);
+    for (const id of [quote.id, root.id, channelSessionId]) {
+      const replies = await service.listReplies(value.bootstrap.userId, id, { limit: 20 });
+      expect(replies.items.map((item) => item.externalMessageId)).toEqual(["om_agent_reply"]);
+    }
+    const detail = await service.detail(value.bootstrap.userId, quote.id);
+    expect(detail.task.id).toBe(channelSessionId);
+    await value.sql.end();
+  });
+
+  it("keeps a native-thread reply stored by the earlier capture, without threadId, in its thread's Task", async () => {
+    const value = await accountFixture();
+    const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    const channel = await chatSession(value.database, { bindingId: binding.id, channelId: "oc_legacy_group" });
+    const thread = await chatSession(value.database, {
+      bindingId: binding.id,
+      channelId: "oc_legacy_group",
+      threadKey: "omt_native",
+    });
+    await inboundMessage(value.database, {
+      bindingId: binding.id,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_root",
+      providerContext: { provider: "feishu", chatType: "group" },
+      occurredAt: new Date("2026-09-22T01:00:00.000Z"),
+    });
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_first",
+      chatId: "oc_legacy_group",
+      text: "First thread reply",
+      rootId: "om_root",
+      parentId: "om_root",
+      threadId: "omt_native",
+      createTime: String(Date.parse("2026-09-22T01:01:00.000Z")),
+    });
+    // The row the earlier capture stored for a reply to om_first whose response omitted thread_id and
+    // root_id: thread key and root resolved from the stored parent, but no threadId recorded.
+    await value.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_legacy_second",
+      providerRevisionKey: OUTBOUND_CREATED_REVISION_KEY,
+      operation: "created",
+      direction: "outbound",
+      threadKey: "omt_native",
+      replyToExternalId: "om_first",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      authorDisplayName: null,
+      content: { version: 1, fallbackText: "Legacy second reply", blocks: [], truncated: false },
+      providerContext: { provider: "feishu", parentId: "om_first", rootId: "om_root" },
+      occurredAt: new Date("2026-09-22T01:02:00.000Z"),
+      receivedAt: new Date("2026-09-22T01:02:00.000Z"),
+    });
+
+    // Attribution is by thread key, so the row with no recorded threadId still matches its thread's
+    // Session; its root_id never moves it to the channel Session that holds the root.
+    const service = new TaskService(value.database);
+    const replies = await service.listReplies(value.bootstrap.userId, thread.id, { limit: 20 });
+    expect(replies.items.map((item) => item.externalMessageId)).toEqual(["om_legacy_second", "om_first"]);
+    const channelReplies = await service.listReplies(value.bootstrap.userId, channel.id, { limit: 20 });
+    expect(channelReplies.items).toEqual([]);
     await value.sql.end();
   });
 
   it("paginates replies that share an instant by native identity without duplicates", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    await chatSession(value.database, { bindingId: binding.id, channelId: "oc_dm", conversationKind: "dm" });
     const anchor = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "oc_dm",
@@ -546,74 +756,57 @@ describe("Task replies subresource", () => {
     await value.sql.end();
   });
 
-  it("does not widen an unknown conversation context to the whole channel", async () => {
+  it("splits a group's replies between its channel Session and its thread Sessions", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "slack", "B0BOT");
-    const anchor = await inboundMessage(value.database, {
+    const channel = await chatSession(value.database, { bindingId: binding.id, channelId: "C0GRP" });
+    const firstThread = await chatSession(value.database, {
       bindingId: binding.id,
-      channelId: "C0UNKNOWN",
-      externalMessageId: "1790000000.000001",
-      // No conversation context proves this private, so it stays the anchor's own topic.
-      providerContext: { provider: "slack" },
-      occurredAt: new Date("2026-09-22T01:00:00.000Z"),
+      channelId: "C0GRP",
+      threadKey: "1790000000.000001",
     });
-    await captureOutbound(value.database, binding.id, "1790042400.000100", "Top-level message", {
-      channelId: "C0UNKNOWN",
+    const secondThread = await chatSession(value.database, {
+      bindingId: binding.id,
+      channelId: "C0GRP",
+      threadKey: "1790000000.000002",
     });
-    await captureOutbound(value.database, binding.id, "1790042460.000200", "Thread reply", {
-      channelId: "C0UNKNOWN",
-      threadTs: "1790000000.000001",
-    });
-
-    const service = new TaskService(value.database);
-    const replies = await service.listReplies(value.bootstrap.userId, anchor.id, { limit: 20 });
-    expect(replies.items.map((item) => item.externalMessageId)).toEqual(["1790042460.000200"]);
-    await value.sql.end();
-  });
-
-  it("isolates group topics: a reply is shown only on the Task of its own thread", async () => {
-    const value = await accountFixture();
-    const binding = await bind(value.database, value.agent.id, "slack", "B0BOT");
     const firstAnchor = await inboundMessage(value.database, {
       bindingId: binding.id,
       channelId: "C0GRP",
-      externalMessageId: "1790000000.000001",
+      externalMessageId: "1790000000.000011",
+      threadKey: "1790000000.000001",
       providerContext: { provider: "slack", channelType: "channel" },
       occurredAt: new Date("2026-09-22T01:00:00.000Z"),
     });
-    const secondAnchor = await inboundMessage(value.database, {
-      bindingId: binding.id,
+    await captureOutbound(value.database, binding.id, "1790042400.000100", "Top-level message", {
       channelId: "C0GRP",
-      externalMessageId: "1790000000.000002",
-      providerContext: { provider: "slack", channelType: "channel" },
-      occurredAt: new Date("2026-09-22T01:05:00.000Z"),
     });
-    const capture = new ImOutboundCapture(value.database, { now: () => OBSERVED_AT });
-    const replyInThread = (messageId: string, threadTs: string): OutboundCaptureEvent => ({
-      ...slackSend(messageId, `Reply in ${threadTs}`),
-      bindingId: binding.id,
-      requestBody: { channel: "C0GRP", thread_ts: threadTs },
-      responsePayload: {
-        ok: true,
-        channel: "C0GRP",
-        ts: messageId,
-        message: { type: "message", bot_id: "B0BOT", text: `Reply in ${threadTs}`, thread_ts: threadTs },
-      },
+    await captureOutbound(value.database, binding.id, "1790042460.000200", "First thread reply", {
+      channelId: "C0GRP",
+      threadTs: "1790000000.000001",
     });
-    await capture.capture(replyInThread("1790042400.000100", "1790000000.000001"));
-    await capture.capture(replyInThread("1790042460.000200", "1790000000.000002"));
+    await captureOutbound(value.database, binding.id, "1790042520.000300", "Second thread reply", {
+      channelId: "C0GRP",
+      threadTs: "1790000000.000002",
+    });
 
     const service = new TaskService(value.database);
-    const first = await service.listReplies(value.bootstrap.userId, firstAnchor.id, { limit: 20 });
-    expect(first.items.map((item) => item.externalMessageId)).toEqual(["1790042400.000100"]);
-    const second = await service.listReplies(value.bootstrap.userId, secondAnchor.id, { limit: 20 });
-    expect(second.items.map((item) => item.externalMessageId)).toEqual(["1790042460.000200"]);
+    const read = async (id: string) =>
+      (await service.listReplies(value.bootstrap.userId, id, { limit: 20 })).items.map(
+        (item) => item.externalMessageId,
+      );
+    expect(await read(channel.id)).toEqual(["1790042400.000100"]);
+    expect(await read(firstThread.id)).toEqual(["1790042460.000200"]);
+    expect(await read(firstAnchor.id)).toEqual(["1790042460.000200"]);
+    expect(await read(secondThread.id)).toEqual(["1790042520.000300"]);
     await value.sql.end();
   });
 
-  it("maps a Feishu topic through the same-binding thread root mapping", async () => {
+  it("attributes a Feishu topic reply to the thread Session of its thread id", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    await chatSession(value.database, { bindingId: binding.id, channelId: "oc_topic_group" });
+    await chatSession(value.database, { bindingId: binding.id, channelId: "oc_topic_group", threadKey: "omt_topic" });
     // A follow-up inbound message inside the topic creates the thread_key → root mapping.
     const anchor = await inboundMessage(value.database, {
       bindingId: binding.id,

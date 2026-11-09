@@ -1,5 +1,5 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentListItem, secondAgentListItem } from "../../__tests__/support/app-fixtures.js";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import type { AgentListItem } from "./agent-model.js";
@@ -71,40 +71,128 @@ describe("Agent list creation order", () => {
   });
 });
 
-describe("A row whose messaging is being re-verified", () => {
-  it("says so without offering to continue setup, unlike a row whose delivery failed", async () => {
-    const reverifying: AgentListItem = {
+function withAvailability(
+  agent: AgentListItem,
+  availability: Partial<AgentListItem["availability"]>,
+  evidenceConfirmed = true,
+): AgentListItem {
+  return { ...agent, evidenceConfirmed, availability: { ...agent.availability, ...availability } };
+}
+
+const reverifying = withAvailability(readyAgent, {
+  state: "setting_up",
+  reason: "handoff_checking",
+  dependencies: {
+    ...readyAgent.availability.dependencies,
+    handoff: {
+      state: "checking",
+      lastConfirmedAt: agentListItem.updatedAt,
+      providerCli: { phase: "checking_credentials" },
+    },
+  },
+});
+const deliveryFailed = withAvailability(readyAgent, {
+  state: "action_required",
+  reason: "handoff_unavailable",
+  dependencies: {
+    ...readyAgent.availability.dependencies,
+    handoff: { state: "action_required", lastConfirmedAt: agentListItem.updatedAt },
+  },
+});
+const unreadable = withAvailability(
+  readyAgent,
+  { state: "unconfirmed", reason: "agent_unconfirmed", lastConfirmedAt: null },
+  false,
+);
+
+function rowStatus() {
+  return screen.getByRole("link", { name: "Open Reviewer" }).closest("article")?.textContent ?? "";
+}
+
+describe("Agent list status through background refreshes", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows current checks and failed reads immediately without retaining Ready", async () => {
+    const { rerender } = await renderInRouter(<AgentList agents={[readyAgent]} />);
+    expect(rowStatus()).toContain("Ready");
+    rerender(<AgentList agents={[reverifying]} />);
+    expect(rowStatus()).toContain("Checking messaging");
+    expect(rowStatus()).not.toContain("Ready");
+    rerender(<AgentList agents={[deliveryFailed]} />);
+    expect(rowStatus()).toContain("Cannot receive messages");
+    rerender(<AgentList agents={[unreadable]} />);
+    expect(rowStatus()).toContain("Status unavailable");
+    expect(screen.queryByText("Refreshing status")).toBeNull();
+  });
+
+  it("says Checking for a first-seen check, and unreadable evidence with nothing settled as unknown", async () => {
+    const runtimeChecking = withAvailability(readyAgent, {
+      state: "action_required",
+      reason: "runtime_unavailable",
+      dependencies: { ...readyAgent.availability.dependencies, runtime: { provider: "codex", status: "checking" } },
+    });
+    const { rerender } = await renderInRouter(<AgentList agents={[runtimeChecking]} />);
+    expect(rowStatus()).toContain("Checking");
+    expect(rowStatus()).not.toContain("Ready");
+
+    rerender(<AgentList agents={[reverifying]} key="remounted" />);
+    expect(rowStatus()).toContain("Checking");
+
+    rerender(<AgentList agents={[unreadable]} key="remounted-again" />);
+    expect(rowStatus()).toContain("Status unavailable");
+  });
+
+  it("never reads Ready before a first check finds a problem", async () => {
+    const needsPermissions = withAvailability(readyAgent, {
+      state: "action_required",
+      reason: "im_reauthorization_required",
+    });
+    const { rerender } = await renderInRouter(<AgentList agents={[reverifying]} />);
+    expect(rowStatus()).toContain("Checking");
+    expect(rowStatus()).not.toContain("Ready");
+
+    rerender(<AgentList agents={[needsPermissions]} />);
+    expect(rowStatus()).toContain("Messaging permissions need updating");
+
+    // Each read replaces the current status.
+    rerender(<AgentList agents={[reverifying]} />);
+    expect(rowStatus()).toContain("Checking messaging");
+  });
+});
+
+describe("Agent list activity", () => {
+  it("shows each Agent's running Task count, and nothing beside an idle Ready", async () => {
+    const working: AgentListItem = {
       ...readyAgent,
-      availability: {
-        ...readyAgent.availability,
-        state: "setting_up",
-        reason: "handoff_checking",
-        dependencies: {
-          ...readyAgent.availability.dependencies,
-          handoff: {
-            state: "checking",
-            lastConfirmedAt: agentListItem.updatedAt,
-            providerCli: { phase: "checking_credentials" },
-          },
-        },
-      },
+      activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
     };
-    const failed: AgentListItem = {
+    const offline: AgentListItem = {
       ...readyAgent,
       ...secondAgentListItem,
-      availability: {
-        ...readyAgent.availability,
-        state: "action_required",
-        reason: "handoff_unavailable",
-        dependencies: {
-          ...readyAgent.availability.dependencies,
-          handoff: { state: "action_required", lastConfirmedAt: agentListItem.updatedAt },
-        },
-      },
+      availability: { ...readyAgent.availability, state: "action_required", reason: "computer_offline" },
     };
-    await renderInRouter(<AgentList agents={[reverifying, failed]} />);
-    expect(screen.getByText("Checking messaging")).toBeTruthy();
-    expect(screen.getByText("Cannot receive messages")).toBeTruthy();
-    expect(screen.getAllByRole("link", { name: "Continue setup" })).toHaveLength(1);
+    const { rerender } = await renderInRouter(<AgentList agents={[working, offline]} />);
+    const row = (name: string) => screen.getByRole("link", { name }).closest("article")?.textContent ?? "";
+    expect(row("Open Reviewer")).toContain("2 tasks running");
+    expect(row("Open Helper")).not.toContain("Waiting");
+
+    rerender(<AgentList agents={[readyAgent, offline]} />);
+    expect(row("Open Reviewer")).toContain("Ready");
+    expect(row("Open Reviewer")).not.toContain("Waiting");
+  });
+});
+
+describe("Agent list row actions", () => {
+  it("links a messaging permission problem to the messaging settings, like setup problems link to setup", async () => {
+    const permissions: AgentListItem = {
+      ...readyAgent,
+      availability: { ...readyAgent.availability, state: "action_required", reason: "im_reauthorization_required" },
+    };
+    await renderInRouter(<AgentList agents={[permissions]} />);
+    expect(screen.getByRole("link", { name: "Update permissions" }).getAttribute("href")).toBe(
+      `/agents/${readyAgent.id}/settings/messaging`,
+    );
   });
 });

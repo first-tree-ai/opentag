@@ -422,6 +422,7 @@ function LabPreview({
       agentId={LAB_AGENT_ID}
       computerAdapter={memory.computerAdapter}
       key={`setup:${configuration.revision}:${configuration.scenario}:${configuration.inventory}:${configuration.runtime}:${configuration.messagingProvider}`}
+      onBackToAgents={() => onNavigationTargetChange("agents")}
       onExternalNavigation={() => undefined}
       onOpenAgent={() => onNavigationTargetChange("agent")}
       onSetupPreviewViewChange={onSetupViewChange}

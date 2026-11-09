@@ -6,7 +6,7 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
  * producing a dead link at runtime.
  */
 export type AgentSettingsSectionLink = ReturnType<typeof agentSettingsSectionLink>;
-export type AgentSetupLink = ReturnType<typeof agentSetupLink>;
+export type AgentSetupLink = ReturnType<typeof agentSetupLink> | ReturnType<typeof agentSetupSignInLink>;
 
 export function agentDetailLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId" } as const;
@@ -16,9 +16,21 @@ export function agentScheduleDetailLink(agentId: string, scheduleId: string) {
   return { params: { agentId }, search: { schedule: scheduleId }, to: "/agents/$agentId" } as const;
 }
 
+export function agentCreateLink() {
+  return { search: { action: "create" }, to: "/agents/setup" } as const;
+}
+
 export function agentSetupLink(agentId: string) {
   return { search: { agentId }, to: "/agents/setup" } as const;
 }
+
+/** Setup for this Agent with its runtime sign-in steps already open. */
+export function agentSetupSignInLink(agentId: string) {
+  return { hash: RUNTIME_SIGN_IN_HASH, search: { agentId }, to: "/agents/setup" } as const;
+}
+
+/** The setup page opens its runtime sign-in steps when it is reached with this fragment. */
+export const RUNTIME_SIGN_IN_HASH = "sign-in";
 
 export function agentUsageLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/usage" } as const;
@@ -59,4 +71,9 @@ export function agentSettingsSectionLink(agentId: string, section: AgentSettings
 /** Account-owned Computer management, with an optional originating Agent. */
 export function accountComputerLink(computerId?: string, fromAgent?: string) {
   return { to: "/agents/computers", search: { computerId, fromAgent } } as const;
+}
+
+/** Starts a new Computer connection on the Account Computers page, keeping the way back to the Agent. */
+export function connectAnotherComputerLink(fromAgent?: string) {
+  return { to: "/agents/computers", search: { connect: "another", fromAgent } } as const;
 }

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
-import { queryKeys } from "../query/keys.js";
+import { queryKeys, viewerTimezone } from "../query/keys.js";
 import {
   AgentUsageOverview,
   AgentUsageTab,
@@ -48,7 +48,7 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
+    expect(screen.queryByText(/Tasks without reported usage/)).toBeNull();
     const metrics = screen.getByLabelText(/Last 30 days/);
     expect(metrics.classList.contains("grid-cols-2")).toBe(true);
     expect(metrics.classList.contains("divide-x")).toBe(true);
@@ -118,6 +118,13 @@ describe("AgentUsageOverview", () => {
     expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Aug 31");
     expect(usageXAxisTickLabel(Date.parse("2026-09-01T00:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("");
     expect(usageXAxisTickLabel(Date.parse("2026-09-01T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Sep 1");
+    // 2026-09-01T20:00:00.000Z is already 2026-09-02 in Asia/Shanghai, so Sep 2 is the final day bucket there.
+    expect(
+      usageXAxisTickLabel(Date.parse("2026-09-02T00:00:00.000Z"), "2026-09-01T20:00:00.000Z", 30, "Asia/Shanghai"),
+    ).toBe("");
+    expect(
+      usageXAxisTickLabel(Date.parse("2026-09-02T12:00:00.000Z"), "2026-09-01T20:00:00.000Z", 30, "Asia/Shanghai"),
+    ).toBe("Sep 2");
   });
 
   it("reads one window once for the overview and the tab that show it together", async () => {
@@ -130,8 +137,8 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect(await screen.findByText(/31 of 32 tasks reported token usage/)).toBeTruthy();
-    expect(screen.getAllByText(/31 of 32 tasks reported token usage/)).toHaveLength(1);
+    expect(await screen.findByText("Tasks without reported usage: 1")).toBeTruthy();
+    expect(screen.getAllByText("Tasks without reported usage: 1")).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
     for (const period of screen.getAllByRole("combobox", { name: "Usage period" })) {
       expect(period.classList.contains("w-full")).toBe(true);
@@ -155,10 +162,10 @@ describe("AgentUsageOverview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
+    expect(screen.queryByText(/Tasks without reported usage/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
-    expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
+    expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30, viewerTimezone());
   });
 
   it("normalizes non-error failures and explains unavailable token coverage", async () => {
@@ -194,7 +201,7 @@ describe("AgentUsageOverview", () => {
       ],
     });
     await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
-    expect(await screen.findByText(/No token data was reported for the 2 tasks/)).toBeTruthy();
+    expect(await screen.findByText("Tasks without reported usage: 2")).toBeTruthy();
     expect(screen.getByRole("img", { name: /10 Tokens used/ })).toBeTruthy();
     expect(usageWindowLabel(1)).toBe("Last 24 hours");
   });

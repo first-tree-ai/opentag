@@ -113,30 +113,49 @@ describe("selected Runtime full-probe adapter", () => {
     expect(customEnvironment.environment.CLAUDE_CONFIG_DIR).toBe(custom);
   });
 
-  it("preserves exact custom Pi home through the daemon's canonical environment filter", async () => {
+  it("preserves custom Pi home and plugin variables through daemon environment preparation", async () => {
     const home = await isolatedHome();
     const custom = join(home, "pi-config");
     const environment = await resolveRuntimeProbeEnvironment("pi", {
       HOME: home,
       PI_CODING_AGENT_DIR: custom,
+      PI_PLUGIN_SECRET: "plugin-value",
       OPENTAG_SERVER_URL: "https://private.example",
     });
+    expect(environment.environment.PI_PLUGIN_SECRET).toBe("plugin-value");
     expect(environment.home).toBe(custom);
     expect(environment.environment.PI_CODING_AGENT_DIR).toBe(custom);
-    expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
+    expect(environment.environment.OPENTAG_SERVER_URL).toBe("https://private.example");
   });
 
-  it("preserves exact custom Codex home through the daemon's canonical environment filter", async () => {
+  it("preserves Claude native plugin variables with the same home and environment as the daemon", async () => {
+    const home = await isolatedHome();
+    const source = { HOME: home, PATH: "/test/bin", PLUGIN_API_KEY: "fixture-plugin-key" };
+    const resolved = await resolveRuntimeProbeEnvironment("claude-code", source);
+    expect(resolved.environment).toEqual(
+      client.claudeCodeProcessEnvironment(source, resolved.home, join(home, ".claude")),
+    );
+    expect(resolved.environment.PLUGIN_API_KEY).toBe("fixture-plugin-key");
+    expect(resolved.environment.CLAUDE_CONFIG_DIR).toBeUndefined();
+    const { claude } = mockFactories();
+    await probeRuntimeComponent({ provider: "claude-code", environment: source });
+    expect(claude).toHaveBeenCalledWith(expect.objectContaining({ environment: resolved.environment }));
+  });
+
+  it("preserves custom Codex home and plugin variables through the daemon's environment preparation", async () => {
     const home = await isolatedHome();
     const custom = join(home, "codex-config");
     const environment = await resolveRuntimeProbeEnvironment("codex", {
       HOME: home,
       CODEX_HOME: custom,
-      OPENTAG_SERVER_URL: "https://private.example",
+      PLUGIN_API_KEY: "fixture-plugin-key",
     });
     expect(environment.home).toBe(custom);
     expect(environment.environment.CODEX_HOME).toBe(custom);
-    expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
+    expect(environment.environment.PLUGIN_API_KEY).toBe("fixture-plugin-key");
+    expect(environment.environment).toEqual(
+      client.codexAgentRuntimeEnvironment({ HOME: home, CODEX_HOME: custom, PLUGIN_API_KEY: "fixture-plugin-key" }),
+    );
   });
 
   it("bounds even a non-settling probe, aborts owned work, and returns a repairable failure", async () => {

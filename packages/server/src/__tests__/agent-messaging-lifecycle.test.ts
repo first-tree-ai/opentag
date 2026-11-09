@@ -29,6 +29,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "../services/im-bindings/slack/index.js";
+import { abortableMockFeishuRegistration } from "./support/abortable-feishu-registration.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const fixedNow = new Date("2026-08-19T00:00:00.000Z");
@@ -113,7 +114,7 @@ function pendingRegistration() {
     reject = rej;
   });
   void result.catch(() => undefined);
-  const registration = {
+  const registration = abortableMockFeishuRegistration({
     // The setup service measures QR expiry against real time, so the fixture must live in the real future.
     qrReady: Promise.resolve({
       url: "https://feishu.example/qr/lifecycle",
@@ -121,7 +122,7 @@ function pendingRegistration() {
     }),
     result,
     abort: vi.fn(),
-  };
+  });
   return { registration, resolve, reject };
 }
 
@@ -252,12 +253,12 @@ describe("Agent messaging unbind lifecycle", () => {
     expect(retainedMessages).toHaveLength(1);
     await expect(value.service.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toBeUndefined();
 
-    // Any Provider may bind afterwards.
-    const slack = await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
-    expect(slack).toMatchObject({ agentId: value.agent.id, credentialGeneration: 1 });
+    await expect(
+      value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE"),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
   });
 
-  it("releases the Agent-owned Slack installation and allows a Feishu bind afterwards", async () => {
+  it("releases the Slack installation and rejects a new Bot after disconnect", async () => {
     const value = await fixture();
     const activated = await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
     await value.service.unbindForAgent(value.bootstrap.userId, value.agent.id, {
@@ -267,8 +268,9 @@ describe("Agent messaging unbind lifecycle", () => {
     const installations = await unitDatabase.database.select().from(slackInstallations);
     expect(installations).toHaveLength(1);
     expect(installations[0]).toMatchObject({ status: "disabled", encryptedCredential: null });
-    const feishu = await value.service.activateFeishu(feishuActivationInput(value.agent.id));
-    expect(feishu).toEqual(expect.any(String));
+    await expect(value.service.activateFeishu(feishuActivationInput(value.agent.id))).rejects.toMatchObject({
+      code: "IM_BINDING_CONFIGURATION_CONFLICT",
+    });
   });
 
   it("fails closed on stale, foreign, or repeated unbind fences", async () => {
@@ -514,7 +516,7 @@ describe("Feishu setup command fencing", () => {
     }
   });
 
-  it("admits same-Provider reauthorize and replace only against the exact binding generation", async () => {
+  it("admits exact-identity reauthorization and rejects replacement", async () => {
     const value = await fixture();
     const bindingId = await value.service.activateFeishu(feishuActivationInput(value.agent.id));
     const pending = pendingRegistration();
@@ -560,8 +562,10 @@ describe("Feishu setup command fencing", () => {
       ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
       expect((gateway.start as ReturnType<typeof vi.fn>).mock.calls.length).toBe(startsBefore);
 
-      const replacement = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "replace", exact);
-      expect(replacement).toMatchObject({ state: "awaiting_user", intent: "replace" });
+      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, "replace", exact)).rejects.toMatchObject(
+        { code: "IM_BINDING_CONFIGURATION_CONFLICT" },
+      );
+      expect(gateway.start).toHaveBeenCalledTimes(startsBefore);
     } finally {
       await setup.stop();
     }
@@ -574,14 +578,16 @@ describe("Feishu setup command fencing", () => {
     // provider handshake: the transaction-time fence, not the earlier observation, must decide.
     const abort = vi.fn();
     const racingGateway: FeishuRegistrationGateway = {
-      start: vi.fn(() => ({
-        qrReady: value.service.activateFeishu(feishuActivationInput(value.agent.id)).then(() => ({
-          url: "https://feishu.example/qr/race",
-          expiresAt: new Date(Date.now() + 60_000),
-        })),
-        result: pending.registration.result,
-        abort,
-      })),
+      start: vi.fn(() =>
+        abortableMockFeishuRegistration({
+          qrReady: value.service.activateFeishu(feishuActivationInput(value.agent.id)).then(() => ({
+            url: "https://feishu.example/qr/race",
+            expiresAt: new Date(Date.now() + 60_000),
+          })),
+          result: pending.registration.result,
+          abort,
+        }),
+      ),
     };
     const setup = feishuSetup(value, racingGateway);
     try {
@@ -606,7 +612,7 @@ describe("Feishu setup command fencing", () => {
     });
     const pending = pendingRegistration();
     const abort = vi.fn();
-    const start = vi.fn(() => ({ qrReady, result: pending.registration.result, abort }));
+    const start = vi.fn(() => abortableMockFeishuRegistration({ qrReady, result: pending.registration.result, abort }));
     const setup = feishuSetup(value, { start });
     try {
       const command = setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize", {

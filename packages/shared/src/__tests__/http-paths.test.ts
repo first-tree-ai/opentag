@@ -110,6 +110,11 @@ import {
   RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
   RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
+  runtimeAgentMcpServerCredentialsPath,
+  runtimeAgentMcpServerDefinitionPath,
+  runtimeAgentMcpServerOAuthStartPath,
+  runtimeAgentMcpServerOAuthStatusPath,
+  runtimeAgentMcpServerPath,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
@@ -196,9 +201,12 @@ describe("http paths", () => {
       expect(agentContextTreePath(agentId)).toBe(`${base}/context-tree`);
     });
 
-    it("carries the usage window as a query parameter", () => {
+    it("carries the usage window and optional timezone as query parameters", () => {
       expect(agentUsagePath(AGENT_ID, 30)).toBe(`/api/v1/agents/${AGENT_ID}/usage?days=30`);
       expect(agentUsagePath(AGENT_ID, 0)).toBe(`/api/v1/agents/${AGENT_ID}/usage?days=0`);
+      expect(agentUsagePath(AGENT_ID, 30, "Asia/Shanghai")).toBe(
+        `/api/v1/agents/${AGENT_ID}/usage?days=30&timezone=Asia%2FShanghai`,
+      );
     });
 
     it("encodes an agent id that would otherwise change the path shape", () => {
@@ -471,6 +479,13 @@ describe("http paths", () => {
         runtimeSkillPresetInstallPath("mcp-onboarding"),
       );
       expect(render(RUNTIME_DURABLE_WORK_PATH, {})).toBe(RUNTIME_DURABLE_WORK_PATH);
+      expect(runtimeAgentMcpServerPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1");
+      expect(runtimeAgentMcpServerCredentialsPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/credentials");
+      expect(runtimeAgentMcpServerOAuthStartPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/oauth/start");
+      expect(runtimeAgentMcpServerOAuthStatusPath("srv-1")).toBe(
+        "/api/v1/runtime/agent/mcp-servers/srv-1/oauth/status",
+      );
+      expect(runtimeAgentMcpServerDefinitionPath("srv-1")).toBe("/api/v1/runtime/agent/mcp-servers/srv-1/definition");
     });
 
     it("exposes the same static and template values through HTTP_PATHS", () => {

@@ -1,6 +1,7 @@
 import { parseDatabaseConfig } from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import { migrateDatabase } from "../db/migrate.js";
+import { DATABASE_CLOSE_TIMEOUT_SECONDS } from "../db/timeouts.js";
 import { BootstrapAdminInputSchema, bootstrapInitialAdmin } from "./bootstrap.js";
 
 const config = parseDatabaseConfig(process.env);
@@ -15,5 +16,5 @@ try {
   const result = await bootstrapInitialAdmin(database, input);
   process.stdout.write(`${JSON.stringify({ ...result, expiresAt: result.expiresAt.toISOString() })}\n`);
 } finally {
-  await sql.end();
+  await sql.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS });
 }

@@ -1,6 +1,7 @@
-import { MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { McpUpstreamCaller } from "../services/mcp/mcp-gateway-upstream.js";
+import { McpTransportError } from "../services/mcp/mcp-transport.js";
 import {
   MCP_DEFAULT_TIMEOUT_MS,
   MCP_RUNTIME_TIMEOUT_MS,
@@ -76,6 +77,27 @@ function call(fetcher: McpOutboundFetcher, overrides: Record<string, unknown> = 
 }
 
 describe("the modern path", () => {
+  it("sends annotated parameter headers to a strict peer without replaying a rejected write", async () => {
+    let writes = 0;
+    const { fetcher, sent } = scriptedFetcher((body) => {
+      if (sent.at(-1)?.headers["Mcp-Param-owner"] !== "first-tree-ai") {
+        return rpcFail(body, 400, { code: -32020, message: "header mismatch: missing Mcp-Param-owner" });
+      }
+      writes += 1;
+      return rpcOk(body, { content: [] });
+    });
+    const params = { name: "create_issue", arguments: { owner: "first-tree-ai" } };
+    await expect(call(fetcher, { params })).rejects.toMatchObject({ rpcError: { code: -32020 } });
+    expect(sent).toHaveLength(1);
+    expect(writes).toBe(0);
+    await call(fetcher, {
+      params,
+      inputSchema: { properties: { owner: { type: "string", "x-mcp-header": "owner" } } },
+    });
+    expect(sent).toHaveLength(2);
+    expect(writes).toBe(1);
+  });
+
   it("calls once at the row's cached version", async () => {
     const { fetcher, sent } = scriptedFetcher((body) => rpcOk(body, { content: [] }));
     await call(fetcher);
@@ -118,6 +140,23 @@ describe("the modern path", () => {
 });
 
 describe("the legacy path", () => {
+  it("does not apply modern parameter headers to a legacy call", async () => {
+    const { fetcher, sent } = scriptedFetcher((body) =>
+      rpcOk(body, body.method === "initialize" ? { protocolVersion: "2025-11-25" } : { content: [] }),
+    );
+    await call(fetcher, {
+      cachedEra: "legacy",
+      params: { name: "create_issue", arguments: { owner: "first-tree-ai" } },
+      inputSchema: { properties: { owner: { type: "string", "x-mcp-header": "owner" } } },
+    });
+    expect(sent).toHaveLength(3);
+    expect(
+      sent.every((exchange) =>
+        Object.keys(exchange.headers).every((header) => !header.toLowerCase().startsWith("mcp-param-")),
+      ),
+    ).toBe(true);
+  });
+
   it("handshakes before the call when the row records the legacy era", async () => {
     const { fetcher, sent } = scriptedFetcher((body) =>
       body.method === "initialize"
@@ -134,17 +173,30 @@ describe("the legacy path", () => {
     );
     await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" });
     expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    expect(sent[1]?.headers["mcp-session-id"]).toBe("sess-1");
     expect(sent[2]?.headers["MCP-Protocol-Version"]).toBe("2025-06-18");
     // The session the handshake opened rides every subsequent request.
     expect(sent[2]?.headers["mcp-session-id"]).toBe("sess-1");
   });
 
-  it("skips the initialized notification when the peer opened no session", async () => {
+  /*
+   * The notification is what closes the handshake, so it cannot be conditional on the session
+   * header. A legacy Server may answer `initialize` without issuing `Mcp-Session-Id`, and such a
+   * peer still waits for `notifications/initialized` before it accepts anything else.
+   */
+  it("sends the initialized notification when the peer opened no session", async () => {
     const { fetcher, sent } = scriptedFetcher((body) =>
       rpcOk(body, body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { content: [] }),
     );
     await call(fetcher, { cachedEra: "legacy" });
-    expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "tools/call"]);
+    expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    const notification = sent[1];
+    // A notification carries no `id`: the peer must not mistake it for a call it has to answer.
+    expect(notification?.body).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
+    expect(notification?.headers.authorization).toBe("Bearer upstream");
+    expect(notification?.headers["mcp-session-id"]).toBeUndefined();
+    // Nothing was issued, so the call rides without a session too.
+    expect(sent[2]?.headers["mcp-session-id"]).toBeUndefined();
   });
 
   /*
@@ -209,18 +261,112 @@ describe("a failed call is never replayed", () => {
   });
 
   it("dispatches once on the legacy path too", async () => {
+    /*
+     * The notification succeeds here so the failure under test is the tool call's: a rejected
+     * notification has its own cases below, and would otherwise source this failure before the call
+     * is dispatched at all.
+     */
     const { fetcher, sent } = scriptedFetcher((body) =>
       body.method === "initialize"
         ? rpcOk(body, { protocolVersion: "2025-06-18" })
-        : rpcFail(body, 500, { code: -32603, message: "boom" }),
+        : body.method === "notifications/initialized"
+          ? { status: 202, headers: new Headers(), text: "" }
+          : rpcFail(body, 500, { code: -32603, message: "boom" }),
     );
     await expect(call(fetcher, { cachedEra: "legacy" })).rejects.toThrow();
     expect(sent.filter((exchange) => exchange.method === "tools/call")).toHaveLength(1);
   });
 
+  /*
+   * A failed `notifications/initialized` means the handshake never completed, so the call must not
+   * be dispatched at all — the same rule as any other pre-dispatch failure, applied to the step the
+   * session guard used to skip.
+   */
+  it("propagates a failed initialized notification without dispatching the call", async () => {
+    const methods: string[] = [];
+    const fetcher = {
+      fetchOutbound: async (_accountId: string, _url: string, init: McpFetchInit = {}): Promise<McpFetchResponse> => {
+        const body = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+        methods.push(String(body.method));
+        if (body.method === "initialize") return rpcOk(body, { protocolVersion: "2025-06-18" });
+        throw new Error("upstream dropped the notification");
+      },
+    } as unknown as McpOutboundFetcher;
+    await expect(call(fetcher, { cachedEra: "legacy" })).rejects.toThrow(/upstream dropped the notification/);
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+  });
+
   it("still reports the upstream failure rather than swallowing it", async () => {
     const { fetcher } = scriptedFetcher((body) => rpcFail(body, 200, { code: -32602, message: "bad arguments" }));
     await expect(call(fetcher)).rejects.toThrow(/bad arguments/);
+  });
+});
+
+/*
+ * A refused `notifications/initialized` is a half-finished handshake, and the reviewer reproduced it
+ * being ignored: the notification carries no `id`, so it never reached the response interpreter and
+ * its status was discarded, and the peer that had just refused the handshake was then sent the
+ * `tools/call` anyway.
+ *
+ * These drive the real `McpOutboundFetcher` — the SSRF gate, redirect refusal, deadline and body
+ * bound are part of the path — with a network-free `fetch` and resolver, and a session-less
+ * `initialize`, because the session guard is what used to skip the notification entirely. The tool
+ * call is scripted to *succeed*, so a passing assertion cannot come from the tool's own error.
+ */
+describe("a refused initialized notification", () => {
+  const MARKER = "notification-body-marker-7d4e";
+
+  function legacyNode(notifyStatus: number) {
+    const methods: string[] = [];
+    const json = { "content-type": "application/json" };
+    const fetchImpl = (async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const method = String(body.method ?? "");
+      methods.push(method);
+      if (method === "initialize") {
+        // No `mcp-session-id`: a legacy peer that is not issuing sessions still needs the notification.
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: json },
+        );
+      }
+      if (method === "notifications/initialized") {
+        return new Response(JSON.stringify({ message: MARKER }), { status: notifyStatus, headers: json });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [] } }), {
+        status: 200,
+        headers: json,
+      });
+    }) as unknown as typeof globalThis.fetch;
+    return {
+      methods,
+      fetcher: new McpOutboundFetcher({
+        allowLoopback: false,
+        fetch: fetchImpl,
+        resolveAddresses: async () => ["93.184.216.34"],
+      }),
+    };
+  }
+
+  it.each([
+    [400, "The MCP Server returned HTTP 400"],
+    [401, MCP_AUTH_REJECTION_SUMMARY],
+    [500, "The MCP Server returned HTTP 500"],
+  ])("fails the call on HTTP %i and dispatches no tool call", async (status, expected) => {
+    const { fetcher, methods } = legacyNode(status);
+    const error = await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    // The handshake ended at the notification: no tool call, and no second attempt at one.
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+    expect(error).toBeInstanceOf(McpTransportError);
+    expect((error as McpTransportError).code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    expect((error as McpTransportError).status).toBe(status);
+    // The transport's own bounded summary: the peer's body never becomes the message.
+    expect((error as McpTransportError).message).toBe(expected);
+    expect((error as McpTransportError).message).not.toContain(MARKER);
+    expect((error as McpTransportError).message.length).toBeLessThanOrEqual(200);
   });
 });
 

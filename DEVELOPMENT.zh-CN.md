@@ -1,7 +1,7 @@
 # openTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-10-21
+> 同步日期：2026-11-04
 
 ## 从源码在本地运行
 
@@ -155,6 +155,18 @@ pnpm --filter @opentag/server start
 数据库及读写改动先遵循[数据库读写规范](./docs/system/database-read-write-standards.md)。
 在变更方案和评审中说明适用的规范编号、例外及验证范围。
 
+### 发布回归与任务记录
+
+每次发布前，在专用回归电脑上执行 [Markdown 发布回归目录](./testing/regression/README.md)。新增或修改产品
+功能时，在同一变更中补充或更新对应回归用例。回归缺陷指派给 `yuezengwu`。`testing/regression/` 是
+`testing/` 下唯一存放测试内容的子目录，父目录 README 仅作为入口。已有自动化单元测试、集成测试、E2E 测试
+及其 CI 继续由各自目录维护。
+
+普通任务测试计划、验收结果、截图、性能报告、原始验证证据和本地测试环境配置不提交到仓库。任务产物保存在
+源码仓库外，有保留价值的脱敏结论记录到关联 GitHub PR/Issue，注明版本、命令、范围、结果与限制。这些执行
+记录也不属于知识库。性能工具默认写入系统临时目录的 `opentag-benchmarks/`，需要保留时通过输出参数指定
+该任务拥有的存储位置和保留方式。
+
 ### 本地验证
 
 根据变更行为及其使用方选择检查范围。开发过程中与创建 pull request 前使用同一套标准；无需仅为创建 PR
@@ -165,7 +177,7 @@ pnpm --filter @opentag/server start
 | 仅文档 | `pnpm check`；无需应用构建或测试。同步根目录的中文镜像。作为运行时输入发布的 Markdown（如内置 Skills）应按受影响 package 的范围验证。 |
 | 单个 package 内的行为 | 相关测试文件与该 package 的类型检查。影响遍及 package 或范围不明确时，扩展到整个 package 的测试套件。 |
 | 共用 schema、公共导出或跨 package 契约 | 提供方测试，以及受影响使用方的测试与类型检查。测试使用方前先构建变更的导出。 |
-| 数据库查询、事务、锁或持久化 | 相关服务器单元测试与 PostgreSQL 集成测试。新增 migration 必须运行完整集成套件，并按 `AGENTS.md` 更新 migration 计数。 |
+| 数据库查询、事务、锁或持久化 | 相关服务器单元测试与 PostgreSQL 集成测试。新增 migration 遵循[迁移要求](./docs/system/database-read-write-standards.md#migrations)。 |
 | `vitest.agent-runtime.config.ts` 覆盖的 Agent Runtime 实现或测试，或该配置本身 | 先运行针对性测试，再运行 `pnpm --filter @opentag/client test:agent-runtime:coverage`。100% 覆盖率门禁以 CI 的 Ubuntu 主机为准；报告平台相关失败。 |
 | 仓库脚本或 workflow | 相关 `scripts/__tests__/*.test.mjs` 文件，以及改动涉及的构建或打包冒烟检查。 |
 | 构建、导出、生成代码或打包 | 受影响的构建，以及相关测试与类型检查。 |
@@ -215,6 +227,21 @@ Turbo 的 web typecheck 任务已包含此步骤。文件路径相对于选定�
 成功后才开始迁移或测试。若容器健康检查通过，但该查询失败，应检查 Docker 端口转发：TCP 端口开放
 不代表 PostgreSQL 请求已到达容器。查询失败时，fixture 会关闭探测连接并删除容器。
 
+### 容器内 PostgreSQL 探针
+
+在容器内运行 `psql` 和 `pg_isready` 时显式指定 TCP 主机，通常使用 `-h 127.0.0.1` 或
+`--host=127.0.0.1`。官方 Postgres 镜像在初始化期间启动仅监听 socket 的临时服务器，只有最终服务器
+响应 TCP。这依赖镜像在 `postgresql.conf.sample` 中设置 `listen_addresses = '*'`。
+挂载自定义 `postgresql.conf` 或更换镜像系列时，需要重新检查这些探针。
+
+`pnpm check` 通过 `scripts/check-container-postgres-tcp.mjs` 执行此规则。检查覆盖 JS/TS 中的 Docker
+参数字面量与通过 `function` 声明的本地参数转发函数、`.sh` 和 workflow `run` 步骤中的简单 Docker shell
+命令、workflow service `options`，以及 Compose/Docker 健康检查命令。保持这些调用显式；
+动态拼接命令或导入封装函数时，需同步扩展检查器。
+宿主机客户端（包括通过 URL 连接）、有意使用临时服务器的镜像初始化脚本，以及 `--help`/`--version`
+调用无需此参数。普通文本和注释不视为命令。静态检查不能证明运行时就绪，也不验证自定义 Postgres 配置。
+容器内规则只认可 `-h`/`--host`；`PGHOST` 和连接字符串中的主机设置不能替代它。
+
 ### CI 与完整套件复现
 
 CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集成测试和 Agent Runtime 覆盖率检查放在并行任务中执行。
@@ -224,7 +251,11 @@ CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集
 Patch Coverage 在安装依赖之前先检查变更路径。现有可覆盖源码范围之外的变更会明确通过检查；
 源码删除和重命名仍会触发覆盖率测量。源码变更由五个并行任务分别测量各工作区，并检查现有覆盖率下限。
 最终任务要求所有报告齐全，拼接互不重叠的文件覆盖率数据，并执行不变的 80% 变更行覆盖率门槛。
-缺失报告、测试失败或源码归属重叠都会使检查失败。每周的 Unit Coverage 工作流仍测量完整基线。
+缺失报告、测试失败或源码归属重叠都会使检查失败。在已测量的工作区内，门禁只评判覆盖率运行实际统计的文件，
+与测量读取同一份范围定义（`scripts/coverage-scope.mjs`），因此测试辅助文件、冒烟测试和工具配置不会被评判。
+被评判的文件如果没有覆盖率记录，说明它没有被测量，无论百分比多少、即使改动中没有可执行行（例如纯改名），都会单独使检查失败。
+Unit Coverage 工作流在每次涉及源码、脚本或依赖的合并后，以及每周，在 `main` 上测量完整基线；
+`main` 低于覆盖率下限时检查失败，从而把问题归到造成它的那次合并。
 
 PR 的 Quality Scoreboard 在 CI 内运行，复用三个 Node 24 单元测试分片的耗时，不再重复运行测试。
 耗时指标明确标为最慢工作区分片的耗时，不包含仓库脚本测试和 runner 排队时间；它与定时或手动运行时

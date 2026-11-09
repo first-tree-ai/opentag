@@ -246,15 +246,67 @@ trim_slashes() {
   printf '%s' "$1" | sed 's:/*$::'
 }
 
+# curl --retry does not treat CURLE_RECV_ERROR (exit 56, e.g. a CDN edge connection reset) as
+# transient without --retry-all-errors, which older system curl builds (such as macOS /usr/bin/curl)
+# do not support, and wget has no equivalent. Retry full downloads in an outer loop instead, removing
+# any partial target file before each attempt.
 download_to() {
   url="$1"
   dest="$2"
   if command_exists curl; then
-    curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"
+    downloader="curl"
   elif command_exists wget; then
-    wget -qO "$dest" "$url"
+    downloader="wget"
   else
-    die "curl or wget is required"
+    die "openTag setup needs curl or wget to download files, and neither is installed.
+Next: install curl (for example: sudo apt-get install curl), then run the same command again."
+  fi
+
+  attempt=1
+  max_attempts=4
+  retry_delay="${OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY:-2}"
+  while :; do
+    rm -f "$dest"
+    if [ "$downloader" = "curl" ]; then
+      if curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"; then
+        return 0
+      else
+        rc=$?
+      fi
+    else
+      if wget -qO "$dest" "$url"; then
+        return 0
+      else
+        rc=$?
+      fi
+    fi
+    rm -f "$dest"
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return "$rc"
+    fi
+    attempt=$((attempt + 1))
+    sleep "$retry_delay"
+  done
+}
+
+# The nearest existing ancestor of a path that may not exist yet.
+existing_ancestor() {
+  dir="$1"
+  while [ ! -e "$dir" ]; do
+    dir="$(dirname "$dir")"
+  done
+  printf '%s' "$dir"
+}
+
+# Fail before downloading anything when the install root or shim directory cannot be created, with
+# one plain reason and a next step instead of a cascade of mkdir errors.
+require_writable() {
+  target="$1"
+  flag="$2"
+  ancestor="$(existing_ancestor "$target")"
+  if [ ! -d "$ancestor" ] || [ ! -w "$ancestor" ]; then
+    die "openTag cannot write to $ancestor (needed for $target): permission denied.
+Next: fix the folder's permissions for user $(id -un 2>/dev/null || printf 'this user'), or choose another folder with $flag, then run the same command again."
   fi
 }
 
@@ -466,13 +518,13 @@ maybe_edit_path() {
   fi
 
   if ! profile="$(profile_for_shell)"; then
-    log "Automatic PATH setup skipped: this shell is not recognized."
+    info "Automatic PATH setup skipped: this shell is not recognized."
     return 0
   fi
 
   if [ "$PATH_MODE" = "prompt" ]; then
     if [ ! -t 0 ]; then
-      log "Automatic PATH setup skipped because prompt mode requires an interactive shell."
+      info "Automatic PATH setup skipped because prompt mode requires an interactive shell."
       return 0
     fi
     printf 'Add %s to PATH in %s? [Y/n] ' "$BIN_DIR" "$profile"
@@ -488,7 +540,7 @@ maybe_edit_path() {
 
   if rewrite_path_block "$profile"; then
     PATH_UPDATED_PROFILE="$profile"
-    log "Updated PATH block in $profile"
+    info "Updated PATH block in $profile"
   else
     log "PATH setup failed for $profile."
   fi
@@ -533,11 +585,17 @@ cleanup() {
     else
       summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. Nothing was activated; any existing install is unchanged."
     fi
-    printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
-    printf '%s\n' "Re-run with --help for options." >&2 || :
+    # A failure before step 1 is a preflight refusal whose reason (and next step) die already printed.
+    if [ "$CURRENT_STEP" -gt 0 ]; then
+      printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
+      [ "$QUIET" -eq 1 ] || printf '%s\n' "Re-run with --help for options." >&2 || :
+    fi
   fi
 }
 trap cleanup EXIT HUP INT TERM
+
+require_writable "$PREFIX" "--prefix"
+require_writable "$BIN_DIR" "--bin-dir"
 
 step "Detecting platform ..."
 PLATFORM="$(detect_platform)"
@@ -576,10 +634,13 @@ fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
   ok "already current"
-  log "openTag ${VERSION} is already installed and up to date; skipping download."
-  log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
-  print_footer "openTag is already up to date."
+  if [ "$QUIET" -eq 1 ]; then
+    # Quiet callers (the connect command) get one line: nothing was downloaded or changed.
+    log "openTag ${VERSION} is already installed."
+    exit 0
+  fi
+  print_footer "openTag is already up to date." "openTag ${VERSION} is already installed; nothing was downloaded."
   exit 0
 fi
 end_step
@@ -694,4 +755,8 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 
+if [ "$QUIET" -eq 1 ]; then
+  log "openTag ${VERSION} installed."
+  exit 0
+fi
 print_footer "openTag is ready." "openTag ${VERSION} installed at $FINAL_VERSION_DIR"

@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildSandboxDeleteArgv,
   buildSandboxExecArgv,
-  buildSandboxMetadataScript,
+  buildSandboxMetadataRead,
   buildSandboxRunArgv,
   MAX_RESOLVER_BYTES,
   NativeSandbox,
@@ -106,6 +109,8 @@ function requiredResolverCopy(args: readonly string[]): string {
 
 /** The valid combined identity + Pi metadata payload the in-Sandbox read prints. */
 const PROBE_METADATA_STDOUT = JSON.stringify({
+  nodeVersion: "v24.19.0",
+  isolated: true,
   runnerVersion: "1.0.0",
   identityPiPackage: "@earendil-works/pi-coding-agent",
   identityPiVersion: "0.84.2",
@@ -113,18 +118,16 @@ const PROBE_METADATA_STDOUT = JSON.stringify({
   piVersion: "0.84.2",
 });
 
-/** Probe answers for the canary test: node version, combined metadata read, then the isolation exec. */
+/** One combined readiness response for each fresh sandbox probe. */
 function respondToProbe(args: readonly string[], onCanary: (canary: string) => void) {
   if (args[0] !== "exec") return { code: 0 };
   const command = args[3];
   const commandArgs = args.slice(4);
-  if (command === SANDBOX_NODE && commandArgs[0] === "--version") return { code: 0, stdout: "v24.19.0\n" };
   if (command !== SANDBOX_NODE || commandArgs[0] !== "-e") return { code: 0 };
   const code = commandArgs[1] ?? "";
-  if (code.includes("identity.json")) return { code: 0, stdout: PROBE_METADATA_STDOUT };
   const canary = /opentag-rootfs-[0-9a-f-]+/.exec(code)?.[0];
   if (canary !== undefined) onCanary(canary);
-  return { code: 0, stdout: "isolated" };
+  return { code: 0, stdout: PROBE_METADATA_STDOUT };
 }
 
 /** Every `sandbox exec` the probe issues, classified by what it runs inside the sandbox. */
@@ -139,7 +142,7 @@ function probeExecKinds(calls: readonly RecordedSpawn[]): {
     if (call.args[0] !== "exec") continue;
     if (call.args[3] === SANDBOX_PI) kinds.piCli += 1;
     if (call.args[3] !== SANDBOX_NODE) continue;
-    if (call.args[4] === "--version") kinds.node += 1;
+    kinds.node += 1;
     const script = call.args[5] ?? "";
     if (script.includes("identity.json")) kinds.metadata += 1;
     if (script.includes("opentag-rootfs-")) kinds.canary += 1;
@@ -406,9 +409,7 @@ describe("native sandbox resolver snapshot", () => {
     await sandbox.destroy();
     expect(canaries).toHaveLength(2);
     expect(canaries[1]).toBe(canaries[0]);
-    // Every probe re-runs the full set fresh: real Node execution, the combined metadata read,
-    // and the isolation canaries. Nothing is cached across probes, and no probe ever launches
-    // the Pi CLI inside the sandbox.
+    // Each fresh probe checks Node, metadata and isolation in the same process.
     expect(probeExecKinds(calls)).toEqual({ node: 2, metadata: 2, canary: 2, piCli: 0 });
   });
 
@@ -431,7 +432,7 @@ describe("native sandbox resolver snapshot", () => {
     expect(probe).toEqual({ nodeVersion: "v24.19.0", piVersion: "0.84.2", runnerVersion: "1.0.0" });
     await sandbox.destroy();
     const execs = calls.filter((call) => call.args[0] === "exec");
-    expect(execs.length).toBeGreaterThan(0);
+    expect(execs).toHaveLength(1);
     expect(execs.every((call) => call.args[3] === SANDBOX_NODE)).toBe(true);
     expect(calls.some((call) => call.args.includes(SANDBOX_PI))).toBe(false);
   });
@@ -468,13 +469,12 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
       JSON.stringify({ ...JSON.parse(PROBE_METADATA_STDOUT), ...overrides });
 
     await expect(
-      probeWith((args) => (args[3] === SANDBOX_NODE && args[4] === "--version" ? { code: 1 } : { code: 0 })).probe(),
+      probeWith((args) => (args[3] === SANDBOX_NODE ? { code: 1 } : { code: 0 })).probe(),
     ).rejects.toMatchObject({ code: "probe_failed", message: /working node runtime/ });
     // The in-Sandbox metadata read failed: missing or corrupt identity/Pi package files, or an
     // inaccessible shim/CLI artifact. The script's own bounded diagnostic is preserved.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
           return { code: 1, stderr: "runner-metadata:pi-package-corrupt" };
         }
@@ -487,7 +487,6 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     // The metadata payload is not JSON at all.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) return { code: 0, stdout: "{nope" };
         return { code: 0 };
       }).probe(),
@@ -495,7 +494,6 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     // The Runner version keeps its exact alphabet check.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
           return { code: 0, stdout: metadataWith({ runnerVersion: "not a version!" }) };
         }
@@ -505,7 +503,6 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     // The installed Pi package version must equal the image identity's locked Pi version.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
           return { code: 0, stdout: metadataWith({ piVersion: "0.84.3" }) };
         }
@@ -515,7 +512,6 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     // The installed Pi package name must equal the image identity's locked Pi package.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
           return { code: 0, stdout: metadataWith({ piName: "@earendil-works/other" }) };
         }
@@ -525,11 +521,10 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     // The isolation canaries still gate readiness after a valid metadata read.
     await expect(
       probeWith((args) => {
-        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
         if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
-          return { code: 0, stdout: PROBE_METADATA_STDOUT };
+          return { code: 0, stdout: metadataWith({ isolated: false }) };
         }
-        return { code: 0, stdout: "not isolated" };
+        return { code: 0 };
       }).probe(),
     ).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
   });
@@ -694,6 +689,293 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
   });
 });
 
+describe("combined native readiness probe", () => {
+  function executeScript(
+    script: string,
+    options: { visible?: string; environment?: string; environmentFile?: string; failure?: string } = {},
+  ) {
+    let stdout = "";
+    let stderr = "";
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const fs = {
+      constants: { X_OK: 1, R_OK: 4 },
+      statSync: () => ({ isFile: () => true, size: 128 }),
+      accessSync: () => undefined,
+      existsSync: (file: string) => options.visible !== undefined && file.includes(options.visible),
+      mkdirSync: () => undefined,
+      writeFileSync: (file: string) => {
+        if (options.failure === "EROFS") throw Object.assign(new Error("read-only filesystem"), { code: "EROFS" });
+        writes.push(file);
+      },
+      readFileSync: (file: string) => {
+        reads.push(file);
+        if (file === options.failure) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        if (file.startsWith("/proc/")) {
+          return options.environmentFile && file !== options.environmentFile
+            ? "PATH=/usr/bin"
+            : (options.environment ?? "PATH=/usr/bin");
+        }
+        if (file.endsWith("identity.json")) {
+          return JSON.stringify({
+            version: "1.0.0",
+            piPackage: "@earendil-works/pi-coding-agent",
+            piVersion: "0.84.2",
+          });
+        }
+        return JSON.stringify({
+          name: "@earendil-works/pi-coding-agent",
+          version: "0.84.2",
+          bin: { pi: "dist/cli.js" },
+        });
+      },
+    };
+    const exit = Symbol("probe exit");
+    let code = 0;
+    try {
+      runInNewContext(script, {
+        require: (name: string) => {
+          if (name === "node:fs") return fs;
+          if (name === "node:path") return path;
+          throw new Error(`Unexpected probe dependency: ${name}`);
+        },
+        process: {
+          version: "v24.19.0",
+          set exitCode(value: number) {
+            code = value;
+          },
+          stdout: {
+            write: (value: string) => {
+              stdout += value;
+            },
+          },
+          stderr: {
+            write: (value: string) => {
+              stderr += value;
+            },
+          },
+          exit: (value: number) => {
+            code = value;
+            throw exit;
+          },
+        },
+      });
+    } catch (error) {
+      if (error !== exit) throw error;
+    }
+    return { code, stdout, stderr, reads, writes };
+  }
+
+  it("executes Node, metadata and every isolation canary in one bounded fresh process", async () => {
+    const rootfs = await temporaryDirectory("opentag-combined-probe-");
+    const executions: ReturnType<typeof executeScript>[] = [];
+    const { spawn, calls } = recordingSpawn((args) => {
+      const result = executeScript(args[5] ?? "");
+      executions.push(result);
+      return result;
+    });
+    const sandbox = new NativeSandbox({ name: "combined", workspace: rootfs, rootfs, spawnProcess: spawn });
+    const exec = vi.spyOn(sandbox, "exec");
+    await expect(sandbox.probe()).resolves.toEqual({
+      nodeVersion: "v24.19.0",
+      piVersion: "0.84.2",
+      runnerVersion: "1.0.0",
+    });
+    expect(exec).toHaveBeenCalledExactlyOnceWith(SANDBOX_NODE, ["-e", expect.any(String)], { timeoutMs: 30_000 });
+    expect(calls).toHaveLength(1);
+    expect(executions[0]?.reads).toEqual([
+      "/opt/opentag/identity.json",
+      "/opt/opentag/pi/node_modules/@earendil-works/pi-coding-agent/package.json",
+      "/proc/self/environ",
+      "/proc/1/environ",
+    ]);
+    const writes = executions[0]?.writes ?? [];
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toMatch(/^\/tmp\/opentag-rootfs-/);
+    expect(writes[1]).toContain("opentag-parent-canary-");
+    await expect(stat(dirname(writes[1] ?? ""))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    { visible: "opentag-parent-canary-" },
+    { visible: "/opt/sandbox-root" },
+    { visible: "opentag-rootfs-" },
+    { environment: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN=canary" },
+    { environment: "OPENTAG_RUNNER_CONTROL_TOKEN=canary" },
+    { environment: "OPENTAG_RUNNER_BACKEND_URL=canary" },
+    { environment: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN=canary", environmentFile: "/proc/1/environ" },
+    { environment: "OPENTAG_RUNNER_CONTROL_TOKEN=canary", environmentFile: "/proc/1/environ" },
+    { environment: "OPENTAG_RUNNER_BACKEND_URL=canary", environmentFile: "/proc/1/environ" },
+  ])("rejects exposed parent files, lower layers and process credentials: %j", async (options) => {
+    const rootfs = await temporaryDirectory("opentag-combined-probe-");
+    let result: ReturnType<typeof executeScript> | undefined;
+    const sandbox = new NativeSandbox({
+      name: "combined",
+      workspace: rootfs,
+      rootfs,
+      spawnProcess: recordingSpawn((args) => {
+        result = executeScript(args[5] ?? "", options);
+        return result;
+      }).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
+    expect(JSON.parse(result?.stdout ?? "")).toMatchObject({ runnerVersion: "1.0.0", isolated: false });
+    expect([10, 11, 12]).toContain(result?.code);
+  });
+
+  it.each(["EROFS", "/proc/self/environ", "/proc/1/environ"])(
+    "classifies isolation exceptions and retains version metrics: %s",
+    async (failure) => {
+      const rootfs = await temporaryDirectory("opentag-combined-probe-");
+      const log = vi.fn();
+      const sandbox = new NativeSandbox({
+        name: "diagnostics",
+        workspace: rootfs,
+        rootfs,
+        onPerformanceLog: log,
+        spawnProcess: recordingSpawn((args) => executeScript(args[5] ?? "", { failure })).spawn,
+      });
+      await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          operation: "runner.native_sandbox.probe",
+          outcome: "error",
+          errorCode: "probe_failed",
+          runnerVersion: "1.0.0",
+        }),
+      );
+    },
+  );
+
+  it.each([10, 11, 12])("retains validated version metadata without accepting isolation exit %i", async (code) => {
+    const log = vi.fn();
+    const sandbox = new NativeSandbox({
+      name: "diagnostics",
+      workspace: "/tmp/unused",
+      onPerformanceLog: log,
+      spawnProcess: recordingSpawn(() => ({ code, stdout: PROBE_METADATA_STDOUT })).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "error", runnerVersion: "1.0.0" }));
+  });
+
+  it("does not log unvalidated metadata from an isolation failure", async () => {
+    const log = vi.fn();
+    const sandbox = new NativeSandbox({
+      name: "diagnostics",
+      workspace: "/tmp/unused",
+      onPerformanceLog: log,
+      spawnProcess: recordingSpawn(() => ({
+        code: 10,
+        stdout: JSON.stringify({ ...JSON.parse(PROBE_METADATA_STDOUT), runnerVersion: "invalid version!" }),
+      })).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /valid Runner version/ });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "error", runnerVersion: "unknown" }),
+    );
+  });
+
+  it.each(["parent", "lower"])(
+    "independently rejects a changed %s host canary and removes temporary files",
+    async (target) => {
+      const rootfs = await temporaryDirectory("opentag-combined-probe-");
+      let parentCanary = "";
+      await mkdir(join(rootfs, "tmp"));
+      const sandbox = new NativeSandbox({
+        name: "combined",
+        workspace: rootfs,
+        rootfs,
+        spawnProcess: recordingSpawn((args) => {
+          const script = args[5] ?? "";
+          parentCanary = JSON.parse(/const p=(".*");/.exec(script)?.[1] ?? "null");
+          const lowerCanary = JSON.parse(/const rootfsCanary=(".*");/.exec(script)?.[1] ?? "null");
+          writeFileSync(target === "parent" ? parentCanary : join(rootfs, lowerCanary), "modified");
+          return { code: 0, stdout: PROBE_METADATA_STDOUT };
+        }).spawn,
+      });
+      await expect(sandbox.probe()).rejects.toMatchObject({
+        code: "probe_failed",
+        message: target === "parent" ? /isolation/ : /immutable/,
+      });
+      await expect(stat(dirname(parentCanary))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("kills a stalled combined probe at its original deadline and removes its parent canary", async () => {
+    let spawned: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      spawned = resolve;
+    });
+    let parentCanary = "";
+    const child = fakeChild({ code: 0 });
+    const kill = vi.spyOn(child, "kill");
+    child.stdin.end = () => spawned();
+    const sandbox = new NativeSandbox({
+      name: "combined",
+      workspace: "/tmp/unused",
+      spawnProcess: (_command, args) => {
+        parentCanary = JSON.parse(/const p=(".*");/.exec(args[5] ?? "")?.[1] ?? "null");
+        return child as never;
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      const running = sandbox.probe();
+      const rejected = expect(running).rejects.toMatchObject({
+        code: "exec_failed",
+        message: "Sandbox execution deadline exceeded",
+      });
+      await entered;
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(stat(dirname(parentCanary))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still cancels a running sandbox exec before its deadline", async () => {
+    const child = fakeChild({ code: 0 });
+    child.stdin.end = () => undefined;
+    const kill = vi.spyOn(child, "kill");
+    const abort = new AbortController();
+    const sandbox = new NativeSandbox({ name: "cancel", workspace: "/tmp/unused", spawnProcess: () => child as never });
+    const running = sandbox.exec(SANDBOX_NODE, ["-e", "unused"], { timeoutMs: 30_000, signal: abort.signal });
+    abort.abort();
+    await expect(running).rejects.toMatchObject({ code: "exec_failed", message: "Sandbox execution cancelled" });
+    expect(kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+  });
+
+  it.each(["null", "[]", "42", "true"])("rejects a non-object combined result: %s", async (stdout) => {
+    const sandbox = new NativeSandbox({
+      name: "invalid",
+      workspace: "/tmp/unused",
+      spawnProcess: recordingSpawn(() => ({ code: 0, stdout })).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({
+      code: "probe_failed",
+      message: /no valid Runner or Pi metadata/,
+    });
+  });
+
+  it.each([undefined, "24.19.0", "v24.19", "v24.19.0\n", 24])(
+    "rejects an invalid combined Node version: %j",
+    async (nodeVersion) => {
+      const { spawn } = recordingSpawn(() => ({
+        code: 0,
+        stdout: JSON.stringify({ ...JSON.parse(PROBE_METADATA_STDOUT), nodeVersion }),
+      }));
+      const sandbox = new NativeSandbox({ name: "combined", workspace: "/tmp/unused", spawnProcess: spawn });
+      await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /working node runtime/ });
+    },
+  );
+});
+
 describe("native sandbox Pi metadata script against local fixtures", () => {
   /** Run the generated script under the real local Node runtime, exactly as `node -e` would. */
   function runNodeScript(script: string): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -762,11 +1044,8 @@ describe("native sandbox Pi metadata script against local fixtures", () => {
   }
 
   function scriptFor(paths: MetadataFixturePaths): string {
-    return buildSandboxMetadataScript({
-      identityPath: paths.identityPath,
-      piHome: paths.piHome,
-      shimPath: paths.shimPath,
-    });
+    return `${buildSandboxMetadataRead(paths)}
+process.stdout.write(JSON.stringify(metadata));`;
   }
 
   it("reads the identity and the locked Pi package metadata without executing the Pi CLI", async () => {
@@ -819,6 +1098,22 @@ describe("native sandbox Pi metadata script against local fixtures", () => {
       stderr: "runner-metadata:pi-package-invalid",
     });
   });
+
+  it.each(["null", "[]", "42", "true", '"metadata"'])(
+    "rejects non-object identity and package JSON with metadata diagnostics: %s",
+    async (value) => {
+      const identity = await piMetadataFixture({ identity: value });
+      expect(await runNodeScript(scriptFor(identity))).toMatchObject({
+        code: 1,
+        stderr: "runner-metadata:identity-invalid",
+      });
+      const pkg = await piMetadataFixture({ packageJson: value });
+      expect(await runNodeScript(scriptFor(pkg))).toMatchObject({
+        code: 1,
+        stderr: "runner-metadata:pi-package-invalid",
+      });
+    },
+  );
 
   it("requires the fixed shim and the declared CLI entry without loading them", async () => {
     const missingShim = await piMetadataFixture({ shim: false });

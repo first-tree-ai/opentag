@@ -6,7 +6,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { summarizeShardTimings } from "../ci-test-timing.mjs";
-import { aggregateCoverageArtifacts, rebaseCoverageMap } from "../coverage-artifacts.mjs";
+import {
+  aggregateCoverageArtifacts,
+  coverageFilePath,
+  projectSourceRoots,
+  rebaseCoverageMap,
+} from "../coverage-artifacts.mjs";
 import { requiresPatchCoverage } from "../patch-coverage-plan.mjs";
 import { COVERAGE_PROJECTS } from "../unit-coverage.mjs";
 import { evaluatePatchCoverage } from "../unit-coverage-gate.mjs";
@@ -35,23 +40,38 @@ test("coverage planning skips non-source patches and keeps source changes conser
   assert.throws(() => requiresPatchCoverage([null]), /Changed paths/);
 });
 
+/** Every declared source root of a project, as the artifact producer writes its paths. */
+function producerPaths(project) {
+  return projectSourceRoots(project).map((root) => `/producer/checkout/${root}/fixture.ts`);
+}
+
+function consumerPath(root) {
+  return `/consumer/checkout/${root}/fixture.ts`;
+}
+
 function createCoverageFixture(directory) {
   const floors = {};
   for (const project of COVERAGE_PROJECTS) {
     const reports = join(directory, `patch-coverage-${project.name}`);
     mkdirSync(reports);
-    const path = `/producer/checkout/${project.sources}/fixture.ts`;
+    const paths = producerPaths(project);
     const summary = {
       total: Object.fromEntries(
-        ["lines", "statements", "functions", "branches"].map((metric) => [metric, { total: 1, covered: 1, pct: 100 }]),
+        ["lines", "statements", "functions", "branches"].map((metric) => [
+          metric,
+          { total: paths.length, covered: paths.length, pct: 100 },
+        ]),
       ),
     };
-    summary[path] = { ...summary.total };
+    const detailed = {};
+    for (const path of paths) {
+      summary[path] = Object.fromEntries(
+        ["lines", "statements", "functions", "branches"].map((metric) => [metric, { total: 1, covered: 1, pct: 100 }]),
+      );
+      detailed[path] = { path, s: { 0: 1 }, statementMap: { 0: { start: { line: 2 }, end: { line: 2 } } } };
+    }
     writeFileSync(join(reports, "coverage-summary.json"), JSON.stringify(summary));
-    writeFileSync(
-      join(reports, "coverage-final.json"),
-      JSON.stringify({ [path]: { path, s: { 0: 1 }, statementMap: { 0: { start: { line: 2 }, end: { line: 2 } } } } }),
-    );
+    writeFileSync(join(reports, "coverage-final.json"), JSON.stringify(detailed));
     writeFileSync(
       join(reports, "test-results.json"),
       JSON.stringify({
@@ -71,15 +91,21 @@ test("coverage aggregation transports disjoint reports and keeps every hit and t
   withFixture((directory) => {
     const options = createCoverageFixture(directory);
     const detailed = aggregateCoverageArtifacts(options);
-    assert.equal(Object.keys(detailed).length, COVERAGE_PROJECTS.length);
-    for (const project of COVERAGE_PROJECTS) {
-      const path = `/consumer/checkout/${project.sources}/fixture.ts`;
+    // One entry per declared source root, so a multi-root project transports every root it measures.
+    const roots = COVERAGE_PROJECTS.flatMap((project) =>
+      projectSourceRoots(project).map((root) => ({ project, root })),
+    );
+    assert.equal(Object.keys(detailed).length, roots.length);
+    for (const { root } of roots) {
+      const path = consumerPath(root);
       assert.equal(detailed[path].path, path);
       assert.equal(detailed[path].s[0], 1);
     }
     const summary = JSON.parse(readFileSync(join(directory, "coverage-summary.json")));
-    assert.equal(summary.total.lines.covered, COVERAGE_PROJECTS.length);
+    assert.equal(summary.total.lines.covered, roots.length);
     assert.equal(summary["/consumer/checkout/apps/cli/src/fixture.ts"].lines.covered, 1);
+    // The server project transports its verification scripts next to its src tree.
+    assert.equal(summary["/consumer/checkout/packages/server/scripts/fixture.ts"].lines.covered, 1);
     assert.equal(summary.total.lines.pct, 100);
     const run = JSON.parse(readFileSync(join(directory, "coverage-run.json")));
     assert.equal(run.packages.length, COVERAGE_PROJECTS.length);
@@ -335,4 +361,135 @@ test("coverage records reject non-finite hit counts before patch evaluation", ()
       /Invalid Istanbul coverage entry/,
     );
   }
+});
+
+function writeServerScriptsCoverage(directory, entry) {
+  const detailedPath = join(directory, "patch-coverage-server/coverage-final.json");
+  const detailed = JSON.parse(readFileSync(detailedPath, "utf8"));
+  detailed["/producer/checkout/packages/server/scripts/fixture.ts"] = entry;
+  writeFileSync(detailedPath, JSON.stringify(detailed));
+}
+
+function evaluateServerScriptsPatch(options, content = "export const answer = 42;") {
+  const coverage = aggregateCoverageArtifacts(options);
+  return evaluatePatchCoverage({
+    coverage,
+    diff: [
+      "--- a/packages/server/scripts/fixture.ts",
+      "+++ b/packages/server/scripts/fixture.ts",
+      "@@ -1,0 +2 @@",
+      `+${content}`,
+      "",
+    ].join("\n"),
+    repositoryRoot: options.repositoryRoot,
+    threshold: 80,
+  });
+}
+
+test("server verification scripts travel through artifacts into patch coverage", () =>
+  withFixture((directory) => {
+    const options = createCoverageFixture(directory);
+    const covered = evaluateServerScriptsPatch(options);
+    assert.equal(covered.total, 1);
+    assert.equal(covered.covered, 1);
+    assert.equal(covered.passed, true);
+
+    // A changed line with a zero hit count is reported against the scripts path, not the src tree.
+    writeServerScriptsCoverage(directory, { ...validEntry, s: { 0: 0 } });
+    const summaryPath = join(directory, "patch-coverage-server/coverage-summary.json");
+    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    for (const metrics of Object.values(summary)) {
+      for (const metric of Object.values(metrics)) {
+        metric.covered = 0;
+        metric.pct = 0;
+      }
+    }
+    writeFileSync(summaryPath, JSON.stringify(summary));
+    options.floors.server = { lines: 0, statements: 0, functions: 0, branches: 0 };
+    const uncovered = evaluateServerScriptsPatch(options);
+    assert.equal(uncovered.total, 1);
+    assert.equal(uncovered.covered, 0);
+    assert.equal(uncovered.passed, false);
+    assert.deepEqual(uncovered.uncovered, ["packages/server/scripts/fixture.ts:2"]);
+  }));
+
+test("server verification scripts reject malformed records like every other root", () =>
+  withFixture((directory) => {
+    const options = createCoverageFixture(directory);
+    writeServerScriptsCoverage(directory, {
+      ...validEntry,
+      statementMap: { 0: { start: { line: 0 }, end: { line: 2 } } },
+    });
+    assert.throws(() => evaluateServerScriptsPatch(options), /Invalid Istanbul coverage entry/);
+  }));
+
+test("a multi-root project attributes every entry to the deepest declared root", () => {
+  const server = COVERAGE_PROJECTS.find((project) => project.name === "server");
+  assert.deepEqual(projectSourceRoots(server), ["packages/server/src", "packages/server/scripts"]);
+  assert.equal(
+    coverageFilePath("/machine/packages/server/src/db/client.ts", server, "/repo"),
+    "/repo/packages/server/src/db/client.ts",
+  );
+  assert.equal(
+    coverageFilePath("/machine/packages/server/scripts/cancel-benchmark.ts", server, "/repo"),
+    "/repo/packages/server/scripts/cancel-benchmark.ts",
+  );
+  // The deepest root wins when one declared root is nested inside another.
+  const nested = { name: "nested", sources: ["pkg/src", "pkg/src/scripts"] };
+  assert.equal(coverageFilePath("/repo/pkg/src/scripts/tool.ts", nested, "/repo"), "/repo/pkg/src/scripts/tool.ts");
+  assert.equal(coverageFilePath("/repo/pkg/src/index.ts", nested, "/repo"), "/repo/pkg/src/index.ts");
+  // A single-string declaration keeps working for artifact producers that still pass one root.
+  assert.deepEqual(projectSourceRoots({ name: "legacy", sources: "apps/cli/src" }), ["apps/cli/src"]);
+  assert.deepEqual(projectSourceRoots({ name: "legacy", sources: ["apps/cli/src", "apps/cli/src/"] }), [
+    "apps/cli/src",
+  ]);
+});
+
+test("multi-root attribution fails closed on foreign, traversing and colliding entries", () => {
+  const server = COVERAGE_PROJECTS.find((project) => project.name === "server");
+  assert.throws(
+    () => coverageFilePath("/repo/packages/server/other/file.ts", server, "/repo"),
+    /Coverage entry outside server/,
+  );
+  assert.throws(
+    () => coverageFilePath("/repo/packages/server/scripts/../src/db/client.ts", server, "/repo"),
+    /Invalid coverage entry/,
+  );
+  assert.throws(() => coverageFilePath("/repo/packages/server/scripts/", server, "/repo"), /Invalid coverage entry/);
+  assert.throws(
+    () =>
+      rebaseCoverageMap(
+        {
+          "/first/packages/server/scripts/cancel-benchmark.ts": { s: {}, statementMap: {} },
+          "/second/packages/server/scripts/cancel-benchmark.ts": { s: {}, statementMap: {} },
+        },
+        server,
+        "/repo",
+      ),
+    /Coverage map collision/,
+  );
+  // Two different roots of the same project stay distinct files.
+  const rebased = rebaseCoverageMap(
+    {
+      "/first/packages/server/src/db/client.ts": validEntry,
+      "/second/packages/server/scripts/cancel-benchmark.ts": validEntry,
+    },
+    server,
+    "/repo",
+  );
+  assert.deepEqual(Object.keys(rebased).sort(), [
+    "/repo/packages/server/scripts/cancel-benchmark.ts",
+    "/repo/packages/server/src/db/client.ts",
+  ]);
+});
+
+test("an unusable source-root declaration is rejected instead of guessed", () => {
+  assert.throws(() => projectSourceRoots({ name: "empty", sources: [] }), /declares no source roots/);
+  assert.throws(() => projectSourceRoots({ name: "missing" }), /declares an invalid source root/);
+  assert.throws(() => projectSourceRoots({ name: "blank", sources: "" }), /declares an invalid source root/);
+  assert.throws(() => projectSourceRoots({ name: "number", sources: 3 }), /declares an invalid source root/);
+  assert.throws(() => projectSourceRoots({ name: "absolute", sources: ["/srv/src"] }), /unsafe source root/);
+  assert.throws(() => projectSourceRoots({ name: "parent", sources: ["pkg/../src"] }), /unsafe source root/);
+  assert.throws(() => projectSourceRoots({ name: "dot", sources: ["pkg/./src"] }), /unsafe source root/);
+  assert.throws(() => projectSourceRoots({ name: "gap", sources: ["pkg//src"] }), /unsafe source root/);
 });

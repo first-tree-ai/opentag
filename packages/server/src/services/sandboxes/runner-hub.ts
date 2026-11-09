@@ -8,6 +8,8 @@ import {
   type RunnerWorkspaceSealFrame,
   type RunnerWorkspaceSealResultFrame,
 } from "@opentag/shared";
+import { traceExternalCall } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 
 /**
  * In-memory hub of authenticated Runner control connections, keyed by Sandbox. A Sandbox has at
@@ -89,17 +91,23 @@ interface HubEntry {
 }
 
 export class RunnerAcceptanceUnavailableError extends Error {
-  constructor(message: string) {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "RunnerAcceptanceUnavailableError";
+    if (code) this.code = code;
   }
 }
 
 /** A workspace seal could not be requested or settled; the caller keeps the allocation and retries. */
 export class RunnerWorkspaceSealUnavailableError extends Error {
-  constructor(message: string) {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "RunnerWorkspaceSealUnavailableError";
+    if (code) this.code = code;
   }
 }
 
@@ -108,9 +116,11 @@ export type RunnerAttachOutcome = "attached" | "replaced" | "duplicate";
 export class RunnerHub {
   readonly #entries = new Map<string, HubEntry>();
   readonly #now: () => number;
+  readonly #perfLogger: PerformanceLogger | undefined;
 
-  constructor(options: { now?: () => number } = {}) {
+  constructor(options: { now?: () => number; performanceLogger?: PerformanceLogger } = {}) {
     this.#now = options.now ?? (() => Date.now());
+    this.#perfLogger = options.performanceLogger;
   }
 
   describe(sandboxId: string): RunnerConnectionSnapshot {
@@ -242,7 +252,7 @@ export class RunnerHub {
    */
   async runAcceptance(
     sandboxId: string,
-    command: Omit<RunnerAcceptanceRunFrame, "type" | "requestId">,
+    command: Omit<RunnerAcceptanceRunFrame, "type" | "requestId"> & { turnId?: string; deliveryId?: string },
     options: {
       timeoutMs: number;
       signal?: AbortSignal;
@@ -258,6 +268,51 @@ export class RunnerHub {
     },
   ): Promise<RunnerAcceptanceResultFrame> {
     const entry = this.#entries.get(sandboxId);
+    let attempts = 0;
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.runAcceptance",
+        sandboxId,
+        ...(entry ? { sessionId: entry.scope.sessionId } : {}),
+        ...(command?.turnId ? { turnId: command.turnId } : {}),
+        ...(command?.deliveryId ? { deliveryId: command.deliveryId } : {}),
+        attributes: {
+          mode: command.mode,
+        },
+      },
+      () =>
+        this.#executeRunAcceptance(sandboxId, command, options, () => {
+          attempts += 1;
+        }),
+      {
+        resultAttributes: (result) => ({
+          acceptanceOutcome: result.outcome,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: "RUNNER_ACCEPTANCE_UNAVAILABLE",
+      },
+    );
+  }
+
+  async #executeRunAcceptance(
+    sandboxId: string,
+    command: Omit<RunnerAcceptanceRunFrame, "type" | "requestId"> & { turnId?: string; deliveryId?: string },
+    options: {
+      timeoutMs: number;
+      signal?: AbortSignal;
+      socket?: RunnerControlSocket;
+      authorize?: () => Promise<boolean>;
+    },
+    onAttempt: () => void,
+  ): Promise<RunnerAcceptanceResultFrame> {
+    const entry = this.#entries.get(sandboxId);
     if (!entry) throw new RunnerAcceptanceUnavailableError("No Runner is connected for this Sandbox");
     if (options.socket && entry.socket !== options.socket) {
       throw new RunnerAcceptanceUnavailableError("The Runner connection was replaced");
@@ -270,7 +325,8 @@ export class RunnerHub {
       throw new RunnerAcceptanceUnavailableError("The acceptance request was already cancelled");
     }
     const requestId = randomUUID();
-    const frame: RunnerAcceptanceRunFrame = { type: "acceptance:run", requestId, ...command };
+    const { turnId: _turnId, deliveryId: _deliveryId, ...runCommand } = command;
+    const frame: RunnerAcceptanceRunFrame = { type: "acceptance:run", requestId, ...runCommand };
     return new Promise<RunnerAcceptanceResultFrame>((resolve, reject) => {
       let settled = false;
       let frameSent = false;
@@ -299,7 +355,9 @@ export class RunnerHub {
       };
       const timer = setTimeout(() => {
         cancel();
-        finish(new RunnerAcceptanceUnavailableError("The acceptance run exceeded its deadline"));
+        finish(
+          new RunnerAcceptanceUnavailableError("The acceptance run exceeded its deadline", "RUNNER_ACCEPTANCE_TIMEOUT"),
+        );
       }, options.timeoutMs);
       timer.unref?.();
       entry.pending.set(requestId, {
@@ -319,6 +377,7 @@ export class RunnerHub {
       }
       const send = () => {
         try {
+          onAttempt();
           entry.socket.send(frame);
           frameSent = true;
         } catch {
@@ -373,11 +432,66 @@ export class RunnerHub {
     options: { timeoutMs: number; socket?: RunnerControlSocket },
   ): Promise<RunnerWorkspaceSealResultFrame> {
     const entry = this.#entries.get(sandboxId);
+    let attempts = 0;
+    let coalesced = false;
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.sealWorkspace",
+        sandboxId,
+        ...(entry ? { sessionId: entry.scope.sessionId } : {}),
+      },
+      () =>
+        this.#executeRequestWorkspaceSeal(
+          sandboxId,
+          options,
+          () => {
+            attempts += 1;
+          },
+          () => {
+            coalesced = true;
+          },
+        ),
+      {
+        resultAttributes: (result) => ({
+          ok: result.ok,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+          ...(coalesced ? { coalesced: true } : {}),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+          ...(coalesced ? { coalesced: true } : {}),
+        }),
+        fallbackErrorCode: "RUNNER_WORKSPACE_SEAL_UNAVAILABLE",
+      },
+    );
+  }
+
+  async sealWorkspace(
+    sandboxId: string,
+    options: { timeoutMs: number; socket?: RunnerControlSocket },
+  ): Promise<RunnerWorkspaceSealResultFrame> {
+    return this.requestWorkspaceSeal(sandboxId, options);
+  }
+
+  async #executeRequestWorkspaceSeal(
+    sandboxId: string,
+    options: { timeoutMs: number; socket?: RunnerControlSocket },
+    onAttempt: () => void,
+    onCoalesced: () => void,
+  ): Promise<RunnerWorkspaceSealResultFrame> {
+    const entry = this.#entries.get(sandboxId);
     if (!entry) throw new RunnerWorkspaceSealUnavailableError("No Runner is connected for this Sandbox");
     if (options.socket && entry.socket !== options.socket) {
       throw new RunnerWorkspaceSealUnavailableError("The Runner connection was replaced");
     }
-    if (entry.pendingSeal) return entry.pendingSeal.promise;
+    if (entry.pendingSeal) {
+      onCoalesced();
+      return entry.pendingSeal.promise;
+    }
     const requestId = randomUUID();
     const frame: RunnerWorkspaceSealFrame = { type: "workspace:seal", requestId };
     let resolvePromise!: (frame: RunnerWorkspaceSealResultFrame) => void;
@@ -396,7 +510,12 @@ export class RunnerHub {
       else if (result) resolvePromise(result);
     };
     const timer = setTimeout(() => {
-      finish(new RunnerWorkspaceSealUnavailableError("The workspace seal exceeded its deadline"));
+      finish(
+        new RunnerWorkspaceSealUnavailableError(
+          "The workspace seal exceeded its deadline",
+          "RUNNER_WORKSPACE_SEAL_TIMEOUT",
+        ),
+      );
     }, options.timeoutMs);
     timer.unref?.();
     entry.pendingSeal = {
@@ -407,6 +526,7 @@ export class RunnerHub {
       timer,
     };
     try {
+      onAttempt();
       entry.socket.send(frame);
     } catch {
       finish(new RunnerWorkspaceSealUnavailableError("The Runner control channel is not writable"));
@@ -441,10 +561,16 @@ export class RunnerHub {
    * Send a frame to exactly one current connection (e.g. a refreshed credential). Never reaches a
    * superseded socket; a failed write is a dead connection, not something to swallow.
    */
-  sendToCurrent(sandboxId: string, socket: RunnerControlSocket, frame: RunnerServerFrame): boolean {
+  sendToCurrent(
+    sandboxId: string,
+    socket: RunnerControlSocket,
+    frame: RunnerServerFrame,
+    options?: { onAttempt?: () => void },
+  ): boolean {
     const entry = this.#entries.get(sandboxId);
     if (!entry || entry.socket !== socket) return false;
     try {
+      options?.onAttempt?.();
       entry.socket.send(frame);
       return true;
     } catch {

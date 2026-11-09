@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentPermissionsSchema } from "./agent-permissions.js";
 import { ContextTreesSchema } from "./context-tree.js";
 import {
+  AGENT_NAME_PATTERN,
   AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
@@ -9,16 +10,24 @@ import {
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
   renderPlatformInstructions,
+  runtimeUtf8Length,
 } from "./runtime-config.js";
+
+export { AGENT_NAME_PATTERN, AGENT_SLUG_CHARACTERS } from "./runtime-config.js";
 
 export const AgentNameSchema = z
   .string()
   .trim()
+  // Compatibility ideographs render like their unified forms; NFC folds them into one name.
+  .normalize("NFC")
   .min(1, "Agent name is required")
-  .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)
   .regex(
-    /^[a-z0-9][a-z0-9-]*$/,
-    "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    AGENT_NAME_PATTERN,
+    "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
+  )
+  .refine(
+    (name) => runtimeUtf8Length(name) <= AGENT_SLUG_MAX_LENGTH,
+    `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} bytes (21 Chinese characters)`,
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();
@@ -69,7 +78,7 @@ export const UpdateAgentRuntimeConfigSchema = z
     permissions: AgentPermissionsSchema.optional(),
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
-    instructions: AgentInstructionsSchema.optional(),
+    instructions: AgentInstructionsSchema.nullable().optional(),
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable().optional(),
   })
   .strict()
@@ -117,7 +126,7 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
     .nullable(),
   /**
    * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
-   * is rejected until the creator rebinds it to an owned Computer.
+   * is rejected; its Computer identity remains fixed, so a different Computer requires a new Agent.
    */
   requiresComputerRebind: z.boolean().optional(),
   /** Whether this deployment can start the first-party Slack OAuth flow. */
@@ -139,16 +148,93 @@ export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
+const IANA_TIMEZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/;
+
+function isValidIanaTimezone(value: string): boolean {
+  if (!IANA_TIMEZONE_PATTERN.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const UsageTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine(isValidIanaTimezone, { message: "Expected a valid IANA timezone identifier" })
+  .default("UTC");
+
+export const AgentUsageQuerySchema = z
+  .object({
+    days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS),
+    timezone: UsageTimezoneSchema,
+  })
+  .strict();
+
+/**
+ * Tasks with a message still waiting to be delivered to the Computer, counted as the Task list's
+ * "Queued" status counts them. Present only when positive; older Servers omit it.
+ */
+const queuedTaskCount = z.number().int().safe().positive().optional();
+
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("idle") }).strict(),
-  z.object({ state: z.literal("unknown") }).strict(),
+  z.object({ state: z.literal("idle"), queuedTaskCount }).strict(),
+  z.object({ state: z.literal("unknown"), queuedTaskCount }).strict(),
   z
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
+      /** Tasks with a Turn the Computer accepted and has not reported yet. Older Servers omit it. */
+      runningTaskCount: z.number().int().safe().positive().optional(),
+      queuedTaskCount,
     })
     .strict(),
 ]);
+
+/**
+ * Clients that render the running Task count send this header. The count is additive to a strict object, so only a
+ * client that declared it receives it: older clients validate the activity strictly and would reject a field they do
+ * not know. Released Servers recognize exactly this value, so it must not change.
+ */
+export const AGENT_ACTIVITY_TASK_COUNT_HEADER = "x-opentag-agent-activity-task-count";
+export const AGENT_ACTIVITY_TASK_COUNT_VERSION = "1";
+
+/**
+ * Clients that render the queued Task count send this header as well. It is separate so a newer Web still receives the
+ * running count from a Server that does not know the queued count.
+ */
+export const AGENT_ACTIVITY_QUEUED_COUNT_HEADER = "x-opentag-agent-activity-queued-count";
+export const AGENT_ACTIVITY_QUEUED_COUNT_VERSION = "1";
+
+export function requestsAgentActivityTaskCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_TASK_COUNT_VERSION;
+}
+
+export function requestsAgentActivityQueuedCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_QUEUED_COUNT_VERSION;
+}
+
+/** The activity a client receives: only the counts that client declared it can read. */
+export function projectAgentActivityForClient(
+  activity: z.infer<typeof AgentListActivitySchema>,
+  includeTaskCount: boolean,
+  includeQueuedCount = false,
+): z.infer<typeof AgentListActivitySchema> {
+  let projected = activity;
+  if (!includeQueuedCount && projected.queuedTaskCount !== undefined) {
+    const { queuedTaskCount: _queued, ...rest } = projected;
+    projected = rest;
+  }
+  if (!includeTaskCount && projected.state === "working" && projected.runningTaskCount !== undefined) {
+    const { runningTaskCount: _count, ...legacy } = projected;
+    projected = legacy;
+  }
+  return projected;
+}
 
 export const AgentDetailSchema = AgentSummarySchema.extend({
   activity: AgentListActivitySchema,
@@ -296,6 +382,7 @@ export const UpdateAgentRequestSchema = z
 export const ListAgentsResponseSchema = z
   .object({
     agents: z.array(AgentListItemSchema),
+    statusVersion: z.literal(1).optional(),
   })
   .strict();
 
@@ -340,6 +427,7 @@ export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 export type AgentListActivity = z.infer<typeof AgentListActivitySchema>;
 export type AgentUsageSummary = z.infer<typeof AgentUsageSummarySchema>;
 export type AgentUsageWindowDays = z.infer<typeof AgentUsageWindowDaysSchema>;
+export type AgentUsageQuery = z.infer<typeof AgentUsageQuerySchema>;
 export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;

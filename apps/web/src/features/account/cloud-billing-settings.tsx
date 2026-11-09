@@ -5,7 +5,17 @@ import { type FormEvent, useId, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { getLocale } from "../../i18n/locale.js";
 import * as m from "../../paraglide/messages.js";
-import { Button, Field, KumoInputControl, Link, Text } from "../../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Field,
+  KumoInputControl,
+  Link,
+  SettingsList,
+  SettingsRow,
+  Text,
+} from "../../ui/design-system.js";
+import { dismissCheckoutReturn, hasCheckoutReturn, rememberCheckoutReturn } from "./checkout-return.js";
 
 const usageLink = linkOptions({ to: "/usage" });
 
@@ -20,7 +30,8 @@ function cents(amount: string, minimum: number, maximum: number): number | undef
   return Number.isSafeInteger(result) && result >= minimum && result <= maximum ? result : undefined;
 }
 
-export function CloudBillingSettings() {
+export function CloudBillingSettings({ accountId }: { accountId: string }) {
+  const [returnedFromCheckout, setReturnedFromCheckout] = useState(() => hasCheckoutReturn(accountId));
   const query = useQuery({
     queryKey: ["cloud-billing"],
     queryFn: () => browserApi.cloudBilling(),
@@ -35,30 +46,58 @@ export function CloudBillingSettings() {
         {m.account_billing_title()}
       </Text>
       {query.isError ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <p className="text-sm text-kumo-danger" role="alert">
-            {m.account_billing_error()}
-          </p>
-          <Button variant="ghost" disabled={query.isFetching} onClick={() => void query.refetch()}>
-            {m.account_billing_refresh()}
-          </Button>
-        </div>
+        <Banner
+          role="alert"
+          variant="error"
+          title={m.account_billing_error()}
+          action={
+            <Banner.Action type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>
+              {m.account_billing_refresh()}
+            </Banner.Action>
+          }
+        />
       ) : null}
-      <div className="ui-surface overflow-hidden bg-kumo-base">
-        <div className="grid gap-2 bg-kumo-tint p-6 sm:p-8">
-          <span className="text-sm text-kumo-subtle">{m.account_billing_balance()}</span>
-          <p className="text-4xl font-semibold text-kumo-strong tabular-nums sm:text-5xl">
-            {dollars(summary.availableMicros)}
-          </p>
-        </div>
-        <CloudCreditForm summary={summary} />
-      </div>
+      {returnedFromCheckout ? (
+        <Banner
+          role="status"
+          title={m.account_billing_checkout_return_title()}
+          description={
+            <div className="grid gap-3">
+              <p>{m.account_billing_checkout_return_description()}</p>
+              <div className="flex flex-wrap gap-2">
+                {!query.isError ? (
+                  <Banner.Action type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>
+                    {m.account_billing_refresh()}
+                  </Banner.Action>
+                ) : null}
+                <Banner.Action
+                  type="button"
+                  onClick={() => {
+                    dismissCheckoutReturn(accountId);
+                    setReturnedFromCheckout(false);
+                  }}
+                >
+                  {m.account_billing_checkout_return_dismiss()}
+                </Banner.Action>
+              </div>
+            </div>
+          }
+        />
+      ) : null}
+      <CloudCreditForm accountId={accountId} summary={summary} />
     </section>
   );
 }
 
-function CloudCreditForm({ summary }: { summary: Extract<CloudBillingSummary, { enabled: true }> }) {
+function CloudCreditForm({
+  accountId,
+  summary,
+}: {
+  accountId: string;
+  summary: Extract<CloudBillingSummary, { enabled: true }>;
+}) {
   const amountId = useId();
+  const amountRef = useRef<HTMLInputElement>(null);
   const [amount, setAmount] = useState("10");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -83,6 +122,7 @@ function CloudCreditForm({ summary }: { summary: Extract<CloudBillingSummary, { 
       purchase.current = { amountCents, idempotencyKey: crypto.randomUUID() };
     try {
       const checkout = await browserApi.cloudCreditCheckout(purchase.current);
+      rememberCheckoutReturn(accountId);
       window.location.assign(checkout.url);
     } catch {
       setError(true);
@@ -93,63 +133,76 @@ function CloudCreditForm({ summary }: { summary: Extract<CloudBillingSummary, { 
   }
 
   return (
-    <form className="grid gap-5 border-t border-kumo-line p-6 sm:p-8" noValidate onSubmit={topUp}>
-      <Text as="h3" variant="heading">
-        {m.account_billing_buy()}
-      </Text>
-      <div className="grid gap-3">
-        <Field
-          htmlFor={amountId}
-          label={m.account_billing_amount()}
-          error={
-            invalid
-              ? m.account_billing_amount_error({
-                  minimum: dollars(summary.minimumTopUpCents * 10_000),
-                  maximum: dollars(summary.maximumTopUpCents * 10_000),
-                })
-              : undefined
+    <form className="grid gap-4" noValidate onSubmit={topUp}>
+      {summary.blocked ? (
+        <Banner role="status" size="sm" variant="alert" title={m.account_billing_blocked()} />
+      ) : summary.usagePaused ? (
+        <Banner role="status" size="sm" variant="alert" title={m.account_billing_usage_paused()} />
+      ) : summary.availableMicros === 0 ? (
+        <Banner
+          role="status"
+          size="sm"
+          variant="alert"
+          title={m.account_billing_exhausted()}
+          description={m.account_billing_exhausted_description()}
+          action={
+            <Banner.Action type="button" onClick={() => amountRef.current?.focus()}>
+              {m.account_billing_buy()}
+            </Banner.Action>
           }
-          errorId={`${amountId}-error`}
-        >
-          <KumoInputControl
-            id={amountId}
-            name="amount"
-            inputMode="decimal"
-            autoComplete="off"
-            maxLength={12}
-            aria-invalid={invalid || undefined}
-            aria-describedby={invalid ? `${amountId}-error` : undefined}
-            disabled={busy || summary.blocked}
-            value={amount}
-            onChange={(event) => {
-              setAmount(event.currentTarget.value);
-              setInvalid(false);
-              setError(false);
-            }}
-          />
-        </Field>
-        <Button className="w-full" disabled={busy || summary.blocked} type="submit">
-          {busy ? m.account_billing_redirecting() : m.account_billing_top_up()}
-        </Button>
-      </div>
+        />
+      ) : null}
+      <SettingsList>
+        <SettingsRow label={m.account_billing_balance()}>
+          <p className="text-2xl font-semibold text-kumo-strong tabular-nums">{dollars(summary.availableMicros)}</p>
+        </SettingsRow>
+        <SettingsRow label={m.account_billing_buy()}>
+          <div className="grid gap-3">
+            <Field
+              htmlFor={amountId}
+              label={m.account_billing_amount()}
+              error={
+                invalid
+                  ? m.account_billing_amount_error({
+                      minimum: dollars(summary.minimumTopUpCents * 10_000),
+                      maximum: dollars(summary.maximumTopUpCents * 10_000),
+                    })
+                  : undefined
+              }
+              errorId={`${amountId}-error`}
+              hint={m.account_billing_amount_hint({
+                minimum: dollars(summary.minimumTopUpCents * 10_000),
+                maximum: dollars(summary.maximumTopUpCents * 10_000),
+              })}
+            >
+              <KumoInputControl
+                id={amountId}
+                ref={amountRef}
+                name="amount"
+                inputMode="decimal"
+                autoComplete="off"
+                maxLength={12}
+                aria-invalid={invalid || undefined}
+                aria-describedby={invalid ? `${amountId}-error` : undefined}
+                disabled={busy || summary.blocked}
+                value={amount}
+                onChange={(event) => {
+                  setAmount(event.currentTarget.value);
+                  setInvalid(false);
+                  setError(false);
+                }}
+              />
+            </Field>
+            <Button className="w-full" disabled={busy || summary.blocked} type="submit">
+              {busy ? m.account_billing_redirecting() : m.account_billing_top_up()}
+            </Button>
+          </div>
+        </SettingsRow>
+      </SettingsList>
       <Link className="w-fit text-sm" href={usageLink.to}>
         {m.account_billing_view_usage()}
       </Link>
-      {summary.blocked ? (
-        <p className="text-sm text-kumo-subtle" role="status">
-          {m.account_billing_blocked()}
-        </p>
-      ) : null}
-      {summary.usagePaused && !summary.blocked ? (
-        <p className="text-sm text-kumo-subtle" role="status">
-          {m.account_billing_usage_paused()}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="text-sm text-kumo-danger" role="alert">
-          {m.account_billing_error()}
-        </p>
-      ) : null}
+      {error ? <Banner role="alert" variant="error" title={m.account_billing_error()} /> : null}
     </form>
   );
 }

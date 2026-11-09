@@ -132,7 +132,7 @@ describe("MCP custom installation", () => {
     await newAddress();
     method("No authentication");
     connect();
-    await screen.findByText("Couldn't load tools");
+    await screen.findByText("Couldn't load tools. Try again.");
     expect(screen.getByRole("radio", { name: "No authentication" }).getAttribute("aria-checked")).toBe("true");
     expect(oauth).not.toHaveBeenCalled();
   });
@@ -151,7 +151,7 @@ describe("MCP custom installation", () => {
     const input = screen.getByLabelText("API key or token", { selector: "input[type=password]" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "wrong-key" } });
     connect();
-    await screen.findByText("Authorization failed");
+    await screen.findByText("The key was rejected. Update it.");
     expect(input.value).toBe("wrong-key");
     fireEvent.change(input, { target: { value: "new-key" } });
     connect();
@@ -169,7 +169,7 @@ describe("MCP custom installation", () => {
     await newAddress(url);
     method("No authentication");
     connect();
-    await screen.findByText("Couldn't load tools");
+    await screen.findByText("Couldn't load tools. Try again.");
     fireEvent.change(screen.getByLabelText("Connector address"), { target: { value: `${url}/other` } });
     fireEvent.change(screen.getByLabelText("Connector address"), { target: { value: url } });
     connect();

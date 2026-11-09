@@ -1,15 +1,12 @@
-import type {
-  AgentSchedule,
-  AgentScheduleListItem,
-  AgentScheduleListResponse,
-  AgentScheduleRule,
-} from "@opentag/shared/browser";
+import type { AgentSchedule, AgentScheduleListItem, AgentScheduleListResponse } from "@opentag/shared/browser";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
-import { Banner, Button, Dialog, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
+import { sameClockAt, scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
 
 /** Account management for schedules pinned to this Agent's existing IM conversations. */
 export function AgentSchedulesSection({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
@@ -195,49 +192,113 @@ function ScheduleRow({
   item: AgentScheduleListItem;
 }) {
   const expanded = expandedId === item.id;
+  const last = item.lastDispatch;
+  const status = scheduleStatus(item);
   return (
-    <li className="grid gap-3 py-4 first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <strong className="wrap-anywhere text-sm text-kumo-strong">{item.name}</strong>
-          <span className="text-sm text-kumo-subtle">{scheduleStatus(item)}</span>
-          {item.nextTriggerAt ? (
-            <span className="text-sm text-kumo-subtle">
-              {m.agents_schedules_next()}: {formatScheduleTime(item.nextTriggerAt, item.timezone)}
-            </span>
-          ) : null}
-          {item.lastDispatch ? (
-            <p className="wrap-anywhere text-sm text-kumo-subtle">
-              <span>
-                {m.agents_schedules_last_dispatch()}: {handoffOutcome(item.lastDispatch.outcome)}
-              </span>
-              {" · "}
-              <time dateTime={item.lastDispatch.scheduledFor}>
-                {formatScheduleTime(item.lastDispatch.scheduledFor, item.timezone)}
-              </time>
-            </p>
-          ) : null}
+    <li className="grid gap-1 py-4 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <Text as="h3" headingSize="body" variant="heading">
+            <Button
+              aria-expanded={expanded}
+              className="!h-auto !w-auto max-w-full justify-start gap-2 !px-0 text-left !font-[inherit] !text-[length:inherit] !text-inherit hover:!bg-transparent"
+              onClick={() => onToggle(item.id)}
+              variant="ghost"
+            >
+              <Icon className="size-4 shrink-0 text-kumo-subtle" name={expanded ? "chevron-down" : "chevron-right"} />
+              <span className="wrap-anywhere">{item.name}</span>
+            </Button>
+          </Text>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button aria-expanded={expanded} onClick={() => onToggle(item.id)} size="compact" variant="secondary">
-            {expanded ? m.agents_schedules_hide_details() : m.agents_schedules_show_details()}
-          </Button>
-          <Button disabled={pendingId === item.id} onClick={() => onChange(item)} size="compact" variant="secondary">
-            {item.enabled ? m.agents_schedules_pause() : m.agents_schedules_resume()}
-          </Button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {/* Not disabled while pending: disabling the focused button would drop keyboard focus to the
+              page when Pause turns into Resume. The click is ignored until the change settles. */}
           <Button
-            disabled={pendingId === item.id}
-            onClick={() => onDelete(item)}
+            aria-busy={pendingId === item.id || undefined}
+            onClick={() => {
+              if (pendingId !== item.id) onChange(item);
+            }}
             size="compact"
-            variant="secondary-destructive"
+            variant="ghost"
           >
-            {m.agents_schedules_delete()}
+            {item.enabled ? m.agents_schedules_pause() : m.agents_schedules_resume()}
           </Button>
         </div>
       </div>
-      {expanded ? <ScheduleRowDetails detail={detail} /> : null}
+      <p className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-6 text-sm text-kumo-subtle">
+        {/* Running on schedule is the default; only a state that differs from it gets a label. It
+            leads the summary line so the title row always keeps its single action. */}
+        {status ? <StatusIndicator label={status} tone="neutral" /> : null}
+        {item.target.internal ? (
+          <span>{m.agents_schedules_target_internal({ sessionId: item.target.sessionId.slice(0, 8) })}</span>
+        ) : null}
+        <span>{scheduleRuleText(item.schedule, item.timezone)}</span>
+        {item.nextTriggerAt ? (
+          <span>
+            {m.agents_schedules_next_short()}{" "}
+            <time dateTime={item.nextTriggerAt}>{shortScheduleTime(item.nextTriggerAt, item.timezone)}</time>
+          </span>
+        ) : null}
+        {last ? <LastRun last={last} timezone={item.timezone} /> : null}
+      </p>
+      {expanded ? (
+        <div className="grid gap-3 pt-2 pl-6">
+          <ScheduleRowDetails detail={detail} />
+          <div>
+            <Button
+              disabled={pendingId === item.id}
+              onClick={() => onDelete(item)}
+              size="compact"
+              variant="secondary-destructive"
+            >
+              {m.agents_schedules_delete()}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </li>
   );
+}
+
+type LastDispatch = NonNullable<AgentScheduleListItem["lastDispatch"]>;
+
+/** The last occurrence in the reader's terms: just its time when it ran, otherwise what went wrong. */
+function LastRun({ last, timezone }: { last: LastDispatch; timezone: string }) {
+  const time = <time dateTime={last.scheduledFor}>{shortScheduleTime(last.scheduledFor, timezone)}</time>;
+  if (last.outcome === "accepted" && last.code !== null) {
+    return (
+      <span className="text-kumo-danger">
+        {m.agents_schedules_last_short()} {time} {m.agents_schedules_last_failed()}
+      </span>
+    );
+  }
+  if (last.outcome === "accepted") {
+    return (
+      <span>
+        {m.agents_schedules_last_short()} {time}
+      </span>
+    );
+  }
+  if (last.outcome === "unknown") {
+    return (
+      <span className="text-kumo-warning">
+        {m.agents_schedules_last_short()} {time} {m.agents_schedules_last_unconfirmed()}
+      </span>
+    );
+  }
+  return (
+    <span className="text-kumo-danger">
+      {m.agents_schedules_last_short()} {time} {m.agents_schedules_last_missed({ reason: missedReason(last) })}
+    </span>
+  );
+}
+
+function missedReason(last: LastDispatch): string {
+  if (last.code === "agent_suspended") return m.agents_schedules_reason_agent_paused();
+  if (last.code === "late") return m.agents_schedules_reason_late();
+  if (last.outcome === "unreachable") return m.agents_schedules_reason_offline();
+  if (last.outcome === "rejected") return m.agents_schedules_reason_rejected();
+  return m.agents_schedules_reason_skipped();
 }
 
 function ScheduleRowDetails({ detail }: { detail: ScheduleListProps["detail"] }) {
@@ -288,72 +349,38 @@ function summaryOf(schedule: AgentSchedule): AgentScheduleListItem {
   return summary;
 }
 
-function scheduleStatus(schedule: AgentScheduleListItem): string {
+/** The schedule's state when it is not simply running on schedule; undefined otherwise. */
+function scheduleStatus(schedule: AgentScheduleListItem): string | undefined {
   if (!schedule.enabled) return m.agents_schedules_paused();
   if (schedule.nextTriggerAt === null) return m.agents_schedules_exhausted();
-  return m.agents_schedules_enabled();
+  return undefined;
 }
 
-function scheduleRule(rule: AgentScheduleRule, timezone: string): string {
-  if (rule.kind === "at") return m.agents_schedules_at({ time: formatScheduleTime(rule.at, timezone) });
-  if (rule.kind === "every") return m.agents_schedules_every({ seconds: String(rule.intervalSeconds) });
-  return m.agents_schedules_cron({ expression: rule.expression });
-}
-
-export function formatScheduleTime(instant: string, timezone: string): string {
-  const formatted = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "long",
-    timeZone: timezone,
-  }).format(new Date(instant));
-  return `${formatted} (${timezone})`;
-}
-
+/**
+ * What the row does not already say: where the schedule posts, its zone when that is not the
+ * reader's, what a failed or unconfirmed last run means for the next one, and the full task.
+ */
 function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   const last = schedule.lastDispatch;
   const target = schedule.target;
-  const targetLabel =
-    target.sessionKind === "thread" && target.threadKey
-      ? m.agents_schedules_target_thread({
-          provider: target.provider,
-          channel: target.channelId,
-          thread: target.threadKey,
-        })
-      : m.agents_schedules_target_channel({ provider: target.provider, channel: target.channelId });
-  const outcome = last ? handoffOutcome(last.outcome) : m.agents_schedules_no_dispatch();
+  const provider = messagingProviderLabel(target.provider);
+  const destination = target.internal
+    ? m.agents_schedules_target_internal({ sessionId: target.sessionId })
+    : target.sessionKind === "thread"
+      ? m.agents_schedules_target_thread({ provider })
+      : m.agents_schedules_target_channel({ provider });
+  // The zone is worth naming only when the reader's clock reads differently at the next (or last) run.
+  const zoneInstant = schedule.nextTriggerAt ?? last?.scheduledFor ?? new Date();
+  const note = last ? lastRunNote(last, schedule.nextTriggerAt !== null) : undefined;
   return (
     <div className="grid gap-3 rounded-md bg-kumo-recessed p-4 text-sm">
       <dl className="grid gap-2">
-        <DetailRow label={m.agents_schedules_rule()} value={scheduleRule(schedule.schedule, schedule.timezone)} />
-        <DetailRow label={m.agents_schedules_timezone()} value={schedule.timezone} />
-        <DetailRow label={m.agents_schedules_target()} value={targetLabel} />
-        <DetailRow
-          label={m.agents_schedules_next()}
-          value={schedule.nextTriggerAt ? formatScheduleTime(schedule.nextTriggerAt, schedule.timezone) : "—"}
-        />
-        <DetailRow label={m.agents_schedules_last_dispatch()} value={outcome} />
-        {last ? (
-          <>
-            <DetailRow
-              label={m.agents_schedules_scheduled_for()}
-              value={formatScheduleTime(last.scheduledFor, schedule.timezone)}
-            />
-            {last.attemptedAt ? (
-              <DetailRow
-                label={m.agents_schedules_attempted_at()}
-                value={formatScheduleTime(last.attemptedAt, schedule.timezone)}
-              />
-            ) : null}
-            {last.code ? <DetailRow label={m.agents_schedules_code()} value={last.code} /> : null}
-          </>
+        <DetailRow label={m.agents_schedules_target()} value={destination} />
+        {!sameClockAt(schedule.timezone, zoneInstant) ? (
+          <DetailRow label={m.agents_schedules_timezone()} value={schedule.timezone} />
         ) : null}
       </dl>
-      {last ? (
-        <div className="grid gap-2 text-kumo-subtle">
-          <p>{handoffExplanation(last.outcome)}</p>
-          {last.outcome !== "accepted" ? <p>{m.agents_schedules_no_retry()}</p> : null}
-        </div>
-      ) : null}
+      {note ? <p className="min-w-0 wrap-anywhere text-kumo-subtle">{note}</p> : null}
       <div className="grid gap-1">
         <strong className="text-kumo-strong">{m.agents_schedules_prompt()}</strong>
         <pre className="overflow-x-auto whitespace-pre-wrap wrap-anywhere font-sans text-kumo-default">
@@ -364,26 +391,14 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   );
 }
 
-type HandoffOutcome = NonNullable<AgentScheduleListItem["lastDispatch"]>["outcome"];
-
-function handoffOutcome(outcome: HandoffOutcome): string {
-  return {
-    accepted: m.agents_schedules_accepted,
-    unreachable: m.agents_schedules_unreachable,
-    rejected: m.agents_schedules_rejected,
-    unknown: m.agents_schedules_unknown,
-    skipped: m.agents_schedules_skipped,
-  }[outcome]();
-}
-
-function handoffExplanation(outcome: HandoffOutcome): string {
-  return {
-    accepted: m.agents_schedules_accepted_explanation,
-    unreachable: m.agents_schedules_unreachable_explanation,
-    rejected: m.agents_schedules_rejected_explanation,
-    unknown: m.agents_schedules_unknown_explanation,
-    skipped: m.agents_schedules_skipped_explanation,
-  }[outcome]();
+function lastRunNote(last: LastDispatch, hasNext: boolean): string | undefined {
+  const noRerun = hasNext ? m.agents_schedules_no_rerun_next() : m.agents_schedules_no_rerun();
+  // Once delivered, a code can only be why the Run failed. The IM message links here for it.
+  if (last.outcome === "accepted") {
+    return last.code === null ? undefined : m.agents_schedules_run_failed_note({ code: last.code, next: noRerun });
+  }
+  if (last.outcome === "unknown") return m.agents_schedules_unconfirmed_note();
+  return noRerun;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

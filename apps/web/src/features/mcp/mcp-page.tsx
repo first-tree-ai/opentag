@@ -3,6 +3,7 @@ import { MCP_ERROR_CODES, type MCPAgentServer, type MCPServer } from "@opentag/s
 import { useQuery } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import { InlineActionSentence } from "../../components/inline-action-sentence.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
@@ -221,7 +222,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
       aria-labelledby="mcp-page-title"
       data-ui="mcp-page"
     >
-      <PageHeader title={m.mcp_heading()} titleId="mcp-page-title" description={m.mcp_intro()}>
+      <PageHeader title={m.mcp_heading()} titleId="mcp-page-title">
         <Button disabled={addDisabled} onClick={() => setPanel({ kind: "discover" })}>
           <Icon name="integrations" />
           {m.mcp_discover_action()}
@@ -286,7 +287,19 @@ function McpManagementPage({ agentId }: { agentId: string }) {
               {m.mcp_empty_title()}
             </Text>
             <Text as="p" size="sm" variant="secondary">
-              {m.mcp_empty()}
+              <InlineActionSentence
+                render={({ first, second }) => m.mcp_empty({ discover: first, custom: second })}
+                first={{
+                  label: m.mcp_empty_discover(),
+                  disabled: addDisabled,
+                  onClick: () => setPanel({ kind: "discover" }),
+                }}
+                second={{
+                  label: m.mcp_empty_custom(),
+                  disabled: addDisabled,
+                  onClick: () => setPanel({ kind: "add" }),
+                }}
+              />
             </Text>
           </div>
         </div>

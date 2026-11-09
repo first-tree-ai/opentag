@@ -122,6 +122,61 @@ describe("PostgresRuntimeCustodyStore", () => {
     await expect(store.acceptDelivery(request, hash, "turn-3", fixture.context)).resolves.toBe("conflict");
   });
 
+  it.each(["completed", "failed"] as const)(
+    "classifies a matching %s target at final steer admission",
+    async (outcome) => {
+      const f = await createFixture(unit, { withRoot: true });
+      const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => f.now });
+      const report = {
+        ...turnReport({ ...f, deliveryId: f.rootDeliveryId }, "turn-root"),
+        outcome,
+        executionEffects: outcome === "completed" ? ("completed" as const) : ("may_have_occurred" as const),
+      };
+      report.resultHash = computeTurnResultHash(report);
+      expect(await store.recordTurn(report, f.context)).toBe("recorded");
+      expect(await store.beginSteerDispatch(f.steer, "input", f.dispatchContext)).toBe(
+        outcome === "completed" ? "target_ended" : "conflict",
+      );
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, f.deliveryId));
+      expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, steerTargetDeliveryId: null });
+    },
+  );
+
+  it.each(["delivery", "steer"] as const)(
+    "separates %s batch eligibility changes from identity conflicts",
+    async (kind) => {
+      const f = await createFixture(unit, { withRoot: true });
+      const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => f.now });
+      const head = kind === "delivery" ? { ...f.direct, attention: "ambient" as const } : f.steer;
+      const request = {
+        ...head,
+        batch: [{ deliveryId: f.absorbedDeliveryId, imMessageId: f.absorbedMessageId, inputHash: "member-hash" }],
+      };
+      const dispatch = () =>
+        request.type === "im:deliver"
+          ? store.beginDeliveryDispatch(request, "hash", f.dispatchContext)
+          : store.beginSteerDispatch(request, "hash", f.dispatchContext);
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ attention: "ambient", nextAttemptAt: new Date(f.now.getTime() + 1) })
+        .where(eq(imMessageDeliveries.id, f.absorbedDeliveryId));
+      expect(await dispatch()).toBe("batch_changed");
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ placementGeneration: 2 })
+        .where(eq(imMessageDeliveries.id, f.absorbedDeliveryId));
+      expect(await dispatch()).toBe("conflict");
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ placementGeneration: 1, nextAttemptAt: f.now })
+        .where(eq(imMessageDeliveries.id, f.absorbedDeliveryId));
+      expect(await dispatch()).toBe("dispatched");
+    },
+  );
+
   it("fences and releases direct dispatch markers with explicit retry disposition", async () => {
     const fixture = await createFixture(unit);
     const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => fixture.now });
@@ -247,7 +302,9 @@ describe("PostgresRuntimeCustodyStore", () => {
       resultHash: "result-retained",
     };
     await store.beginDeliveryDispatch(fixture.direct, directHash, fixture.dispatchContext);
-    await store.claimRetainedReports(request, [claim, { ...claim, deliveryId: randomUUID() }], fixture.context);
+    await expect(
+      store.claimRetainedReports(request, [claim, { ...claim, deliveryId: randomUUID() }], fixture.context),
+    ).resolves.toEqual([claim]);
     expect(await store.getDelivery(fixture.deliveryId)).toMatchObject({
       turnId: "turn-retained",
       instanceId: fixture.instanceId,
@@ -279,7 +336,7 @@ describe("PostgresRuntimeCustodyStore", () => {
       .update(sessionPlacements)
       .set({ generation: 2 })
       .where(eq(sessionPlacements.sessionId, fixture.sessionId));
-    await expect(store.claimRetainedReports(request, [claim], fixture.context)).resolves.toBeUndefined();
+    await expect(store.claimRetainedReports(request, [claim], fixture.context)).resolves.toEqual([]);
   });
 
   it("reads accepted deliveries and records turn reports idempotently", async () => {

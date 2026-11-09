@@ -8,7 +8,9 @@ import {
   imBindings,
   runtimeDurableWork,
   sandboxes,
+  sessionCliProofs,
   sessionMessages,
+  sessionPlacements,
   users,
 } from "../../db/schema/index.js";
 import type { RuntimeDispatchAdmission } from "../../runtime/runtime-domain-owner.js";
@@ -29,6 +31,8 @@ import {
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
 import { SandboxService } from "../../services/sandboxes/sandbox-service.js";
 import { SessionCliProofService, SessionService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
+import { pausedTableRead } from "../support/paused-binding-read.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -149,7 +153,11 @@ interface Stack {
   sessions: SessionService;
 }
 
-function makeStack(): Stack {
+function makeStack(
+  options: Partial<
+    Pick<ConstructorParameters<typeof CloudSessionCollaborationOwner>[0], "allocation" | "ensureTimeoutMs" | "database">
+  > = {},
+): Stack {
   const hub = new RunnerHub();
   const fence = new CloudRuntimeFence();
   const registry = new RuntimeExecutionRegistry();
@@ -178,6 +186,7 @@ function makeStack(): Stack {
     proofs,
     sessions,
     work: new CloudSessionWorkTracker(),
+    ...options,
   });
   return { fence, hub, owner, proofs, registry, sessions };
 }
@@ -749,4 +758,219 @@ describe("E8 Cloud Session collaboration on real PostgreSQL", () => {
     const [message] = await client.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId));
     expect(message?.lastOutcome).toBe("unknown");
   });
+});
+
+it.each(["upsert-disconnect", "upsert-execution", "commit-disconnect", "committed-replacement"] as const)(
+  "does not retain a Cloud proof after %s",
+  async (phase) => {
+    const fixture = await seedCloudSession();
+    const stack = makeStack();
+    const attached = attachRunner(stack, fixture);
+    const execution = openExecution(stack, fixture, attached.connection);
+    const entered = deferred();
+    const release = deferred();
+    const transaction = client.database.transaction.bind(client.database);
+    const hold = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    const spy = vi.spyOn(client.database, "transaction").mockImplementationOnce((async (work, options) => {
+      const result = await transaction(async (tx) => {
+        const wrapped = phase.startsWith("upsert")
+          ? new Proxy(tx, {
+              get(target, key) {
+                const value = Reflect.get(target, key);
+                if (key !== "insert") return typeof value === "function" ? value.bind(target) : value;
+                return (table: unknown) => {
+                  const builder = Reflect.apply(value, target, [table]) as ReturnType<typeof tx.insert>;
+                  if (table !== sessionCliProofs) return builder;
+                  const values = builder.values.bind(builder);
+                  builder.values = ((...args: Parameters<typeof values>) => {
+                    const query = values(...args);
+                    const then = query.then.bind(query);
+                    // biome-ignore lint/suspicious/noThenProperty: Pause the actual Drizzle write before mint resumes.
+                    Object.defineProperty(query, "then", {
+                      configurable: true,
+                      value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
+                        then(async (rows: unknown) => {
+                          await hold();
+                          return rows;
+                        }).then(resolve, reject),
+                    });
+                    return query;
+                  }) as typeof builder.values;
+                  return builder;
+                };
+              },
+            })
+          : tx;
+        const result = await work(wrapped);
+        if (phase === "commit-disconnect") await hold();
+        return result;
+      }, options);
+      if (phase === "committed-replacement") await hold();
+      return result;
+    }) as typeof client.database.transaction);
+    const input = {
+      computerId: fixture.computerId,
+      connectionId: attached.connection.connectionId,
+      executionId: execution.executionId,
+      placementGeneration: 1,
+      sandboxId: fixture.sandboxId,
+      sessionId: fixture.sessionId,
+    };
+    const mint = stack.proofs.mintCloud(input).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let replacement: { proofId: string; token: string } | undefined;
+    try {
+      await entered.promise;
+      stack.registry.close(execution.executionId, "execution_closed");
+      if (phase !== "upsert-execution") {
+        stack.fence.detach(attached.connection.connectionId);
+        await stack.owner.detachConnection(attached.connection.connectionId);
+        expect(await client.database.select().from(sessionCliProofs)).toHaveLength(0);
+      }
+      if (phase === "committed-replacement") {
+        const next = attachRunner(stack, fixture);
+        const fresh = openExecution(stack, fixture, next.connection);
+        replacement = await stack.proofs.mintCloud({
+          ...input,
+          connectionId: next.connection.connectionId,
+          executionId: fresh.executionId,
+        });
+      }
+      release.resolve();
+      expect(await mint).toMatchObject({ code: "runtime_unavailable" });
+      const rows = await client.database.select().from(sessionCliProofs);
+      if (replacement) {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.proofId).toBe(replacement.proofId);
+        await expect(stack.proofs.authenticate(replacement.token)).resolves.toMatchObject({
+          sessionId: fixture.sessionId,
+        });
+      } else expect(rows).toHaveLength(0);
+      expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+    } finally {
+      release.resolve();
+      await mint;
+      spy.mockRestore();
+    }
+  },
+);
+
+it.each(["resolve", "reject"] as const)("joins an allocation SQL tail after public timeout and %s", async (outcome) => {
+  const fixture = await seedCloudSession();
+  await client.database
+    .update(sandboxes)
+    .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+    .where(eq(sandboxes.id, fixture.sandboxId));
+  const entered = deferred();
+  const release = deferred();
+  let tailFinished = false;
+  const allocate = vi.fn(async () => {
+    await client.sql`select 1`;
+    entered.resolve();
+    await release.promise;
+    await client.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    tailFinished = true;
+    if (outcome === "reject") throw new Error("Controlled allocation acknowledgement loss");
+    return "pending" as const;
+  });
+  const stack = makeStack({
+    ensureTimeoutMs: 30,
+    allocation: {
+      ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      ensureEnvironmentAllocated: allocate,
+    },
+  });
+  const messageId = randomUUID();
+  await client.database.insert(sessionMessages).values({
+    id: messageId,
+    sourceSessionId: fixture.sessionId,
+    targetSessionId: fixture.sessionId,
+    content: "allocate",
+    contentHash: "a".repeat(64),
+    attemptCount: 1,
+    lastAttemptAt: new Date(),
+  });
+  const input = {
+    attemptCount: 1,
+    message: { content: "allocate", id: messageId },
+    route: {
+      agentId: fixture.agentId,
+      imBindingId: fixture.bindingId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: randomUUID(),
+      sourcePlacementGeneration: 1,
+      sourceSessionId: fixture.sessionId,
+      targetComputerId: fixture.computerId,
+      targetComputerKind: "cloud" as const,
+      targetInstallationId: randomUUID(),
+      targetPlacementGeneration: 1,
+      targetSessionId: fixture.sessionId,
+      targetSessionKind: "channel" as const,
+      targetCreatorSessionId: null,
+    },
+    runtime: await new EffectiveRuntimeSnapshotAssembler(client.database).assembleForSession(fixture.sessionId),
+  };
+  const running = stack.owner.deliver(input, allowAdmission);
+  let closed = false;
+  try {
+    await entered.promise;
+    expect(await running).toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    expect(tailFinished).toBe(false);
+    expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+    await expect(stack.owner.deliver(input, allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    release.resolve();
+    await closing;
+    expect(tailFinished).toBe(true);
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(await client.database.select().from(runtimeDurableWork)).toHaveLength(0);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([running, stack.owner.close()]);
+  }
+});
+
+it.each(["reconcile", "cancel"] as const)("joins original %s SQL and stops new admission", async (kind) => {
+  const fixture = await seedCloudSession();
+  const pause = pausedTableRead(client.database, sessionPlacements);
+  const stack = makeStack({ database: pause.database });
+  pause.arm();
+  const running = (
+    kind === "reconcile"
+      ? stack.owner.reconcileSessionWork(fixture.sessionId)
+      : stack.owner.cancelSessionMessages(fixture.sessionId)
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closed = false;
+  try {
+    await pause.captured;
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    expect(await stack.owner.reconcileSessionWork(fixture.sessionId)).toBe(0);
+    expect(await stack.owner.cancelSessionMessages(fixture.sessionId)).toEqual([]);
+    pause.release();
+    await closing;
+    await running;
+    expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+  } finally {
+    pause.release();
+    await Promise.allSettled([running, stack.owner.close()]);
+  }
 });

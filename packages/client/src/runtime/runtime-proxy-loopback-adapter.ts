@@ -96,6 +96,11 @@ export interface RuntimeProxyAdapterStreamRequest {
   readonly path: string;
   readonly provider: RuntimeProxyProvider;
   readonly signal: AbortSignal;
+  /**
+   * The execution-local handle this request was verified with, when it carried one. Owners that
+   * serve several concurrent child executions route by it; it is never forwarded upstream.
+   */
+  readonly localHandle?: string;
 }
 
 export interface RuntimeProxyLoopbackAdapterOptions {
@@ -146,6 +151,7 @@ export class RuntimeProxyLoopbackAdapter {
   readonly #localHandleFor?: (provider: RuntimeProxyProvider) => string | undefined;
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
   readonly #openStream: RuntimeProxyLoopbackAdapterOptions["openStream"];
+  readonly #pendingConnects = new WeakMap<net.Socket, PendingConnect>();
   readonly #sockets = new Set<net.Socket>();
   readonly #verifyHandle: RuntimeProxyLoopbackAdapterOptions["verifyHandle"];
   #closed = false;
@@ -244,10 +250,10 @@ export class RuntimeProxyLoopbackAdapter {
       if (this.#closed) socket.destroy();
       else {
         if (head.length) socket.unshift(head);
-        (socket as unknown as { __opentagConnect: PendingConnect }).__opentagConnect = {
+        this.#pendingConnects.set(socket, {
           host: "github.com",
           provider: "github",
-        };
+        });
         inner.emit("connection", socket);
       }
     };
@@ -346,10 +352,10 @@ export class RuntimeProxyLoopbackAdapter {
     if (head.length > 0) socket.unshift(head);
     const encrypted = new tls.TLSSocket(socket, { isServer: true, secureContext });
     encrypted.on("error", () => encrypted.destroy());
-    (encrypted as unknown as { __opentagConnect?: PendingConnect }).__opentagConnect = {
+    this.#pendingConnects.set(encrypted, {
       host: target.host,
       ...(CONNECT_HOST_PROVIDERS[target.host] ? { provider: CONNECT_HOST_PROVIDERS[target.host] } : {}),
-    };
+    });
     this.#track(encrypted);
     inner.emit("connection", encrypted);
   }
@@ -395,7 +401,7 @@ export class RuntimeProxyLoopbackAdapter {
   }
 
   async #handleInnerRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
-    const pending = (request.socket as unknown as { __opentagConnect?: PendingConnect }).__opentagConnect;
+    const pending = this.#pendingConnects.get(request.socket);
     if (!pending?.provider) {
       replyText(response, 403, "forbidden");
       return;
@@ -443,7 +449,7 @@ export class RuntimeProxyLoopbackAdapter {
       replyText(response, 503, "adapter_closed");
       return;
     }
-    await this.#forward(provider, request, response, path, originHost, authorization.override);
+    await this.#forward(provider, request, response, path, originHost, authorization.override, authorization.handle);
   }
 
   /**
@@ -549,6 +555,7 @@ export class RuntimeProxyLoopbackAdapter {
     path: string,
     originHost: string,
     override?: { readonly body: AsyncIterable<Uint8Array>; readonly headers: http.IncomingHttpHeaders },
+    localHandle?: string,
   ): Promise<void> {
     const abort = new AbortController();
     request.on("aborted", () => abort.abort(new Error("request aborted")));
@@ -564,6 +571,7 @@ export class RuntimeProxyLoopbackAdapter {
         headers: forwardedRequestHeaders(provider, override?.headers ?? request.headers, originHost),
         body: override?.body ?? (request as AsyncIterable<Uint8Array>),
         signal: abort.signal,
+        ...(localHandle ? { localHandle } : {}),
       });
     } catch (error) {
       this.#logger.debug(
@@ -636,7 +644,9 @@ export async function generateExecutionCa(materialDir: string): Promise<RuntimeP
           configPath,
           "-x509",
           "-newkey",
-          "rsa:2048",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:prime256v1",
           "-nodes",
           "-days",
           "2",
@@ -647,7 +657,7 @@ export async function generateExecutionCa(materialDir: string): Promise<RuntimeP
           "-addext",
           "basicConstraints=critical,CA:TRUE",
           "-addext",
-          "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
+          "keyUsage=critical,digitalSignature,keyCertSign,cRLSign",
           "-addext",
           "extendedKeyUsage=serverAuth",
           "-keyout",
@@ -713,7 +723,7 @@ interface ProviderAuthorizationOverride {
 }
 
 type ProviderAuthorization =
-  | { readonly ok: true; readonly override?: ProviderAuthorizationOverride }
+  | { readonly ok: true; readonly handle?: string; readonly override?: ProviderAuthorizationOverride }
   | { readonly ok: false; readonly challenge?: boolean; readonly code: string; readonly status: number };
 
 type SlackFormInspection =
@@ -751,10 +761,11 @@ async function authorizeProviderRequest(input: {
       : { ok: false, status: 401, code: "authentication_required", challenge: true };
   }
   if (!verifyHandle(provider, handle)) return { ok: false, status: 403, code: "invalid_handle" };
-  if (form.kind !== "body") return { ok: true };
+  if (form.kind !== "body") return { ok: true, handle };
   // The bounded body was consumed for inspection; forward the scrubbed copy with its exact length.
   return {
     ok: true,
+    handle,
     override: {
       body: singleChunkBody(form.body),
       headers: headersWithContentLength(request.headers, form.body.byteLength),

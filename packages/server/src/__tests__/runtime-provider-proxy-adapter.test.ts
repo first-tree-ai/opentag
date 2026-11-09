@@ -3,11 +3,15 @@ import { FEISHU_TENANT_TOKEN_LOCAL_SENTINEL } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import { FEISHU_OPERATIONS } from "../runtime-credentials/feishu-operations.js";
+import { FeishuTenantTokenExchangeError } from "../runtime-credentials/feishu-tenant-token.js";
 import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import {
   ImProviderProxyAdapter,
+  type OutboundWriteCapture,
+  type OutboundWriteCaptureEvent,
   type ProviderProxyRequest,
   RuntimeProxyError,
+  type SessionTaskAnchorResolution,
 } from "../runtime-credentials/provider-proxy-adapter.js";
 import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
@@ -60,7 +64,18 @@ function authorization(overrides: Partial<RuntimeProxyAuthorization> = {}): Runt
 }
 
 function adapter(
-  options: { provider?: "slack" | "feishu"; fetchImpl?: typeof fetch; urlHandles?: RuntimeUrlHandleStore } = {},
+  options: {
+    provider?: "slack" | "feishu";
+    fetchImpl?: typeof fetch;
+    urlHandles?: RuntimeUrlHandleStore;
+    publicOrigin?: string;
+    resolveTaskAnchor?: (input: {
+      sessionId: string;
+      source?: RuntimeProxyAuthorization["source"];
+      signal?: AbortSignal;
+    }) => Promise<SessionTaskAnchorResolution>;
+    outboundCapture?: OutboundWriteCapture;
+  } = {},
 ) {
   const provider = options.provider ?? "slack";
   const urlHandles = options.urlHandles ?? new RuntimeUrlHandleStore();
@@ -68,6 +83,9 @@ function adapter(
     provider,
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles,
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.resolveTaskAnchor ? { resolveTaskAnchor: options.resolveTaskAnchor } : {}),
+    ...(options.outboundCapture ? { outboundCapture: options.outboundCapture } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   });
   return { instance, urlHandles };
@@ -114,6 +132,46 @@ function captureFetch(payload: unknown = { ok: true, ts: "1710000000.000100" }):
 }
 
 describe("ImProviderProxyAdapter operation registration", () => {
+  it("validates Feishu bot identity while rejecting metadata and business operations in validation", async () => {
+    const { calls, fetchImpl } = captureFetch({ code: 0, bot: { open_id: "ou_bot" } });
+    const { instance } = adapter({ provider: "feishu", fetchImpl });
+    const auth = authorization({
+      provider: "feishu",
+      purpose: "validation",
+      resolveMaterial: async () => ({ kind: "bearer", token: "synthetic-token", origin: "https://open.feishu.cn" }),
+    });
+    const identity = await instance.handle(
+      request({ provider: "feishu", method: "GET", path: "/open-apis/bot/v3/info" }),
+      auth,
+    );
+    expect(JSON.parse(await readBody(identity.body))).toEqual({ code: 0, bot: { open_id: "ou_bot" } });
+    expect(calls).toHaveLength(1);
+    for (const [method, path, code] of [
+      ["GET", "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92", "validation_scope"],
+      ["GET", "/open-apis/im/v1/chats", "validation_scope"],
+      ["POST", "/open-apis/im/v1/messages", "validation_scope"],
+      ["POST", "/api/tools/open/api_definition", "operation_not_registered"],
+      ["GET", "/api/tools/open/unknown", "operation_not_registered"],
+    ] as const) {
+      await expect(instance.handle(request({ provider: "feishu", method, path }), auth)).rejects.toMatchObject({
+        code,
+      });
+    }
+    expect(calls).toHaveLength(1);
+    const metadata = await instance.handle(
+      request({
+        provider: "feishu",
+        method: "GET",
+        path: "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92",
+      }),
+      { ...auth, purpose: "execution" },
+    );
+    expect(metadata.status).toBe(200);
+    expect(calls.at(-1)?.url).toBe(
+      "https://open.feishu.cn/api/tools/open/api_definition?protocol=meta&client_version=1.0.92",
+    );
+  });
+
   it("rejects unregistered methods, paths, and providers", async () => {
     const { instance } = adapter();
     await expect(instance.handle(request({ method: "GET" }), authorization())).rejects.toMatchObject({
@@ -641,6 +699,45 @@ describe("ImProviderProxyAdapter write outcomes", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["rejected", 10014, 400],
+    ["rate_limited", 99991400, 429],
+  ] as const)(
+    "answers a %s Feishu token exchange in Feishu's shape without any upstream call",
+    async (kind, code, status) => {
+      const fetchImpl = vi.fn();
+      const { instance } = adapter({ fetchImpl: fetchImpl as unknown as typeof fetch });
+      const response = await instance.handle(
+        request({ body: jsonBody({ channel: "C1" }) }),
+        authorization({
+          resolveMaterial: async () => {
+            throw new FeishuTenantTokenExchangeError(kind, code);
+          },
+        }),
+      );
+      expect(response.status).toBe(status);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of response.body) chunks.push(chunk);
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toMatchObject({ code });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an unreachable Feishu token endpoint a proxy failure", async () => {
+    const { instance } = adapter({ fetchImpl: vi.fn() as unknown as typeof fetch });
+    const error = new FeishuTenantTokenExchangeError("upstream");
+    await expect(
+      instance.handle(
+        request({ body: jsonBody({ channel: "C1" }) }),
+        authorization({
+          resolveMaterial: async () => {
+            throw error;
+          },
+        }),
+      ),
+    ).rejects.toBe(error);
+  });
+
   it("never replays a write after a transport failure; a caller retry is a fresh upstream request", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error("connection reset");
@@ -774,6 +871,488 @@ describe("ImProviderProxyAdapter upload handles", () => {
     await expect(
       instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), stale),
     ).rejects.toMatchObject({ code: "credential_stale" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImProviderProxyAdapter Session ID footer", () => {
+  const AGENT_ID = "11111111-2222-3333-4444-555555555555";
+  const SESSION_ID = "12345678-aaaa-bbbb-cccc-ddddeeeeffff";
+  const SHORT_ID = "12345678";
+  const PUBLIC_ORIGIN = "https://opentag.example.com/";
+  const SESSION_URL = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${SESSION_ID}`;
+
+  it("appends the Session ID footer to Slack text, markdown_text, and blocks while keeping captured requestBody untouched", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const originalBody = {
+      channel: "C1",
+      text: "Hello from Slack",
+      markdown_text: "**Hello** from Slack",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "Section text" } }],
+    };
+
+    await instance.handle(
+      request({ sessionId: SESSION_ID, body: jsonBody(originalBody) }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: `Hello from Slack\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`,
+      markdown_text: `**Hello** from Slack\n\n_[Session ${SHORT_ID}](${SESSION_URL})_`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "Section text" } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session ${SHORT_ID}>` }] },
+      ],
+    });
+    expect(capturedEvents).toHaveLength(1);
+    expect(capturedEvents[0]?.requestBody).toEqual(originalBody);
+    expect(capturedEvents[0]?.injectedSessionFooter).toEqual({
+      sessionUrl: SESSION_URL,
+      shortId: SHORT_ID,
+      slackTextAppended: `\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`,
+      slackBlockTextAppended: `<${SESSION_URL}|Session ${SHORT_ID}>`,
+    });
+  });
+
+  it("keeps Slack text (<= 4,000 chars) and markdown_text (<= 12,000 chars) within field limits in JSON and form modes without truncating Agent text", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const maxText = "t".repeat(4_000);
+    const maxMarkdown = "m".repeat(12_000);
+
+    // JSON mode at exact field limits: sent unmodified, injectedSessionFooter omitted
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        body: jsonBody({ channel: "C1", text: maxText, markdown_text: maxMarkdown }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: maxText,
+      markdown_text: maxMarkdown,
+    });
+    expect(capturedEvents[0]?.injectedSessionFooter).toBeUndefined();
+
+    // Form mode at exact field limits: sent unmodified, injectedSessionFooter omitted
+    const form = new URLSearchParams({
+      channel: "C1",
+      text: maxText,
+      markdown_text: maxMarkdown,
+    }).toString();
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        headers: FORM_HEADERS,
+        body: bodyOf(new TextEncoder().encode(form)),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(calls[1]?.body).toBe(form);
+    expect(capturedEvents[1]?.injectedSessionFooter).toBeUndefined();
+  });
+
+  it("omits injectedSessionFooter when the annotated payload exceeds maxBodyBytes and falls back to prepared.bytes", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const { calls, fetchImpl } = captureFetch({ code: 0, data: { message_id: "om_big" } });
+    const { instance } = adapter({
+      provider: "feishu",
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+    const footerLikeText = `Session abcdef01: https://other.example/agents/other-agent/tasks/abcdef01-0000`;
+    const nearLimitPayload = {
+      receive_id: "oc_1",
+      msg_type: "text",
+      content: JSON.stringify({ text: `${"x".repeat(128 * 1024 - 180)}\n\n${footerLikeText}` }),
+    };
+
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody(nearLimitPayload),
+      }),
+      feishuAuth,
+    );
+
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toEqual(nearLimitPayload);
+    expect(capturedEvents[0]?.injectedSessionFooter).toBeUndefined();
+  });
+
+  it("appends the Session ID footer to Slack form-encoded chat.postMessage requests", async () => {
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const { instance } = adapter({ fetchImpl, publicOrigin: PUBLIC_ORIGIN });
+    const form = new URLSearchParams({
+      channel: "C1",
+      text: "Form reply",
+      blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "Form block" } }]),
+    }).toString();
+
+    await instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        headers: FORM_HEADERS,
+        body: bodyOf(new TextEncoder().encode(form)),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+
+    const params = new URLSearchParams(calls[0]?.body ?? "");
+    expect(params.get("text")).toBe(`Form reply\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`);
+    expect(JSON.parse(params.get("blocks") ?? "[]")).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: "Form block" } },
+      { type: "context", elements: [{ type: "mrkdwn", text: `<${SESSION_URL}|Session ${SHORT_ID}>` }] },
+    ]);
+  });
+
+  it("appends the Session ID footer to Feishu text, post, and interactive v1/v2 messages", async () => {
+    const { calls, fetchImpl } = captureFetch({ code: 0, data: { message_id: "om_1" } });
+    const { instance } = adapter({ provider: "feishu", fetchImpl, publicOrigin: PUBLIC_ORIGIN });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+
+    // 1. Feishu text
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({ receive_id: "oc_1", msg_type: "text", content: JSON.stringify({ text: "Hello Feishu" }) }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[0]?.body ?? "{}").content)).toEqual({
+      text: `Hello Feishu\n\nSession ${SHORT_ID}: ${SESSION_URL}`,
+    });
+
+    // 2. Feishu post (top-level and locale-wrapped)
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages/om_parent/reply",
+        body: jsonBody({
+          msg_type: "post",
+          content: JSON.stringify({
+            zh_cn: { title: "Title", content: [[{ tag: "text", text: "Line 1" }]] },
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[1]?.body ?? "{}").content)).toEqual({
+      zh_cn: {
+        title: "Title",
+        content: [[{ tag: "text", text: "Line 1" }], [{ tag: "a", text: `Session ${SHORT_ID}`, href: SESSION_URL }]],
+      },
+    });
+
+    // 3. Feishu interactive Card v2
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "interactive",
+          content: JSON.stringify({
+            schema: "2.0",
+            body: { elements: [{ tag: "markdown", content: "Card v2 body" }] },
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[2]?.body ?? "{}").content)).toEqual({
+      schema: "2.0",
+      body: {
+        elements: [
+          { tag: "markdown", content: "Card v2 body" },
+          { tag: "markdown", text_size: "notation", content: `[Session ${SHORT_ID}](${SESSION_URL})` },
+        ],
+      },
+    });
+
+    // 4. Feishu interactive Card v1
+    await instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "interactive",
+          content: JSON.stringify({
+            elements: [{ tag: "div", text: { tag: "lark_md", content: "Card v1 body" } }],
+          }),
+        }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(calls[3]?.body ?? "{}").content)).toEqual({
+      elements: [
+        { tag: "div", text: { tag: "lark_md", content: "Card v1 body" } },
+        { tag: "note", elements: [{ tag: "lark_md", content: `[Session ${SHORT_ID}](${SESSION_URL})` }] },
+      ],
+    });
+  });
+
+  it("uses resolveTaskAnchor for the task URL while keeping Session <shortId> as the visible label, renders plain Session <shortId> when anchor is plain, and annotates message edits", async () => {
+    const ANCHOR_A = "aaaa0000-1111-2222-3333-444444444444";
+    const ANCHOR_B = "bbbb0000-1111-2222-3333-444444444444";
+    let currentResolution: SessionTaskAnchorResolution = { kind: "link", taskAnchorId: ANCHOR_A };
+    const slackCalls = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const slackAdapter = adapter({
+      fetchImpl: slackCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => currentResolution,
+    });
+
+    // Send A on group channel Session resolves URL to ANCHOR_A
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.postMessage",
+        body: jsonBody({ channel: "C1", text: "Reply to request A" }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    const urlA = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${ANCHOR_A}`;
+    expect(JSON.parse(slackCalls.calls[0]?.body ?? "{}").text).toBe(
+      `Reply to request A\n\n_<${urlA}|Session ${SHORT_ID}>_`,
+    );
+
+    // Edit via Slack chat.update also appends the footer idempotently
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.update",
+        body: jsonBody({ channel: "C1", ts: "1710000000.000100", text: "Edited reply A" }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(slackCalls.calls[1]?.body ?? "{}").text).toBe(
+      `Edited reply A\n\n_<${urlA}|Session ${SHORT_ID}>_`,
+    );
+
+    // Plain resolution (e.g. session-message on a group channel Session) renders plain Session <shortId> without link
+    currentResolution = { kind: "plain" };
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        path: "/api/chat.postMessage",
+        body: jsonBody({
+          channel: "C1",
+          text: "Plain reply",
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: "Plain block" } }],
+        }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    expect(JSON.parse(slackCalls.calls[2]?.body ?? "{}")).toEqual({
+      channel: "C1",
+      text: `Plain reply\n\n_Session ${SHORT_ID}_`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "Plain block" } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `Session ${SHORT_ID}` }] },
+      ],
+    });
+
+    // Second top-level request B on the same group channel Session resolves URL to ANCHOR_B
+    currentResolution = { kind: "link", taskAnchorId: ANCHOR_B };
+    const urlB = `https://opentag.example.com/agents/${AGENT_ID}/tasks/${ANCHOR_B}`;
+    const feishuCalls = captureFetch({ code: 0, data: { message_id: "om_edit" } });
+    const feishuAdapter = adapter({
+      provider: "feishu",
+      fetchImpl: feishuCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => currentResolution,
+    });
+    const feishuAuth = authorization({
+      provider: "feishu",
+      sessionId: SESSION_ID,
+      agentId: AGENT_ID,
+      cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+      resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+    });
+    await feishuAdapter.instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        method: "PUT",
+        path: "/open-apis/im/v1/messages/om_edit",
+        body: jsonBody({ msg_type: "text", content: JSON.stringify({ text: "Updated Feishu reply B" }) }),
+      }),
+      feishuAuth,
+    );
+    expect(JSON.parse(JSON.parse(feishuCalls.calls[0]?.body ?? "{}").content)).toEqual({
+      text: `Updated Feishu reply B\n\nSession ${SHORT_ID}: ${urlB}`,
+    });
+  });
+
+  it("tracks exact per-component footer provenance when Slack text or a Feishu post locale already contains the footer", async () => {
+    const capturedEvents: OutboundWriteCaptureEvent[] = [];
+    const slackCalls = captureFetch({ ok: true, ts: "1710000000.000100" });
+    const slackAdapter = adapter({
+      fetchImpl: slackCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          capturedEvents.push(event);
+        },
+      },
+    });
+    const preAnnotatedText = `Reference body\n\n_<${SESSION_URL}|Session ${SHORT_ID}>_`;
+    await slackAdapter.instance.handle(
+      request({
+        sessionId: SESSION_ID,
+        body: jsonBody({
+          channel: "C1",
+          text: preAnnotatedText,
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: "Block without link" } }],
+        }),
+      }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID }),
+    );
+    // text was NOT modified, only blocks was modified -> slackTextAppended is undefined!
+    expect(JSON.parse(slackCalls.calls[0]?.body ?? "{}").text).toBe(preAnnotatedText);
+    expect(capturedEvents[0]?.injectedSessionFooter).toEqual({
+      shortId: SHORT_ID,
+      sessionUrl: SESSION_URL,
+      slackBlockTextAppended: `<${SESSION_URL}|Session ${SHORT_ID}>`,
+    });
+
+    const feishuCaptured: OutboundWriteCaptureEvent[] = [];
+    const feishuCalls = captureFetch({ code: 0, data: { message_id: "om_post_mixed" } });
+    const feishuAdapter = adapter({
+      provider: "feishu",
+      fetchImpl: feishuCalls.fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      outboundCapture: {
+        capture: async (event) => {
+          feishuCaptured.push(event);
+        },
+      },
+    });
+    await feishuAdapter.instance.handle(
+      request({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        path: "/open-apis/im/v1/messages?receive_id_type=chat_id",
+        body: jsonBody({
+          receive_id: "oc_1",
+          msg_type: "post",
+          content: JSON.stringify({
+            zh_cn: {
+              title: "ZH",
+              content: [
+                [{ tag: "text", text: "ZH body" }],
+                [{ tag: "a", text: `Session ${SHORT_ID}`, href: SESSION_URL }],
+              ],
+            },
+            en_us: {
+              title: "EN",
+              content: [[{ tag: "text", text: "EN body" }]],
+            },
+          }),
+        }),
+      }),
+      authorization({
+        provider: "feishu",
+        sessionId: SESSION_ID,
+        agentId: AGENT_ID,
+        cli: { provider: "feishu", appId: "cli_a", teamBrand: "feishu" },
+        resolveMaterial: async () => ({ kind: "bearer", token: "t-token", origin: "https://open.feishu.cn" }),
+      }),
+    );
+    expect(feishuCaptured[0]?.injectedSessionFooter).toEqual({
+      shortId: SHORT_ID,
+      sessionUrl: SESSION_URL,
+      feishuPostLocalesAppended: ["en_us"],
+      feishuPostSegmentText: `Session ${SHORT_ID}`,
+      feishuPostSegmentHref: SESSION_URL,
+    });
+  });
+
+  it("rechecks the live authority fence after resolveTaskAnchor settles and before any upstream byte is sent", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, ts: "1" })) as unknown as typeof fetch;
+    let revoked = false;
+    let releaseAnchor: (() => void) | undefined;
+    const anchorStarted = new Promise<void>((resolve) => {
+      releaseAnchor = resolve;
+    });
+    let continueAnchor: (() => void) | undefined;
+    const anchorGate = new Promise<void>((resolve) => {
+      continueAnchor = resolve;
+    });
+
+    const { instance } = adapter({
+      fetchImpl,
+      publicOrigin: PUBLIC_ORIGIN,
+      resolveTaskAnchor: async () => {
+        releaseAnchor?.();
+        await anchorGate;
+        return { kind: "link", taskAnchorId: SESSION_ID };
+      },
+    });
+    const recheck = vi.fn(async () => {
+      if (revoked) {
+        throw Object.assign(new Error("revoked during anchor lookup"), { code: "credential_stale" });
+      }
+    });
+
+    const pending = instance.handle(
+      request({ sessionId: SESSION_ID, body: jsonBody({ channel: "C1", text: "hello" }) }),
+      authorization({ sessionId: SESSION_ID, agentId: AGENT_ID, recheck }),
+    );
+    await anchorStarted;
+    revoked = true;
+    continueAnchor?.();
+
+    await expect(pending).rejects.toMatchObject({ code: "credential_stale" });
+    expect(recheck).toHaveBeenCalledTimes(1);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

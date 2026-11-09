@@ -25,7 +25,8 @@ const PUBLIC_RESOLVE = { resolveAddresses: async (): Promise<string[]> => ["93.1
 interface Response {
   status: number;
   body?: unknown;
-  raw?: string;
+  /** A raw body, or a function of the parsed request so a fixture can echo the request's own id. */
+  raw?: string | ((request: Record<string, unknown>) => string);
   contentType?: string;
 }
 
@@ -49,10 +50,13 @@ function node(body: Response, pageTools?: (params: Record<string, unknown>) => R
     const next =
       (method === "tools/list" ? pageTools?.(params) : undefined) ??
       (method === "server/discover" ? body : { status: 404 });
-    return new Response(next.raw ?? JSON.stringify(next.body ?? {}), {
-      status: next.status,
-      headers: { "content-type": next.contentType ?? "application/json" },
-    });
+    return new Response(
+      (typeof next.raw === "function" ? next.raw(request) : next.raw) ?? JSON.stringify(next.body ?? {}),
+      {
+        status: next.status,
+        headers: { "content-type": next.contentType ?? "application/json" },
+      },
+    );
   }) as unknown as typeof globalThis.fetch;
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return {
@@ -114,6 +118,34 @@ function toolsPage(tools: unknown[], nextCursor?: string): Response {
 }
 
 describe("MCP probe success path", () => {
+  it.each([
+    [401, "application/json"],
+    [403, "application/json"],
+    [401, "text/event-stream"],
+    [403, "text/event-stream"],
+  ])("reports OAuth-shaped HTTP %i with %s as rejected authorization", async (status, contentType) => {
+    const { probe, calls } = node({
+      status,
+      contentType,
+      raw: ({ id }) => {
+        const error = { error: status === 401 ? "invalid_token" : "insufficient_scope", error_description: "private" };
+        return contentType === "application/json"
+          ? JSON.stringify(error)
+          : `data: ${JSON.stringify({ jsonrpc: "2.0", id, ...error })}\n\n`;
+      },
+    });
+    const result = await probe.probe(request());
+
+    expect(result).toMatchObject({
+      probeState: "failed",
+      probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+      tools: [],
+      toolsCount: 0,
+      eraInvalidated: false,
+    });
+    expect(calls.map((call) => parseBody(call).method)).toEqual(["server/discover", "server/discover"]);
+  });
+
   it.each([
     [401, "application/json"],
     [403, "application/json"],
@@ -448,7 +480,10 @@ describe("MCP probe success path", () => {
       {
         status: 200,
         contentType: "text/event-stream",
-        raw: 'data: {"jsonrpc":"2.0","id":"1","result":{"capabilities":{"tools":{}}}}\n\n',
+        // A request-scoped stream must answer the request that opened it: the id is the one the
+        // transport just generated, not a constant.
+        raw: (request) =>
+          `data: ${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { capabilities: { tools: {} } } })}\n\n`,
       },
       () => toolsPage([{ name: "from-sse" }]),
     );
@@ -712,6 +747,155 @@ describe("MCP probe era handling", () => {
     }
   });
 
+  /*
+   * A legacy Server may answer `initialize` without issuing `Mcp-Session-Id`. The notification is
+   * still required: it is what closes the handshake, and it is the request the session header is
+   * not needed for.
+   */
+  it("sends the initialized notification to a session-less legacy Server", async () => {
+    const legacyCalls: { method: string; body: Record<string, unknown>; headers: Record<string, string> }[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((value, key) => {
+        headers[key] = value;
+      });
+      const method = String(body.method ?? "");
+      legacyCalls.push({ method, body, headers });
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "sessionless" }] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    const result = await probe.probe({ ...request(), cachedEra: "legacy", cachedVersion: "2025-06-18" });
+
+    expect(legacyCalls.map((call) => call.method)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+    const notification = legacyCalls[1];
+    // A notification carries no `id` and needs no session: nothing issued one.
+    expect(notification?.body).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
+    expect(notification?.headers["mcp-session-id"]).toBeUndefined();
+    expect(legacyCalls[2]?.headers["mcp-session-id"]).toBeUndefined();
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["sessionless"]);
+  });
+
+  /*
+   * The handshake is not complete until the notification is accepted, so a failure there fails the
+   * probe and dispatches nothing after it. A transient transport failure is also not evidence that
+   * the origin changed its protocol, so the cached era must survive it.
+   */
+  it("fails the probe when the initialized notification fails, without listing tools", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      methods.push(method);
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error("upstream closed the connection");
+    }) as unknown as typeof globalThis.fetch;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
+    });
+    const result = await probe.probe({ ...request(), cachedEra: "legacy", cachedVersion: "2025-06-18" });
+
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+    expect(result.probeState).toBe("failed");
+    expect(result.tools).toEqual([]);
+    expect(result.eraInvalidated).toBe(false);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ cachedEra: "legacy", errorCode: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE }),
+      "MCP probe failed",
+    );
+  });
+
+  /*
+   * A refused `notifications/initialized` is a half-finished handshake. The reviewer reproduced the
+   * status being discarded — the notification has no `id`, so nothing interpreted its response — and
+   * a session-less peer that refused the handshake was then sent `tools/list` anyway.
+   *
+   * These drive the real `McpOutboundFetcher` with a network-free `fetch` and resolver, and answer
+   * `tools/list` successfully, so a passing assertion cannot come from the listing's own error.
+   */
+  describe("a refused initialized notification", () => {
+    const MARKER = "notification-body-marker-5c19";
+
+    function legacyNode(notifyStatus: number) {
+      const methods: string[] = [];
+      const json = { "content-type": "application/json" };
+      const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+        const method = String(body.method ?? "");
+        methods.push(method);
+        if (method === "initialize") {
+          // No `mcp-session-id`: a legacy peer that issues no session still needs the notification.
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { protocolVersion: "2025-06-18", capabilities: {} },
+            }),
+            { status: 200, headers: json },
+          );
+        }
+        if (method === "notifications/initialized") {
+          return new Response(JSON.stringify({ message: MARKER }), { status: notifyStatus, headers: json });
+        }
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "legacy-tool" }] } }),
+          {
+            status: 200,
+            headers: json,
+          },
+        );
+      }) as unknown as typeof globalThis.fetch;
+      return {
+        methods,
+        fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      };
+    }
+
+    it.each([
+      [400, "The MCP Server returned HTTP 400"],
+      [401, MCP_AUTH_REJECTION_SUMMARY],
+      [500, "The MCP Server returned HTTP 500"],
+    ])("fails the probe on HTTP %i and lists no tools", async (status, expected) => {
+      const { fetcher, methods } = legacyNode(status);
+      const result = await new McpProbe({ fetcher }).probe({
+        ...request(),
+        cachedEra: "legacy",
+        cachedVersion: "2025-06-18",
+      });
+
+      // No `server/discover` (the era was cached), no `tools/list`, and no second `initialize`.
+      expect(methods).toEqual(["initialize", "notifications/initialized"]);
+      expect(result.probeState).toBe("failed");
+      expect(result.tools).toEqual([]);
+      expect(result.toolsCount).toBe(0);
+      // The bounded, credential-free mapping: no part of the upstream body is interpreted or exposed.
+      expect(result.probeError).toContain(MCP_ERROR_CODES.UPSTREAM_ERROR);
+      expect(result.probeError).toContain(expected);
+      expect(result.probeError).not.toContain(MARKER);
+      // A refused handshake is not evidence the origin changed its protocol.
+      expect(result.eraInvalidated).toBe(false);
+    });
+  });
+
   it("omits the version header for the legacy version that predates it", async () => {
     /*
      * `2025-03-26` has no `MCP-Protocol-Version` at all, so sending one would be wrong in the other
@@ -814,50 +998,55 @@ describe("MCP probe era handling", () => {
     expect(result.toolsTruncated).toBe(true);
   });
 
-  it("retries with an advertised version instead of downgrading when a modern error answers 400", async () => {
-    const versions: string[] = [];
-    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      versions.push(headers.get("mcp-protocol-version") ?? "");
-      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
-      if (method === "server/discover" && versions.length === 1) {
-        return new Response(
-          JSON.stringify({
+  it.each(["application/json", "text/event-stream"])(
+    "retries an advertised version without downgrading for a 400 %s JSON-RPC error",
+    async (contentType) => {
+      const versions: string[] = [];
+      const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        versions.push(headers.get("mcp-protocol-version") ?? "");
+        const request = JSON.parse(String(init?.body)) as { method?: string; id: string };
+        const method = request.method ?? "";
+        if (method === "server/discover" && versions.length === 1) {
+          const body = JSON.stringify({
             jsonrpc: "2.0",
-            id: "1",
+            id: request.id,
             error: { code: -32022, message: "unsupported", data: { supported: ["2025-11-25"] } },
-          }),
-          { status: 400, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (method === "server/discover") {
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { capabilities: {} } }), {
+          });
+          return new Response(contentType === "application/json" ? body : `data: ${body}\n\n`, {
+            status: 400,
+            headers: { "content-type": contentType },
+          });
+        }
+        if (method === "server/discover") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { capabilities: {} } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [] } }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
-      }
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [] } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
+      }) as unknown as typeof globalThis.fetch;
+      const probe = new McpProbe({
+        fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
       });
-    }) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({
-      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
-    });
-    const result = await probe.probe({
-      accountId: ACCOUNT,
-      url: ENDPOINT,
-      authHeaders: {},
-      cachedEra: null,
-      cachedVersion: null,
-    });
-    expect(versions[0]).toBe("2026-07-28");
-    expect(versions[1]).toBe("2025-11-25");
-    expect(result.probeState).toBe("succeeded");
-    // The retry kept the modern per-request model at the version the peer advertised: no
-    // `initialize` handshake was attempted, which is the whole point of inspecting the body first.
-    expect(result.protocolVersion).toBe("2025-11-25");
-  });
+      const result = await probe.probe({
+        accountId: ACCOUNT,
+        url: ENDPOINT,
+        authHeaders: {},
+        cachedEra: null,
+        cachedVersion: null,
+      });
+      expect(versions[0]).toBe("2026-07-28");
+      expect(versions[1]).toBe("2025-11-25");
+      expect(result.probeState).toBe("succeeded");
+      // The retry kept the modern per-request model at the version the peer advertised: no
+      // `initialize` handshake was attempted, which is the whole point of inspecting the body first.
+      expect(result.protocolVersion).toBe("2025-11-25");
+    },
+  );
 
   it("honours a cached legacy era and never sends a modern discovery request", async () => {
     const methods: string[] = [];

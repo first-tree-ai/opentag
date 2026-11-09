@@ -69,3 +69,38 @@ it("clears selections once, advances affected revisions, and preserves other con
     await sql.end();
   }
 });
+
+it("changes a nonempty selection while the Agent keeps running", async () => {
+  const { database, sql } = createDatabaseClient(testDatabase.databaseUrl);
+  try {
+    const [existing] = await sql<{ id: string }[]>`select id from users order by created_at limit 1`;
+    const userId =
+      existing?.id ??
+      (await bootstrapInitialAdmin(database, { displayName: "Admin", email: "admin@example.com" })).userId;
+    const service = new AgentService(database);
+    const agent = await service.createForAccount(userId, {
+      name: "running",
+      displayName: "Running",
+      runtimeProvider: "codex",
+    });
+    const first = { kind: "git" as const, repository: "acme/memory", path: ".", ref: "main" };
+    const second = { kind: "git" as const, repository: "acme/notes", path: "docs", ref: "main" };
+    const save = async (connections: (typeof first)[]) => {
+      const current = await service.getConfigById(userId, agent.id);
+      expect(current.status).toBe("active");
+      return service.updateContextTreeSelection(
+        userId,
+        agent.id,
+        { ...current, runtimeConfigRevision: current.runtimeConfig.revision },
+        connections,
+      );
+    };
+    expect((await save([first])).runtimeConfig.contextTrees).toEqual([first]);
+    const added = await save([first, second]);
+    expect(added.status).toBe("active");
+    expect(added.runtimeConfig.contextTrees).toEqual([first, second]);
+    expect((await save([second])).runtimeConfig.contextTrees).toEqual([second]);
+  } finally {
+    await sql.end();
+  }
+});

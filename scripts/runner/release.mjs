@@ -50,7 +50,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
 
 const DOCKER_TRANSFER_TIMEOUT_MS = 30 * 60 * 1000;
 const SMOKE_PREFIX = "opentag-runner-release";
-const NPM_METADATA_WAIT_DEADLINE_MS = 5 * 60 * 1000;
+export const NPM_METADATA_WAIT_DEADLINE_MS = 30 * 60 * 1000;
 const NPM_METADATA_WAIT_INTERVAL_MS = 15_000;
 
 const defaultSleep = (milliseconds) => new Promise((settle) => setTimeout(settle, milliseconds));

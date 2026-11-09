@@ -3,7 +3,7 @@ import type { MCPAgentServer, MCPAuthKind, MCPServer } from "@opentag/shared/bro
 import { UpdateMCPBindingRequestSchema } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
-import { expect } from "./fixtures.js";
+import { allowExpectedDiagnostic, expect } from "./fixtures.js";
 
 const timestamp = "2026-10-10T00:00:00.000Z";
 export function server(name: string, kind: MCPAuthKind = "none"): MCPServer {
@@ -31,7 +31,12 @@ export function binding(value: MCPServer): MCPAgentServer {
     description: null,
     discoveredDescription: null,
     enabled: true,
-    effective: { url: value.url, authHeader: value.authHeader, authScheme: value.authScheme, extraHeaders: {} },
+    effective: {
+      url: value.url,
+      authHeader: value.authHeader,
+      authScheme: value.authScheme,
+      extraHeaders: value.extraHeaders,
+    },
     overridden: { url: false, authHeader: false, authScheme: false, extraHeaders: false },
     authorization: null,
     snapshot: null,
@@ -60,6 +65,7 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
   const mounts = new Map<string, MCPAgentServer[]>();
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   let failProbe = false;
+  let failAuthorization = false;
   let failOAuth = false;
   let oauthSuccess = false;
   let releasePool: () => void = () => {};
@@ -75,6 +81,7 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     const body = route.request().postDataJSON() as Record<string, unknown> | null;
     const method = route.request().method();
     if (method !== "GET") writes.push({ path, body: body ?? {} });
+    if (await respondMcpReuseDisabled(route, path, method)) return;
     if (path === "/api/v1/mcp-servers") {
       await respondPool(route, method, body);
       return;
@@ -136,6 +143,10 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     else {
       const value = servers.find((candidate) => candidate.id === body?.mcpServerId);
       if (!value) throw new Error("Missing server fixture");
+      if (entries.some((entry) => entry.mcpServerId === value.id)) {
+        await route.fulfill({ status: 409, json: { message: "Already mounted", code: "MCP_BINDING_CONFLICT" } });
+        return;
+      }
       const entry = binding(value);
       entries.push(entry);
       await route.fulfill({ json: entry });
@@ -199,6 +210,10 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
   }
   async function respondAuthorization(route: Route, entry: MCPAgentServer, body: Record<string, unknown> | null) {
     const cancelling = route.request().method() === "DELETE";
+    if (!cancelling && failAuthorization) {
+      await route.fulfill({ status: 503, json: { message: "Fixture authorization unavailable" } });
+      return;
+    }
     if (!cancelling) await authorizationGate;
     if (cancelling && body?.expectedOAuthState && entry.authorization?.status === "active") {
       await route.fulfill({
@@ -243,11 +258,24 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     servers,
     mounts,
     writes,
+    failAuthorization: (value: boolean) => {
+      failAuthorization = value;
+      if (value) {
+        allowExpectedDiagnostic(page, {
+          routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization",
+          status: 503,
+        });
+      }
+    },
     failProbe: (value: boolean) => {
       failProbe = value;
     },
     failOAuth: () => {
       failOAuth = true;
+      allowExpectedDiagnostic(page, {
+        routeTemplate: "/api/v1/agents/:id/mcp-servers/:id/authorization/oauth",
+        status: 502,
+      });
     },
     allowOAuth: () => {
       failOAuth = false;
@@ -299,6 +327,15 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     },
     releaseAuthorization: () => releaseAuthorization(),
   };
+}
+
+export async function respondMcpReuseDisabled(route: Route, path: string, method: string) {
+  let json: object;
+  if (method === "POST" && path.endsWith("/mcp-servers/reusable-installation")) json = { server: null };
+  else if (method === "POST" && path.endsWith("/authorization/connect")) json = { connected: false };
+  else return false;
+  await route.fulfill({ json });
+  return true;
 }
 
 async function respondBindingUpdate(

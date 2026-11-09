@@ -12,7 +12,12 @@ export function runtimeProviderMessageRef(
 ): RuntimeProviderMessageRef {
   if (!binding.externalAppId || !binding.externalBotId) throw new Error("IM_BINDING_IDENTITY_INCOMPLETE");
   if (message.providerContext.provider === "feishu") {
-    const { provider: _provider, ...context } = message.providerContext;
+    const {
+      provider: _provider,
+      chatMode: _chatMode,
+      groupMessageType: _groupMessageType,
+      ...context
+    } = message.providerContext;
     return {
       provider: "feishu",
       teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",

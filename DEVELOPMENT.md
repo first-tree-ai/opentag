@@ -161,6 +161,19 @@ For UI translations, see [Web i18n](./docs/system/web/i18n.md).
 For database and read/write changes, start with the [Database read/write standards](./docs/system/database-read-write-standards.md).
 Identify the applicable rule IDs, any exceptions, and the verification scope in the change proposal and review.
 
+### Release regression and task records
+
+Run the [Markdown release regression catalogue](./testing/regression/README.md) before every release on the dedicated
+regression computer. When adding or changing a product feature, add or update its matching cases in the same change.
+Assign regression defects to `yuezengwu`. `testing/regression/` is the only test-content directory under `testing/`;
+the parent README is its entry point. Automated unit, integration and E2E tests and their CI remain with their owners.
+
+Do not commit ordinary task test plans, acceptance results, screenshots, performance reports, raw validation evidence
+or local test environment configuration. Keep task artifacts outside the source repository and record useful redacted
+findings in the task's GitHub PR/Issue, including revision, commands, scope, outcomes and limitations. These execution
+records do not belong in the knowledge base. Benchmark tools default to the system temporary directory under
+`opentag-benchmarks/`; use their output overrides for task-owned storage and retention.
+
 ### Local validation
 
 Choose checks from the changed behavior and its consumers. Use the same scope during development and before opening
@@ -172,7 +185,7 @@ every commit. CI runs the complete regression matrix and must pass before merge.
 | Documentation only | `pnpm check`; no application build or tests. Keep root Chinese mirrors synchronized. Markdown shipped as runtime input, such as bundled Skills, follows the affected package's validation scope. |
 | Behavior within one package | Relevant test files and the package's type check. Expand to the package suite when the impact spans the package or is unclear. |
 | Shared schemas, public exports, or cross-package contracts | Producer tests and affected consumer tests/type checks. Build changed exports before testing consumers. |
-| Database queries, transactions, locking, or persistence | Relevant server unit and PostgreSQL integration tests. A new migration requires the full integration suite and migration-count update in `AGENTS.md`. |
+| Database queries, transactions, locking, or persistence | Relevant server unit and PostgreSQL integration tests. New migrations follow the [migration requirements](./docs/system/database-read-write-standards.md#migrations). |
 | Agent Runtime implementation or tests covered by `vitest.agent-runtime.config.ts`, or that configuration | Focused tests, then `pnpm --filter @opentag/client test:agent-runtime:coverage`. Its 100% gate is authoritative on CI's Ubuntu host; report host-specific failures. |
 | Repository scripts or workflows | Relevant `scripts/__tests__/*.test.mjs` files and any build/package smoke checks exercised by the change. |
 | Build, exports, generated code, or packaging | Affected builds plus relevant tests and type checks. |
@@ -226,6 +239,23 @@ published port binds to `127.0.0.1`; remote Docker endpoints retain Docker's def
 query fails, check Docker port forwarding: an open TCP port alone does not prove that PostgreSQL traffic reaches the
 container. The fixture closes the probe connection and removes the container on failure.
 
+### Container PostgreSQL probes
+
+Run `psql` and `pg_isready` inside containers with an explicit TCP host, normally `-h 127.0.0.1` or
+`--host=127.0.0.1`. The official Postgres image starts a socket-only server during initialization; only the final
+server answers TCP. This relies on the image setting `listen_addresses = '*'` in `postgresql.conf.sample`.
+Revisit the probes when mounting a custom `postgresql.conf` or changing the image family.
+
+`pnpm check` enforces this with `scripts/check-container-postgres-tcp.mjs`. It checks literal Docker argument lists
+and local argv-forwarding functions declared with `function` in JS/TS, simple Docker shell commands in `.sh` and
+workflow `run` steps, workflow service `options`, and Compose/Docker health commands. Keep these invocations explicit;
+dynamically assembled commands or imported wrappers
+need the checker extended alongside them. Host-side clients (including URL-based connections), image initialization
+scripts that intentionally use the temporary server, and `--help`/`--version` calls remain valid without this flag.
+Ordinary text and comments are not commands. This static check does not prove runtime readiness or validate custom
+Postgres configuration.
+Only `-h`/`--host` satisfies the container-side rule; `PGHOST` and connection-string host settings do not replace it.
+
 ### CI and full-suite reproduction
 
 CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime
@@ -236,7 +266,13 @@ Patch Coverage checks changed paths before installing dependencies. Changes outs
 receive an explicit pass; source deletions and renames still require measurement. For source changes, five parallel jobs
 measure one workspace each and enforce its existing floors. The final job requires every report, concatenates disjoint
 file maps, and enforces the unchanged 80% changed-line threshold. Missing reports, failed suites, and overlapping source
-ownership fail the check. The weekly Unit Coverage workflow still measures the complete baseline.
+ownership fail the check. Inside a measured workspace the gate judges exactly the files the coverage run instruments,
+read from the same scope (`scripts/coverage-scope.mjs`), so test helpers, smoke harnesses and tooling config are never
+judged. A judged file with no coverage entry was not measured and fails the check on its own, whatever the percentage
+and even when its change has no executable line,
+as for a pure rename. The Unit Coverage workflow measures the complete baseline on `main` after every merge that touches source, scripts, or
+dependencies, and weekly, and fails when `main` falls below a floor, so a breach is attributed to the merge that
+caused it.
 
 On pull requests, Quality Scoreboard runs inside CI and reuses the three Node 24 unit shard timings instead of rerunning
 tests. Its duration metric is explicitly the slowest workspace shard, excluding repository script tests and runner queue

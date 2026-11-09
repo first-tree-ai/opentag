@@ -84,7 +84,7 @@ test("Add custom exposes explicit authentication and retries tools without anoth
   ).toBe(1);
   await page.screenshot({ path: test.info().outputPath("mcp-loading.png") });
   fixture.releaseProbe();
-  await expect(dialog).toContainText("Couldn't load tools");
+  await expect(dialog).toContainText("Couldn't load tools. Try again.");
   fixture.failProbe(false);
   await dialog.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -217,7 +217,7 @@ for (const width of [1440, 320]) {
     await dialog.getByLabel("Connector address", { exact: true }).fill("https://mcp.figma.com/mcp");
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     const error = dialog.getByRole("alert");
-    await expect(error).toHaveText("Authorization failed");
+    await expect(error).toHaveText("Authorization didn't finish. Try again.");
     await expect(dialog).not.toContainText("Private upstream detail");
     await expectUnclipped(error);
     await expectAccessible(page);

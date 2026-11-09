@@ -1,4 +1,6 @@
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_AVATAR_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CLOUD_TEMPLATE,
@@ -12,7 +14,6 @@ import {
   AGENT_SETUP_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
-  AGENT_USAGE_WINDOW_DAYS,
   AgentAdminConfigSchema,
   AgentCloudOverviewQuerySchema,
   AgentCloudOverviewSchema,
@@ -23,15 +24,20 @@ import {
   AgentRuntimeTestResponseSchema,
   AgentSetupSnapshotSchema,
   AgentUsageDetailSchema,
-  AgentUsageWindowDaysSchema,
+  AgentUsageQuerySchema,
+  ContextTreeAvailabilityResponseSchema,
   ContextTreeOperationRequestSchema,
   ContextTreeOperationResponseSchema,
+  projectAgentActivityForClient,
   RebindAgentComputerRequestSchema,
+  requestsAgentActivityQueuedCount,
+  requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import { isRuntimeOptionsAbortError } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeOptionsService } from "../services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
@@ -42,9 +48,6 @@ import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } 
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
-const AgentUsageQuerySchema = z
-  .object({ days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS) })
-  .strict();
 
 function authenticatedUserId(request: FastifyRequest): string {
   const userId = request.authContext?.me.user.id;
@@ -114,8 +117,11 @@ export function registerAgentRoutes(
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const detail = await agentService.getById(authenticatedUserId(request), agentId);
+    const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
+    const includeQueuedCount = requestsAgentActivityQueuedCount(request.headers[AGENT_ACTIVITY_QUEUED_COUNT_HEADER]);
     const response = AgentDetailSchema.parse({
       ...detail,
+      activity: projectAgentActivityForClient(detail.activity, includeTaskCount, includeQueuedCount),
       ...(slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable }),
     });
     return reply.code(200).send(response);
@@ -123,9 +129,9 @@ export function registerAgentRoutes(
 
   app.get(AGENT_USAGE_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    const { days } = parseRequest(AgentUsageQuerySchema, request.query);
+    const { days, timezone } = parseRequest(AgentUsageQuerySchema, request.query);
     const response = AgentUsageDetailSchema.parse(
-      await agentService.getUsageById(authenticatedUserId(request), agentId, days),
+      await agentService.getUsageById(authenticatedUserId(request), agentId, days, timezone),
     );
     return reply.code(200).send(response);
   });
@@ -198,7 +204,14 @@ export function registerAgentRoutes(
     });
   }
 
-  if (contextTree)
+  if (contextTree) {
+    app.get(AGENT_CONTEXT_TREE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const response = ContextTreeAvailabilityResponseSchema.parse(
+        await contextTree.availability(authenticatedUserId(request), agentId),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
     app.post(AGENT_CONTEXT_TREE_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(ContextTreeOperationRequestSchema, request.body);
@@ -207,6 +220,7 @@ export function registerAgentRoutes(
       );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
+  }
 
   if (runtimeOptions)
     app.get(AGENT_RUNTIME_OPTIONS_TEMPLATE, { preHandler }, async (request, reply) => {
@@ -218,6 +232,11 @@ export function registerAgentRoutes(
           await runtimeOptions.get(authenticatedUserId(request), agentId, model, disconnect.signal),
         );
         return reply.header("Cache-Control", "no-store").send(response);
+      } catch (error) {
+        if (disconnect.signal.aborted && isRuntimeOptionsAbortError(error)) {
+          return reply.sent || reply.raw.writableEnded ? reply : reply.code(499).send();
+        }
+        throw error;
       } finally {
         disconnect.dispose();
       }

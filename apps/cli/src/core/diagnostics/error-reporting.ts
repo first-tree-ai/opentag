@@ -3,7 +3,7 @@ import * as client from "@opentag/client";
 import type { Command } from "commander";
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { resolveChannelEnvironment } from "../channel/environment.js";
-import type { CommandError } from "../command/policy.js";
+import { type CommandError, isBrokenPipeError } from "../command/policy.js";
 
 /**
  * Categories that describe the program rather than the caller's input, credentials, or environment.
@@ -12,6 +12,7 @@ import type { CommandError } from "../command/policy.js";
 const REPORTED_CATEGORIES: ReadonlySet<CommandError["category"]> = new Set(["internal", "dependency", "protocol"]);
 
 export function shouldReportCommandError(error: CommandError): boolean {
+  if (isBrokenPipeError(error)) return false;
   return REPORTED_CATEGORIES.has(error.category);
 }
 
@@ -26,7 +27,7 @@ export async function reportCommandFailure(
   commandError: CommandError,
   options: CliErrorReportOptions = {},
 ): Promise<{ ok: boolean }> {
-  if (!shouldReportCommandError(commandError)) return { ok: false };
+  if (isBrokenPipeError(error) || !shouldReportCommandError(commandError)) return { ok: false };
   const identity = typeof error === "object" && error !== null ? error : commandError;
   if (reportedFailures.has(identity)) return { ok: false };
   reportedFailures.add(identity);
@@ -182,6 +183,7 @@ export interface CliErrorReportOptions {
  * gain from complaining about it.
  */
 export async function reportCliError(error: unknown, options: CliErrorReportOptions = {}): Promise<{ ok: boolean }> {
+  if (isBrokenPipeError(error)) return { ok: false };
   try {
     const environment = resolveChannelEnvironment(options.environment ?? process.env);
     const home = options.home ?? client.resolveOpenTagHome(environment);

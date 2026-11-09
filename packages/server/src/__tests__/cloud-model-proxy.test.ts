@@ -3,6 +3,7 @@ import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerCloudModelProxyRoutes } from "../api/cloud-model-proxy.js";
+import { waitForCloudModelRetry } from "../cloud-model-retry.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import {
@@ -15,6 +16,11 @@ import {
 } from "./fixtures/cloud-model-upstream.js";
 
 import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
+
+vi.mock("../cloud-model-retry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../cloud-model-retry.js")>()),
+  waitForCloudModelRetry: vi.fn(async () => true),
+}));
 
 const SECRET = "unit-test-jwt-secret-at-least-32-characters";
 const SANDBOX_ID = "11111111-1111-4111-8111-111111111111";
@@ -69,6 +75,7 @@ async function makeStack(input: {
   app?: FastifyInstance;
   configOverrides?: Partial<ProxyConfig>;
   grants?: CloudModelGrantService;
+  fetchImpl?: typeof fetch;
   logger?: { level: string; stream: { write(line: string): void } };
   upstream: CloudModelUpstream;
 }) {
@@ -80,7 +87,7 @@ async function makeStack(input: {
   registerCloudModelProxyRoutes(app, {
     config,
     grants,
-    modelService: createTestCloudModelService(config),
+    modelService: createTestCloudModelService(config, input.fetchImpl),
     contextForExecution: async () => ({ ...cloudTestOwner, sessionId: SESSION_ID, source: "execution" }),
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -95,11 +102,18 @@ async function issueToken(grants: CloudModelGrantService, executionId = "turn-1"
   return issued;
 }
 
-function postModel(port: number, body: unknown, token?: string, signal?: AbortSignal): Promise<Response> {
+function postModel(
+  port: number,
+  body: unknown,
+  token?: string,
+  signal?: AbortSignal,
+  proxyOwnsRetry = true,
+): Promise<Response> {
   return fetch(`http://127.0.0.1:${port}${CLOUD_MODEL_CHAT_COMPLETIONS_PATH}`, {
     body: JSON.stringify(body),
     headers: {
       "content-type": "application/json",
+      ...(proxyOwnsRetry ? { "x-opentag-model-retry-owner": "proxy" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     method: "POST",
@@ -212,6 +226,7 @@ afterEach(async () => {
   for (const app of cleanups.apps.splice(0)) await app.close().catch(() => undefined);
   for (const upstream of cleanups.upstreams.splice(0)) await upstream.close();
   for (const grants of cleanups.grants.splice(0)) grants.close();
+  vi.mocked(waitForCloudModelRetry).mockReset().mockResolvedValue(true);
 });
 
 describe("Cloud model proxy route", () => {
@@ -854,6 +869,98 @@ describe("Cloud model proxy route", () => {
 });
 
 describe("Cloud model proxy upstream error classification", () => {
+  it("normalizes the Router's initial HTTP 200 SSE rate-limit rejection before committing a stream", async () => {
+    const upstream = await startFixture({
+      kind: "sse",
+      chunks: [
+        JSON.stringify({
+          error: {
+            code: "rate_limit_exceeded",
+            type: "rate_limit_error",
+            pre_stream_rejection: true,
+            param: null,
+            message: "Upstream rate limit exceeded.",
+            request_id: "fixture-router-request",
+          },
+        }),
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(429);
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(4);
+  });
+
+  it("preserves an available validated hint when normalizing a streaming rate limit", async () => {
+    const upstream = await startFixture({
+      kind: "sse",
+      retryAfter: "30",
+      chunks: [
+        JSON.stringify({
+          error: { code: "rate_limit_exceeded", type: "rate_limit_error", pre_stream_rejection: true },
+        }),
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(4);
+  });
+
+  it("terminates a heartbeat-only prelude timeout without making an uncertain call retryable", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 200 } });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNCERTAIN");
+    expect(upstream.stats.hits).toBe(1);
+    expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true);
+  });
+
+  it("terminates a disconnected heartbeat-only prelude without making an uncertain call retryable", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
+    await vi.waitFor(() => expect(upstream.stats.responseBytesSent).toBeGreaterThan(0));
+    await upstream.close();
+    const response = await pending;
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNCERTAIN");
+    expect(upstream.stats.hits).toBe(1);
+    expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true);
+  });
+
+  it("closes a heartbeat-only prelude and releases its grant on server shutdown", async () => {
+    const upstream = await startFixture({ kind: "heartbeat", chunkIntervalMs: 10 });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
+    await vi.waitFor(() => expect(upstream.stats.responseBytesSent).toBeGreaterThan(0));
+    await stack.app.close();
+    const response = await pending;
+    expect(response.status).toBe(401);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_TOKEN_INVALID");
+    expect(upstream.stats.hits).toBe(1);
+  });
   async function classifiedResponse(status: number, body: unknown) {
     const upstream = await startFixture({ kind: "error", status, body });
     const { grants, port } = await makeStack({ upstream });
@@ -959,8 +1066,7 @@ describe("Cloud model proxy upstream error classification", () => {
   });
 
   it("classifies rate limits as bounded-retryable and billing or auth failures as permanent", async () => {
-    // Pi's pinned retry policy (dist/utils/retry.js): the rate-limit text matches the retryable
-    // pattern and none of the non-retryable quota patterns, so Pi applies its own bounded retry.
+    // Only the confirmed HTTP 429 class may consume the proxy-owned retry budget.
     const rateLimited = await classifiedResponse(429, {
       error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: `slow down, key=${FIXTURE_MASTER_KEY}` },
     });
@@ -979,8 +1085,7 @@ describe("Cloud model proxy upstream error classification", () => {
     expect(bareRateLimit.response.status).toBe(429);
     expect(JSON.parse(bareRateLimit.text)).toMatchObject({ error: { code: "rate_limit_exceeded" } });
 
-    // Quota exhaustion is permanent: the billing text matches Pi's non-retryable pattern, so a
-    // 429-shaped quota rejection is never retried as a transient rate limit.
+    // Quota exhaustion is permanent even when the upstream status is 429.
     const quota = await classifiedResponse(429, {
       error: { code: "insufficient_quota", type: "billing_error", message: "quota" },
     });
@@ -1025,7 +1130,65 @@ describe("Cloud model proxy upstream error classification", () => {
     });
   });
 
-  it("does not retry the upstream: one client request produces at most one upstream call", async () => {
+  it.each([
+    ["30", "30"],
+    ["0", "0"],
+    ["120", "120"],
+    ["-1", null],
+    ["1.5", null],
+    ["not-a-delay", null],
+    [FIXTURE_MASTER_KEY, null],
+  ])("preserves validated rate-limit hints after the proxy budget is exhausted: %s", async (retryAfter, expected) => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "rate_limit_exceeded" } },
+      retryAfter,
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe(expected);
+    expect(await errorCode(response)).toBe("rate_limit_exceeded");
+    expect(upstream.stats.hits).toBe(retryAfter === "120" ? 1 : 4);
+  });
+
+  it("does not expose a retry hint for a permanent quota rejection", async () => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "insufficient_quota" } },
+      retryAfter: "30",
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(402);
+    expect(response.headers.get("retry-after")).toBeNull();
+    expect(await errorCode(response)).toBe("billing_error");
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("normalizes an HTTP-date rate-limit hint into a bounded numeric response", async () => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "rate_limit_exceeded" } },
+      retryAfter: new Date(Date.now() + 30_000).toUTCString(),
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(28);
+    expect(Number(response.headers.get("retry-after"))).toBeLessThanOrEqual(30);
+    expect(upstream.stats.hits).toBe(4);
+    await response.body?.cancel();
+  });
+
+  it("exhausts exactly four attempts in one proxy request", async () => {
     const upstream = await startFixture({
       kind: "error",
       status: 429,
@@ -1036,6 +1199,175 @@ describe("Cloud model proxy upstream error classification", () => {
     const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(response.status).toBe(429);
     await response.text();
-    expect(upstream.stats.hits).toBe(1);
+    expect(upstream.stats.hits).toBe(4);
+    expect(waitForCloudModelRetry).toHaveBeenCalledTimes(3);
   });
+});
+
+describe("Cloud proxy is the sole safe retry owner", () => {
+  it("forwards legacy clients once without stacking their retry policy", async () => {
+    const upstream = await startFixture({ kind: "error", status: 429, retryAfter: "0" });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a" },
+      issued.token,
+      undefined,
+      false,
+    );
+    expect(response.status).toBe(429);
+    await response.text();
+    expect(upstream.stats.hits).toBe(1);
+    expect(waitForCloudModelRetry).not.toHaveBeenCalled();
+  });
+  it.each(["", ": heartbeat\n\n", 'data: {"error":'])(
+    "terminates clean EOF before a complete data event: %s",
+    async (prelude) => {
+      const upstream = await startFixture({ kind: "raw-sse", chunks: [prelude] });
+      const stack = await makeStack({ upstream });
+      const issued = await issueToken(stack.grants);
+      const response = await postModel(
+        stack.port,
+        { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+        issued.token,
+      );
+      expect(response.status).toBe(400);
+      expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNCERTAIN");
+      expect(upstream.stats.hits).toBe(1);
+      expect(waitForCloudModelRetry).not.toHaveBeenCalled();
+      expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true);
+    },
+  );
+
+  it("continues the same proxy request after a confirmed HTTP 429", async () => {
+    const upstream = await startFixture({
+      kind: "sequence",
+      handlers: [
+        { kind: "error", status: 429, retryAfter: "1", body: { error: { code: "rate_limit_exceeded" } } },
+        { kind: "json", payload: { choices: [{ message: { content: "Recovered" } }] } },
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Recovered");
+    expect(upstream.stats.hits).toBe(2);
+    expect(waitForCloudModelRetry).toHaveBeenCalledExactlyOnceWith(1_000, expect.any(AbortSignal));
+  });
+
+  it("recovers a marked Router streaming rejection within the same budget", async () => {
+    const upstream = await startFixture({
+      kind: "sequence",
+      handlers: [
+        {
+          kind: "sse",
+          chunks: [
+            JSON.stringify({ error: { code: "rate_limit_exceeded", pre_stream_rejection: true, retry_after: "1" } }),
+          ],
+        },
+        { kind: "sse", chunks: ['{"choices":[{"delta":{"content":"Recovered"}}]}'] },
+      ],
+    });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(
+      stack.port,
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
+      issued.token,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Recovered");
+    expect(upstream.stats.hits).toBe(2);
+    expect(waitForCloudModelRetry).toHaveBeenCalledExactlyOnceWith(1_000, expect.any(AbortSignal));
+  });
+
+  it.each([408, 409, 500, 502, 503, 504])("does not retry an ambiguous upstream HTTP %s", async (status) => {
+    const upstream = await startFixture({ kind: "error", status, body: { error: { code: "rate_limit_exceeded" } } });
+    const stack = await makeStack({ upstream });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(status);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_ERROR");
+    expect(upstream.stats.hits).toBe(1);
+    expect(waitForCloudModelRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("does not replay Router 502 with not_dispatched=%s", async (notDispatched) => {
+    const upstream = await startFixture({ kind: "error", status: 502 });
+    const stack = await makeStack({
+      upstream,
+      fetchImpl: async (input, init) => {
+        const response = await fetch(input, init);
+        const headers = new Headers(response.headers);
+        if (notDispatched) headers.set("x-router-dispatch", "not_dispatched");
+        return new Response(response.body, { status: response.status, headers });
+      },
+    });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(502);
+    await response.text();
+    expect(upstream.stats.hits).toBe(1);
+    expect(waitForCloudModelRetry).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a transport loss after the Router accepted the request", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    const keys: string[] = [];
+    const stack = await makeStack({
+      upstream,
+      fetchImpl: async (input, init) => {
+        keys.push(new Headers(init?.headers).get("idempotency-key") ?? "");
+        const response = await fetch(input, init);
+        await response.body?.cancel();
+        throw new TypeError("fixture response lost after dispatch");
+      },
+    });
+    const issued = await issueToken(stack.grants);
+    const response = await postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(502);
+    expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_UNAVAILABLE");
+    expect(upstream.stats.hits).toBe(1);
+    expect(keys).toHaveLength(1);
+    expect(waitForCloudModelRetry).not.toHaveBeenCalled();
+  });
+
+  it.each(["deadline", "revocation", "shutdown"])("stops a real backoff on %s", async (kind) => {
+    const actual = await vi.importActual<typeof import("../cloud-model-retry.js")>("../cloud-model-retry.js");
+    vi.mocked(waitForCloudModelRetry).mockImplementationOnce(actual.waitForCloudModelRetry);
+    const upstream = await startFixture({ kind: "error", status: 429, retryAfter: "30" });
+    const stack = await makeStack({
+      upstream,
+      configOverrides: { requestTimeoutMs: kind === "deadline" ? 200 : 5_000 },
+    });
+    const issued = await issueToken(stack.grants);
+    const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    await vi.waitFor(() => expect(waitForCloudModelRetry).toHaveBeenCalledTimes(1));
+    if (kind === "revocation") stack.grants.revokeExecution("turn-1");
+    if (kind === "shutdown") await stack.app.close();
+    const response = await pending;
+    expect(response.status).toBe(kind === "deadline" ? 504 : 401);
+    await response.text();
+    expect(upstream.stats.hits).toBe(1);
+    expect(waitForCloudModelRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("cancels a real retry wait when the model client disconnects", async () => {
+  const actual = await vi.importActual<typeof import("../cloud-model-retry.js")>("../cloud-model-retry.js");
+  vi.mocked(waitForCloudModelRetry).mockImplementationOnce(actual.waitForCloudModelRetry);
+  const upstream = await startFixture({ kind: "error", status: 429, retryAfter: "30" });
+  const stack = await makeStack({ upstream });
+  const issued = await issueToken(stack.grants);
+  const controller = new AbortController();
+  const pending = postModel(stack.port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token, controller.signal);
+  const rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(waitForCloudModelRetry).toHaveBeenCalledTimes(1));
+  controller.abort();
+  await rejected;
+  await vi.waitFor(() => expect(slotIsFree(stack.grants, issued.claims.jti)).toBe(true));
+  expect(upstream.stats.hits).toBe(1);
+  expect(waitForCloudModelRetry).toHaveBeenCalledTimes(1);
 });

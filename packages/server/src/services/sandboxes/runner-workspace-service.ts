@@ -1,6 +1,8 @@
 import type { RunnerWorkspaceObject } from "@opentag/shared";
 import type { DatabaseClient } from "../../db/client.js";
 import type { sandboxes } from "../../db/schema/index.js";
+import { updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { loadSandboxRecordById } from "./owned-sandbox.js";
 import type { RunnerBootstrapTokenService } from "./runner-bootstrap-token.js";
 import type { RunnerHub, RunnerScope } from "./runner-hub.js";
@@ -10,6 +12,7 @@ import {
   type WorkspaceObjectStore,
   WorkspaceObjectStoreError,
   type WorkspaceObjectWriteInput,
+  type WorkspaceWriteInspection,
 } from "./workspace-object-store.js";
 
 /**
@@ -64,6 +67,7 @@ export interface RunnerWorkspaceUploadInput extends RunnerWorkspacePins {
   readonly md5: string;
   readonly sealed: boolean;
   readonly body: AsyncIterable<Uint8Array>;
+  readonly writeId?: string;
 }
 
 export interface RunnerWorkspaceServiceOptions {
@@ -71,6 +75,7 @@ export interface RunnerWorkspaceServiceOptions {
   readonly hub: RunnerHub;
   readonly store: WorkspaceObjectStore;
   readonly runnerService: Pick<SandboxRunnerService, "validateRunnerChannelScope">;
+  readonly logger?: ServiceLogger;
 }
 
 const MAX_BEARER_TOKEN_CHARS = 4_096;
@@ -125,6 +130,7 @@ export class RunnerWorkspaceService {
   readonly #hub: RunnerHub;
   readonly #store: WorkspaceObjectStore;
   readonly #runnerService: Pick<SandboxRunnerService, "validateRunnerChannelScope">;
+  readonly #logger: ServiceLogger | undefined;
   /** One upload per Sandbox per Server process; a second concurrent attempt conflicts. */
   readonly #uploads = new Set<string>();
 
@@ -134,6 +140,7 @@ export class RunnerWorkspaceService {
     this.#hub = options.hub;
     this.#store = options.store;
     this.#runnerService = options.runnerService;
+    this.#logger = options.logger;
   }
 
   /**
@@ -180,17 +187,39 @@ export class RunnerWorkspaceService {
     ) {
       throw staleScope("The Runner allocation is no longer current");
     }
+    updateCurrentPerformanceContext({
+      sandboxId: scope.sandboxId,
+      sessionId: scope.sessionId,
+      environmentGeneration: scope.environmentGeneration,
+    });
     return { scope, row };
   }
 
   /**
    * Claim the workspace for the current allocation. `preparing`/`ready` claim through the store
-   * (only the allocator may initialize storage); a `releasing` allocation may only read back
-   * current same-owner metadata and must never initialize or claim another generation.
+   * (only the allocator may initialize storage); a `releasing` allocation may read or fence
+   * existing same-owner metadata, but must never initialize or take ownership of another generation.
    */
-  async claim(context: RunnerWorkspaceContext): Promise<RunnerWorkspaceObject> {
+  async claim(
+    context: RunnerWorkspaceContext,
+    options: { fence?: boolean; upload?: WorkspaceWriteInspection } = {},
+  ): Promise<RunnerWorkspaceObject> {
     const scope = storeScope(context.row);
+    if (options.upload) {
+      try {
+        return await this.#store.inspectWrite(scope, options.upload);
+      } catch (error) {
+        throw mapStoreError(error);
+      }
+    }
     if (context.row.lifecycle === "releasing") {
+      if (options.fence) {
+        try {
+          return await this.#store.claim(scope, { fence: true, sameOwnerOnly: true });
+        } catch (error) {
+          throw mapStoreError(error);
+        }
+      }
       const head = await this.#head(scope);
       if (!head || head.ownerGeneration !== context.row.environmentGeneration) {
         throw conflict("A releasing environment cannot claim the workspace");
@@ -198,7 +227,43 @@ export class RunnerWorkspaceService {
       return head;
     }
     try {
-      return await this.#store.claim(scope);
+      const claimed = await this.#store.claim(scope, options);
+      this.#emitWorkspaceLog("runner.workspace.claim", scope, {
+        archiveBytes: claimed.bytes,
+        workspaceGeneration: claimed.generation,
+        saved: claimed.saved,
+        sealed: claimed.sealed,
+      });
+      return claimed;
+    } catch (error) {
+      throw mapStoreError(error);
+    }
+  }
+
+  async sealArchive(context: RunnerWorkspaceContext, pins: RunnerWorkspacePins): Promise<RunnerWorkspaceObject> {
+    const { row } = context;
+    if (row.lifecycle !== "ready" && row.lifecycle !== "releasing") {
+      throw conflict("Only a ready or releasing environment may seal the workspace");
+    }
+    const scope = storeScope(row);
+    const head = await this.#head(scope);
+    if (
+      !head?.saved ||
+      head.sealed ||
+      head.ownerGeneration !== row.environmentGeneration ||
+      head.generation !== pins.generation ||
+      head.metageneration !== pins.metageneration
+    ) {
+      throw conflict("The workspace preconditions do not match an unsealed saved object");
+    }
+    try {
+      const sealed = await this.#store.seal(scope, head);
+      this.#emitWorkspaceLog("runner.workspace.seal", scope, {
+        workspaceGeneration: sealed.generation,
+        saved: sealed.saved,
+        sealed: sealed.sealed,
+      });
+      return sealed;
     } catch (error) {
       throw mapStoreError(error);
     }
@@ -227,7 +292,13 @@ export class RunnerWorkspaceService {
       throw conflict("The pinned workspace archive is no longer current");
     }
     try {
-      return { object: head, stream: await this.#store.read(scope, head) };
+      const stream = await this.#store.read(scope, head);
+      this.#emitWorkspaceLog("runner.workspace.download", scope, {
+        archiveBytes: head.bytes,
+        workspaceGeneration: head.generation,
+        sealed: head.sealed,
+      });
+      return { object: head, stream };
     } catch (error) {
       throw mapStoreError(error);
     }
@@ -272,8 +343,17 @@ export class RunnerWorkspaceService {
         sha256: input.sha256,
         md5: input.md5,
         sealed: input.sealed,
+        ...(input.writeId ? { writeId: input.writeId } : {}),
       };
-      return await this.#store.write(scope, head, write);
+      const writeStarted = performance.now();
+      const written = await this.#store.write(scope, head, write);
+      this.#emitWorkspaceLog("runner.workspace.upload", scope, {
+        archiveBytes: written.bytes,
+        objectWriteMs: performance.now() - writeStarted,
+        workspaceGeneration: written.generation,
+        sealed: written.sealed,
+      });
+      return written;
     } catch (error) {
       if (error instanceof RunnerWorkspaceError) throw error;
       throw mapStoreError(error);
@@ -287,6 +367,24 @@ export class RunnerWorkspaceService {
       return await this.#store.head(scope);
     } catch (error) {
       throw mapStoreError(error);
+    }
+  }
+
+  #emitWorkspaceLog(operation: string, scope: WorkspaceObjectScope, fields: Record<string, unknown>): void {
+    try {
+      this.#logger?.info(
+        {
+          operation,
+          outcome: "success",
+          sandboxId: scope.sandboxId,
+          sessionId: scope.sessionId,
+          environmentGeneration: scope.environmentGeneration,
+          ...fields,
+        },
+        `Runner workspace operation: ${operation}`,
+      );
+    } catch {
+      // Observability logging must never affect workspace persistence semantics.
     }
   }
 }

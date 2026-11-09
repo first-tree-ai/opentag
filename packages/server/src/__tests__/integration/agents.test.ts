@@ -451,28 +451,26 @@ describe("Agent persistence and authorization", () => {
     },
   );
 
-  it("serializes a replacement registration after an already-started decision write", async () => {
+  it("releases a decision enqueue before replacement registration while its callback is pending", async () => {
     const value = await approvalFixture();
     const entered = deferred<void>();
     const release = deferred<void>();
-    try {
-      const delivery = value.store.deliver(value.row, async () => {
+    let finished = false;
+    const delivery = value.store
+      .deliver(value.row, async () => {
         entered.resolve();
         await release.promise;
+      })
+      .finally(() => {
+        finished = true;
       });
+    try {
       await entered.promise;
-      const replacement = value.register(crypto.randomUUID(), "new-socket");
-      // Observe PostgreSQL's lock barrier instead of relying on a timer to guess the ordering.
-      await waitUntil(async () => {
-        const [row] = await value.sql<
-          { blocked: boolean }[]
-        >`select exists(select 1 from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0) as blocked`;
-        return row?.blocked === true;
-      });
-      expect((await value.store.find(value.row.id))?.status).toBe("accept");
+      await value.register(crypto.randomUUID(), "new-socket");
+      expect(finished).toBe(false);
+      expect((await value.store.find(value.row.id))?.status).toBe("stale");
       release.resolve();
       expect(await delivery).toBe(true);
-      await replacement;
       expect((await value.store.find(value.row.id))?.status).toBe("stale");
       expect(
         await value.store.deliver(value.row, async () => {
@@ -481,6 +479,7 @@ describe("Agent persistence and authorization", () => {
       ).toBe(false);
     } finally {
       release.resolve();
+      await delivery.catch(() => undefined);
       await value.sql.end();
     }
   });
@@ -1417,6 +1416,42 @@ describe("Agent persistence and authorization", () => {
       ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT", statusCode: 409 });
       await expect(value.service.listForAccount(value.bootstrap.userId)).resolves.toMatchObject({
         agents: [{ id: first.id }],
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps uppercase and Chinese names as typed and refuses a case variant", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const mixed = await value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Atlas"));
+      const chinese = await value.service.createForAccount(
+        value.bootstrap.userId,
+        createInput(computer.id, "研发助理"),
+      );
+      expect([mixed.name, chinese.name]).toEqual(["Atlas", "研发助理"]);
+
+      await expect(
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "atlas")),
+      ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("lets only one of two concurrent case-variant creates win", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const settled = await Promise.allSettled([
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "Helper")),
+        value.service.createForAccount(value.bootstrap.userId, createInput(computer.id, "helper")),
+      ]);
+      expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(settled.find((result) => result.status === "rejected")).toMatchObject({
+        reason: { code: "AGENT_NAME_CONFLICT" },
       });
     } finally {
       await value.sql.end();

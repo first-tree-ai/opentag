@@ -1,4 +1,6 @@
 import { checkOutboundUrl, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
+import { sanitizeExternalUrl, traceExternalCall } from "../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../observability/performance-logger.js";
 import { withOutboundDeadline } from "../outbound/deadline.js";
 import { classifyOutboundDestination, resolveAllAddresses } from "../outbound/destination-policy.js";
 import { McpServiceError } from "./errors.js";
@@ -134,6 +136,7 @@ export function assertOutboundUrl(rawUrl: string, policy: McpOutboundPolicy): UR
 
 export interface McpOutboundFetchOptions extends McpOutboundPolicy {
   fetch?: typeof globalThis.fetch;
+  performanceLogger?: PerformanceLogger;
   /**
    * Resolves a hostname to every address it holds. Injectable so a test can assert the policy
    * without a network, and so a deployment can supply a resolver with different search domains.
@@ -152,6 +155,7 @@ export class McpOutboundFetcher {
   readonly #inFlight = new Map<string, number>();
   readonly #maxConcurrentPerAccount: number;
   readonly #maxResponseBytes: number;
+  readonly #perfLogger: PerformanceLogger | undefined;
   readonly #policy: McpOutboundPolicy;
   readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
   readonly #timeoutMs: number;
@@ -160,6 +164,7 @@ export class McpOutboundFetcher {
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#maxConcurrentPerAccount = options.maxConcurrentPerAccount ?? MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT;
     this.#maxResponseBytes = options.maxResponseBytes ?? MCP_DEFAULT_MAX_RESPONSE_BYTES;
+    this.#perfLogger = options.performanceLogger;
     this.#policy = { allowLoopback: options.allowLoopback };
     this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
     this.#timeoutMs = options.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
@@ -171,13 +176,53 @@ export class McpOutboundFetcher {
   }
 
   async fetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit = {}): Promise<McpFetchResponse> {
+    const httpMethod = (init.method ?? "GET").toUpperCase();
+    const urlMeta = sanitizeExternalUrl(rawUrl);
+    let attempts = 0;
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "mcp",
+        operation: "external.mcp.http",
+        accountId,
+        attributes: {
+          httpMethod,
+          ...urlMeta,
+        },
+      },
+      () =>
+        this.#executeFetchOutbound(accountId, rawUrl, init, () => {
+          attempts += 1;
+        }),
+      {
+        statusFromResult: (response) => response.status,
+        resultAttributes: (res) => ({
+          status: res.status,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      },
+    );
+  }
+
+  async #executeFetchOutbound(
+    accountId: string,
+    rawUrl: string,
+    init: McpFetchInit,
+    onAttempt: () => void,
+  ): Promise<McpFetchResponse> {
     const url = assertOutboundUrl(rawUrl, this.#policy);
     /*
      * A call the caller cancelled before entry is refused here. `fetch` would refuse to start it
      * too, but only after a body was assembled and a slot taken, and the answer would say the peer
      * was unreachable when nothing was ever sent.
      */
-    if (init.signal?.aborted === true) throw unreachable({ cause: "aborted" });
+    if (init.signal?.aborted === true) throw unreachable({ cause: "aborted", dispatched: false });
     /*
      * The counter is taken before resolving, not after. A DNS lookup is a network round trip the
      * Account asked for, so a hostile Server answering with many distinct names could otherwise spend
@@ -187,11 +232,12 @@ export class McpOutboundFetcher {
       throw new McpServiceError(
         MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
         "Too many concurrent MCP requests for this Account",
+        { cause: "concurrency_limit", dispatched: false },
       );
     }
     this.#inFlight.set(accountId, (this.#inFlight.get(accountId) ?? 0) + 1);
     try {
-      return await this.#request(url, init);
+      return await this.#request(url, init, onAttempt);
     } finally {
       const remaining = (this.#inFlight.get(accountId) ?? 1) - 1;
       if (remaining <= 0) this.#inFlight.delete(accountId);
@@ -207,18 +253,21 @@ export class McpOutboundFetcher {
    * not keep a concurrency slot for the transport's whole budget. The slot is released by
    * `fetchOutbound` when this settles, which is at the deadline rather than after the resolver.
    */
-  #request(url: URL, init: McpFetchInit): Promise<McpFetchResponse> {
+  #request(url: URL, init: McpFetchInit, onAttempt: () => void): Promise<McpFetchResponse> {
+    let dispatched = false;
     return withOutboundDeadline(
       {
         timeoutMs: this.#timeoutMs,
         ...(init.signal === undefined ? {} : { signal: init.signal }),
-        failure: (reason) => unreachable({ cause: reason }),
+        failure: (reason) => unreachable({ cause: reason, ...(dispatched ? {} : { dispatched: false }) }),
       },
       async (deadline) => {
         await this.#assertPublicDestination(url);
         // The resolver cannot be interrupted, so it may answer after this call already failed. No
         // request may follow it: that would spend the Account's slot on a call nobody is waiting for.
         deadline.throwIfEnded();
+        dispatched = true;
+        onAttempt();
         return this.#perform(url, init, deadline.signal);
       },
     );
@@ -255,6 +304,7 @@ export class McpOutboundFetcher {
       throw unreachable({
         ...(verdict.failure.cause === undefined ? {} : { cause: verdict.failure.cause }),
         host: verdict.failure.host,
+        dispatched: false,
       });
     }
     throw blocked("The outbound URL resolves to a non-public address", { host: verdict.failure.host });

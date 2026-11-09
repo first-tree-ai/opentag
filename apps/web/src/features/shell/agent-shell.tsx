@@ -146,30 +146,48 @@ function AgentSwitcher({
         style={{ zIndex: 50 }}
         side="bottom"
       >
-        {agents.map((candidate) => (
-          <DropdownMenu.LinkItem
-            closeOnClick
-            icon={
-              <AgentAvatar
-                displayName={candidate.displayName}
-                avatarPath={candidate.avatarPath}
-                className="mr-2 size-6 text-xs"
-              />
-            }
-            key={candidate.id}
-            render={
-              <Link
-                {...(candidate.id === agentId ? { to: pathname } : agentSwitchLink(pathname, candidate.id))}
-                onClick={candidate.id === agentId ? (event) => event.preventDefault() : undefined}
-              />
-            }
-            aria-current={candidate.id === agentId ? "true" : undefined}
-            className={candidate.id === agentId ? "bg-(--brand-soft)" : undefined}
-          >
-            <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-            {candidate.id === agentId && <Icon name="check" />}
-          </DropdownMenu.LinkItem>
-        ))}
+        {/*
+         * A long roster scrolls on its own while All Agents and New Agent stay in view. The list is
+         * a scrollable region, so it is focusable and named like one; arrow keys still move through
+         * the Agents as menu items.
+         */}
+        <DropdownMenu.Group
+          aria-label={m.shell_agents()}
+          className="app-agent-menu-list"
+          // Keyboard users must be able to scroll a long Agent list, so the list is focusable. Focus that
+          // lands on the list itself (opening the menu from the keyboard) moves on to its first Agent,
+          // so arrow keys keep working as menu navigation.
+          tabIndex={0}
+          onFocus={(event) => {
+            if (event.target !== event.currentTarget) return;
+            event.currentTarget.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+          }}
+        >
+          {agents.map((candidate) => (
+            <DropdownMenu.LinkItem
+              closeOnClick
+              icon={
+                <AgentAvatar
+                  displayName={candidate.displayName}
+                  avatarPath={candidate.avatarPath}
+                  className="mr-2 size-6 text-xs"
+                />
+              }
+              key={candidate.id}
+              render={
+                <Link
+                  {...(candidate.id === agentId ? { to: pathname } : agentSwitchLink(pathname, candidate.id))}
+                  onClick={candidate.id === agentId ? (event) => event.preventDefault() : undefined}
+                />
+              }
+              aria-current={candidate.id === agentId ? "true" : undefined}
+              className={candidate.id === agentId ? "bg-(--brand-soft)" : undefined}
+            >
+              <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
+              {candidate.id === agentId && <Icon name="check" />}
+            </DropdownMenu.LinkItem>
+          ))}
+        </DropdownMenu.Group>
         <DropdownMenu.Separator />
         <DropdownMenu.LinkItem
           closeOnClick
@@ -196,8 +214,14 @@ export function isAgentSectionActive(
   section: "home" | "instructions" | "context-tree" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
 ): boolean {
   const root = `/agents/${agentId}`;
-  if (section === "home") return isAgentHome(pathname, agentId);
+  // Settings opens from the Overview and has no item of its own, so the Overview stays current there.
+  if (section === "home") return isAgentHome(pathname, agentId) || isAgentSettings(pathname, agentId);
   return pathname === `${root}/${section}` || pathname.startsWith(`${root}/${section}/`);
+}
+
+function isAgentSettings(pathname: string, agentId: string): boolean {
+  const settings = `/agents/${agentId}/settings`;
+  return pathname === settings || pathname.startsWith(`${settings}/`);
 }
 
 function isAgentHome(pathname: string, agentId: string): boolean {

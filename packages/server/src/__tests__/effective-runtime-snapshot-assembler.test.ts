@@ -1,4 +1,8 @@
-import { computeRuntimeSnapshotHashes, renderPlatformInstructions } from "@opentag/shared";
+import {
+  computeRuntimeSnapshotHashes,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
+  renderPlatformInstructions,
+} from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import {
@@ -257,7 +261,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       revision: 8,
       model: "gpt-5.1",
       reasoningEffort: "medium",
-      maxDurationMs: 45_000,
+      maxDurationMs: 3 * 60 * 60 * 1_000,
     };
     const inherited = await assembler(async () =>
       authority({ sessionKind: "internal", runtimeConfig: updatedConfig }),
@@ -265,7 +269,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     expect(inherited).toMatchObject({
       model: "gpt-5.1",
       reasoningEffort: "medium",
-      budget: { maxDurationMs: 45_000 },
+      budget: { maxDurationMs: 3 * 60 * 60 * 1_000 },
       revision: { session: { sequence: 8 } },
     });
     expect(inherited.revision.session.id).not.toBe(initial.revision.session.id);
@@ -294,6 +298,25 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       revision: { session: { sequence: 8 } },
     });
     expect(explicitAfter.revision.session.id).toBe(explicitBefore.revision.session.id);
+  });
+
+  it("gives an internal Session without an explicit budget at least the internal default", async () => {
+    const internal = await assembler(async () => authority({ sessionKind: "internal" })).assembleForSession(sessionId);
+    expect(internal.budget).toEqual({ maxDurationMs: RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS });
+
+    const unconfigured = {
+      ...(authority().runtimeConfig as Record<string, unknown>),
+      maxDurationMs: null,
+    };
+    const fallback = await assembler(async () =>
+      authority({ sessionKind: "internal", runtimeConfig: unconfigured }),
+    ).assembleForSession(sessionId);
+    expect(fallback.budget).toEqual({ maxDurationMs: RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS });
+
+    const visible = await assembler(async () => authority({ runtimeConfig: unconfigured })).assembleForSession(
+      sessionId,
+    );
+    expect(visible).not.toHaveProperty("budget");
   });
 
   it.each([

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../../../db/client.js";
-import { slackWebhookReceipts } from "../../../db/schema/index.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
+import { imBindings, slackInstallations, slackWebhookReceipts } from "../../../db/schema/index.js";
 import type { PolicyErrorCategory, PolicyPhase, PolicyRetryability } from "../../im/external-call-policy.js";
+import { lockImAgentCustody } from "../../im/inbound-admission.js";
 import { InboundReceiptWorkStore } from "../../im/inbound-receipt-work-store.js";
 import {
   INBOUND_WORK_LEASE_MS,
@@ -93,6 +94,7 @@ export class SlackWebhookReceiptStore {
     const work = input.work === undefined ? undefined : InboundWorkSchema.parse(input.work);
     if (work && work.provider !== "slack") throw new Error("IM_INBOUND_WORK_PROVIDER_MISMATCH");
     return this.#database.transaction(async (transaction) => {
+      await this.#lockWorkFence(transaction, input, work);
       const receivedAt = this.#now();
       const leaseExpiresAt = work ? new Date(receivedAt.getTime() + INBOUND_WORK_LEASE_MS) : null;
       const [created] = await transaction
@@ -160,6 +162,57 @@ export class SlackWebhookReceiptStore {
         ...(existing?.status ? { status: existing.status } : {}),
       };
     });
+  }
+
+  async #lockWorkFence(
+    transaction: DatabaseTransaction,
+    input: SlackWebhookReceiptInput,
+    work: InboundWork | undefined,
+  ): Promise<void> {
+    if (work?.provider !== "slack") return;
+    const [identity] = await transaction
+      .select({ agentId: slackInstallations.agentId })
+      .from(slackInstallations)
+      .where(eq(slackInstallations.id, input.installationId))
+      .limit(1);
+    if (!identity) throw new SlackWebhookReceiptError("SLACK_INBOUND_FENCE_STALE");
+    await lockImAgentCustody(transaction, identity.agentId);
+    // Slack lifecycle writers lock routes before their installation.
+    if (work.bindingId) {
+      const [binding] = await transaction
+        .select({ id: imBindings.id })
+        .from(imBindings)
+        .where(
+          and(
+            eq(imBindings.id, work.bindingId),
+            eq(imBindings.agentId, identity.agentId),
+            eq(imBindings.provider, "slack"),
+            eq(imBindings.status, "active"),
+            eq(imBindings.slackInstallationId, input.installationId),
+            eq(imBindings.credentialGeneration, input.credentialGeneration),
+          ),
+        )
+        .limit(1)
+        .for("no key update");
+      if (!binding) throw new SlackWebhookReceiptError("SLACK_INBOUND_FENCE_STALE");
+    }
+    const [installation] = await transaction
+      .select({ id: slackInstallations.id })
+      .from(slackInstallations)
+      .where(
+        and(
+          eq(slackInstallations.id, input.installationId),
+          eq(slackInstallations.agentId, identity.agentId),
+          eq(slackInstallations.status, "active"),
+          eq(slackInstallations.credentialGeneration, input.credentialGeneration),
+          eq(slackInstallations.externalAppId, work.appId),
+          eq(slackInstallations.externalTeamId, work.teamId),
+          eq(slackInstallations.externalBotId, work.botUserId),
+        ),
+      )
+      .limit(1)
+      .for("no key update");
+    if (!installation) throw new SlackWebhookReceiptError("SLACK_INBOUND_FENCE_STALE");
   }
 
   async markProcessed(receiptId: string, attempt?: number): Promise<void> {

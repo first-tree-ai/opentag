@@ -13,6 +13,8 @@ export type AgentRuntimeErrorCode =
   | "provider_unavailable"
   | "resume_failed"
   | "run_mismatch"
+  /** The steer was refused before anything was sent to the provider, so the input has no effect. */
+  | "steer_not_sent"
   | "unsupported_capability";
 
 export class AgentRuntimeError extends Error {

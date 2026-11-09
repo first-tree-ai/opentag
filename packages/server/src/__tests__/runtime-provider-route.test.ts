@@ -15,6 +15,9 @@ it("mounts the production proxy endpoint with enough WebSocket capacity for a fu
     machineAuthService: {} as MachineAuthService,
     runtimeProviderProxy: {
       transport: {
+        close() {
+          return Promise.resolve();
+        },
         attach(socket: WebSocket) {
           socket.on("message", (data, binary) =>
             socket.send(JSON.stringify({ length: Buffer.byteLength(data as Buffer), binary })),

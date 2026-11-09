@@ -1,17 +1,23 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentAdminConfig, MCPAgentServer } from "@opentag/shared";
+import type { AgentAdminConfig, MCPAgentServer, SelfMCPOAuthStatus } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import * as agentSelf from "../core/agent/self.js";
 import {
   type AgentSelfApiClient,
+  runAgentSelfMcpAdd,
   runAgentSelfMcpAttach,
   runAgentSelfMcpAvailable,
+  runAgentSelfMcpCheckOAuthStatus,
+  runAgentSelfMcpDelete,
   runAgentSelfMcpDetach,
   runAgentSelfMcpEnable,
+  runAgentSelfMcpGenerateOAuthUrl,
   runAgentSelfMcpList,
+  runAgentSelfMcpSearch,
+  runAgentSelfMcpUse,
   runAgentSelfShow,
   runAgentSelfUpdate,
 } from "../core/agent/self.js";
@@ -64,6 +70,20 @@ const mounted: MCPAgentServer = {
   updatedAt: now,
 };
 
+const status: SelfMCPOAuthStatus = {
+  mcpServerId,
+  name: "docs",
+  enabled: true,
+  authKind: "oauth",
+  authStatus: "active",
+  probeState: "succeeded",
+  probeError: null,
+  failureCode: null,
+  toolsCount: 1,
+  toolsTruncated: false,
+  tools: [{ name: "search_docs", description: "Search docs" }],
+};
+
 function fakeApi() {
   const api = {
     getRuntimeAgentConfig: vi.fn(async () => config),
@@ -75,6 +95,14 @@ function fakeApi() {
     attachRuntimeAgentMcpServer: vi.fn(async () => mounted),
     updateRuntimeAgentMcpBinding: vi.fn(async () => ({ ...mounted, enabled: false })),
     detachRuntimeAgentMcpServer: vi.fn(async () => undefined),
+    createRuntimeAgentMcpServer: vi.fn(async () => mounted),
+    deleteRuntimeAgentMcpServerDefinition: vi.fn(async () => undefined),
+    setRuntimeAgentMcpBearerKey: vi.fn(async () => mounted),
+    startRuntimeAgentMcpOAuth: vi.fn(async () => ({
+      authorizationUrl: "https://provider.example/authorize?x=1",
+      expiresAt: now,
+    })),
+    getRuntimeAgentMcpOAuthStatus: vi.fn(async () => status),
   } satisfies AgentSelfApiClient;
   return { api, deps: { api, proof: "fixture-proof" } };
 }
@@ -143,6 +171,100 @@ describe("agent self core", () => {
     await expect(runAgentSelfMcpDetach("missing", deps)).rejects.toThrow("This Agent does not mount");
   });
 
+  it("adds a connector from the catalog's own name and auth kind", async () => {
+    const { api, deps } = fakeApi();
+
+    const presets = runAgentSelfMcpSearch("docs");
+    expect(presets.every((preset) => preset.url === null || preset.url.startsWith("http"))).toBe(true);
+    // A query that names an entry outright resolves to that entry, not to its token neighbours.
+    const named = runAgentSelfMcpSearch("notion");
+    expect(named[0]).toMatchObject({ id: "notion", installable: true });
+    expect(named[0]?.url).toMatch(/^https:\/\//);
+
+    await runAgentSelfMcpAdd({ ...deps, name: "hubspot", url: "https://mcp.hubspot.example/mcp", authKind: "oauth" });
+    expect(api.createRuntimeAgentMcpServer).toHaveBeenLastCalledWith("fixture-proof", {
+      name: "hubspot",
+      url: "https://mcp.hubspot.example/mcp",
+      defaultAuthKind: "oauth",
+    });
+
+    await runAgentSelfMcpAdd({ ...deps, name: "cmdb", url: "https://cmdb.example/mcp", apiKey: "k" });
+    expect(api.createRuntimeAgentMcpServer).toHaveBeenLastCalledWith("fixture-proof", {
+      name: "cmdb",
+      url: "https://cmdb.example/mcp",
+      defaultAuthKind: "bearer",
+      apiKey: "k",
+    });
+  });
+
+  it("rejects the anonymous and mismatched combinations before any request", async () => {
+    const { api, deps } = fakeApi();
+    await expect(
+      runAgentSelfMcpAdd({ ...deps, name: "x", url: "https://mcp.example.com/mcp", authKind: "none" }),
+    ).rejects.toThrow("requires no credentials");
+    await expect(
+      runAgentSelfMcpAdd({ ...deps, name: "x", url: "https://mcp.example/mcp", authKind: "token" }),
+    ).rejects.toThrow("auth_kind must be oauth or bearer");
+    await expect(
+      runAgentSelfMcpAdd({ ...deps, name: "x", url: "https://mcp.example/mcp", authKind: "oauth", apiKey: "k" }),
+    ).rejects.toThrow("--api-key can only be used with auth_kind bearer");
+    expect(api.createRuntimeAgentMcpServer).not.toHaveBeenCalled();
+  });
+
+  it("writes a Bearer key onto the mount it resolved and does not create a definition", async () => {
+    const { api, deps } = fakeApi();
+    await expect(runAgentSelfMcpUse("docs", "k", deps)).resolves.toEqual(mounted);
+    expect(api.setRuntimeAgentMcpBearerKey).toHaveBeenCalledWith("fixture-proof", mcpServerId, "k");
+    expect(api.createRuntimeAgentMcpServer).not.toHaveBeenCalled();
+    await expect(runAgentSelfMcpUse("missing", "k", deps)).rejects.toThrow("This Agent does not mount");
+    await expect(runAgentSelfMcpUse("docs", "", deps)).rejects.toThrow(
+      "A credential is required; pass it with --api-key-stdin",
+    );
+  });
+
+  it("deletes by name from this Agent's own mounts", async () => {
+    const { api, deps } = fakeApi();
+    await expect(runAgentSelfMcpDelete("docs", deps)).resolves.toEqual(mounted);
+    expect(api.deleteRuntimeAgentMcpServerDefinition).toHaveBeenCalledWith("fixture-proof", mcpServerId);
+    await expect(runAgentSelfMcpDelete("missing", deps)).rejects.toThrow("This Agent does not mount");
+  });
+
+  it("starts OAuth against the mount it resolved and reports the URL", async () => {
+    const { api, deps } = fakeApi();
+    await expect(runAgentSelfMcpGenerateOAuthUrl("docs", { ...deps, scopes: ["read"] })).resolves.toMatchObject({
+      authorizationUrl: "https://provider.example/authorize?x=1",
+      server: mounted,
+    });
+    expect(api.startRuntimeAgentMcpOAuth).toHaveBeenCalledWith("fixture-proof", mcpServerId, { scopes: ["read"] });
+  });
+
+  it("polls the status until it settles, and returns at once with no wait budget", async () => {
+    const { api, deps } = fakeApi();
+    api.getRuntimeAgentMcpOAuthStatus.mockResolvedValueOnce({ ...status, probeState: "pending" });
+    await expect(runAgentSelfMcpCheckOAuthStatus("docs", deps)).resolves.toMatchObject({ probeState: "pending" });
+    expect(api.getRuntimeAgentMcpOAuthStatus).toHaveBeenCalledTimes(1);
+
+    api.getRuntimeAgentMcpOAuthStatus.mockReset();
+    api.getRuntimeAgentMcpOAuthStatus
+      .mockResolvedValueOnce({ ...status, authStatus: "pending", probeState: "pending" })
+      .mockResolvedValueOnce(status);
+    await expect(
+      runAgentSelfMcpCheckOAuthStatus("docs", { ...deps, waitSeconds: 5, pollIntervalMs: 1 }),
+    ).resolves.toEqual(status);
+    expect(api.getRuntimeAgentMcpOAuthStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("pages the Agent's mounts in the CLI", async () => {
+    const { api, deps } = fakeApi();
+    const second = { ...mounted, mcpServerId: availableId, name: "search" };
+    api.listRuntimeAgentMcpServers.mockResolvedValue({ servers: [mounted, second, { ...second, name: "third" }] });
+
+    await expect(runAgentSelfMcpList({ ...deps, page: 2, limit: 2 })).resolves.toEqual([{ ...second, name: "third" }]);
+    await expect(runAgentSelfMcpList({ ...deps, page: 1, limit: 1 })).resolves.toEqual([mounted]);
+    await expect(runAgentSelfMcpList({ ...deps, page: 0 })).rejects.toThrow("--page must be a positive integer");
+    await expect(runAgentSelfMcpList({ ...deps, limit: 0 })).rejects.toThrow("--limit must be a positive integer");
+  });
+
   it("refuses to run outside a managed Session and rejects half-injected dependencies", async () => {
     await expect(runAgentSelfShow({ environment: {} })).rejects.toMatchObject({
       code: "AGENT_SELF_SESSION_REQUIRED",
@@ -207,6 +329,67 @@ describe("agent self commands", () => {
       await createProgram().parseAsync(["node", "opentag", "agent", "self", "mcp", "available"]);
       expect(stdout.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain("No unmounted Account MCP Servers");
     } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("registers the search, add, delete, and OAuth subcommands, including at the root", async () => {
+    const search = vi.spyOn(agentSelf, "runAgentSelfMcpSearch").mockReturnValue([
+      {
+        id: "notion",
+        name: "notion",
+        title: "Notion",
+        url: "https://mcp.notion.example/mcp",
+        defaultAuthKind: "oauth",
+        installable: true,
+        oauthScopes: null,
+      },
+    ]);
+    const add = vi.spyOn(agentSelf, "runAgentSelfMcpAdd").mockResolvedValue(mounted);
+    const use = vi.spyOn(agentSelf, "runAgentSelfMcpUse").mockResolvedValue(mounted);
+    const remove = vi.spyOn(agentSelf, "runAgentSelfMcpDelete").mockResolvedValue(mounted);
+    const oauthUrl = vi.spyOn(agentSelf, "runAgentSelfMcpGenerateOAuthUrl").mockResolvedValue({
+      server: mounted,
+      authorizationUrl: "https://provider.example/authorize?x=1",
+      expiresAt: now,
+    });
+    const oauthStatus = vi.spyOn(agentSelf, "runAgentSelfMcpCheckOAuthStatus").mockResolvedValue(status);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      for (const args of [
+        ["self", "mcp", "search", "notion"],
+        ["self", "mcp", "add", "hubspot", "https://mcp.hubspot.example/mcp", "oauth"],
+        ["self", "mcp", "use", "docs", "--api-key", "secret-key"],
+        ["self", "mcp", "delete", "docs"],
+        ["self", "mcp", "generate_oauth_url", "docs", "--scopes", "read,write"],
+        ["self", "mcp", "check_oauth_status", "docs"],
+        ["self", "mcp", "check_oauth_status", "docs", "--wait"],
+        ["agent", "self", "mcp", "check_oauth_status", "docs", "--wait", "10"],
+      ]) {
+        await createProgram().parseAsync(["node", "opentag", ...args]);
+      }
+      expect(search).toHaveBeenCalledWith("notion", undefined);
+      expect(add).toHaveBeenCalledWith({
+        name: "hubspot",
+        url: "https://mcp.hubspot.example/mcp",
+        authKind: "oauth",
+      });
+      expect(use).toHaveBeenCalledWith("docs", "secret-key");
+      expect(remove).toHaveBeenCalledWith("docs");
+      expect(oauthUrl).toHaveBeenCalledWith("docs", { scopes: ["read", "write"] });
+      // A bare status read does not wait; `--wait` takes the default budget; an explicit value is honoured.
+      expect(oauthStatus.mock.calls.map(([, options]) => options?.waitSeconds)).toEqual([0, 45, 10]);
+
+      const output = stdout.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain("notion\toauth\thttps://mcp.notion.example/mcp\tnotion");
+      expect(output).toContain(`Unmounted docs (${mcpServerId})`);
+      expect(output).toContain("https://provider.example/authorize?x=1");
+      expect(output).toContain("docs\tactive\tsucceeded\t1 tools");
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
       vi.restoreAllMocks();
     }
   });

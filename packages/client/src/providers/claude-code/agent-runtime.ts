@@ -10,6 +10,19 @@ import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/error
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
 import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
+  isNonNegativeNumber,
+  parseHttpMcpGateway,
+  protocolError,
+  toJsonValue as protocolJsonValue,
+  providerConfiguration,
+  record,
+  requireArray,
+  requireIndex as requireProtocolIndex,
+  requireProtocolString,
+  requireRecord,
+  requireUuid,
+} from "../../agent-runtime/provider-utils.js";
+import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentHostedTools,
@@ -17,6 +30,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
   type AgentRuntimeConfigurationOptionsRequest,
@@ -27,6 +41,7 @@ import {
   type AgentRuntimeProbeIssue,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
+  type AgentSteerRequest,
   type CreateAgentRuntimeRequest,
   type JsonValue,
   type ResumeAgentRuntimeRequest,
@@ -42,7 +57,11 @@ import {
 import { createLogger } from "../../observability/logger.js";
 import { claudePermissionRules } from "../native-permissions.js";
 import { probeClaudeEnvironmentCredential } from "./credential-probe.js";
-import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
+import {
+  type ClaudeCodeHostedToolBridge,
+  createClaudeCodeBridgeIdentity,
+  startClaudeCodeHostedToolBridge,
+} from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
@@ -54,16 +73,7 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
 
-/**
- * The setting sources every Claude Code invocation loads. Runtime turns and the credential probe
- * must interrogate exactly the same configuration: probing the CLI defaults would read user-level
- * settings the runtime never loads and report a false-positive `ready` while every turn fails
- * authentication.
- *
- * Agent Home is model-writable, so none of its settings may execute hooks, credential helpers,
- * or environment overrides. Skills are loaded separately through an owned skills-only plugin.
- */
-const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", ""] as const;
+const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", "user,project,local"] as const;
 const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
@@ -92,6 +102,7 @@ interface ClaudeCodeProviderConfiguration {
 }
 
 interface ClaudeCodeRuntimeOptions {
+  readonly cwd: string;
   readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
@@ -145,6 +156,8 @@ interface ClaudeCodeTerminal {
   readonly stopReason?: string;
   readonly subtype: string;
   readonly totalCostUsd?: number;
+  /** Result texts of earlier results in this Run that were followed by steered input. */
+  readonly earlierResults?: readonly string[];
   readonly usage?: {
     readonly cachedInputTokens?: number;
     readonly inputTokens?: number;
@@ -164,6 +177,7 @@ interface ToolState {
 }
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
+  readonly #cwd: string;
   readonly #policy: AgentRuntimePolicy;
   readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
@@ -173,6 +187,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #hostedTools?: AgentHostedTools;
   readonly #skillPaths: readonly string[];
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
+  readonly #bridgeIdentity = createClaudeCodeBridgeIdentity();
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
   readonly #tools = new Map<string, ToolState>();
@@ -180,9 +195,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #startedModelTurns = new Set<string>();
   readonly #completedModelTurns = new Set<string>();
   #process?: ClaudeCodeProcessClient;
-  #context?: AgentProviderRunContext;
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: ClaudeCodeTerminal;
+  /** Results that steered input continued past; merged into the one terminal of this Run. */
+  readonly #continuedTerminals: ClaudeCodeTerminal[] = [];
+  #processReady?: ProcessReady;
   #providerFailure?: Error;
   #assistantError?: string;
   #currentMessageId?: string;
@@ -192,11 +209,12 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   constructor(options: ClaudeCodeRuntimeOptions) {
     super({
       manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-      capabilities: { steer: "unsupported", interactions: "supported" },
+      capabilities: { steer: "supported", interactions: "supported" },
       eventSink: options.eventSink,
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
+    this.#cwd = options.cwd;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
@@ -212,8 +230,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     request: AgentPromptRequest,
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
-    this.#context = context;
+    this.providerContext = context;
+    // A steer admitted before executeRun started may already be waiting on this slot.
+    this.#processReady ??= deferredProcess();
     this.#terminal = undefined;
+    this.#continuedTerminals.length = 0;
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
     this.#currentMessageId = undefined;
@@ -241,9 +262,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           context.signal,
           this.#skillPaths,
           mcpGateway,
+          this.#cwd,
+          this.#bridgeIdentity,
         );
+        if (request.compactContext && this.#sessionExists)
+          await this.#compactContext(request, context, hostedToolBridge);
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
+        if (context.signal.aborted) throw error;
         logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
         throw new AgentProviderError(
           "provider_start_failed",
@@ -252,11 +278,19 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         );
       }
       this.#process = process;
-      await process.execute(claudeCodeInput(request), (message) => this.#enqueue(message), context.signal);
+      this.#processReady?.resolve(process);
+      const { abandonedBackgroundWork } = await process.execute(
+        claudeCodeInput(request),
+        (message, terminal) => this.#enqueue(message, terminal),
+        context.signal,
+      );
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return claudeCodeRunResult(this.#terminal, this.#assistantError);
+      return {
+        ...claudeCodeRunResult(this.#terminal, this.#assistantError),
+        ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
+      };
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -276,13 +310,79 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
       });
       await hostedToolBridge?.close();
+      this.#processReady?.resolve(undefined);
+      this.#processReady = undefined;
+      this.#continuedTerminals.length = 0;
       this.#process = undefined;
-      this.#context = undefined;
+      this.providerContext = undefined;
       this.#currentMessageId = undefined;
       this.#textBlocks.clear();
       this.#tools.clear();
       this.#toolBlocks.clear();
       this.#permissions.clear();
+    }
+  }
+
+  /**
+   * Claude Code compacts through its native `/compact` command, which has no RPC of its own, so it
+   * runs in a process of its own before the Run's process. The next `--resume` then continues from
+   * the compact boundary of the same native Session. Only an abort stops the Run.
+   */
+  async #compactContext(
+    request: AgentPromptRequest,
+    context: AgentProviderRunContext,
+    hostedToolBridge: ClaudeCodeHostedToolBridge,
+  ): Promise<void> {
+    let compacted = false;
+    let failure = "Claude Code did not compact the conversation";
+    let process: ClaudeCodeProcessClient | undefined;
+    try {
+      process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+      this.#process = process;
+      await process.execute(
+        claudeCodeUserMessage([{ type: "text", text: "/compact" }]),
+        (message) => {
+          if (message.type === "system" && message.subtype === "compact_boundary") compacted = true;
+          if (message.type === "result" && message.is_error === true && typeof message.result === "string")
+            failure = message.result;
+        },
+        context.signal,
+      );
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      failure = error instanceof Error ? error.message : failure;
+    } finally {
+      this.#process = undefined;
+      await process?.close().catch((error: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
+      });
+    }
+    if (compacted) {
+      logger.info({ runId: context.runId }, "Claude Code compacted the Session context");
+      return;
+    }
+    await context.emit({ type: "provider_warning", code: "claude_compaction_failed", message: failure });
+  }
+
+  /**
+   * Claude Code's stream-json input queues a user message written mid-query and attaches it at the
+   * next tool boundary; input that arrives after the last tool call runs right after the current
+   * result. Either way the provider session already holds the earlier input, so the Run continues
+   * until Claude Code has started every steered message and emitted a result after it.
+   *
+   * A written steer is not yet owned by the provider: the process can exit before Claude Code starts
+   * it. The returned custody reports whether `command_lifecycle` showed it started, so a Run that
+   * fails first lets the caller deliver the input again instead of treating it as processed.
+   */
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
+    this.#processReady ??= deferredProcess();
+    const process = await this.#processReady.promise;
+    if (!process?.steer || this.#terminalClaimed || this.#providerFailure)
+      throw new AgentRuntimeError("steer_not_sent", "Claude Code settled before steer was accepted");
+    try {
+      return await process.steer({ ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() });
+    } catch (error) {
+      throw new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", { cause: error });
     }
   }
 
@@ -324,11 +424,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--no-chrome",
       ...CLAUDE_CODE_SETTING_SOURCES,
       "--plugin-dir",
       hostedToolBridge.pluginPath,
-      "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
       ...(this.#policy.approvals === "never" && hostedToolBridge.allowedTools.length > 0
@@ -336,15 +434,13 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "acceptEdits",
       ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
       "--settings",
       JSON.stringify({
-        disableAllHooks: true,
-        disableSkillShellExecution: true,
         ...(this.#policy.approvals === "never"
           ? {}
-          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? []) }),
+          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
@@ -357,13 +453,15 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     return args;
   }
 
-  #enqueue(message: Readonly<Record<string, unknown>>): void {
-    this.#claimTerminalAtIngress(message);
+  #enqueue(message: Readonly<Record<string, unknown>>, mayBeTerminal = true): void {
+    // A result followed by still-queued steered input is not this Run's terminal.
+    const terminal = mayBeTerminal && message.type === "result";
+    if (terminal) this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
-      if (!this.#context || this.#providerFailure) return;
+      if (!this.providerContext || this.#providerFailure) return;
       if (message.type === "control_request" || message.type === "control_cancel_request")
         await this.#handleControlMessage(message);
-      else await this.#handleMessage(message);
+      else await this.#handleMessage(message, terminal);
     });
     this.#eventTail = next.catch((error: unknown) => {
       logger.debug({ code: "event_processing_failed", error: String(error) }, "Claude Code event processing failed");
@@ -372,10 +470,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
-    if (message.type !== "result" || !this.#context) return;
+    if (!this.providerContext) return;
     try {
       parseTerminal(message, this.#sessionId);
-      this.#context.claimTerminal();
+      this.providerContext.claimTerminal();
       this.#terminalClaimed = true;
     } catch (error) {
       logger.debug(
@@ -395,7 +493,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         throw protocolError("Unsupported Claude Code control request");
       const input = requireRecord(request.input, "Claude Code permission input is invalid");
       this.#permissions.set(id, input);
-      await this.#requireContext().requestInteraction({
+      await this.requireProviderContext().requestInteraction({
         requestId: id,
         kind: "approval",
         title: `Approve ${requireString(request.tool_name, "Claude Code permission tool is invalid")}`,
@@ -405,10 +503,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     const id = requireString(message.request_id, "Claude Code cancelled request has no id");
     this.#permissions.delete(id);
-    await this.#requireContext().resolveInteraction(id, "cancel");
+    await this.requireProviderContext().resolveInteraction(id, "cancel");
   }
 
-  async #handleMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
+  async #handleMessage(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
     const type = requireString(message.type, "Claude Code message has no type");
     if (type === "stream_event") {
       await this.#handleStreamEvent(requireRecord(message.event, "Claude Code stream event is invalid"));
@@ -440,14 +538,24 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "result") {
-      const terminal = parseTerminal(message, this.#sessionId);
-      this.#sessionExists = true;
-      await this.#completeOutstandingTools(terminal);
-      if (terminal.usage) await this.#requireContext().emit({ type: "usage_updated", usage: terminal.usage });
-      this.#terminal = terminal;
+      await this.#handleResult(message, terminal);
       return;
     }
     await this.#emitProviderEvent(message);
+  }
+
+  async #handleResult(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
+    const parsed = parseTerminal(message, this.#sessionId);
+    this.#sessionExists = true;
+    await this.#completeOutstandingTools(parsed);
+    if (!terminal) {
+      // Steered input is still queued behind this result; Claude Code continues the same session.
+      this.#continuedTerminals.push(parsed);
+      return;
+    }
+    const merged = mergeTerminals(this.#continuedTerminals, parsed);
+    if (merged.usage) await this.requireProviderContext().emit({ type: "usage_updated", usage: merged.usage });
+    this.#terminal = merged;
   }
 
   async #handleStreamEvent(event: Readonly<Record<string, unknown>>): Promise<void> {
@@ -475,14 +583,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "message_delta") {
       const usage = parseUsage(event.usage);
-      if (usage) await this.#requireContext().emit({ type: "usage_updated", usage });
+      if (usage) await this.requireProviderContext().emit({ type: "usage_updated", usage });
       return;
     }
     if (type === "message_stop") {
       const id = this.#requireCurrentMessageId();
       if (!this.#completedModelTurns.has(id)) {
         this.#completedModelTurns.add(id);
-        await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: id });
+        await this.requireProviderContext().emit({ type: "model_turn_completed", modelTurnId: id });
       }
       this.#currentMessageId = undefined;
       return;
@@ -508,7 +616,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         if (!this.#tools.has(toolId)) {
           const name = requireString(block.name, "Claude Code tool use has no name");
           this.#tools.set(toolId, { name });
-          await this.#requireContext().emit({
+          await this.requireProviderContext().emit({
             type: "tool_started",
             toolCallId: toolId,
             name,
@@ -519,11 +627,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (!alreadyStarted && !this.#completedModelTurns.has(id)) {
       this.#completedModelTurns.add(id);
-      await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: id });
+      await this.requireProviderContext().emit({ type: "model_turn_completed", modelTurnId: id });
     }
     if (typeof envelope.error === "string") {
       this.#assistantError = envelope.error;
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "provider_warning",
         code: "claude_code_assistant_error",
         message: envelope.error,
@@ -542,7 +650,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const tool = this.#tools.get(toolCallId);
       if (!tool) continue;
       this.#tools.delete(toolCallId);
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_completed",
         toolCallId,
         name: tool.name,
@@ -558,11 +666,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     if (block.type === "text") {
       const state: TextBlockState = { id: key, completed: false, started: true, text: "" };
       this.#textBlocks.set(key, state);
-      await this.#requireContext().emit({ type: "message_started", messageId: key });
+      await this.requireProviderContext().emit({ type: "message_started", messageId: key });
       const text = typeof block.text === "string" ? block.text : "";
       if (text) {
         state.text += text;
-        await this.#requireContext().emit({ type: "message_delta", messageId: key, delta: text });
+        await this.requireProviderContext().emit({ type: "message_delta", messageId: key, delta: text });
       }
       return;
     }
@@ -583,7 +691,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       };
       /* v8 ignore else -- Claude Code always attaches an input payload to tool_use blocks. */
       if (block.input !== undefined) event.input = toJsonValue(block.input);
-      await this.#requireContext().emit(event);
+      await this.requireProviderContext().emit(event);
       return;
     }
     await this.#emitProviderEvent({ type: "content_block_start", index, block: toJsonValue(block) });
@@ -597,14 +705,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const state = this.#textBlocks.get(key);
       if (!state) throw protocolError("Claude Code text delta has no matching block");
       state.text += text;
-      await this.#requireContext().emit({ type: "message_delta", messageId: state.id, delta: text });
+      await this.requireProviderContext().emit({ type: "message_delta", messageId: state.id, delta: text });
       return;
     }
     if (delta.type === "input_json_delta") {
       const partialJson = requireString(delta.partial_json, "Claude Code tool delta has no JSON", true);
       const toolCallId = this.#toolBlocks.get(key);
       if (!toolCallId) throw protocolError("Claude Code tool delta has no matching tool");
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_updated",
         toolCallId,
         update: { partialJson },
@@ -621,7 +729,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     const state = this.#textBlocks.get(key);
     if (!state || state.completed) return;
     state.completed = true;
-    await this.#requireContext().emit({ type: "message_completed", messageId: state.id, text: state.text });
+    await this.requireProviderContext().emit({ type: "message_completed", messageId: state.id, text: state.text });
   }
 
   async #emitCompleteText(key: string, text: string): Promise<void> {
@@ -632,20 +740,20 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (!state.started) {
       state.started = true;
-      await this.#requireContext().emit({ type: "message_started", messageId: key });
+      await this.requireProviderContext().emit({ type: "message_started", messageId: key });
     }
     if (!state.text && text) {
       state.text = text;
-      await this.#requireContext().emit({ type: "message_delta", messageId: key, delta: text });
+      await this.requireProviderContext().emit({ type: "message_delta", messageId: key, delta: text });
     }
     state.completed = true;
-    await this.#requireContext().emit({ type: "message_completed", messageId: key, text });
+    await this.requireProviderContext().emit({ type: "message_completed", messageId: key, text });
   }
 
   async #startModelTurn(id: string): Promise<void> {
     if (this.#startedModelTurns.has(id)) return;
     this.#startedModelTurns.add(id);
-    await this.#requireContext().emit({ type: "model_turn_started", modelTurnId: id });
+    await this.requireProviderContext().emit({ type: "model_turn_started", modelTurnId: id });
   }
 
   async #completeOutstandingTools(terminal: ClaudeCodeTerminal): Promise<void> {
@@ -655,7 +763,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         .filter((value): value is string => typeof value === "string"),
     );
     for (const [toolCallId, tool] of this.#tools) {
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_completed",
         toolCallId,
         name: tool.name,
@@ -666,7 +774,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   async #emitProviderEvent(payload: JsonValue | Readonly<Record<string, unknown>>): Promise<void> {
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "provider_event",
       providerId: CLAUDE_CODE_PROVIDER_ID,
       schemaVersion: 1,
@@ -677,12 +785,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #requireCurrentMessageId(): string {
     if (!this.#currentMessageId) throw protocolError("Claude Code content event has no active message");
     return this.#currentMessageId;
-  }
-
-  #requireContext(): AgentProviderRunContext {
-    /* v8 ignore next -- the serial envelope queue drops messages after the active Run context is cleared. */
-    if (!this.#context) throw protocolError("Claude Code event arrived without an active run");
-    return this.#context;
   }
 
   #failProvider(error: Error): void {
@@ -756,7 +858,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, auto mode, and stdio permission prompts",
+          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
         });
       }
       if (result.credentialIssue) {
@@ -867,6 +969,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
+        cwd: request.workspace.cwd,
         policy: request.policy,
         binding,
         configuration: request.configuration,
@@ -895,53 +998,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
 }
 
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const exact = new Set([
-    "APPDATA",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLOUD_ML_REGION",
-    "COMSPEC",
-    "GCLOUD_PROJECT",
-    "HOME",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "LANG",
-    "LC_ALL",
-    "LOCALAPPDATA",
-    "LOGNAME",
-    "NODE_EXTRA_CA_CERTS",
-    "NO_PROXY",
-    "OPENTAG_PROVIDER_ENV_FILE",
-    "OPENTAG_HOME",
-    "OPENTAG_SESSION_PROOF_FILE",
-    "OPENTAG_EXECUTION_ID",
-    "PATH",
-    "PATHEXT",
-    "SHELL",
-    "SSL_CERT_DIR",
-    "SSL_CERT_FILE",
-    "SystemRoot",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "USER",
-    "USERPROFILE",
-    "WINDIR",
-    "https_proxy",
-    "http_proxy",
-    "no_proxy",
-  ]);
-  const prefixes = ["ANTHROPIC_", "AWS_", "GOOGLE_"];
-  const environment: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && (exact.has(key) || prefixes.some((prefix) => key.startsWith(prefix)))) {
-      environment[key] = value;
-    }
-  }
-  return environment;
+  return { ...source };
 }
 
 async function probeClaudeCode(
@@ -969,7 +1026,7 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
     helpResult.stdout.includes("--allowedTools") &&
-    /\bauto\b/.test(helpResult.stdout) &&
+    /\bacceptEdits\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
   const authentication = await probeClaudeCodeCredential(command, execution, signal);
@@ -1001,7 +1058,8 @@ async function probeClaudeCodeCredential(
 ): Promise<Readonly<Record<string, unknown>> | undefined> {
   let output: string;
   try {
-    output = (await execFileAsync(command, [...CLAUDE_CODE_SETTING_SOURCES, "auth", "status", "--json"], execution))
+    // Readiness is cached per Provider, so an unrelated daemon project cannot supply its credentials.
+    output = (await execFileAsync(command, ["--setting-sources", "user", "auth", "status", "--json"], execution))
       .stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -1077,11 +1135,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   }
 }
 
-function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
-  if (!configuration) return;
-  assertConfigurationStrings(configuration);
-  parseProviderConfiguration(configuration.provider);
-}
+const { validate: validateConfiguration, merge: mergeConfiguration } =
+  providerConfiguration(parseProviderConfiguration);
 
 function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodeProviderConfiguration {
   if (value === undefined) return {};
@@ -1123,58 +1178,79 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
  * otherwise be written into `mcp.json` for the CLI to interpret.
  */
 function parseMcpGatewayConfiguration(value: unknown): ClaudeCodeMcpGatewayConfiguration | undefined {
-  if (value === undefined) return undefined;
-  const object = record(value);
-  if (!object) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway must be an object");
-  }
-  const url = object.url;
-  const token = object.token;
-  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway requires a url and a token");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be absolute");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be http or https");
-  }
-  return { url, token };
-}
-
-function mergeConfiguration(
-  base: AgentRunConfiguration | undefined,
-  override: AgentRunConfiguration | undefined,
-): AgentRunConfiguration | undefined {
-  if (!base) {
-    validateConfiguration(override);
-    return override;
-  }
-  if (!override) return base;
-  const merged: AgentRunConfiguration = {
-    ...base,
-    ...override,
-    // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
-    provider: {
-      ...parseProviderConfiguration(base.provider),
-      ...parseProviderConfiguration(override.provider),
-    } as JsonValue,
-  };
-  validateConfiguration(merged);
-  return merged;
+  return parseHttpMcpGateway(value, "Claude Code");
 }
 
 function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {
+  return { ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() };
+}
+
+function claudeCodeUserMessage(items: AgentPromptRequest["input"]["items"]): Readonly<Record<string, unknown>> {
   return {
     type: "user",
     message: {
       role: "user",
-      content: request.input.items.map((item) => ({ type: "text", text: item.text })),
+      content: items.map((item) => ({ type: "text", text: item.text })),
     },
     parent_tool_use_id: null,
+  };
+}
+
+interface ProcessReady {
+  readonly promise: Promise<ClaudeCodeProcessClient | undefined>;
+  resolve(process?: ClaudeCodeProcessClient): void;
+}
+
+function deferredProcess(): ProcessReady {
+  let resolve!: (process?: ClaudeCodeProcessClient) => void;
+  const promise = new Promise<ClaudeCodeProcessClient | undefined>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * One OpenTag Run reports one terminal: the last result's outcome plus everything steered input added.
+ *
+ * Result fields have two scopes in Claude Code's streaming-input mode
+ * (https://code.claude.com/docs/en/agent-sdk/cost-tracking#track-costs-in-streaming-input-mode):
+ * - `usage` covers only its own turn and `num_turns` counts only that result's agent loop (coalesced
+ *   completions report `num_turns: 0`), so both are summed across the Run's results.
+ * - `total_cost_usd` is the process's running total, so the latest result supersedes earlier ones and
+ *   summing would double-count. Every OpenTag Run spawns a fresh Claude Code process (`--resume` after
+ *   the first Run) that is closed when the Run settles, so no earlier Run's spend accrues in this
+ *   process and no in-process baseline is subtracted: the Run reports the last result's value, the
+ *   same scope a single-result Run reports. Claude Code restores a resumed session's saved totals, so
+ *   that value may include spend from earlier Runs of the session, exactly as before steering existed.
+ * `duration_ms` and `duration_api_ms` are not parsed.
+ */
+function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCodeTerminal): ClaudeCodeTerminal {
+  if (earlier.length === 0) return last;
+  const sum = (pick: (terminal: ClaudeCodeTerminal) => number | undefined): number | undefined => {
+    const values = [...earlier, last].map(pick).filter((value): value is number => value !== undefined);
+    return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0);
+  };
+  const inputTokens = sum((terminal) => terminal.usage?.inputTokens);
+  const cachedInputTokens = sum((terminal) => terminal.usage?.cachedInputTokens);
+  const outputTokens = sum((terminal) => terminal.usage?.outputTokens);
+  const numTurns = sum((terminal) => terminal.numTurns);
+  const totalCostUsd = [...earlier, last].reduce<number | undefined>(
+    (latest, terminal) => terminal.totalCostUsd ?? latest,
+    undefined,
+  );
+  const usage = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+  return {
+    ...last,
+    permissionDenials: [...earlier, last].flatMap((terminal) => terminal.permissionDenials),
+    // A result Claude Code generated for itself has no model turn and no text.
+    earlierResults: earlier.flatMap((terminal) => (terminal.result ? [terminal.result] : [])),
+    ...(numTurns !== undefined ? { numTurns } : {}),
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+    ...(Object.keys(usage).length > 0 ? { usage } : {}),
   };
 }
 
@@ -1225,7 +1301,9 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
 }
 
 function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {
-  const output = terminal.result === undefined ? [] : [{ type: "text" as const, text: terminal.result }];
+  const output = [...(terminal.earlierResults ?? []), ...(terminal.result === undefined ? [] : [terminal.result])].map(
+    (text) => ({ type: "text" as const, text }),
+  );
   const diagnostics: JsonValue = {
     providerSessionId: terminal.sessionId,
     resultSubtype: terminal.subtype,
@@ -1284,57 +1362,13 @@ function blockKey(messageId: string, index: number): string {
 }
 
 function requireIndex(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw protocolError("Claude Code content block has an invalid index");
-  }
-  return value as number;
-}
-
-function requireUuid(value: unknown, field: string): string {
-  const result = requireString(value, `${field} must be a UUID`);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
-    throw protocolError(`${field} must be a UUID`);
-  }
-  return result;
+  return requireProtocolIndex(value, "Claude Code content block has an invalid index");
 }
 
 function toJsonValue(value: unknown): JsonValue {
-  assertJsonValue(value, "Claude Code event payload");
-  return value as JsonValue;
-}
-
-function protocolError(message: string): AgentProviderError {
-  return new AgentProviderError("provider_protocol_error", message);
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
-  const result = record(value);
-  if (!result) throw protocolError(message);
-  return result;
-}
-
-function requireArray(value: unknown, message: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw protocolError(message);
-  return value;
+  return protocolJsonValue(value, "Claude Code event payload");
 }
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
-  if (
-    typeof value !== "string" ||
-    (!allowEmpty && value.length === 0) ||
-    Buffer.byteLength(value, "utf8") > 8 * 1024 * 1024
-  ) {
-    throw protocolError(message);
-  }
-  return value;
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
 }

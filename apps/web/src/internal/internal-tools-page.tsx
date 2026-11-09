@@ -1,14 +1,9 @@
 import type { AccountSetupResetMode, UserProfile } from "@opentag/shared/browser";
-import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
-import { queryKeys } from "../query/keys.js";
-import { Button, Dialog, Icon, Switch, Text } from "../ui/design-system.js";
-import { useInternalNavigationVisibility } from "./navigation-visibility.js";
-
-type InternalNavigationItem = "integrations";
+import { Button, Dialog, Icon, Text } from "../ui/design-system.js";
 
 export interface InternalToolsPageProps {
   /** Runs after a completed reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
@@ -78,27 +73,8 @@ function toolPages() {
 export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageProps) {
   const [confirming, setConfirming] = useState<ResetOperation | null>(null);
   const [resetState, setResetState] = useState<ResetState>({ kind: "idle" });
-  const [preferenceError, setPreferenceError] = useState(false);
-  const [pendingPreference, setPendingPreference] = useState<InternalNavigationItem>();
   const triggerRefs = useRef(new Map<AccountSetupResetMode, HTMLButtonElement | null>());
   const resetInFlight = useRef(false);
-  const queryClient = useQueryClient();
-  const internalNavigation = useInternalNavigationVisibility();
-
-  async function setNavigationVisibility(item: InternalNavigationItem, visible: boolean) {
-    if (pendingPreference) return;
-    setPendingPreference(item);
-    setPreferenceError(false);
-    try {
-      const updated = await browserApi.updateInternalNavigationVisibility({ ...internalNavigation, [item]: visible });
-      queryClient.setQueryData(queryKeys.internalNavigationVisibility(), updated);
-    } catch {
-      setPreferenceError(true);
-    } finally {
-      setPendingPreference(undefined);
-    }
-  }
-
   async function run(operation: ResetOperation) {
     if (resetInFlight.current) return;
     resetInFlight.current = true;
@@ -137,30 +113,6 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         </Text>
         <p>{m.common_internal_tools_scope({ email: user.email })}</p>
       </header>
-
-      <section aria-labelledby="internal-navigation-heading" className="grid gap-3">
-        <div className="grid gap-1">
-          <Text as="h2" id="internal-navigation-heading" variant="heading">
-            {m.common_internal_navigation()}
-          </Text>
-          <p className="text-sm text-kumo-subtle">{m.common_internal_navigation_description()}</p>
-        </div>
-        <div className="ui-surface divide-y divide-kumo-line bg-kumo-base">
-          <NavigationVisibilityRow
-            checked={internalNavigation.integrations}
-            description={m.common_show_integrations_navigation_description()}
-            disabled={pendingPreference !== undefined}
-            label={m.common_show_integrations_navigation()}
-            transitioning={pendingPreference === "integrations"}
-            onCheckedChange={(checked) => void setNavigationVisibility("integrations", checked)}
-          />
-        </div>
-        {preferenceError ? (
-          <p className="text-sm text-kumo-danger" role="alert">
-            {m.common_internal_navigation_save_failed()}
-          </p>
-        ) : null}
-      </section>
 
       <section aria-label={m.common_account_resets()} className="grid gap-3">
         <Text as="h2" variant="heading">
@@ -234,38 +186,5 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         </Dialog>
       ) : null}
     </main>
-  );
-}
-
-function NavigationVisibilityRow({
-  checked,
-  description,
-  disabled,
-  label,
-  onCheckedChange,
-  transitioning,
-}: {
-  checked: boolean;
-  description: string;
-  disabled: boolean;
-  label: string;
-  onCheckedChange: (checked: boolean) => void;
-  transitioning: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 p-4">
-      <div className="grid gap-1">
-        <strong className="text-kumo-strong">{label}</strong>
-        <span className="text-sm text-kumo-subtle">{description}</span>
-      </div>
-      <Switch
-        aria-label={label}
-        checked={checked}
-        className="shrink-0"
-        disabled={disabled}
-        transitioning={transitioning}
-        onCheckedChange={onCheckedChange}
-      />
-    </div>
   );
 }

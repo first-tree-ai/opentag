@@ -1,8 +1,9 @@
 import { Readable } from "node:stream";
-import type { RuntimeCredentialProvider } from "@opentag/shared";
+import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { decodeBufferedBody, slackBufferedBodyKind } from "./buffered-body.js";
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
+import { FeishuTenantTokenExchangeError } from "./feishu-tenant-token.js";
 import {
   bufferProxyBody,
   type ProviderOperation,
@@ -69,6 +70,19 @@ export interface ProviderProxyAdapter {
   handle(request: ProviderProxyRequest, authorization: RuntimeProxyAuthorization): Promise<ProviderProxyResponse>;
 }
 
+export type SessionTaskAnchorResolution = { kind: "link"; taskAnchorId: string } | { kind: "plain" };
+
+export interface InjectedSessionFooter {
+  shortId: string;
+  sessionUrl?: string;
+  slackTextAppended?: string;
+  slackBlockTextAppended?: string;
+  feishuTextAppended?: string;
+  feishuPostLocalesAppended?: readonly string[];
+  feishuPostSegmentText?: string;
+  feishuPostSegmentHref?: string;
+}
+
 /**
  * One verified platform write success handed to the capture port. The payload is the native JSON
  * exactly as the platform returned it, before any temporary-URL rewriting. No headers, tokens, or
@@ -83,6 +97,8 @@ export interface OutboundWriteCaptureEvent {
   query: string;
   requestBody: unknown;
   responsePayload: unknown;
+  /** Present only when the proxy actually appended a Session ID footer to this outbound request. */
+  injectedSessionFooter?: InjectedSessionFooter;
   observedAt: Date;
 }
 
@@ -97,11 +113,24 @@ export interface OutboundWriteCapture {
 }
 
 export interface ImProviderProxyAdapterOptions {
+  onCredentialFailure?: (authorization: RuntimeProxyAuthorization) => void;
   provider: RuntimeCredentialProvider;
   registry: ProviderOperationRegistry;
   urlHandles: RuntimeUrlHandleStore;
   fetchImpl?: typeof fetch;
   capabilityTtlSeconds?: number;
+  /** Public web origin used to append a clickable Session ID footer to outbound IM messages. */
+  publicOrigin?: string;
+  /**
+   * Resolves an execution's Session and source to a stable Task anchor ID (`kind: "link"`) or a
+   * plain non-clickable `Session <shortId>` label (`kind: "plain"`). Defaults to linking to
+   * `request.sessionId` when omitted.
+   */
+  resolveTaskAnchor?: (input: {
+    sessionId: string;
+    source?: RuntimeExecutionSource;
+    signal?: AbortSignal;
+  }) => Promise<SessionTaskAnchorResolution>;
   /** Optional confirmed-send capture (IM adapters in production); absent keeps the proxy read-only. */
   outboundCapture?: OutboundWriteCapture;
   /** Test/deployment override for the bounded capture-port wait; defaults to the proxy budget. */
@@ -158,21 +187,40 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     authorization: RuntimeProxyAuthorization,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
-    // Preflight boundary: material resolution and the live fence revalidation after that async
-    // boundary fail with their own codes (or `cancelled`), before any upstream byte is sent.
+    // Preflight boundary: footer anchor resolution, material resolution, and the live fence
+    // revalidation after those async steps fail with their own codes (or `cancelled`), before
+    // any upstream byte is sent.
+    let annotated: AnnotatedOutboundBody;
     let material: RuntimeProviderMaterial;
     try {
+      annotated = await this.#annotateOutboundBodyWithSessionFooter(
+        operation,
+        prepared,
+        headers,
+        request,
+        authorization,
+      );
       material = await authorization.resolveMaterial(request.signal);
       await authorization.recheck(request.signal);
+      request.signal.throwIfAborted();
     } catch (error) {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
-      throw error;
+      return answerFeishuTokenRefusal(error);
     }
     try {
-      const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
+      const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
+      this.#hintHttpCredentialFailure(response.status, authorization);
       return operation.response === "stream"
         ? this.#streamResponse(match, response)
-        : await this.#jsonResponse(match, request, authorization, material, prepared, response);
+        : await this.#jsonResponse(
+            match,
+            request,
+            authorization,
+            material,
+            prepared,
+            annotated.injectedSessionFooter,
+            response,
+          );
     } catch (error) {
       if (error instanceof RuntimeProxyError) {
         // A write whose response cannot be parsed or read is an unconfirmed outcome, never a
@@ -237,7 +285,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
 
   async #fetchUpstream(
     operation: ProviderOperation,
-    prepared: { bytes: Uint8Array; parsed: unknown },
+    bodyBytes: Uint8Array,
     headers: Record<string, string>,
     request: ProviderProxyRequest,
     material: RuntimeProviderMaterial,
@@ -258,14 +306,64 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     if (operation.body === "stream") {
       init.body = Readable.from(request.body);
       init.duplex = "half";
-    } else if (operation.body !== "none" && prepared.bytes.byteLength > 0) {
-      init.body = prepared.bytes;
+    } else if (operation.body !== "none" && bodyBytes.byteLength > 0) {
+      init.body = bodyBytes;
     }
     try {
       return await this.#fetch(url, init);
     } catch (error) {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
       throw error;
+    }
+  }
+
+  async #annotateOutboundBodyWithSessionFooter(
+    operation: ProviderOperation,
+    prepared: { bytes: Uint8Array; parsed: unknown },
+    headers: Record<string, string>,
+    request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
+  ): Promise<AnnotatedOutboundBody> {
+    if (!isAnnotatableMessageOperation(operation)) return { bytes: prepared.bytes };
+    const origin = this.#options.publicOrigin?.trim().replace(/\/+$/, "");
+    if (!origin || authorization.purpose === "validation" || !request.sessionId || !authorization.agentId) {
+      return { bytes: prepared.bytes };
+    }
+    const resolution = await this.#resolveAnchor(request, authorization);
+    return annotateOutboundBodyWithSessionFooter({
+      operation,
+      prepared,
+      headers,
+      request,
+      authorization,
+      publicOrigin: origin,
+      resolution,
+    });
+  }
+
+  async #resolveAnchor(
+    request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
+  ): Promise<SessionTaskAnchorResolution> {
+    if (!this.#options.resolveTaskAnchor) {
+      return { kind: "link", taskAnchorId: request.sessionId };
+    }
+    try {
+      return await this.#options.resolveTaskAnchor({
+        sessionId: request.sessionId,
+        ...(authorization.source ? { source: authorization.source } : {}),
+        signal: request.signal,
+      });
+    } catch (error) {
+      this.#options.logger?.warn(
+        {
+          code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED",
+          sessionId: request.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to resolve IM session footer task anchor",
+      );
+      return { kind: "plain" };
     }
   }
 
@@ -282,24 +380,48 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     };
   }
 
+  #hintHttpCredentialFailure(status: number, authorization: RuntimeProxyAuthorization): void {
+    if (status === 401) this.#hintCredentialFailure(authorization);
+  }
+
+  #hintCredentialFailure(authorization: RuntimeProxyAuthorization): void {
+    if (authorization.purpose === "validation") return;
+    try {
+      this.#options.onCredentialFailure?.(authorization);
+    } catch {
+      this.#options.logger?.warn({ code: "CREDENTIAL_FAILURE_HINT_FAILED" }, "Credential failure hint failed");
+    }
+  }
+
   async #jsonResponse(
     match: ProviderOperationMatch,
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
     prepared: { bytes: Uint8Array; parsed: unknown },
+    injectedSessionFooter: InjectedSessionFooter | undefined,
     response: Response,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
     const payload = await parseJsonResponse(response, operation.maxResponseBytes ?? 2 * 1024 * 1024);
+    if (response.status !== 401 && request.provider === "slack" && isSlackCredentialFailure(payload))
+      this.#hintCredentialFailure(authorization);
     if (operation.kind === "write") {
       const outcome = classifyWriteOutcome({ payload, provider: request.provider, status: response.status });
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
       if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
       if (outcome.state === "succeeded") {
-        await this.#captureConfirmedWrite(match, request, authorization, prepared.parsed, payload);
+        await this.#captureConfirmedWrite(
+          match,
+          request,
+          authorization,
+          prepared.parsed,
+          injectedSessionFooter,
+          payload,
+        );
       }
     }
+    request.signal.throwIfAborted();
     const rewritten = rewriteOperationResponse(operation, payload, {
       executionId: request.executionId,
       provider: request.provider,
@@ -325,6 +447,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
     parsedRequest: unknown,
+    injectedSessionFooter: InjectedSessionFooter | undefined,
     payload: unknown,
   ): Promise<void> {
     const capture = this.#options.outboundCapture;
@@ -341,6 +464,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
             query: match.query,
             requestBody: parsedRequest,
             responsePayload: payload,
+            ...(injectedSessionFooter ? { injectedSessionFooter } : {}),
             observedAt: new Date(),
           })
           .then(() => "settled" as const),
@@ -456,4 +580,353 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     throw new RuntimeProxyError("handle_invalid");
   }
+}
+
+function isSlackCredentialFailure(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const value = payload as { ok?: unknown; error?: unknown };
+  return (
+    value.ok === false &&
+    typeof value.error === "string" &&
+    ["invalid_auth", "token_revoked", "account_inactive", "not_authed"].includes(value.error)
+  );
+}
+
+const SLACK_TEXT_MAX_CHARS = 4_000;
+const SLACK_MARKDOWN_TEXT_MAX_CHARS = 12_000;
+
+interface AnnotatedOutboundBody {
+  bytes: Uint8Array;
+  injectedSessionFooter?: InjectedSessionFooter;
+}
+
+function isAnnotatableMessageOperation(operation: ProviderOperation): boolean {
+  if (operation.provider === "slack") {
+    return operation.operationId === "chat.postMessage" || operation.operationId === "chat.update";
+  }
+  if (operation.provider === "feishu") {
+    return (
+      operation.operationId === "feishu.im.messages.create" ||
+      operation.operationId === "feishu.im.messages.reply" ||
+      operation.operationId === "feishu.im.messages.update" ||
+      operation.operationId === "feishu.im.messages.patch"
+    );
+  }
+  return false;
+}
+
+function annotateOutboundBodyWithSessionFooter(input: {
+  operation: ProviderOperation;
+  prepared: { bytes: Uint8Array; parsed: unknown };
+  headers: Record<string, string>;
+  request: ProviderProxyRequest;
+  authorization: RuntimeProxyAuthorization;
+  publicOrigin: string | undefined;
+  resolution: SessionTaskAnchorResolution;
+}): AnnotatedOutboundBody {
+  const { operation, prepared, headers, request, authorization, publicOrigin, resolution } = input;
+  const footer = buildSessionFooter(publicOrigin, authorization, request, resolution);
+  if (!footer) return { bytes: prepared.bytes };
+  let annotated: AnnotatedOutboundBody | undefined;
+  if (operation.provider === "slack" && isAnnotatableMessageOperation(operation)) {
+    annotated = annotateSlackPostMessage(prepared.parsed, footer.shortId, footer.sessionUrl, headers);
+  } else if (operation.provider === "feishu" && isAnnotatableMessageOperation(operation)) {
+    annotated = annotateFeishuSend(prepared.parsed, footer.shortId, footer.sessionUrl);
+  }
+  const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
+  if (!annotated || annotated.bytes.byteLength > maxBytes) {
+    return { bytes: prepared.bytes };
+  }
+  return annotated;
+}
+
+function buildSessionFooter(
+  publicOrigin: string | undefined,
+  authorization: RuntimeProxyAuthorization,
+  request: ProviderProxyRequest,
+  resolution: SessionTaskAnchorResolution,
+): { shortId: string; sessionUrl?: string } | undefined {
+  const origin = publicOrigin?.trim().replace(/\/+$/, "");
+  if (!origin || authorization.purpose === "validation" || !request.sessionId || !authorization.agentId) {
+    return undefined;
+  }
+  const shortId = request.sessionId.slice(0, 8);
+  if (resolution.kind === "plain") {
+    return { shortId };
+  }
+  const anchorId = resolution.taskAnchorId || request.sessionId;
+  return {
+    shortId,
+    sessionUrl: `${origin}/agents/${encodeURIComponent(authorization.agentId)}/tasks/${encodeURIComponent(anchorId)}`,
+  };
+}
+
+function annotateSlackBlocks(
+  blocks: unknown,
+  shortId: string,
+  sessionUrl: string | undefined,
+): { blocks: unknown; blockLabel: string } | undefined {
+  const blockLabel = sessionUrl ? `<${sessionUrl}|Session ${shortId}>` : `Session ${shortId}`;
+  const checkToken = sessionUrl ?? blockLabel;
+  const footerBlock = {
+    type: "context",
+    elements: [{ type: "mrkdwn", text: blockLabel }],
+  };
+  if (Array.isArray(blocks)) {
+    if (blocks.length >= 50 || JSON.stringify(blocks).includes(checkToken)) return undefined;
+    return { blocks: [...blocks, footerBlock], blockLabel };
+  }
+  if (typeof blocks === "string") {
+    if (blocks.includes(checkToken)) return undefined;
+    try {
+      const parsed = JSON.parse(blocks) as unknown;
+      if (!Array.isArray(parsed) || parsed.length >= 50) return undefined;
+      return { blocks: JSON.stringify([...parsed, footerBlock]), blockLabel };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function annotateSlackTextFields(
+  record: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string | undefined,
+): { text?: string; markdown_text?: string } {
+  const textFooter = sessionUrl ? `\n\n_<${sessionUrl}|Session ${shortId}>_` : `\n\n_Session ${shortId}_`;
+  const markdownFooter = sessionUrl ? `\n\n_[Session ${shortId}](${sessionUrl})_` : `\n\n_Session ${shortId}_`;
+  const checkToken = sessionUrl ?? `_Session ${shortId}_`;
+  const out: { text?: string; markdown_text?: string } = {};
+  if (
+    typeof record.text === "string" &&
+    record.text.trim().length > 0 &&
+    !record.text.includes(checkToken) &&
+    record.text.length + textFooter.length <= SLACK_TEXT_MAX_CHARS
+  ) {
+    out.text = textFooter;
+  }
+  if (
+    typeof record.markdown_text === "string" &&
+    record.markdown_text.trim().length > 0 &&
+    !record.markdown_text.includes(checkToken) &&
+    record.markdown_text.length + markdownFooter.length <= SLACK_MARKDOWN_TEXT_MAX_CHARS
+  ) {
+    out.markdown_text = markdownFooter;
+  }
+  return out;
+}
+
+function encodeSlackAnnotatedBody(next: Record<string, unknown>, headers: Record<string, string>): Uint8Array {
+  if (slackBufferedBodyKind(headers["content-type"]) === "form") {
+    const form = new URLSearchParams();
+    for (const [key, value] of Object.entries(next)) {
+      form.set(key, typeof value === "string" ? value : JSON.stringify(value));
+    }
+    return new TextEncoder().encode(form.toString());
+  }
+  return new TextEncoder().encode(JSON.stringify(next));
+}
+
+function annotateSlackPostMessage(
+  parsed: unknown,
+  shortId: string,
+  sessionUrl: string | undefined,
+  headers: Record<string, string>,
+): AnnotatedOutboundBody | undefined {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  const annotatedBlocks = annotateSlackBlocks(record.blocks, shortId, sessionUrl);
+  const textFields = annotateSlackTextFields(record, shortId, sessionUrl);
+  if (!annotatedBlocks && !textFields.text && !textFields.markdown_text) return undefined;
+  const next: Record<string, unknown> = {
+    ...record,
+    ...(annotatedBlocks ? { blocks: annotatedBlocks.blocks } : {}),
+    ...(textFields.text ? { text: `${record.text as string}${textFields.text}` } : {}),
+    ...(textFields.markdown_text
+      ? { markdown_text: `${record.markdown_text as string}${textFields.markdown_text}` }
+      : {}),
+  };
+  return {
+    bytes: encodeSlackAnnotatedBody(next, headers),
+    injectedSessionFooter: {
+      shortId,
+      ...(sessionUrl ? { sessionUrl } : {}),
+      ...(textFields.text ? { slackTextAppended: textFields.text } : {}),
+      ...(annotatedBlocks ? { slackBlockTextAppended: annotatedBlocks.blockLabel } : {}),
+    },
+  };
+}
+
+function appendFeishuLocalePostParagraphs(
+  contentObj: Record<string, unknown>,
+  checkToken: string,
+  footerParagraph: unknown,
+): { content: Record<string, unknown>; localesAppended: readonly string[] } | undefined {
+  const localesAppended: string[] = [];
+  const next: Record<string, unknown> = { ...contentObj };
+  for (const [key, value] of Object.entries(contentObj)) {
+    const locale =
+      value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+    if (!locale || !Array.isArray(locale.content) || JSON.stringify(locale.content).includes(checkToken)) continue;
+    next[key] = { ...locale, content: [...locale.content, footerParagraph] };
+    localesAppended.push(key);
+  }
+  return localesAppended.length > 0 ? { content: next, localesAppended } : undefined;
+}
+
+function annotateFeishuPostContent(
+  contentObj: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string | undefined,
+):
+  | {
+      content: Record<string, unknown>;
+      localesAppended: readonly string[];
+      segmentText: string;
+      segmentHref?: string;
+    }
+  | undefined {
+  const segmentText = `Session ${shortId}`;
+  const checkToken = sessionUrl ?? `"${segmentText}"`;
+  const footerParagraph = sessionUrl
+    ? [{ tag: "a", text: segmentText, href: sessionUrl }]
+    : [{ tag: "text", text: segmentText }];
+  const hrefField = sessionUrl ? { segmentHref: sessionUrl } : {};
+  if (Array.isArray(contentObj.content)) {
+    if (JSON.stringify(contentObj.content).includes(checkToken)) return undefined;
+    return {
+      content: { ...contentObj, content: [...contentObj.content, footerParagraph] },
+      localesAppended: ["$top"],
+      segmentText,
+      ...hrefField,
+    };
+  }
+  const localized = appendFeishuLocalePostParagraphs(contentObj, checkToken, footerParagraph);
+  return localized ? { ...localized, segmentText, ...hrefField } : undefined;
+}
+
+function annotateFeishuInteractiveContent(
+  contentObj: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string | undefined,
+): Record<string, unknown> | undefined {
+  const notation = sessionUrl ? `[Session ${shortId}](${sessionUrl})` : `Session ${shortId}`;
+  const checkToken = sessionUrl ?? `Session ${shortId}`;
+  if (contentObj.schema === "2.0") {
+    const body =
+      contentObj.body && typeof contentObj.body === "object" && !Array.isArray(contentObj.body)
+        ? (contentObj.body as Record<string, unknown>)
+        : undefined;
+    if (!body || !Array.isArray(body.elements) || JSON.stringify(body.elements).includes(checkToken)) return undefined;
+    return {
+      ...contentObj,
+      body: {
+        ...body,
+        elements: [...body.elements, { tag: "markdown", text_size: "notation", content: notation }],
+      },
+    };
+  }
+  if (!Array.isArray(contentObj.elements) || JSON.stringify(contentObj.elements).includes(checkToken)) return undefined;
+  return {
+    ...contentObj,
+    elements: [...contentObj.elements, { tag: "note", elements: [{ tag: "lark_md", content: notation }] }],
+  };
+}
+
+function parseFeishuRecordContent(content: string): Record<string, unknown> | undefined {
+  try {
+    const raw = JSON.parse(content) as unknown;
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeFeishuRecord(record: Record<string, unknown>, nextContent: Record<string, unknown>): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ ...record, content: JSON.stringify(nextContent) }));
+}
+
+function annotateFeishuTextContent(
+  contentObj: Record<string, unknown>,
+  shortId: string,
+  sessionUrl: string | undefined,
+): { content: Record<string, unknown>; feishuTextAppended: string } | undefined {
+  const textFooter = sessionUrl ? `\n\nSession ${shortId}: ${sessionUrl}` : `\n\nSession ${shortId}`;
+  const checkToken = sessionUrl ?? `Session ${shortId}`;
+  if (
+    typeof contentObj.text !== "string" ||
+    contentObj.text.trim().length === 0 ||
+    contentObj.text.includes(checkToken)
+  ) {
+    return undefined;
+  }
+  return {
+    content: { ...contentObj, text: `${contentObj.text}${textFooter}` },
+    feishuTextAppended: textFooter,
+  };
+}
+
+function annotateFeishuPostBody(
+  record: Record<string, unknown>,
+  contentObj: Record<string, unknown>,
+  baseFooter: InjectedSessionFooter,
+): AnnotatedOutboundBody | undefined {
+  const post = annotateFeishuPostContent(contentObj, baseFooter.shortId, baseFooter.sessionUrl);
+  if (!post) return undefined;
+  return {
+    bytes: encodeFeishuRecord(record, post.content),
+    injectedSessionFooter: {
+      ...baseFooter,
+      feishuPostLocalesAppended: post.localesAppended,
+      feishuPostSegmentText: post.segmentText,
+      ...(post.segmentHref ? { feishuPostSegmentHref: post.segmentHref } : {}),
+    },
+  };
+}
+
+function annotateFeishuSend(
+  parsed: unknown,
+  shortId: string,
+  sessionUrl: string | undefined,
+): AnnotatedOutboundBody | undefined {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.content !== "string") return undefined;
+  const contentObj = parseFeishuRecordContent(record.content);
+  if (!contentObj) return undefined;
+  const baseFooter: InjectedSessionFooter = { shortId, ...(sessionUrl ? { sessionUrl } : {}) };
+  if (record.msg_type === "text") {
+    const text = annotateFeishuTextContent(contentObj, shortId, sessionUrl);
+    if (!text) return undefined;
+    return {
+      bytes: encodeFeishuRecord(record, text.content),
+      injectedSessionFooter: { ...baseFooter, feishuTextAppended: text.feishuTextAppended },
+    };
+  }
+  if (record.msg_type === "post") {
+    return annotateFeishuPostBody(record, contentObj, baseFooter);
+  }
+  if (record.msg_type === "interactive" || record.msg_type === undefined) {
+    const interactive = annotateFeishuInteractiveContent(contentObj, shortId, sessionUrl);
+    return interactive
+      ? { bytes: encodeFeishuRecord(record, interactive), injectedSessionFooter: baseFooter }
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Feishu refused the Server-side token exchange, so no request reached the operation. Answer in
+ * Feishu's own shape: a generic proxy outage would make a dead credential read as an unreachable
+ * provider, and the CLI classifies this answer exactly as it would a direct one.
+ */
+function answerFeishuTokenRefusal(error: unknown): ProviderProxyResponse {
+  if (!(error instanceof FeishuTenantTokenExchangeError) || error.providerCode === undefined) throw error;
+  const body = JSON.stringify({ code: error.providerCode, msg: "Feishu refused the tenant token exchange" });
+  return {
+    status: error.kind === "rate_limited" ? 429 : 400,
+    headers: { "content-type": "application/json" },
+    body: singleChunk(new TextEncoder().encode(body)),
+  };
 }

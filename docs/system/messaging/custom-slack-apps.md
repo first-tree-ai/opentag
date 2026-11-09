@@ -9,7 +9,7 @@ See [Slack setup](slack-app-setup.md) for the capability contract and operating 
 
 ## Design and user flow
 
-The current Web entry is **Connect Slack** in both Agent setup and Messaging settings. Local automatic setup uses one command and code; manual setup replaces the dialog contents rather than adding another form. Existing official bindings retain restricted OAuth recovery.
+The current Web entry is **Connect Slack** in both Agent setup and Messaging settings. Local automatic setup uses one command and code; manual setup replaces the current form rather than adding another form. Agent setup uses an inline panel; Messaging settings retain the dialog. Existing official bindings retain restricted OAuth recovery.
 
 Each Agent uses a different user-created Slack App, installed in the same Team. A current App/Team pair belongs to one
 Agent; another Agent cannot claim it. Agent creation succeeds without a Computer or messaging app. Connecting an app
@@ -86,6 +86,10 @@ This includes necessary GET/POST configuration APIs as well as Web changes. The 
 updates preserve blank values and require the same App/Team/Bot identity. The commit transaction rechecks Account
 authority, Computer, binding ID and generation. Uncertain save results are resolved by reading state, never automatic POST
 replay. Credentials are cleared on success, close, and Agent changes and are never returned by the management API.
+
+Automatic setup carries its original Computer into this final Agent-guarded activation check.
+A rebind during external Slack inspection rejects before storing credentials or a binding. The
+unlocked pre-bind placement read is unnecessary; the later current-target check still precedes CLI callbacks.
 
 First-party OAuth start/callback and explicit replacement semantics, signed Events, proxy/runtime, old CLI contracts,
 and Feishu remain. Older servers keep OAuth recovery; missing `slackOAuthAvailable` retains the old behavior and only

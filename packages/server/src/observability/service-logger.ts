@@ -25,7 +25,19 @@ export function createServiceLoggerPort(getLogger: () => FastifyBaseLogger | und
       // not pay for it. FastifyBaseLogger does not declare isLevelEnabled even though the Pino
       // instance behind it has one, so the capability is detected rather than assumed.
       if (isLevelAware(logger) && !logger.isLevelEnabled(level)) return;
-      const payload = redactForLog({ ...bindings, module }) as Record<string, unknown>;
+      let rawError: Error | undefined;
+      const restBindings = { ...bindings };
+      if (restBindings.err instanceof Error) {
+        rawError = restBindings.err;
+        delete restBindings.err;
+      } else if (restBindings.error instanceof Error) {
+        rawError = restBindings.error;
+        delete restBindings.error;
+      }
+      const payload = redactForLog({ ...restBindings, module }) as Record<string, unknown>;
+      if (rawError !== undefined) {
+        payload.err = rawError;
+      }
       // The message is the second Pino argument and crosses the same boundary, so it is redacted
       // and byte-capped too: an adoption lane passing a provider or exception message here must not
       // be able to write a credential or an unbounded string through the seam advertised as safe.

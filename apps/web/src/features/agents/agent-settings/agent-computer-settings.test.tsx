@@ -52,6 +52,16 @@ describe("Agent Computer settings", () => {
     expect(screen.queryByText("Not ready")).toBeNull();
   });
 
+  it("does not offer replacing a bound Computer", async () => {
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
+    const bind = vi.spyOn(browserApi, "rebindAgentComputer");
+    const value = agent(COMPUTER_ID, "ready");
+    await renderInRouter(<AgentComputerSettings agent={value} onAgentChanged={vi.fn()} />);
+    expect(screen.queryByRole("link", { name: "Connect a new computer" })).toBeNull();
+    expect(issue).not.toHaveBeenCalled();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
   it("routes offline recovery to the exact Account Computer without issuing a command", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
     const cloudOverview = vi.spyOn(browserApi, "agentCloudOverview");
@@ -112,6 +122,9 @@ describe("Agent Computer settings", () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
     await renderInRouter(<AgentComputerSettings agent={value} onAgentChanged={vi.fn()} />);
     const use = await screen.findByRole("button", { name: "Use this computer: Ada's Mac" });
+    expect(screen.getByRole("link", { name: "Connect a new computer" }).getAttribute("href")).toContain(
+      "connect=another",
+    );
     expect(bind).not.toHaveBeenCalled();
     expect(issue).not.toHaveBeenCalled();
     fireEvent.click(use);
@@ -144,6 +157,7 @@ describe("A Cloud Computer's settings", () => {
     expect(screen.queryByText("Hosted by openTag")).toBeNull();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
     expect(overview).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
   });

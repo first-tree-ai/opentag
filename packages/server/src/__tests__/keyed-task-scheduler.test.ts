@@ -2,6 +2,7 @@ import { setImmediate as waitImmediate } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
+import { deferred } from "./support/deferred.js";
 
 describe("KeyedTaskScheduler", () => {
   it("validates limits and rejects work after shutdown", () => {
@@ -305,4 +306,33 @@ describe("KeyedTaskScheduler", () => {
     });
     scheduler.close();
   });
+});
+
+it("close joins actual running work while dropping queued work once", async () => {
+  const entered = deferred(),
+    release = deferred();
+  const scheduler = new KeyedTaskScheduler({ maxConcurrent: 1, maxQueuedPerKey: 2, maxQueuedTotal: 4 });
+  const queued = vi.fn(),
+    dropped = vi.fn();
+  scheduler.enqueue("first", async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error("owned failure");
+  });
+  scheduler.enqueue("next", queued, dropped);
+  await entered.promise;
+  let drained = false;
+  const closing = scheduler.close();
+  expect(scheduler.close()).toBe(closing);
+  const stopped = closing.then(() => {
+    drained = true;
+  });
+  await waitImmediate();
+  expect(drained).toBe(false);
+  expect(dropped).toHaveBeenCalledTimes(1);
+  expect(scheduler.enqueue("late", queued)).toBe(false);
+  release.resolve();
+  await stopped;
+  expect(queued).not.toHaveBeenCalled();
+  expect(scheduler.stats()).toMatchObject({ active: 0, queued: 0, lanes: 0 });
 });

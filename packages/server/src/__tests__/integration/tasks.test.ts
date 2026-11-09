@@ -1,11 +1,26 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { computeTurnResultHash, type TurnReportRequest, TurnReportRequestSchema } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import {
+  computeTurnResultHash,
+  type NormalizedInboundImEvent,
+  type TurnReportRequest,
+  TurnReportRequestSchema,
+} from "@opentag/shared";
+import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sessionMessages,
+  sessions,
+} from "../../db/schema/index.js";
+import { resolveSessionTaskAnchor } from "../../runtime-credentials/index.js";
+import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
@@ -349,9 +364,117 @@ describe("Task cancel under a row lock", () => {
       await value.sql.end();
     }
   }, 20_000);
+
+  it("serializes a cancel with IM admission into the same Session, so a 200 never leaves a queued delivery", async () => {
+    // The reported interleaving: a worker holds pending row A, the cancel waits for it, and a new
+    // message is admitted into the same Session meanwhile. The cancel must not withdraw A, leave the
+    // new delivery queued and still answer 200. The admission goes through the real inbound path on
+    // its own pool, so it takes the binding lock every production admission takes.
+    const value = await fixture();
+    await value.database
+      .update(imBindings)
+      .set({
+        status: "active",
+        externalAppId: "app",
+        externalBotId: "bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "unit-only-unused",
+        activatedAt: new Date(),
+      })
+      .where(eq(imBindings.id, value.binding.id));
+    const admitter = createDatabaseClient(databaseUrl);
+    const observer = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const first = await new ImMessageInbox(value.database).ingest(value.binding.id, 1, dmEvent("race-admit-a"));
+    const deliveryA = first.deliveryIds[0];
+    if (!deliveryA || !first.messageId) throw new Error("The first admission queued no delivery");
+    const lock = await holdDeliveryLock(deliveryA, async () => undefined);
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, first.messageId);
+      // The cancel holds the binding and waits for row A.
+      await waitForBlockedStatements(observer, 1);
+      let admitted = false;
+      const second = new ImMessageInbox(admitter.database)
+        .ingest(value.binding.id, 1, dmEvent("race-admit-b"))
+        .then((result) => {
+          admitted = true;
+          return result;
+        });
+      // The admission waits for the cancel's binding lock instead of inserting beside it.
+      await waitForBlockedStatements(observer, 2, '"im_bindings"');
+      expect(admitted).toBe(false);
+      await lock.commit();
+      await expect(racing).resolves.toMatchObject({ status: "cancelled" });
+      const later = await second;
+      const deliveryB = later.deliveryIds[0];
+      if (!deliveryB) throw new Error("The second admission queued no delivery");
+      expect(await deliveryState(value, deliveryA)).toEqual({ state: "expired", reason: "cancelled" });
+      // The message admitted behind the cancel is a new request in the queue, not a survivor of it.
+      expect(await deliveryState(value, deliveryB)).toEqual({ state: "pending", reason: null });
+      // Both requests went into the one Session the cancel was serialized against.
+      const rows = await value.database
+        .select({ sessionId: imMessageDeliveries.sessionId })
+        .from(imMessageDeliveries)
+        .where(sql`${imMessageDeliveries.id} in (${deliveryA}::uuid, ${deliveryB}::uuid)`);
+      expect(new Set(rows.map((row) => row.sessionId)).size).toBe(1);
+    } finally {
+      await lock.commit();
+      await lock.end();
+      await observer.end();
+      await admitter.sql.end();
+      await value.sql.end();
+    }
+  }, 30_000);
 });
 
-describe("Task topic queries", () => {
+/** A private-chat message in a conversation of its own, admitted through the inbound path. */
+function dmEvent(id: string): NormalizedInboundImEvent {
+  return {
+    providerEventId: `event-${id}`,
+    externalAppId: "app",
+    externalTeamId: "team",
+    providerContext: { provider: "feishu", chatType: "p2p" },
+    conversation: { externalId: "oc_admission_race", kind: "dm" },
+    message: {
+      externalId: `om_${id}`,
+      revisionKey: "1",
+      operation: "created",
+      author: { externalId: "ou_debug", kind: "human" },
+      occurredAt: new Date(),
+      content: {
+        version: 1,
+        fallbackText: `Request ${id}`,
+        blocks: [{ type: "text", text: `Request ${id}` }],
+        truncated: false,
+      },
+      resources: [],
+    },
+    mentions: [],
+  };
+}
+
+/**
+ * Wait until `count` backends are blocked behind another backend's lock, one of them running a
+ * statement that contains `fragment` when given. Long statements are truncated in
+ * `pg_stat_activity`, so the count rather than the text identifies the cancel.
+ */
+async function waitForBlockedStatements(observer: postgres.Sql, count: number, fragment?: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const [row] = await observer`
+      select
+        count(*)::int as blocked,
+        count(*) filter (where ${fragment ?? ""} = '' or position(${fragment ?? ""} in query) > 0)::int as matching
+      from pg_stat_activity
+      where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
+    `;
+    if ((row?.blocked ?? 0) >= count && (row?.matching ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`Fewer than ${count} statements waited for a lock`);
+    await wait(50);
+  }
+}
+
+describe("Task queries", () => {
   it.each(["running", "expired", "ended", "superseded"] as const)(
     "projects %s liveness consistently into Task detail",
     async (state) => {
@@ -469,7 +592,7 @@ describe("Task topic queries", () => {
         nextCursor: null,
         tasks: [
           {
-            id: value.message.id,
+            id: value.session.id,
             title: "Please debug this Turn.",
             status: "completed",
             agent: { id: value.agent.id, displayName: "Atlas" },
@@ -613,7 +736,7 @@ describe("Task topic queries", () => {
         cursor: firstPage.nextCursor,
         limit: 1,
       });
-      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondMessage.id]);
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
       expect(secondPage.nextCursor).toBeNull();
 
       const [followUpMessage] = await value.database
@@ -804,6 +927,439 @@ describe("Task topic queries", () => {
         cachedInputTokens: null,
         outputTokens: 50,
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+/**
+ * Keyset pagination must use the precision PostgreSQL compares. timestamptz has microseconds while
+ * `Date` has milliseconds, so a cursor built from a `Date` re-reads (ascending) or skips
+ * (descending) every row whose timestamp sits inside the truncated millisecond. These cases pin
+ * that down on the real engine, per section, with limit=1 and equal-time id ties.
+ */
+describe("Task cursor precision", () => {
+  /** Rewrite a stored instant after insert, because a `Date` cannot carry microseconds. */
+  async function setInstant(
+    value: Awaited<ReturnType<typeof fixture>>,
+    table: "sessions" | "im_messages" | "session_messages",
+    id: string,
+    column: "created_at" | "occurred_at",
+    instant: string,
+  ) {
+    await value.database.execute(
+      sql`update ${sql.identifier(table)} set ${sql.identifier(column)} = ${instant}::timestamptz where id = ${id}::uuid`,
+    );
+  }
+
+  /** Walk every page at `limit`, returning the ids in order and asserting the walk terminates. */
+  async function walk<T>(
+    read: (cursor?: string) => Promise<{ items: T[]; nextCursor: string | null }>,
+    id: (item: T) => string,
+    limit = 1,
+  ) {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      const result = await read(cursor);
+      expect(result.items.length).toBeLessThanOrEqual(limit);
+      ids.push(...result.items.map(id));
+      if (!result.nextCursor) return ids;
+      // A cursor that does not advance would loop for ever; the bound above turns that into a failure.
+      expect(result.nextCursor).not.toBe(cursor);
+      cursor = result.nextCursor;
+    }
+    throw new Error("The page walk did not terminate");
+  }
+
+  it("pages Internal Sessions across a shared millisecond without repeating or skipping", async () => {
+    const value = await fixture();
+    try {
+      // The fixture's own private-chat Session is the creator, so the internal Sessions belong to
+      // the Task under test and no second active channel Session is created for the same chat.
+      const chatSession = value.session;
+
+      // Three instants inside one millisecond, plus an equal-time pair whose order is the id alone.
+      const instants = [
+        { at: "2026-08-27T01:00:01.000100Z", id: "10000000-0000-4000-8000-000000000001" },
+        { at: "2026-08-27T01:00:01.000456Z", id: "10000000-0000-4000-8000-000000000002" },
+        { at: "2026-08-27T01:00:01.000456Z", id: "10000000-0000-4000-8000-000000000003" },
+        { at: "2026-08-27T01:00:01.000900Z", id: "10000000-0000-4000-8000-000000000004" },
+      ];
+      await value.database.insert(sessions).values(
+        instants.map((instant) => ({
+          id: instant.id,
+          imBindingId: value.binding.id,
+          channelId: "oc_debug",
+          conversationKind: "dm" as const,
+          kind: "internal" as const,
+          createdBySessionId: chatSession.id,
+          runtimeModel: "claude-sonnet",
+          runtimeReasoningEffort: "medium",
+          runtimeMaxDurationMs: 20_000,
+          createdAt: new Date("2026-08-27T01:00:01.000Z"),
+        })),
+      );
+      for (const instant of instants) await setInstant(value, "sessions", instant.id, "created_at", instant.at);
+
+      const ids = await walk(
+        async (cursor) =>
+          value.service.listInternalSessions(value.bootstrap.userId, value.message.id, {
+            limit: 1,
+            ...(cursor ? { cursor } : {}),
+          }),
+        (session) => session.id,
+      );
+      expect(ids).toEqual(instants.map((instant) => instant.id));
+
+      // Why the cursor keeps microseconds: the same keyset with the instant truncated to the
+      // millisecond a `Date` carries re-reads the row it had just returned, so a reader would see it
+      // twice. This is the defect the text cursor removes, asserted rather than described.
+      const firstRow = await value.service.listInternalSessions(value.bootstrap.userId, value.message.id, { limit: 1 });
+      if (!firstRow.nextCursor) throw new Error("The first Internal Session page did not issue a cursor");
+      const decoded = JSON.parse(Buffer.from(firstRow.nextCursor, "base64url").toString("utf8")) as {
+        at: string;
+        id: string;
+      };
+      const truncatedCursor = Buffer.from(
+        JSON.stringify({ at: new Date(decoded.at).toISOString(), id: decoded.id }),
+        "utf8",
+      ).toString("base64url");
+      const repeated = await value.service.listInternalSessions(value.bootstrap.userId, value.message.id, {
+        limit: 1,
+        cursor: truncatedCursor,
+      });
+      expect(repeated.items[0]?.id).toBe(firstRow.items[0]?.id);
+
+      // The same walk at a page size that ends on a microsecond boundary.
+      const twoAtATime = await walk(
+        async (cursor) =>
+          value.service.listInternalSessions(value.bootstrap.userId, value.message.id, {
+            limit: 2,
+            ...(cursor ? { cursor } : {}),
+          }),
+        (session) => session.id,
+        2,
+      );
+      expect(twoAtATime).toEqual(instants.map((instant) => instant.id));
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("pages Turns across a shared millisecond without repeating or skipping", async () => {
+    const value = await fixture();
+    try {
+      const instants = [
+        { at: "2026-08-27T01:04:00.000200Z", suffix: "a" },
+        { at: "2026-08-27T01:04:00.000456Z", suffix: "b" },
+        { at: "2026-08-27T01:04:00.000456Z", suffix: "c" },
+        { at: "2026-08-27T01:04:00.000700Z", suffix: "d" },
+      ];
+      const created: { at: string; deliveryId: string; id: string }[] = [];
+      for (const instant of instants) {
+        const [message] = await value.database
+          .insert(imMessages)
+          .values({
+            imBindingId: value.binding.id,
+            providerEventId: `event-micro-${instant.suffix}`,
+            channelId: "oc_debug",
+            externalMessageId: `om_micro_${instant.suffix}`,
+            providerRevisionKey: "1",
+            operation: "created",
+            direction: "inbound",
+            authorKind: "human",
+            authorExternalId: "ou_debug",
+            authorDisplayName: "Mia",
+            content: { version: 1, fallbackText: `Micro ${instant.suffix}`, blocks: [], truncated: false },
+            providerContext: { provider: "feishu", chatType: "p2p" },
+            occurredAt: new Date("2026-08-27T01:04:00.000Z"),
+          })
+          .returning();
+        if (!message) throw new Error("The microsecond message fixture was not created");
+        await setInstant(value, "im_messages", message.id, "occurred_at", instant.at);
+        const [delivery] = await value.database
+          .insert(imMessageDeliveries)
+          .values({
+            messageId: message.id,
+            sessionId: value.session.id,
+            attention: "direct",
+            state: "pending",
+            placementGeneration: 1,
+            expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+          })
+          .returning();
+        if (!delivery) throw new Error("The microsecond delivery fixture was not created");
+        created.push({ at: instant.at, deliveryId: delivery.id, id: message.id });
+      }
+
+      const ids = await walk(
+        async (cursor) =>
+          value.service.listTurns(value.bootstrap.userId, value.message.id, {
+            limit: 1,
+            ...(cursor ? { cursor } : {}),
+          }),
+        (turn) => turn.deliveryId,
+      );
+      // Newest first, and an equal instant is broken by the delivery id — never by insertion order.
+      const expected = [...created]
+        .sort((left, right) =>
+          left.at === right.at ? right.deliveryId.localeCompare(left.deliveryId) : right.at.localeCompare(left.at),
+        )
+        .map((row) => row.deliveryId);
+      // The fixture's own Turn is older than every microsecond message.
+      expect(ids).toEqual(expected.concat(value.deliveryId));
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("pages collaboration messages across a shared millisecond without repeating or skipping", async () => {
+    const value = await fixture();
+    try {
+      const instants = [
+        { at: "2026-08-27T01:05:00.000150Z", hash: "1" },
+        { at: "2026-08-27T01:05:00.000456Z", hash: "2" },
+        { at: "2026-08-27T01:05:00.000456Z", hash: "3" },
+        { at: "2026-08-27T01:05:00.000850Z", hash: "4" },
+      ];
+      const created: { at: string; id: string }[] = [];
+      for (const instant of instants) {
+        const id = crypto.randomUUID();
+        await value.database.insert(sessionMessages).values({
+          id,
+          sourceSessionId: value.session.id,
+          targetSessionId: value.session.id,
+          content: `Micro collaboration ${instant.hash}`,
+          contentHash: instant.hash.repeat(64),
+          lastOutcome: "accepted",
+          attemptCount: 1,
+          lastAttemptAt: new Date("2026-08-27T01:05:00.000Z"),
+          createdAt: new Date("2026-08-27T01:05:00.000Z"),
+          updatedAt: new Date("2026-08-27T01:05:00.000Z"),
+        });
+        await setInstant(value, "session_messages", id, "created_at", instant.at);
+        created.push({ at: instant.at, id });
+      }
+
+      const ids = await walk(
+        async (cursor) =>
+          value.service.listCollaborationMessages(value.bootstrap.userId, value.message.id, {
+            limit: 1,
+            ...(cursor ? { cursor } : {}),
+          }),
+        (message) => message.id,
+      );
+      // Oldest first, and an equal instant is broken by the message id.
+      expect(ids).toEqual(
+        [...created]
+          .sort((left, right) =>
+            left.at === right.at ? left.id.localeCompare(right.id) : left.at.localeCompare(right.at),
+          )
+          .map((row) => row.id),
+      );
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("pages the Task list across a shared millisecond without repeating or skipping", async () => {
+    const value = await fixture();
+    try {
+      // Each Task is its own private chat whose only message carries the activity instant.
+      const instants = [
+        { at: "2026-08-27T01:06:00.000120Z", channel: "oc_micro_1" },
+        { at: "2026-08-27T01:06:00.000456Z", channel: "oc_micro_2" },
+        { at: "2026-08-27T01:06:00.000456Z", channel: "oc_micro_3" },
+        { at: "2026-08-27T01:06:00.000880Z", channel: "oc_micro_4" },
+      ];
+      const created: { at: string; id: string }[] = [];
+      for (const instant of instants) {
+        const [chat] = await value.database
+          .insert(sessions)
+          .values({
+            imBindingId: value.binding.id,
+            channelId: instant.channel,
+            conversationKind: "dm",
+            kind: "channel",
+            createdAt: new Date("2026-08-27T01:06:00.000Z"),
+          })
+          .returning();
+        if (!chat) throw new Error("The microsecond chat fixture was not created");
+        const [message] = await value.database
+          .insert(imMessages)
+          .values({
+            imBindingId: value.binding.id,
+            providerEventId: `event-list-${instant.channel}`,
+            channelId: instant.channel,
+            externalMessageId: `om_${instant.channel}`,
+            providerRevisionKey: "1",
+            operation: "created",
+            direction: "inbound",
+            authorKind: "human",
+            authorExternalId: "ou_debug",
+            authorDisplayName: "Mia",
+            content: { version: 1, fallbackText: `Task ${instant.channel}`, blocks: [], truncated: false },
+            providerContext: { provider: "feishu", chatType: "p2p" },
+            occurredAt: new Date("2026-08-27T01:06:00.000Z"),
+          })
+          .returning();
+        if (!message) throw new Error("The microsecond list message fixture was not created");
+        await setInstant(value, "im_messages", message.id, "occurred_at", instant.at);
+        await value.database.insert(imMessageDeliveries).values({
+          messageId: message.id,
+          sessionId: chat.id,
+          attention: "direct",
+          state: "pending",
+          placementGeneration: 1,
+          expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+        });
+        created.push({ at: instant.at, id: chat.id });
+      }
+
+      const ids = await walk(
+        async (cursor) => {
+          const page = await value.service.list(value.bootstrap.userId, {
+            limit: 1,
+            ...(cursor ? { cursor } : {}),
+          });
+          return { items: page.tasks, nextCursor: page.nextCursor };
+        },
+        (task) => task.id,
+      );
+      // Newest first, with the equal-time pair ordered by the Task id descending.
+      expect(ids.slice(0, 4)).toEqual(
+        [...created]
+          .sort((left, right) =>
+            left.at === right.at ? right.id.localeCompare(left.id) : right.at.localeCompare(left.at),
+          )
+          .map((row) => row.id),
+      );
+      // The fixture's own Task is older still.
+      expect(ids.at(-1)).toBe(value.session.id);
+    } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+describe("Session footer links and Task detail", () => {
+  /** A group channel Session in the fixture's binding, and one inbound message delivered to it. */
+  async function groupSession(value: Awaited<ReturnType<typeof fixture>>) {
+    const [channel] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId: "oc_group",
+        conversationKind: "channel",
+        kind: "channel",
+        createdAt: new Date("2026-08-27T02:00:00.000Z"),
+      })
+      .returning();
+    if (!channel) throw new Error("Group channel Session fixture was not created");
+    return channel;
+  }
+
+  async function deliver(
+    value: Awaited<ReturnType<typeof fixture>>,
+    sessionId: string,
+    externalMessageId: string,
+    attention: "direct" | "ambient",
+    occurredAt: Date,
+  ) {
+    const [message] = await value.database
+      .insert(imMessages)
+      .values({
+        imBindingId: value.binding.id,
+        providerEventId: `event-${externalMessageId}`,
+        channelId: "oc_group",
+        externalMessageId,
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_group",
+        authorDisplayName: "Mia",
+        content: { version: 1, fallbackText: `Message ${externalMessageId}`, blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt,
+      })
+      .returning();
+    if (!message) throw new Error("Group message fixture was not created");
+    await value.database.insert(imMessageDeliveries).values({
+      messageId: message.id,
+      sessionId,
+      attention,
+      state: "accepted",
+      placementGeneration: 1,
+      inputHash: "c".repeat(64),
+      turnId: `turn-${externalMessageId}`,
+      reportOwnerInstanceId: crypto.randomUUID(),
+      acceptedAt: occurredAt,
+      expiresAt: new Date(occurredAt.getTime() + 86_400_000),
+    });
+    return message;
+  }
+
+  async function internalSession(
+    value: Awaited<ReturnType<typeof fixture>>,
+    createdBySessionId: string,
+    channelId: string,
+  ) {
+    const [internal] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId,
+        conversationKind: "channel",
+        kind: "internal",
+        createdBySessionId,
+        createdAt: new Date("2026-08-27T03:00:00.000Z"),
+      })
+      .returning();
+    if (!internal) throw new Error("Internal Session fixture was not created");
+    return internal;
+  }
+
+  it("keeps a plain footer exactly when Task detail answers 404, and links when it resolves", async () => {
+    const value = await fixture();
+    try {
+      // An ambient-only group channel Session: stored and owned, but not a Task.
+      const channel = await groupSession(value);
+      await deliver(value, channel.id, "om_overheard", "ambient", new Date("2026-08-27T02:01:00.000Z"));
+      const internal = await internalSession(value, channel.id, "oc_group");
+      const nested = await internalSession(value, internal.id, "oc_group");
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({ kind: "plain" });
+        await expect(value.service.detail(value.bootstrap.userId, sessionId)).rejects.toMatchObject({
+          code: "RESOURCE_NOT_FOUND",
+          statusCode: 404,
+        });
+      }
+      // List eligibility is unchanged: the ambient-only Session is not listed.
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
+      expect(listed.tasks.map((task) => task.id)).toEqual([value.session.id]);
+
+      // An eligible private-chat Task and an internal Session rooted at it link, and the link resolves.
+      const dmInternal = await internalSession(value, value.session.id, "oc_debug");
+      for (const sessionId of [value.session.id, dmInternal.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(value.session.id);
+      }
+
+      // Once somebody addresses the Agent in the group, the same Sessions qualify and link together.
+      await deliver(value, channel.id, "om_addressed", "direct", new Date("2026-08-27T02:05:00.000Z"));
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(channel.id);
+      }
     } finally {
       await value.sql.end();
     }

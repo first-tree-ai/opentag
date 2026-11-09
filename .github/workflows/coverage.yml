@@ -201,10 +201,15 @@ jobs:
 
           const coverage = JSON.parse(readFileSync(`${repositoryRoot}/coverage/unit/coverage-final.json`, "utf8"));
           const result = evaluatePatchCoverage({ coverage, diff, repositoryRoot, threshold });
-          if (result.total === 0) {
+          // An unmeasured changed file fails first, before the no-executable-lines pass can read as green.
+          if (result.unmeasured.length > 0) {
+            console.log(`Changed files the coverage run did not measure:\n${result.unmeasured.join("\n")}`);
+          }
+          if (result.total === 0 && result.passed) {
             console.log("Patch coverage: no executable changed lines were found (explicit pass).");
             process.exit(0);
           }
+          if (result.total === 0) process.exit(1);
           console.log(
             `Patch coverage: ${result.covered}/${result.total} lines (${result.percent.toFixed(2)}%), threshold ${threshold.toFixed(2)}%.`,
           );

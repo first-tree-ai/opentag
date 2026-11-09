@@ -49,6 +49,7 @@ export function RuntimeModelField({
   cloudModelState,
   modelDraft,
   id,
+  note,
   onSelectionChange,
   onModelChange,
 }: {
@@ -56,6 +57,8 @@ export function RuntimeModelField({
   cloudModelState: CloudModelState | undefined;
   modelDraft: string;
   id: string;
+  /** One short line by the field, only when the computer's model list can't be read. */
+  note?: string;
   onSelectionChange(value: string): void;
   onModelChange(value: string): void;
 }) {
@@ -64,7 +67,7 @@ export function RuntimeModelField({
     return value === CUSTOM ? m.agent_settings_model_custom() : value;
   };
   return (
-    <SettingsRow label={m.agent_settings_model()}>
+    <SettingsRow description={note} label={m.agent_settings_model()}>
       <div className="grid w-full gap-2 @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
         <Select
           aria-label={m.agent_settings_model()}

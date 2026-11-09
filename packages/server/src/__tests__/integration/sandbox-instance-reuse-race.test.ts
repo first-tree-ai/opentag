@@ -23,7 +23,10 @@ import { ComputerService } from "../../services/computers/index.js";
 import { SandboxService } from "../../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
-import { SandboxRunnerService } from "../../services/sandboxes/sandbox-runner-service.js";
+import {
+  SandboxRunnerService,
+  WORKSPACE_RECOVERY_RETRY_DELAY_MS,
+} from "../../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { FakeCloudRunAdmin } from "../support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "../support/fake-workspace-store.js";
@@ -598,5 +601,358 @@ describe("E7 gated interleavings on PostgreSQL", () => {
 
     controller.abort();
     await expect(acceptance).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
+function retryService(client: DatabaseClient, stack: RaceStack, now: () => Date) {
+  return new SandboxRunnerService(client, {
+    cloudAdmin: stack.fake as never,
+    tokens: new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: 600 }),
+    hub: stack.hub,
+    environment: "staging",
+    backendUrl: "wss://unit.example/api/v1/sandbox-runners/ws",
+    expectedRunnerVersion: RUNNER_VERSION,
+    acceptanceTimeoutMs: 10_000,
+    createConvergeTimeoutMs: 30_000,
+    idleTimeoutMs: 120_000,
+    sleep: () => Promise.resolve(),
+    workspace: { store: stack.store },
+    now,
+  });
+}
+
+async function failedIdleClaim(stack: RaceStack, now: Date, lifecycle: "ready" | "releasing" = "ready") {
+  const accountId = await account();
+  const ready = await readySandbox(stack, accountId, `retry-${randomUUID()}`);
+  const previous = new Date(now.getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS);
+  await database
+    .update(sandboxes)
+    .set({
+      lifecycle,
+      idleReclaimAt: previous,
+      lastActivityAt: previous,
+      lastErrorCode: "workspace_save_failed",
+      lastErrorAt: previous,
+      updatedAt: previous,
+    })
+    .where(eq(sandboxes.id, ready.row.id));
+  return ready;
+}
+
+describe("automatic reclamation retry reservations on PostgreSQL", () => {
+  it.each(["ready", "releasing"] as const)(
+    "grants one %s retry to concurrent workers and preserves cooldown across restart",
+    async (lifecycle) => {
+      const stack = makeStack();
+      let now = new Date(Date.now() + 1_000);
+      const ready = await failedIdleClaim(stack, now, lifecycle);
+      const baseline = stack.store.stored(ready.row.storageUri);
+      const clients = [0, 1].map(() => createDatabaseClient(testDatabase.databaseUrl, { max: 1 }));
+      const locked = deferred();
+      const unlock = deferred();
+      const sealing = deferred();
+      const finishSeal = deferred();
+      const seal = vi.spyOn(stack.hub, "requestWorkspaceSeal").mockImplementation(async () => {
+        sealing.resolve();
+        await finishSeal.promise;
+        return { type: "workspace:seal:result", requestId: randomUUID(), ok: false, code: "workspace_save_failed" };
+      });
+      const reads = vi.spyOn(stack.fake, "getInstance");
+      const block = database.transaction(async (transaction) => {
+        await transaction.select().from(sandboxes).where(eq(sandboxes.id, ready.row.id)).for("update");
+        locked.resolve();
+        await unlock.promise;
+      });
+      const attempts: Promise<unknown>[] = [];
+      try {
+        const pids = await Promise.all(
+          clients.map(async (client) => {
+            const [row] = await client.sql`select pg_backend_pid() as pid`;
+            return row?.pid as number;
+          }),
+        );
+        await locked.promise;
+        const outcomes: { released: number; failed: number }[] = [];
+        for (const client of clients) {
+          const worker = retryService(client.database, stack, () => now);
+          attempts.push(
+            worker.reclaimIdleSandboxes().then((result) => {
+              outcomes.push(result);
+            }),
+          );
+        }
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql`
+          select pid from pg_stat_activity
+          where pid in (${pids[0] as number}, ${pids[1] as number}) and wait_event_type = 'Lock'
+        `;
+            expect(waiting).toHaveLength(2);
+          },
+          { timeout: 2_000 },
+        );
+        unlock.resolve();
+        await block;
+        await sealing.promise;
+        await vi.waitFor(() => expect(outcomes).toHaveLength(1));
+        expect(reads).toHaveBeenCalledOnce();
+        expect(seal).toHaveBeenCalledOnce();
+        expect((await rowFor(ready.row.id)).updatedAt).toEqual(now);
+        finishSeal.resolve();
+        await Promise.all(attempts);
+        expect(outcomes.reduce((sum, result) => sum + result.failed, 0)).toBe(1);
+        expect(stack.store.stored(ready.row.storageUri)).toEqual(baseline);
+        const fresh = retryService((clients[0] as (typeof clients)[number]).database, stack, () => now);
+        await fresh.reclaimIdleSandboxes();
+        expect(seal).toHaveBeenCalledOnce();
+        now = new Date(now.getTime() + WORKSPACE_RECOVERY_RETRY_DELAY_MS);
+        await fresh.reclaimIdleSandboxes();
+        expect(seal).toHaveBeenCalledTimes(2);
+        expect((await rowFor(ready.row.id)).currentResourceUid).toBe(ready.row.currentResourceUid);
+      } finally {
+        unlock.resolve();
+        finishSeal.resolve();
+        await Promise.allSettled([block, ...attempts]);
+        await Promise.all(clients.map((client) => client.sql.end()));
+      }
+    },
+  );
+
+  it.each(["stop", "generation", "uid"])(
+    "leaves newer %s state untouched when a reserved seal fails late",
+    async (change) => {
+      const stack = makeStack();
+      const now = new Date(Date.now() + 1_000);
+      const ready = await failedIdleClaim(stack, now);
+      const baseline = stack.store.stored(ready.row.storageUri);
+      const entered = deferred();
+      const finish = deferred();
+      vi.spyOn(stack.hub, "requestWorkspaceSeal").mockImplementation(async () => {
+        entered.resolve();
+        await finish.promise;
+        return { type: "workspace:seal:result", requestId: randomUUID(), ok: false, code: "workspace_save_failed" };
+      });
+      const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+      const worker = retryService(client.database, stack, () => now);
+      const attempt = worker.reclaimIdleSandboxes();
+      try {
+        await entered.promise;
+        const replacement: Partial<typeof sandboxes.$inferInsert> = {
+          updatedAt: new Date(now.getTime() + 1),
+          lastErrorCode: "workspace_discard_requested",
+          idleReclaimAt: null,
+          ...(change === "stop" ? { lifecycle: "releasing" as const } : {}),
+          ...(change === "generation" ? { environmentGeneration: ready.row.environmentGeneration + 1 } : {}),
+          ...(change === "uid" ? { currentResourceUid: "replacement-uid" } : {}),
+        };
+        await database.update(sandboxes).set(replacement).where(eq(sandboxes.id, ready.row.id));
+        finish.resolve();
+        await attempt;
+        expect(await rowFor(ready.row.id)).toMatchObject(replacement);
+        expect(stack.store.stored(ready.row.storageUri)).toEqual(baseline);
+        expect(stack.fake.liveInstanceCount()).toBe(1);
+      } finally {
+        finish.resolve();
+        await attempt;
+        await client.sql.end();
+      }
+    },
+  );
+});
+
+describe("automatic deletion confirmation on PostgreSQL", () => {
+  function pendingDeletes(stack: RaceStack) {
+    const remove = stack.fake.deleteInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+      const result = await remove(name, uid);
+      const instance = stack.fake.instances.get(name);
+      if (instance && !result.alreadyGone) instance.gone = false;
+      return result;
+    });
+  }
+
+  it("reserves one confirmation across concurrent Server connections", async () => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    await retryService(database, stack, () => now).reclaimIdleSandboxes();
+    expect((await rowFor(ready.row.id)).lastErrorCode).toBe("cloud_delete_pending");
+    now = new Date(now.getTime() + 15_000);
+    const clients = [0, 1].map(() => createDatabaseClient(testDatabase.databaseUrl, { max: 1 }));
+    const locked = deferred();
+    const unlock = deferred();
+    const reading = deferred();
+    const finish = deferred();
+    const reads = vi.spyOn(stack.fake, "getInstance").mockImplementation(async () => {
+      reading.resolve();
+      await finish.promise;
+      return undefined;
+    });
+    const block = database.transaction(async (transaction) => {
+      await transaction.select().from(sandboxes).where(eq(sandboxes.id, ready.row.id)).for("update");
+      locked.resolve();
+      await unlock.promise;
+    });
+    const attempts: Promise<unknown>[] = [];
+    const outcomes: { released: number }[] = [];
+    try {
+      const pids = await Promise.all(
+        clients.map(async (client) => {
+          const [row] = await client.sql`select pg_backend_pid() as pid`;
+          return row?.pid as number;
+        }),
+      );
+      await locked.promise;
+      for (const client of clients) {
+        attempts.push(
+          retryService(client.database, stack, () => now)
+            .reclaimIdleSandboxes()
+            .then((result) => {
+              outcomes.push(result);
+            }),
+        );
+      }
+      await vi.waitFor(async () => {
+        const waiting =
+          await sql`select pid from pg_stat_activity where pid in (${pids[0] as number}, ${pids[1] as number}) and wait_event_type = 'Lock'`;
+        expect(waiting).toHaveLength(2);
+      });
+      unlock.resolve();
+      await reading.promise;
+      await vi.waitFor(() => expect(outcomes).toHaveLength(1));
+      expect(reads).toHaveBeenCalledOnce();
+      finish.resolve();
+      await Promise.all(attempts);
+      expect(outcomes.reduce((sum, result) => sum + result.released, 0)).toBe(1);
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+      expect((await rowFor(ready.row.id)).lifecycle).toBe("unallocated");
+    } finally {
+      unlock.resolve();
+      finish.resolve();
+      await Promise.allSettled([block, ...attempts]);
+      await Promise.all(clients.map((client) => client.sql.end()));
+    }
+  });
+
+  it.each(["stop", "generation", "uid"])("does not stamp a late pending marker onto newer %s state", async (change) => {
+    const stack = makeStack();
+    const now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    const entered = deferred();
+    const finish = deferred();
+    const get = stack.fake.getInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "getInstance").mockImplementation(async (name) => {
+      const view = await get(name);
+      if (stack.fake.deleteCalls.length > 0) {
+        entered.resolve();
+        await finish.promise;
+      }
+      return view;
+    });
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const attempt = retryService(client.database, stack, () => now).reclaimIdleSandboxes();
+    try {
+      await entered.promise;
+      const replacement = {
+        updatedAt: new Date(now.getTime() + 1),
+        lastErrorCode: "workspace_discard_requested",
+        idleReclaimAt: null,
+        ...(change === "generation" ? { environmentGeneration: ready.row.environmentGeneration + 1 } : {}),
+        ...(change === "uid" ? { currentResourceUid: "replacement-uid" } : {}),
+      };
+      await database.update(sandboxes).set(replacement).where(eq(sandboxes.id, ready.row.id));
+      finish.resolve();
+      expect(await attempt).toMatchObject({ released: 0, failed: 0 });
+      expect(await rowFor(ready.row.id)).toMatchObject(replacement);
+      expect(stack.fake.deleteCalls).toEqual([
+        { name: ready.row.currentResourceName, uid: ready.row.currentResourceUid },
+      ]);
+    } finally {
+      finish.resolve();
+      await attempt;
+      await client.sql.end();
+    }
+  });
+
+  it("does not clear a newer allocation after a late 404 confirmation", async () => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    await retryService(database, stack, () => now).reclaimIdleSandboxes();
+    now = new Date(now.getTime() + 15_000);
+    const entered = deferred();
+    const finish = deferred();
+    vi.spyOn(stack.fake, "getInstance").mockImplementationOnce(async () => {
+      entered.resolve();
+      await finish.promise;
+      return undefined;
+    });
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const attempt = retryService(client.database, stack, () => now).reclaimIdleSandboxes();
+    try {
+      await entered.promise;
+      const replacement = {
+        lifecycle: "preparing" as const,
+        environmentGeneration: ready.row.environmentGeneration + 1,
+        currentResourceName: "replacement-name",
+        currentResourceUid: "replacement-uid",
+        lastErrorCode: "cloud_create_pending",
+        lastActivityAt: now,
+        idleReclaimAt: null,
+        updatedAt: now,
+      };
+      await database.update(sandboxes).set(replacement).where(eq(sandboxes.id, ready.row.id));
+      finish.resolve();
+      expect(await attempt).toMatchObject({ released: 0, failed: 0 });
+      expect(await rowFor(ready.row.id)).toMatchObject(replacement);
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+    } finally {
+      finish.resolve();
+      await attempt;
+      await client.sql.end();
+    }
+  });
+
+  it.each([false, true])("recovers a pending-marker write with an unknown result (committed=%s)", async (committed) => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const update = client.database.update.bind(client.database);
+    vi.spyOn(client.database, "update").mockImplementation(((table) => {
+      const builder = update(table);
+      const set = builder.set.bind(builder);
+      builder.set = ((values) => {
+        if ((values as { lastErrorCode?: unknown }).lastErrorCode !== "cloud_delete_pending") return set(values);
+        return {
+          where: async (condition: Parameters<ReturnType<typeof set>["where"]>[0]) => {
+            if (committed) await set(values).where(condition);
+            throw new Error("Pending marker acknowledgement lost");
+          },
+        };
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof client.database.update);
+    try {
+      expect((await retryService(client.database, stack, () => now).reclaimIdleSandboxes()).failed).toBe(1);
+      expect(await rowFor(ready.row.id)).toMatchObject({
+        lifecycle: "releasing",
+        currentResourceUid: ready.row.currentResourceUid,
+        lastErrorCode: committed ? "cloud_delete_pending" : "workspace_save_failed",
+      });
+      const instance = stack.fake.instances.get(ready.row.currentResourceName as string);
+      if (!instance) throw new Error("Missing fixture Instance");
+      instance.gone = true;
+      now = new Date(now.getTime() + (committed ? 15_000 : WORKSPACE_RECOVERY_RETRY_DELAY_MS));
+      expect((await retryService(database, stack, () => now).reclaimIdleSandboxes()).released).toBe(1);
+      expect((await rowFor(ready.row.id)).lifecycle).toBe("unallocated");
+      expect(stack.store.stored(ready.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    } finally {
+      await client.sql.end();
+    }
   });
 });

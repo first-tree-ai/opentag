@@ -175,6 +175,7 @@ export const mcpServerAuthorizations = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     kind: mcpAuthKind("kind").notNull(),
+    credentialSourceId: uuid("credential_source_id"),
     status: mcpAuthorizationStatus("status").notNull().default("pending"),
     /** Access + refresh sealed in one bound envelope; null while `kind='none'`. */
     ciphertext: text("ciphertext"),
@@ -254,6 +255,22 @@ export const mcpServerAuthorizations = pgTable(
     /** The OAuth callback locates its row by state, so a live state is unique across the table. */
     uniqueIndex("mcp_server_authorizations_state_unique").on(table.state).where(sql`${table.state} is not null`),
     index("mcp_server_authorizations_agent_idx").on(table.agentId),
+    index("mcp_server_authorizations_credential_source_idx")
+      .on(table.credentialSourceId)
+      .where(sql`${table.credentialSourceId} is not null`),
+    check(
+      "mcp_server_authorizations_source_shape",
+      sql`${table.credentialSourceId} is null or (
+        ${table.credentialSourceId} <> ${table.id}
+        and ${table.kind} = 'oauth' and ${table.status} = 'active'
+        and ${table.ciphertext} is null and ${table.keyId} is null
+        and ${table.accessTokenExpiresAt} is null
+        and ${table.refreshClaimId} is null and ${table.refreshClaimedAt} is null
+        and ${table.state} is null and ${table.stateExpiresAt} is null
+        and ${table.pkceCiphertext} is null and ${table.loginSessionHash} is null
+        and ${table.flowAuthorizationServer} is null and ${table.flowOauthResource} is null
+      )`,
+    ),
     index("mcp_server_authorizations_refresh_due_idx")
       .on(table.accessTokenExpiresAt)
       .where(sql`${table.kind} = 'oauth' and ${table.status} = 'active'`),
@@ -292,7 +309,7 @@ export const mcpServerAuthorizations = pgTable(
     check(
       "mcp_server_authorizations_oauth_shape",
       sql`${table.kind} <> 'oauth' or (
-        ${table.status} not in ('active', 'expired') or ${table.ciphertext} is not null
+        ${table.status} not in ('active', 'expired') or ${table.ciphertext} is not null or ${table.credentialSourceId} is not null
       )`,
     ),
     check(

@@ -1,6 +1,7 @@
 import type {
   AccountComputerSummary,
   AgentDetail,
+  AgentStatusSnapshot,
   ImBindingHandoffStatus,
   ImBindingSummary,
 } from "@opentag/shared/browser";
@@ -134,6 +135,61 @@ function CaptureClient() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Agent views read from the cache", () => {
+  it("uses one negotiated batch status read without per-Agent evidence fanout", async () => {
+    const computers = vi.spyOn(browserApi, "computers");
+    const binding = vi.spyOn(browserApi, "imBinding");
+    const handoff = vi.spyOn(browserApi, "imBindingHandoff");
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentListItem], statusVersion: 1 });
+    const status: AgentStatusSnapshot = {
+      agentId,
+      agentRevision: 1,
+      agentUpdatedAt: agentDetail.updatedAt,
+      agentStatus: "active",
+      observedAt: new Date().toISOString(),
+      checkedAt: new Date().toISOString(),
+      state: "ready",
+      reason: null,
+      runtimeProvider: "codex",
+      runtimeStatus: "ready",
+      messaging: null,
+      computer: {
+        computerId,
+        displayName: "Ada's Mac",
+        platform: "darwin",
+        kind: "local",
+        online: true,
+        lastSeenAt: null,
+      },
+    };
+    const read = vi.spyOn(browserApi, "agentStatuses").mockResolvedValue({ statuses: [status] });
+    await renderInRouter(<ListProbe />);
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("ready"));
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith([agentId]);
+    expect(computers).not.toHaveBeenCalled();
+    expect(binding).not.toHaveBeenCalled();
+    expect(handoff).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused status batch refused while the next status request is pending", async () => {
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentListItem], statusVersion: 1 });
+    vi.spyOn(browserApi, "agentStatuses")
+      .mockRejectedValueOnce(new ApiError(403, "Status refused"))
+      .mockReturnValue(neverSettles());
+    await renderInRouter(
+      <>
+        <CaptureClient />
+        <ListProbe />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("error"));
+    await act(async () => {
+      void capturedClient.refetchQueries({ queryKey: ["agent-statuses", accountId] });
+    });
+    expect(screen.getByTestId("kind").textContent).toBe("error");
+    expect(screen.getByTestId("value").textContent).toBe("Status refused");
+  });
+
   it.each([401, 403, 404, 410])(
     "keeps a terminal Agent response ahead of route state while the next read is in flight (%d)",
     async (status) => {

@@ -104,7 +104,8 @@ const CATALOG = vi.hoisted(() => ({
   ],
 }));
 
-vi.mock("@opentag/mcp-presets", () => ({
+vi.mock("@opentag/mcp-presets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opentag/mcp-presets")>()),
   MCP_CATALOG_CATEGORIES: CATALOG.categories,
   MCP_CATALOG_ENTRIES: CATALOG.entries,
 }));
@@ -381,7 +382,7 @@ describe("Discover installation and recovery", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
     add("Alpha");
-    await card("Alpha").findByText("Authorization failed");
+    await card("Alpha").findByText("Authorization didn't finish. Try again.");
     fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
     await waitFor(() => expect(calls.oauth).toHaveBeenCalledTimes(2));
     expect(calls.attach).toHaveBeenCalledTimes(1);
@@ -406,7 +407,7 @@ describe("Discover installation and recovery", () => {
     fireEvent.click(button);
     await waitFor(() => expect(calls.create).toHaveBeenCalledTimes(1));
     finish(serverFor("alpha"));
-    await card("Alpha").findByText("Authorization failed");
+    await card("Alpha").findByText("Authorization didn't finish. Try again.");
     expect(calls.attach).toHaveBeenCalledTimes(1);
   });
   it("saves the key in the same installation and returns to the directory", async () => {
@@ -440,7 +441,7 @@ describe("Discover installation and recovery", () => {
     fireEvent.change(input, { target: { value: "draft-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const failure = await within(screen.getByRole("dialog")).findByRole("alert");
-    expect(failure.textContent).toBe("Couldn't load tools");
+    expect(failure.textContent).toBe("Couldn't load tools. Try again.");
     expect(input.getAttribute("aria-describedby")).toBe(failure.id);
     expect(input.value).toBe("draft-key");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -494,7 +495,7 @@ describe("Discover installation and recovery", () => {
       probeError: `${MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE}: timed out`,
     });
     await discover({ mounted: [binding] });
-    expect(screen.getByText("Request timed out")).toBeTruthy();
+    expect(screen.getByText("The service timed out. Try again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry: Beta" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Added" })).toBeNull();
   });
@@ -511,7 +512,7 @@ describe("Discover authorization lifecycle", () => {
       wrap(<McpPage agentId={AGENT_ID} />);
       await openDiscover();
       fireEvent.click(card("Alpha").getByRole("button", { name: "Authorize: Alpha" }));
-      await card("Alpha").findByText("Cannot reach service");
+      await card("Alpha").findByText("Can't reach the service. Try again later.");
       fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
       fireEvent.click(await screen.findByRole("button", { name: "Alpha" }));
       browser.open.mockReturnValue(null);
@@ -658,7 +659,7 @@ describe("Discover authorization lifecycle", () => {
       await card("Alpha").findByRole("img", { name: "Added" });
       fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
       const row = within(document.getElementById(`mcp-server-${ALPHA_ID}`) as HTMLElement);
-      expect(row.queryByText("Authorization failed")).toBeNull();
+      expect(row.queryByText("Authorization didn't finish. Try again.")).toBeNull();
     } finally {
       browser.restore();
     }
@@ -696,7 +697,7 @@ describe("Discover authorization lifecycle", () => {
       expect(screen.queryByText(/cancelled|canceled/i)).toBeNull();
       calls.oauth.mockRejectedValue(new ApiError(503, "private detail"));
       add("Alpha");
-      await card("Alpha").findByText("Authorization failed");
+      await card("Alpha").findByText("Authorization didn't finish. Try again.");
       expect(calls.create).toHaveBeenCalledTimes(2);
     } finally {
       browser.restore();
@@ -736,7 +737,7 @@ describe("Discover authorization lifecycle", () => {
       add("Alpha");
       await card("Alpha").findByText("Authorizing…");
       await complete(browser, calls.mounts);
-      await card("Alpha").findByText("Couldn't load tools");
+      await card("Alpha").findByText("Couldn't load tools. Try again.");
       fireEvent.click(card("Alpha").getByRole("button", { name: "Retry: Alpha" }));
       await card("Alpha").findByRole("img", { name: "Added" });
       expect(calls.oauth).toHaveBeenCalledTimes(1);

@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { PROVIDER_CLI_REASON_V2_HEADER, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import {
+  PROVIDER_CLI_REASON_V2_HEADER,
+  PROVIDER_READINESS_V1_HEADER,
+  SESSION_STOP_ANSWER_BUDGET_MS,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
+import { OPEN_TAG_API_REQUEST_TIMEOUT_MS } from "../request-policy.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -80,6 +85,70 @@ const agentUsage = {
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
+
+describe("OpenTagApi Computer connect exchange compatibility", () => {
+  const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+  const computerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
+  const request = {
+    code: "1234567890abcdef",
+    installationId,
+    displayName: "Laptop",
+    platform: "linux" as const,
+    arch: "x64",
+    clientVersion: "0.0.1",
+    machineToken: "otmc_current",
+    reportOutcome: true as const,
+  };
+  function validationError(code: string) {
+    return jsonResponse(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "validation",
+          message: "The request payload is invalid",
+          requestId: "request-1",
+          issues: [{ path: [], code, message: "rejected" }],
+        },
+      },
+      400,
+    );
+  }
+
+  it("retries once without the optional fields when an older Server rejects them as unknown", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(validationError("unrecognized_keys"))
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, machineToken: "otmc_new" }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.exchangeComputerConnectCode(request)).resolves.toEqual({
+      computerId,
+      installationId,
+      machineToken: "otmc_new",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(retried).not.toHaveProperty("machineToken");
+    expect(retried).not.toHaveProperty("reportOutcome");
+    expect(retried.installationId).toBe(installationId);
+  });
+
+  it("does not retry other validation failures and accepts a token-less already-connected answer", async () => {
+    const rejecting = vi.fn<typeof fetch>().mockResolvedValueOnce(validationError("too_small"));
+    await expect(
+      new OpenTagApi("https://opentag.example", rejecting).exchangeComputerConnectCode(request),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(rejecting).toHaveBeenCalledTimes(1);
+
+    const connected = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, outcome: "already_connected" }));
+    await expect(
+      new OpenTagApi("https://opentag.example", connected).exchangeComputerConnectCode(request),
+    ).resolves.toEqual({ computerId, installationId, outcome: "already_connected" });
+  });
+});
 
 describe("OpenTagApi Agent methods", () => {
   it("covers computer, session, optional binding, and resource API surfaces", async () => {
@@ -163,6 +232,34 @@ describe("OpenTagApi Agent methods", () => {
       items: [],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it("gets a stop's answer from the Server before its own request times out", () => {
+    expect(SESSION_STOP_ANSWER_BUDGET_MS).toBeLessThan(OPEN_TAG_API_REQUEST_TIMEOUT_MS);
+  });
+
+  it("stops a Session with the proof and asks for stopped Sessions only when told to", async () => {
+    const sessionId = randomUUID();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      Response.json(
+        String(input).includes("/stop") ? { status: "stopped", sessionId, execution: "stopped" } : { items: [] },
+      ),
+    );
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.stopSession("proof", { targetSessionId: sessionId })).resolves.toMatchObject({
+      status: "stopped",
+    });
+    await api.stopSession("proof", { targetSessionId: sessionId }, { executionId: "execution-1" });
+    await api.listInternalSessions("proof", { recursive: false, limit: 5 });
+    await api.listInternalSessions("proof", { recursive: false, limit: 5, includeStopped: true });
+
+    const [first, second, plain, stopped] = fetchImpl.mock.calls;
+    expect(String(first?.[0])).toContain("/runtime/sessions/stop");
+    expect(first?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ targetSessionId: sessionId }) });
+    expect(new Headers(second?.[1]?.headers).get("x-opentag-execution-id")).toBe("execution-1");
+    expect(String(plain?.[0])).not.toContain("includeStopped");
+    expect(String(stopped?.[0])).toContain("includeStopped=true");
   });
 
   it("maps network, optional-response, no-content, and fallback HTTP failures", async () => {
@@ -505,5 +602,141 @@ describe("OpenTagApi Agent methods", () => {
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("x-opentag-provider-readiness-v2")).toBe("2");
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
     expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
+  });
+
+  describe("runtime agent self mcp operations", () => {
+    it("creates, sets credentials, starts oauth, gets status and deletes mcp server definition", async () => {
+      const serverPayload = {
+        mcpServerId: "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        name: "test-mcp",
+        description: null,
+        discoveredDescription: null,
+        enabled: true,
+        effective: {
+          url: "https://mcp.example.com",
+          authHeader: "Authorization",
+          authScheme: "Bearer",
+          extraHeaders: {},
+        },
+        overridden: { url: false, authHeader: false, authScheme: false, extraHeaders: false },
+        authorization: null,
+        snapshot: null,
+        createdAt: "2026-09-22T00:00:00.000Z",
+        updatedAt: "2026-09-22T00:00:00.000Z",
+      };
+
+      const oauthStartPayload = {
+        authorizationUrl: "https://example.com/oauth/handoff?token=xyz",
+        expiresAt: "2026-10-27T10:00:00.000Z",
+      };
+
+      const oauthStatusPayload = {
+        mcpServerId: "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        name: "test-mcp",
+        enabled: true,
+        authKind: "oauth",
+        authStatus: "pending",
+        probeState: null,
+        probeError: null,
+        failureCode: null,
+        toolsCount: null,
+        toolsTruncated: false,
+        tools: null,
+      };
+
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(serverPayload, 201))
+        .mockResolvedValueOnce(jsonResponse(serverPayload))
+        .mockResolvedValueOnce(jsonResponse(oauthStartPayload))
+        .mockResolvedValueOnce(jsonResponse(oauthStatusPayload))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+      const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+      const created = await api.createRuntimeAgentMcpServer("proof-token", {
+        name: "test-mcp",
+        url: "https://mcp.example.com",
+        defaultAuthKind: "bearer",
+      });
+      expect(created.name).toBe("test-mcp");
+
+      const authed = await api.setRuntimeAgentMcpBearerKey(
+        "proof-token",
+        "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b",
+        "secret-key",
+      );
+      expect(authed.mcpServerId).toBe("0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b");
+
+      const started = await api.startRuntimeAgentMcpOAuth("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b", {
+        scopes: ["read"],
+      });
+      expect(started.authorizationUrl).toContain("token=xyz");
+
+      const status = await api.getRuntimeAgentMcpOAuthStatus("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b");
+      expect(status.authStatus).toBe("pending");
+
+      await expect(
+        api.deleteRuntimeAgentMcpServerDefinition("proof-token", "0f4c8f7e-4a4d-4b7b-9a51-7c8f1d2e3a4b"),
+      ).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe("OpenTagApi against a newer Server", () => {
+  /*
+   * A CLI keeps running until its next connect while the Server upgrades for everyone, so a newer
+   * Server's additive fields must not break its reads. Known fields stay validated.
+   */
+  const future = {
+    serverOnlyFlag: true,
+    agents: [
+      {
+        ...agentListItem,
+        activity: { state: "working", startedAt: agent.updatedAt, futureActivityHint: 2 },
+        computer: { ...agentListItem.computer, region: "value-must-not-be-logged" },
+        brandNewField: { nested: [1, 2] },
+      },
+    ],
+  };
+
+  it("reads the Agent list and detail when the Server adds fields at any depth", async () => {
+    const debug = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith("/api/v1/agents")
+        ? jsonResponse(future)
+        : jsonResponse({ ...future.agents[0], usage: undefined, newDetailField: "x" }),
+    );
+    const api = new OpenTagApi("https://opentag.example", { fetchImpl, logger: { debug } });
+
+    const listed = await api.listAgents("access");
+    expect(listed).toEqual({
+      agents: [{ ...agentListItem, activity: { state: "working", startedAt: agent.updatedAt } }],
+    });
+    const detail = await api.getAgent("access", agentId);
+    expect(detail.activity).toEqual({ state: "working", startedAt: agent.updatedAt });
+    expect(detail).not.toHaveProperty("newDetailField");
+
+    // Version skew is visible in debug logs by key path only, never by value.
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/api/v1/agents",
+        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.futureActivityHint"]),
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("value-must-not-be-logged");
+  });
+
+  it("still rejects a newer Server's response that changes a known field", async () => {
+    const changed = { agents: [{ ...future.agents[0], status: "archived" }] };
+    const api = new OpenTagApi("https://opentag.example", {
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(changed)),
+      logger: { debug: vi.fn() },
+    });
+    await expect(api.listAgents("access")).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      phase: "serialization",
+    });
   });
 });

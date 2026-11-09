@@ -51,6 +51,15 @@ describe("Slack operation registry boundaries", () => {
 });
 
 describe("Feishu operation registry boundaries", () => {
+  it("keeps validation limited to bot identity rather than optional CLI metadata", () => {
+    expect(
+      FEISHU_OPERATIONS.filter((operation) => operation.validationAllowed).map((operation) => operation.operationId),
+    ).toEqual(["feishu.bot.info"]);
+    expect(
+      feishu.match("GET", "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92")?.operation,
+    ).toMatchObject({ operationId: "feishu.metadata.api_definition", kind: "read" });
+  });
+
   it("registers the tenant token, identity, IM, and document domains", () => {
     expect(feishu.match("POST", "/open-apis/auth/v3/tenant_access_token/internal")).toBeDefined();
     expect(feishu.match("GET", "/open-apis/bot/v3/info")?.operation.validationAllowed).toBe(true);
@@ -93,6 +102,24 @@ describe("Feishu tenant token exchange and cache", () => {
     expect(calls[0]).toBe("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal");
     expect(token.token).toBe("t-real");
     expect(token.expiresAt).toBe(1_000 + 7_200_000);
+  });
+
+  it.each([
+    ["an invalid secret on HTTP 200", 200, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
+    ["an invalid secret on HTTP 400", 400, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
+    ["the rate limit code on HTTP 200", 200, { code: 99991400 }, { kind: "rate_limited" }],
+    ["the rate limit code on HTTP 400", 400, { code: 99991400 }, { kind: "rate_limited" }],
+    ["HTTP 429", 429, {}, { kind: "rate_limited" }],
+    ["a 5xx with a code", 503, { code: 10014 }, { kind: "upstream" }],
+  ])("classifies %s", async (_name, status, body, expected) => {
+    await expect(
+      exchangeFeishuTenantToken({
+        origin: "https://open.feishu.cn",
+        appId: "a",
+        appSecret: "b",
+        fetchImpl: (async () => new Response(JSON.stringify(body), { status })) as typeof fetch,
+      }),
+    ).rejects.toMatchObject(expected);
   });
 
   it("rejects non-zero platform codes and non-OK upstream responses", async () => {

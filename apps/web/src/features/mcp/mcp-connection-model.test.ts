@@ -5,7 +5,8 @@ import { installableEntries } from "./catalog/mcp-catalog-model.js";
 import { connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
 import { authorization, detail, entry } from "./mcp-test-fixtures.js";
 
-vi.mock("@opentag/mcp-presets", () => ({
+vi.mock("@opentag/mcp-presets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opentag/mcp-presets")>()),
   MCP_CATALOG_ENTRIES: [
     {
       id: "service",
@@ -83,6 +84,7 @@ describe("Preset method configuration", () => {
       keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
     } as McpInstallableCatalogEntry;
     expect(presetAuthKinds(preset)).toEqual(["oauth", "bearer"]);
+    expect(presetAuthKinds({ ...preset, defaultAuthKind: "bearer" })).toEqual(["bearer"]);
     expect(presetAuthConfig(preset, "bearer")).toEqual({
       url: "https://service.test/key",
       authHeader: "x-api-key",

@@ -395,7 +395,7 @@ describe("MCP credential save serialization", () => {
 });
 
 it.each(["same Agent", "same definition"] as const)(
-  "keeps child FK shares compatible for an attach on the %s",
+  "admits an attach on the %s after the Account credential transaction commits",
   async (scope) => {
     const observer = createDatabaseClient(testDatabase.databaseUrl);
     const writer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
@@ -436,13 +436,14 @@ it.each(["same Agent", "same definition"] as const)(
       ]);
       pending.push(save);
       await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
-      await attacher.sql`set statement_timeout = '2s'`;
-      await expect(servers.attachServer(f.accountId, agentId, serverId, true)).resolves.toMatchObject({
-        mcpServerId: serverId,
-        enabled: true,
-      });
+      const [backend] = await attacher.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      if (!backend) throw new Error("Missing attach backend");
+      const attached = Promise.allSettled([servers.attachServer(f.accountId, agentId, serverId, true)]);
+      pending.push(attached);
+      await waitForLock(observer.sql, backend.pid);
       resume.resolve();
       expectCommitted(await save);
+      expect(await attached).toMatchObject([{ status: "fulfilled", value: { mcpServerId: serverId, enabled: true } }]);
       expect(await observer.database.select().from(agentMcpServers)).toHaveLength(2);
     } finally {
       resume.resolve();
@@ -532,7 +533,7 @@ it.each(["success", "failure", "throw"] as const)(
 );
 
 it.each(["same Agent", "same definition"] as const)(
-  "saves another mount on the %s while the first credential write is paused",
+  "admits another mount on the %s after the Account credential transaction commits",
   async (scope) => {
     const observer = createDatabaseClient(testDatabase.databaseUrl);
     const writer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
@@ -574,15 +575,19 @@ it.each(["same Agent", "same definition"] as const)(
       ]);
       running.push(first);
       await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
-      await other.sql`set statement_timeout = '2s'`;
-      await expect(
+      const [backend] = await other.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      if (!backend) throw new Error("Missing second credential backend");
+      const second = Promise.allSettled([
         authorizations(other.database).setBearerOrNone(f.accountId, agentId, serverId, {
           kind: "bearer",
           bearerKey: "second-synthetic-key",
         }),
-      ).resolves.toBeUndefined();
+      ]);
+      running.push(second);
+      await waitForLock(observer.sql, backend.pid);
       resume.resolve();
       expectCommitted(await first);
+      expectCommitted(await second);
       expect(await authorizations(observer.database).buildHeaders(f.accountId, agentId, serverId)).toMatchObject({
         authorization: "Bearer second-synthetic-key",
       });

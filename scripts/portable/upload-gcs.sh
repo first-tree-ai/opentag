@@ -188,8 +188,30 @@ run_gcloud() {
   CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False gcloud "${args[@]}"
 }
 
+# curl --retry does not retry CURLE_RECV_ERROR (exit 56, e.g. a CDN edge connection reset) without
+# --retry-all-errors, which older system curl builds do not support. Retry full downloads in an outer
+# loop and discard any partial output file between attempts.
 download_url() {
-  curl -fsSL --retry 3 --retry-delay 2 "$1" -o "$2"
+  local url="$1"
+  local dest="$2"
+  local attempt=1
+  local max_attempts=4
+  local retry_delay="${OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY:-2}"
+  local rc=0
+  while :; do
+    rm -f "$dest"
+    if curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"; then
+      return 0
+    else
+      rc=$?
+    fi
+    rm -f "$dest"
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      return "$rc"
+    fi
+    attempt=$((attempt + 1))
+    sleep "$retry_delay"
+  done
 }
 
 asset_checksums() {

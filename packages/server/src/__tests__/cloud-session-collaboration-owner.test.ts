@@ -31,6 +31,7 @@ import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { AuthorizedSessionMessageRoute } from "../services/sessions/session-service.js";
+import { pausedTableRead } from "./support/paused-binding-read.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
@@ -160,6 +161,7 @@ interface Stack {
 function makeStack(
   fixture: CloudFixture,
   overrides: {
+    database?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["database"];
     allocation?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["allocation"];
     durableWork?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["durableWork"];
     ensureTimeoutMs?: number;
@@ -167,6 +169,7 @@ function makeStack(
     noteActivity?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["noteActivity"];
     recordMessageOutcome?: (input: { messageId: string }) => Promise<boolean>;
     requestTimeoutMs?: number;
+    runOutcomeRetryMs?: number;
     logger?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["logger"];
   } = {},
 ): Stack {
@@ -197,7 +200,7 @@ function makeStack(
   const owner = new CloudSessionCollaborationOwner({
     ...(overrides.allocation ? { allocation: overrides.allocation } : {}),
     assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
-    database: db.database,
+    database: overrides.database ?? db.database,
     ...(overrides.ensureTimeoutMs !== undefined ? { ensureTimeoutMs: overrides.ensureTimeoutMs } : {}),
     ...(overrides.durableWork !== undefined
       ? { durableWork: overrides.durableWork }
@@ -210,6 +213,7 @@ function makeStack(
     ...(overrides.logger !== undefined ? { logger: overrides.logger } : {}),
     proofs,
     ...(overrides.requestTimeoutMs !== undefined ? { requestTimeoutMs: overrides.requestTimeoutMs } : {}),
+    ...(overrides.runOutcomeRetryMs !== undefined ? { runOutcomeRetryMs: overrides.runOutcomeRetryMs } : {}),
     sessions: { recordMessageOutcome },
     work,
   });
@@ -332,6 +336,14 @@ const allowAdmission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceived
   result: Promise.resolve(await operation(() => undefined)),
 });
 
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function deliveryInput(
   fixture: CloudFixture,
   messageId: string,
@@ -366,6 +378,7 @@ async function scheduledDeliveryInput(fixture: CloudFixture, messageId: string):
       imBindingId: fixture.bindingId,
       targetSessionId: fixture.sessionId,
       targetSessionKind: "channel",
+      targetCreatorSessionId: null,
       targetInstallationId: randomUUID(),
       targetComputerId: fixture.computerId,
       targetComputerKind: "cloud",
@@ -889,6 +902,331 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(attach.sent.filter((frame) => frame.type === "session:message:settled:ack")).toHaveLength(2);
   });
 
+  it("notifies the creator once per non-completed settlement under the reporting connection", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const notifyRunOutcome = vi.fn(async () => "notified" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+
+    await stack.owner.handleSettled(attach.connection, { ...settleFrame(messageId, "failed"), reason: "turn_timeout" });
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    expect(notifyRunOutcome).toHaveBeenCalledWith({
+      childSessionId: fixture.sessionId,
+      messageId,
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      source: {
+        computerId: attach.connection.computerId,
+        connectionInstanceId: attach.connection.connectionId,
+        placementGeneration: 1,
+      },
+    });
+    // An identical replay re-asks the idempotent notifier (repairing a lost notice); the
+    // deterministic notice id keeps it to one message.
+    await stack.owner.handleSettled(attach.connection, { ...settleFrame(messageId, "failed"), reason: "turn_timeout" });
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(2));
+    await stack.owner.close();
+  });
+
+  it("withholds the settlement ack until the notice is final and replays it after an ACK-window detach", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const warn = vi.fn();
+    const stack = makeStack(fixture, { logger: { error: vi.fn(), warn } });
+    const answers: ((status: "notified" | "ignored" | "retry") => void)[] = [];
+    const notifyRunOutcome = vi.fn(
+      () =>
+        new Promise<"notified" | "ignored" | "retry">((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const first = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const settled = { ...settleFrame(messageId, "failed"), reason: "turn_timeout" } as const;
+    const acks = (sent: RunnerServerFrame[]) => sent.filter((frame) => frame.type === "session:message:settled:ack");
+
+    // The terminal fact commits and the frame loop is released, but the ack is withheld while
+    // the notice is in flight; a replay on the same connection does not start a second notice.
+    await stack.owner.handleSettled(first.connection, settled);
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    // The durable row is terminal, but the withheld ack leaves the Runner journal as the only
+    // replay owner: the exact allocation stays an idle/borrow reclaim barrier.
+    const barrier = () =>
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId });
+    await expect(barrier()).resolves.toBe(true);
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    // Custody is allocation-scoped: it never pins a replacement allocation of the same Sandbox.
+    await expect(
+      stack.owner.hasUnsettledSessionWork({
+        allocation: { ...fixture.scope, environmentGeneration: fixture.scope.environmentGeneration + 1 },
+        sessionId: fixture.sessionId,
+      }),
+    ).resolves.toBe(false);
+    await stack.owner.handleSettled(first.connection, settled);
+    expect(notifyRunOutcome).toHaveBeenCalledOnce();
+    expect(acks(first.sent)).toEqual([]);
+
+    // The Runner detaches before the notice is recorded: its source authority is now stale, so
+    // the notifier's final answer is `ignored`. No ack reaches the Runner, which keeps the
+    // journaled settlement.
+    stack.fence.detach(first.connection.connectionId);
+    stack.hub.detach(fixture.sandboxId, first.socket);
+    await stack.owner.detachConnection(first.connection.connectionId);
+    answers[0]?.("ignored");
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "CLOUD_SESSION_RUN_OUTCOME_ACK_WITHHELD", messageId }),
+        expect.any(String),
+      ),
+    );
+    expect(acks(first.sent)).toEqual([]);
+    // The notice is final but its ack never reached a Runner: the journal on this allocation still
+    // owns replay, so the barrier survives the detach.
+    await expect(barrier()).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+
+    // The replay on the next connection notifies again under that connection and only then acks.
+    const second = await attachRunner(stack, fixture);
+    await stack.owner.handleSettled(second.connection, settled);
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(2));
+    await expect(barrier()).resolves.toBe(true);
+    expect(notifyRunOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId,
+        source: expect.objectContaining({ connectionInstanceId: second.connection.connectionId }),
+      }),
+    );
+    expect(acks(second.sent)).toEqual([]);
+    answers[1]?.("notified");
+    await vi.waitFor(() =>
+      expect(acks(second.sent)).toEqual([
+        expect.objectContaining({ messageId, status: "already_recorded", turnId: `turn-${messageId}` }),
+      ]),
+    );
+    // The replayed settlement's final ack was handed to the exact Runner: custody is released.
+    await expect(barrier()).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await stack.owner.close();
+  });
+
+  it("never holds a reclaim barrier for a settlement that cannot commit", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const notifyRunOutcome = vi.fn(async () => "notified" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "failed"));
+    await vi.waitFor(() =>
+      expect(attach.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:settled:ack" })),
+    );
+    // A conflicting outcome for the terminal record is neither acked nor left as custody.
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "unknown"));
+    expect(attach.sent.filter((frame) => frame.type === "session:message:settled:ack")).toHaveLength(1);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await expect(
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId }),
+    ).resolves.toBe(false);
+    await stack.owner.close();
+  });
+
+  it("keeps a replay's settlement custody when a stale CAS loser that held first releases its own", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    // Pause the FIRST terminal replacement (the old connection's CAS) until the replay committed.
+    const oldCasReached = deferred();
+    const oldCasRelease = deferred();
+    let replacements = 0;
+    class PausingStore extends PostgresRuntimeDurableWorkStore {
+      override async replaceSessionMessageRecord(
+        ...args: Parameters<PostgresRuntimeDurableWorkStore["replaceSessionMessageRecord"]>
+      ) {
+        replacements += 1;
+        if (replacements === 1) {
+          oldCasReached.resolve();
+          await oldCasRelease.promise;
+        }
+        return super.replaceSessionMessageRecord(...args);
+      }
+    }
+    const stack = makeStack(fixture, { durableWork: new PausingStore(db.database) });
+    const answers: ((status: "notified" | "ignored" | "retry") => void)[] = [];
+    const notifyRunOutcome = vi.fn(
+      () =>
+        new Promise<"notified" | "ignored" | "retry">((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const old = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const settled = { ...settleFrame(messageId, "failed"), reason: "turn_timeout" } as const;
+    const acks = (sent: RunnerServerFrame[]) => sent.filter((frame) => frame.type === "session:message:settled:ack");
+    const barrier = () =>
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId });
+
+    // The old connection passes its exact-connection check, holds custody first, then stalls in its CAS.
+    const oldHandler = stack.owner.handleSettled(old.connection, settled);
+    await oldCasReached.promise;
+    // A normal reconnect: the replacement connection replays the same settlement, holds its own
+    // custody, wins the CAS, and waits on the creator notice before acking.
+    stack.fence.detach(old.connection.connectionId);
+    stack.hub.detach(fixture.sandboxId, old.socket);
+    const replay = await attachRunner(stack, fixture);
+    await stack.owner.handleSettled(replay.connection, settled);
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    // The old handler's stale CAS now loses; it releases only its own hold.
+    oldCasRelease.resolve();
+    await oldHandler;
+    expect(acks(old.sent)).toEqual([]);
+    expect(acks(replay.sent)).toEqual([]);
+    await expect(barrier()).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+
+    // Only the replay's exact ack hand-off ends the custody.
+    answers[0]?.("notified");
+    await vi.waitFor(() =>
+      expect(acks(replay.sent)).toEqual([expect.objectContaining({ messageId, status: "recorded" })]),
+    );
+    await expect(barrier()).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await stack.owner.close();
+  });
+
+  it("re-checks settlement custody after the barrier's awaited reads", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const pause = pausedTableRead(db.database, sessionPlacements);
+    const stack = makeStack(fixture, { database: pause.database });
+    const answers: ((status: "notified" | "ignored" | "retry") => void)[] = [];
+    const notifyRunOutcome = vi.fn(
+      () =>
+        new Promise<"notified" | "ignored" | "retry">((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    try {
+      // The barrier passes its early custody check, then pauses on the placement read.
+      pause.arm();
+      const barrier = stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId });
+      await pause.captured;
+      // Meanwhile the Runner's failed settlement acquires custody and terminalizes the durable row,
+      // and its creator notice is held, so no ack has been sent.
+      await stack.owner.handleSettled(attach.connection, {
+        ...settleFrame(messageId, "failed"),
+        reason: "turn_timeout",
+      });
+      await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+      expect(attach.sent.some((frame) => frame.type === "session:message:settled:ack")).toBe(false);
+      // The resumed barrier reads no non-terminal row, but the custody re-check keeps it closed.
+      pause.release();
+      await expect(barrier).resolves.toBe(true);
+      // Allocation fencing is preserved: a replacement allocation is never pinned.
+      await expect(
+        stack.owner.hasUnsettledSessionWork({
+          allocation: { ...fixture.scope, environmentGeneration: fixture.scope.environmentGeneration + 1 },
+          sessionId: fixture.sessionId,
+        }),
+      ).resolves.toBe(false);
+      answers[0]?.("notified");
+      await vi.waitFor(() =>
+        expect(attach.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:settled:ack" })),
+      );
+      await expect(
+        stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId }),
+      ).resolves.toBe(false);
+    } finally {
+      pause.release();
+      for (const answer of answers) answer("notified");
+      await stack.owner.close();
+    }
+  });
+
+  it("withholds the ack when the Server stops before the notice is final", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture, { runOutcomeRetryMs: 60_000 });
+    const notifyRunOutcome = vi.fn(async () => "retry" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "unknown"));
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    await stack.owner.close();
+    expect(attach.sent.some((frame) => frame.type === "session:message:settled:ack")).toBe(false);
+  });
+
+  it("never notifies for a completed settlement and bounds retries for a busy creator", async () => {
+    const fixture = await seedCloudSession();
+    const completedId = randomUUID();
+    const failedId = randomUUID();
+    await insertMessage(completedId, fixture);
+    await insertMessage(failedId, fixture);
+    const warn = vi.fn();
+    const stack = makeStack(fixture, { logger: { error: vi.fn(), warn }, runOutcomeRetryMs: 1 });
+    const notifyRunOutcome = vi.fn(async () => "retry" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    for (const id of [completedId, failedId]) {
+      await expect(stack.owner.deliver(await deliveryInput(fixture, id), allowAdmission)).resolves.toEqual({
+        status: "accepted",
+      });
+    }
+
+    await stack.owner.handleSettled(attach.connection, settleFrame(completedId));
+    await stack.owner.handleSettled(attach.connection, settleFrame(failedId, "cancelled"));
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(3));
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: failedId, outcome: "cancelled", reason: "turn_cancelled" }),
+    );
+    expect(notifyRunOutcome).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: completedId }));
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: failedId }),
+        expect.any(String),
+      ),
+    );
+    // The bounded attempts are spent, so the settlement is finally acked and retired, which also
+    // releases the allocation's reclaim barrier.
+    await vi.waitFor(() =>
+      expect(attach.sent).toContainEqual(
+        expect.objectContaining({ messageId: failedId, type: "session:message:settled:ack" }),
+      ),
+    );
+    await expect(
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId }),
+    ).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await stack.owner.close();
+  });
+
   it("retires accepted work only when its allocation is authoritatively gone", async () => {
     const fixture = await seedCloudSession();
     const messageId = randomUUID();
@@ -1104,6 +1442,268 @@ describe("CloudSessionCollaborationOwner", () => {
     stack.work.clearSandbox(fixture.sandboxId);
     expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+  });
+
+  it("skips an already cancelled delivery before model or allocation work", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const allowed = vi.spyOn(stack.grants, "isModelAllowed");
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(stack.owner.deliver(input, allowAdmission, controller.signal)).resolves.toEqual({
+        status: "unreachable",
+        code: "delivery_timeout",
+      });
+      expect(allowed).not.toHaveBeenCalled();
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+      expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    } finally {
+      stack.grants.close();
+    }
+  });
+
+  it("skips a cancelled FIFO entry while preserving live order and post-send custody", async () => {
+    const fixture = await seedCloudSession();
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of ids) await insertMessage(id, fixture);
+    const [first, cancelled, last] = await Promise.all(ids.map((id) => deliveryInput(fixture, id)));
+    if (!first || !cancelled || !last) throw new Error("missing delivery fixture");
+    const custody = deferred();
+    const committing = deferred();
+    const stack = makeStack(fixture, {
+      recordMessageOutcome: async ({ messageId }) => {
+        if (messageId === first.message.id) {
+          committing.resolve();
+          await custody.promise;
+        }
+        await db.database
+          .update(sessionMessages)
+          .set({ lastOutcome: "accepted" })
+          .where(eq(sessionMessages.id, messageId));
+        return true;
+      },
+    });
+    const runOrder: string[] = [];
+    await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        runOrder.push(frame.message.messageId);
+        answeringOnFrame(stack, fixture)(frame);
+      },
+    });
+    const sentController = new AbortController();
+    const queuedController = new AbortController();
+    const delivering = [
+      stack.owner.deliver(first, allowAdmission, sentController.signal),
+      stack.owner.deliver(cancelled, allowAdmission, queuedController.signal),
+      stack.owner.deliver(last, allowAdmission),
+    ];
+    try {
+      await committing.promise;
+      sentController.abort();
+      queuedController.abort();
+      expect(runOrder).toEqual([first.message.id]);
+      custody.resolve();
+      await expect(Promise.all(delivering)).resolves.toEqual([
+        { status: "accepted" },
+        { status: "unreachable", code: "delivery_timeout" },
+        { status: "accepted" },
+      ]);
+      expect(runOrder).toEqual([first.message.id, last.message.id]);
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+      const records = await db.database.select().from(runtimeDurableWork);
+      expect(records).toHaveLength(2);
+      expect(records.some((row) => row.recordKey.endsWith(cancelled.message.id))).toBe(false);
+    } finally {
+      custody.resolve();
+      await Promise.allSettled(delivering);
+      stack.grants.close();
+    }
+  });
+
+  it("stops after a cancelled Sandbox ensure without reloading or allocating", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    await db.database.delete(sandboxes).where(eq(sandboxes.id, fixture.sandboxId));
+    const sandbox = deferred<{ accountId: string; sandboxId: string }>();
+    const ensureSandbox = vi.fn(() => sandbox.promise);
+    const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+    const stack = makeStack(fixture, { allocation: { ensureSandbox, ensureEnvironmentAllocated } });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureSandbox).toHaveBeenCalledOnce());
+      controller.abort();
+      const selects = vi.spyOn(db.database, "select");
+      sandbox.resolve({ accountId: fixture.accountId, sandboxId: fixture.sandboxId });
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(ensureEnvironmentAllocated).not.toHaveBeenCalled();
+    } finally {
+      sandbox.resolve({ accountId: fixture.accountId, sandboxId: fixture.sandboxId });
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it("does not start a retirement write after its read is cancelled", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const store = new PostgresRuntimeDurableWorkStore(db.database);
+    const paused = pausedTableRead(db.database, runtimeDurableWork);
+    const stack = makeStack(fixture, { durableWork: store, database: paused.database });
+    await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await db.database.update(sandboxes).set({ environmentGeneration: 2 }).where(eq(sandboxes.id, fixture.sandboxId));
+    paused.arm();
+    const write = vi.spyOn(store, "replaceSessionMessageRecord");
+    const controller = new AbortController();
+    const reconciling = stack.owner.reconcileSessionWork(fixture.sessionId, controller.signal);
+    try {
+      await paused.captured;
+      controller.abort();
+      paused.release();
+      await expect(reconciling).rejects.toBe(controller.signal.reason);
+      expect(write).not.toHaveBeenCalled();
+      const [record] = await db.database.select().from(runtimeDurableWork);
+      expect(record?.status).toBe("accepted");
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    } finally {
+      paused.release();
+      await Promise.allSettled([reconciling]);
+      stack.grants.close();
+    }
+  });
+
+  it("does not start database preparation when a cancelled model lookup completes", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const model = deferred<boolean>();
+    const allowed = vi.spyOn(stack.grants, "isModelAllowed").mockReturnValue(model.promise);
+    const selects = vi.spyOn(db.database, "select");
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(allowed).toHaveBeenCalledOnce());
+      controller.abort();
+      model.resolve(true);
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(selects).not.toHaveBeenCalled();
+    } finally {
+      model.resolve(true);
+      await delivering;
+      selects.mockRestore();
+      stack.grants.close();
+    }
+  });
+
+  it("stops readiness polling on cancellation and never sends when the Runner arrives later", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 1_000,
+    });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      controller.abort();
+      await expect(
+        Promise.race([delivering, new Promise((resolve) => setTimeout(() => resolve("late"), 300))]),
+      ).resolves.toEqual({
+        status: "unreachable",
+        code: "delivery_timeout",
+      });
+      const selects = vi.spyOn(db.database, "select");
+      const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(sent).toHaveLength(0);
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+    } finally {
+      controller.abort();
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it.each([false, true])("does not resume late allocation preparation, parent cancelled=%s", async (cancelled) => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const allocation = deferred<"pending">();
+    const ensureEnvironmentAllocated = vi.fn(() => allocation.promise);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 50,
+    });
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(input, allowAdmission, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      if (cancelled) controller.abort();
+      await expect(delivering).resolves.toEqual({
+        status: "unreachable",
+        code: cancelled ? "delivery_timeout" : "runtime_not_ready",
+      });
+      const selects = vi.spyOn(db.database, "select");
+      allocation.resolve("pending");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(selects).not.toHaveBeenCalled();
+      selects.mockRestore();
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+    } finally {
+      allocation.resolve("pending");
+      await delivering;
+      stack.grants.close();
+    }
+  });
+
+  it("rechecks cancellation after final admission waits and before the first frame", async () => {
+    const fixture = await seedCloudSession();
+    const input = await deliveryInput(fixture, randomUUID());
+    const stack = makeStack(fixture);
+    const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    const admission = deferred();
+    const entered = deferred();
+    const controller = new AbortController();
+    const delivering = stack.owner.deliver(
+      input,
+      async (operation) => {
+        entered.resolve();
+        await admission.promise;
+        return { admitted: true, result: operation(() => undefined) };
+      },
+      controller.signal,
+    );
+    try {
+      await entered.promise;
+      controller.abort();
+      admission.resolve();
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(sent).toHaveLength(0);
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+      expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    } finally {
+      admission.resolve();
+      await delivering;
+      stack.grants.close();
+    }
   });
 
   it("cleans the serialized tail after an unexpected dispatch failure", async () => {
@@ -1696,6 +2296,32 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(message?.lastOutcome).toBe("unknown");
   });
 
+  it("reports a Runner client_busy refusal as unreachable with that cause", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        void stack.owner.handleReceived(connection, {
+          messageId: frame.message.messageId,
+          reason: "client_busy",
+          requestId: frame.requestId,
+          status: "rejected",
+          type: "session:message:received",
+        });
+      },
+    });
+
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "client_busy",
+    });
+  });
+
   it("correlates a same-input retry by its new request identity and settles against it", async () => {
     const fixture = await seedCloudSession();
     const messageId = randomUUID();
@@ -2169,4 +2795,109 @@ describe("CloudSessionCollaborationOwner", () => {
     });
     expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
   });
+});
+
+it.each(["before-timeout", "after-timeout"] as const)("drains original allocation work %s", async (phase) => {
+  const fixture = await seedCloudSession();
+  const messageId = randomUUID();
+  await insertMessage(messageId, fixture);
+  await db.database
+    .update(sandboxes)
+    .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+    .where(eq(sandboxes.id, fixture.sandboxId));
+  const entered = deferred();
+  const release = deferred();
+  const allocate = vi.fn(async () => {
+    entered.resolve();
+    await release.promise;
+    await db.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    return "pending" as const;
+  });
+  const stack = makeStack(fixture, {
+    ensureTimeoutMs: phase === "after-timeout" ? 30 : 1000,
+    allocation: {
+      ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      ensureEnvironmentAllocated: allocate,
+    },
+  });
+  const input = await deliveryInput(fixture, messageId);
+  const running = stack.owner.deliver(input, allowAdmission);
+  let closed = false;
+  try {
+    await entered.promise;
+    if (phase === "after-timeout") expect(await running).toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    expect(stack.owner.close()).toBe(stack.owner.close());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closed).toBe(false);
+    await expect(stack.owner.deliver(input, allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    release.resolve();
+    await closing;
+    await running;
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    expect(stack.owner.activeDispatchTargets).toBe(0);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([running, stack.owner.close()]);
+    stack.grants.close();
+  }
+});
+
+it.each(["reconcile", "cancel"] as const)("joins admitted %s SQL during close", async (kind) => {
+  const fixture = await seedCloudSession();
+  const pause = pausedTableRead(db.database, sessionPlacements);
+  const stack = makeStack(fixture, { database: pause.database });
+  pause.arm();
+  const running = (
+    kind === "reconcile"
+      ? stack.owner.reconcileSessionWork(fixture.sessionId)
+      : stack.owner.cancelSessionMessages(fixture.sessionId)
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closed = false;
+  try {
+    await pause.captured;
+    const closing = stack.owner.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(await stack.owner.reconcileSessionWork(fixture.sessionId)).toBe(0);
+    expect(await stack.owner.cancelSessionMessages(fixture.sessionId)).toEqual([]);
+    pause.release();
+    await closing;
+    await running;
+  } finally {
+    pause.release();
+    await Promise.allSettled([running, stack.owner.close()]);
+    stack.grants.close();
+  }
+});
+
+it("closes a pending receipt without sending late verification", async () => {
+  const fixture = await seedCloudSession();
+  const messageId = randomUUID();
+  await insertMessage(messageId, fixture);
+  const stack = makeStack(fixture);
+  const { sent } = await attachRunner(stack, fixture);
+  const running = stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission);
+  try {
+    await vi.waitFor(() => expect(sent.some((frame) => frame.type === "session:message:run")).toBe(true));
+    await stack.owner.close();
+    await expect(running).resolves.toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    expect(stack.owner.activeDispatchTargets).toBe(0);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    expect(sent.filter((frame) => frame.type === "session:message:verified")).toHaveLength(0);
+  } finally {
+    await stack.owner.close();
+    stack.grants.close();
+  }
 });

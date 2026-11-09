@@ -156,6 +156,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Overview" }).getAttribute("href")).toBe(`/agents/${agentId}`);
     expect(screen.getByRole("link", { name: "All Agents" }).getAttribute("href")).toBe("/agents");
     expect(agentReads).toBe(0);
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
@@ -239,7 +240,7 @@ describe("OpenTag Web App Shell", () => {
     const setupLink = within(status).getByRole("link", { name: /Continue setup$/ });
     expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
     fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
     fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
@@ -254,11 +255,14 @@ describe("OpenTag Web App Shell", () => {
     const computerLabel = await screen.findByText("Computer");
     const computerLink = computerLabel.closest("a");
     expect(screen.getByText("Ada's Mac · macOS · Offline")).toBeTruthy();
-    expect(screen.getByText("Review")).toBeTruthy();
     if (!(computerLink instanceof HTMLAnchorElement)) {
       throw new Error("Expected the Connected computer recovery row to be a link");
     }
     expect(computerLink.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
+    // The row also carries the one fix the Agent list and home give, as its own named link.
+    const fix = screen.getByRole("link", { name: "Computer: Restore connection" });
+    expect(fix.textContent).toBe("Restore connection");
+    expect(fix.getAttribute("href")).toContain("/agents/computers?computerId=");
   });
 
   it("edits the Agent display name without exposing its permanent handle", async () => {
@@ -285,13 +289,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    const unavailableDeleteButton = await screen.findByRole("button", { name: "Delete Agent" });
-    expect(unavailableDeleteButton.hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByRole("button", { name: "Delete Agent" })).hasAttribute("disabled")).toBe(false);
     expect(
-      screen.getByText("Permanently deletes this Agent and disconnects its messaging app. Pause the Agent first."),
+      screen.getByText("Permanently deletes this Agent and disconnects its messaging app. This cannot be undone."),
     ).toBeTruthy();
-    fireEvent.click(unavailableDeleteButton);
-    expect(screen.queryByRole("dialog", { name: "Delete Reviewer?" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Pause Agent" }));
     expect(await screen.findByRole("button", { name: "Resume Agent" })).toBeTruthy();

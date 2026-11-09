@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { GitHubExecutionCredentials } from "../services/github-proxy/execution-credentials.js";
 
-const input = { accountId: "account", connectionId: "connection", authorizationRevision: "github:7" };
+const input = { agentId: "agent", accountId: "account", connectionId: "connection", authorizationRevision: "github:7" };
 const parent = {
   accessToken: "gho_parent",
   githubUserId: "42",

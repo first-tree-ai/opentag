@@ -1,15 +1,17 @@
 export * from "./account.js";
+export * from "./account-api-endpoints.js";
 export * from "./agent.js";
 export * from "./agent-permissions.js";
 export * from "./agent-setup.js";
+export * from "./agent-status.js";
 export * from "./auth.js";
 export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
+export type { AccountSandboxRunnerStopRequest } from "./cloud-runner.js";
 export {
   type AccountSandboxRunnerStatusResponse,
   AccountSandboxRunnerStatusResponseSchema,
-  type AccountSandboxRunnerStopRequest,
-} from "./cloud-runner.js";
+} from "./cloud-runner-status.js";
 export * from "./computer.js";
 export * from "./context-tree.js";
 export * from "./context-tree-operation.js";
@@ -20,9 +22,24 @@ export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";
+export type { ImFeedbackActionKind, ImFeedbackActionRequest, ImFeedbackView } from "./im-feedback.js";
+export {
+  ImFeedbackActionKindSchema,
+  ImFeedbackActionRequestSchema,
+  type ImFeedbackList,
+  ImFeedbackListSchema,
+  ImFeedbackStateSchema,
+  ImFeedbackViewSchema,
+} from "./im-feedback.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./public-catalog.js";
+export {
+  MAX_UNKNOWN_KEY_PASSES,
+  type ParseIssue,
+  parseResponseIgnoringUnknownKeys,
+  type ResponseParseResult,
+} from "./response-parse.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";

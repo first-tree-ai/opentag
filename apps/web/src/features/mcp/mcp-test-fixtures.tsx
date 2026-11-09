@@ -122,6 +122,8 @@ export function stub(servers: MCPAgentServer[], detailValue: MCPServerDetail = d
     ],
   } as never);
   vi.spyOn(browserApi, "agentMcpServers").mockResolvedValue({ servers });
+  vi.spyOn(browserApi, "reusableMcpInstallation").mockResolvedValue({ server: null });
+  vi.spyOn(browserApi, "connectMcpOAuth").mockResolvedValue({ connected: false });
   vi.spyOn(browserApi, "mcpServer").mockResolvedValue(detailValue);
   vi.spyOn(browserApi, "availableMcpServers").mockResolvedValue({ servers: [] });
   vi.spyOn(browserApi, "mcpServers").mockResolvedValue({ servers: [] });

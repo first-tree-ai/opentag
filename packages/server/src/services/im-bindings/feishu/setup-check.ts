@@ -44,7 +44,7 @@ const TERMINAL_SERVICE_CODES = new Set([
  * small: only signals the platform reports for app credentials themselves qualify, so a provider
  * outage or a scope hiccup cannot steal a candidate that may still activate later.
  */
-const TERMINAL_FEISHU_CREDENTIAL_CODES = new Set([10015, 20002]);
+export const TERMINAL_FEISHU_CREDENTIAL_CODES: ReadonlySet<number> = new Set([10015, 20002]);
 
 /**
  * Official Feishu/Lark codes meaning the app is disabled or not installed for the tenant
@@ -52,7 +52,9 @@ const TERMINAL_FEISHU_CREDENTIAL_CODES = new Set([10015, 20002]);
  * stays recoverable while the tenant enables or installs the app, so these read as a bounded wait
  * instead of a dead credential or an opaque transient failure.
  */
-const RECOVERABLE_APP_UNAVAILABLE_CODES = new Set([10014, 11207, 11210, 20009, 99991662, 99991673]);
+export const RECOVERABLE_APP_UNAVAILABLE_CODES: ReadonlySet<number> = new Set([
+  10014, 11207, 11210, 20009, 99991662, 99991673,
+]);
 
 function objectProperty(value: unknown, key: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
@@ -60,7 +62,7 @@ function objectProperty(value: unknown, key: string): unknown {
 }
 
 /** Walks a cause chain once, returning the first non-undefined visit result. */
-function walkCauses<T>(error: unknown, visit: (candidate: unknown) => T | undefined): T | undefined {
+export function walkCauses<T>(error: unknown, visit: (candidate: unknown) => T | undefined): T | undefined {
   let current: unknown = error;
   const visited = new Set<unknown>();
   while (typeof current === "object" && current !== null && !visited.has(current)) {
@@ -79,7 +81,7 @@ function parseNumericCode(value: unknown): number | undefined {
 }
 
 /** The numeric provider error code, from the error itself or a wrapped HTTP response body. */
-function numericProviderCode(error: unknown): number | undefined {
+export function numericProviderCode(error: unknown): number | undefined {
   return walkCauses(error, (candidate) => {
     const response = objectProperty(candidate, "response");
     return [

@@ -66,6 +66,32 @@ trim_trailing_slashes() {
   printf '%s' "$value"
 }
 
+# curl --retry does not retry CURLE_RECV_ERROR (exit 56, e.g. a CDN edge connection reset) without
+# --retry-all-errors, which older system curl builds do not support. Retry full downloads in an outer
+# loop and discard any partial output file between attempts.
+download_url() {
+  local url="$1"
+  local dest="$2"
+  local attempt=1
+  local max_attempts=4
+  local retry_delay="${OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY:-2}"
+  local rc=0
+  while :; do
+    rm -f "$dest"
+    if curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"; then
+      return 0
+    else
+      rc=$?
+    fi
+    rm -f "$dest"
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      return "$rc"
+    fi
+    attempt=$((attempt + 1))
+    sleep "$retry_delay"
+  done
+}
+
 # Installs the published release the same way a user would: fetch the channel installer over the
 # public endpoint and run it against a throwaway prefix, so a broken artifact or an unserved object
 # fails the release instead of the first person to run the install command.
@@ -89,12 +115,12 @@ import(pathToFileURL(process.env.OPENTAG_CHANNEL_CONFIG_MODULE).href).then((modu
     installer="$tmp_dir/install.sh"
     installer_url="$DOWNLOAD_BASE_URL/$CHANNEL/install.sh"
     log "running the public install smoke test from $installer_url"
-    curl -fsSL --retry 3 --retry-delay 2 "$installer_url" -o "$installer"
+    download_url "$installer_url" "$installer"
 
     # This stage validates the channel pointer, so it asserts against whatever the channel actually
     # advertises. Publication is monotonic: republishing an older release leaves a newer pointer in
     # place on purpose, and that must not be reported as a broken channel.
-    curl -fsSL --retry 3 --retry-delay 2 "$DOWNLOAD_BASE_URL/$CHANNEL/latest.json" -o "$tmp_dir/latest.json"
+    download_url "$DOWNLOAD_BASE_URL/$CHANNEL/latest.json" "$tmp_dir/latest.json"
     published_version="$(node -e '
 const latest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
 if (typeof latest.version !== "string") process.exit(2);
@@ -121,7 +147,7 @@ process.stdout.write(latest.version);
         OPENTAG_HOME="$tmp_dir/home" \
         sh "$installer" --prefix "$tmp_dir/prefix" --bin-dir "$tmp_dir/bin" --no-path-edit 2>&1
     )"
-    [[ "$repeat_output" == *"already installed and up to date"* ]] ||
+    [[ "$repeat_output" == *"openTag ${published_version} is already installed; nothing was downloaded."* ]] ||
       die "reinstalling the published release did not short-circuit: $repeat_output"
 
     log "public install smoke test passed for $CHANNEL $published_version"

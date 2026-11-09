@@ -1,5 +1,5 @@
 import { useRouter } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Dialog, Text } from "../../../ui/design-system.js";
 
@@ -41,15 +41,54 @@ export function SettingsSaveActions({
   showActions?: boolean;
   discardLabel?: string;
 }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const focusInside = useRef(false);
+  // The bar disappears once changes are saved or discarded. Keyboard focus on one of its buttons would
+  // otherwise fall back to the page, so it moves to the first control of the form the bar belongs to.
+  useLayoutEffect(() => {
+    const element = bar.current;
+    const form = element?.closest("form");
+    const onFocusIn = () => {
+      focusInside.current = true;
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      // A browser may report a blur while the bar itself is being removed; that is not the reader leaving.
+      if (!element?.isConnected) return;
+      focusInside.current = element.contains(event.relatedTarget as Node | null);
+    };
+    element?.addEventListener("focusin", onFocusIn);
+    element?.addEventListener("focusout", onFocusOut);
+    return () => {
+      element?.removeEventListener("focusin", onFocusIn);
+      element?.removeEventListener("focusout", onFocusOut);
+      if (element?.contains(document.activeElement)) focusInside.current = true;
+      if (!focusInside.current || !form) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement && document.activeElement !== document.body) return;
+        form.querySelector<HTMLElement>(FIRST_FORM_CONTROL)?.focus();
+      });
+    };
+  }, []);
   return (
-    <div className="flex min-h-[57px] flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3 md:min-h-[53px]">
+    <div
+      ref={bar}
+      className="flex min-h-[57px] flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3 md:min-h-[53px]"
+    >
       {statusLabel ? <span className="text-sm text-kumo-subtle">{statusLabel}</span> : null}
       {showActions ? (
         <div className="ml-auto flex flex-wrap justify-end gap-2">
-          <Button disabled={busy} type="button" variant="ghost" onClick={onDiscard}>
+          {/* Busy buttons stay enabled and ignore repeats: disabling the focused button would drop focus. */}
+          <Button
+            aria-disabled={busy || undefined}
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              if (!busy) onDiscard();
+            }}
+          >
             {discardLabel}
           </Button>
-          <Button disabled={busy || saveDisabled} type="submit">
+          <Button aria-busy={busy || undefined} disabled={saveDisabled && !busy} type="submit">
             {busy ? savingLabel : saveLabel}
           </Button>
         </div>
@@ -57,6 +96,9 @@ export function SettingsSaveActions({
     </div>
   );
 }
+
+const FIRST_FORM_CONTROL =
+  'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), [contenteditable="true"], button:not([disabled])';
 
 export function UnsavedChangesGuard({ when, soul = false }: { when: boolean; soul?: boolean }) {
   const router = useRouter({ warn: false });

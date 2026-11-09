@@ -19,6 +19,123 @@ import { projectComputerProviderReadiness } from "../services/computers/provider
 import { deferred } from "./support/deferred.js";
 
 describe("ConnectionRegistry", () => {
+  it("orders complete self-checks by connection and epoch, retains settled evidence, and ages it monotonically", async () => {
+    let monotonic = 0;
+    const registry = new ConnectionRegistry({ monotonicNow: () => monotonic });
+    const computerId = randomUUID(),
+      instanceId = randomUUID(),
+      connectionId = randomUUID();
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        connectionId,
+        installationId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+        providerReadinessProviders: ["codex"],
+        lastHeartbeatAt: 1000,
+        socket: { ...socket(), readyState: WebSocket.OPEN } as WebSocket,
+      },
+      async () => undefined,
+    );
+    const first = registry.requestSelfCheck(computerId, instanceId, 1000);
+    if (!first) throw new Error("Missing self-check request");
+    const sample = {
+      type: "runtime:self-check:report" as const,
+      requestId: randomUUID(),
+      selfCheckId: first.requestId,
+      sequence: 1,
+      checkedAt: new Date(1000).toISOString(),
+      problems: [],
+      providerReadiness: [{ provider: "codex" as const, status: "ready" as const }],
+      imCliReadiness: [{ provider: "feishu" as const, status: "ready" as const }],
+    };
+    expect(registry.recordSelfCheck(computerId, instanceId, randomUUID(), sample, 1000)).toBe(false);
+    expect(registry.recordSelfCheck(computerId, instanceId, connectionId, sample, 1000)).toBe(true);
+    monotonic = 30_000;
+    expect(registry.recordSelfCheck(computerId, instanceId, connectionId, sample, 99_000)).toBe(true);
+    expect(registry.selfCheckState(computerId)?.receivedAt).toBe(1000);
+    expect(
+      registry.recordSelfCheck(computerId, instanceId, connectionId, {
+        ...sample,
+        providerReadiness: [{ provider: "codex", status: "install" }],
+      }),
+    ).toBe(false);
+    const second = registry.requestSelfCheck(computerId, instanceId, 2000);
+    expect(registry.providerReadiness(computerId, 999_000)[0]?.observation.status).toBe("ready");
+    expect(registry.recordSelfCheck(computerId, instanceId, connectionId, { ...sample, sequence: 2 })).toBe(false);
+    expect(
+      registry.recordSelfCheck(
+        computerId,
+        instanceId,
+        connectionId,
+        { ...sample, selfCheckId: second?.requestId ?? "", sequence: 2 },
+        2000,
+      ),
+    ).toBe(true);
+    monotonic = 89_999;
+    expect(registry.connectionStatus(computerId)).toBe("online");
+    monotonic = 90_000;
+    expect(registry.connectionStatus(computerId)).toBe("offline");
+    monotonic = 105_000;
+    expect(registry.selfCheckState(computerId)?.stale).toBe(true);
+    expect(registry.providerReadiness(computerId)[0]?.observation.status).toBe("unavailable");
+  });
+
+  it("expires registration evidence without a first valid self-check despite continuing heartbeats", async () => {
+    let monotonic = 0;
+    const registry = new ConnectionRegistry({ monotonicNow: () => monotonic });
+    const entry = {
+      computerId: randomUUID(),
+      installationId: randomUUID(),
+      instanceId: randomUUID(),
+      connectionId: randomUUID(),
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+      providerReadinessProviders: ["codex" as const],
+      providerReadiness: [{ provider: "codex" as const, status: "ready" as const }],
+      providerReadinessObservedAt: 1000,
+      imCliReadiness: [{ provider: "feishu" as const, status: "ready" as const }],
+      imCliReadinessObservedAt: 1000,
+      lastHeartbeatAt: 1000,
+      socket: { ...socket(), readyState: WebSocket.OPEN } as WebSocket,
+    };
+    await registry.register(entry, async () => undefined);
+    const epoch = registry.requestSelfCheck(entry.computerId, entry.instanceId, 1000);
+    for (const tick of [30_000, 60_000, 74_999]) {
+      monotonic = tick;
+      registry.touch(
+        entry.computerId,
+        entry.instanceId,
+        entry.socket,
+        1000 + tick,
+        undefined,
+        undefined,
+        undefined,
+        tick,
+      );
+    }
+    expect(registry.selfCheckState(entry.computerId)?.stale).toBe(false);
+    expect(
+      registry.recordSelfCheck(entry.computerId, entry.instanceId, entry.connectionId, {
+        type: "runtime:self-check:report",
+        requestId: randomUUID(),
+        selfCheckId: randomUUID(),
+        sequence: 1,
+        checkedAt: new Date().toISOString(),
+        problems: [],
+        providerReadiness: [],
+        imCliReadiness: [],
+      }),
+    ).toBe(false);
+    monotonic = 75_000;
+    expect(registry.connectionStatus(entry.computerId)).toBe("online");
+    expect(registry.selfCheckState(entry.computerId)?.stale).toBe(true);
+    expect(registry.providerReadiness(entry.computerId)[0]?.observation.status).toBe("unavailable");
+    expect(registry.imCliReadiness(entry.computerId)[0]?.observation.status).toBe("unavailable");
+    expect(epoch).toBeDefined();
+  });
+
   it.each([
     undefined,
     "bad",

@@ -1,12 +1,10 @@
-import { type AgentPermissions, type AgentRuntimeProvider, FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { type AgentRuntimeProvider, FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../__tests__/support/unit-database.js";
 import {
   agentMcpServers,
-  agentRuntimeConfigs,
   agentSchedules,
-  agentSkills,
   agents,
   computers,
   imBindings,
@@ -16,15 +14,12 @@ import {
   mcpServers,
   sessionPlacements,
   sessions,
-  slackInstallations,
-  slackOAuthNonces,
   users,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AgentService } from "../../services/agents/agent-service.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { disableImBindingInTransaction, ImBindingService } from "../../services/im-bindings/index.js";
-import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { transferAgent } from "../transfer-agent.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
@@ -96,48 +91,10 @@ async function createAgent(
 }
 
 /** A suspended Agent with a Computer, which is the only state a transfer admits. */
-async function suspendedAgent(ownerUserId: string, computerId: string, name = "code-reviewer") {
+async function suspendedAgent(ownerUserId: string, computerId: string | null, name = "code-reviewer") {
   const created = await createAgent(ownerUserId, computerId, name);
   await service().suspendById(ownerUserId, created.id);
   return created;
-}
-
-async function createSlackBinding(agentId: string) {
-  const externalAppId = `A${crypto.randomUUID().slice(0, 8)}`;
-  const externalTeamId = `T${crypto.randomUUID().slice(0, 8)}`;
-  const [installation] = await unitDatabase.database
-    .insert(slackInstallations)
-    .values({
-      agentId,
-      status: "active",
-      externalAppId,
-      externalTeamId,
-      externalBotId: "B1",
-      credentialSchemaVersion: 1,
-      credentialGeneration: 1,
-      encryptedCredential: "sealed-installation-credential",
-      activatedAt: NOW,
-    })
-    .returning();
-  if (!installation) throw new Error("Slack installation fixture was not created");
-  const [binding] = await unitDatabase.database
-    .insert(imBindings)
-    .values({
-      agentId,
-      provider: "slack",
-      status: "active",
-      externalAppId,
-      externalTeamId,
-      externalBotId: "B1",
-      credentialSchemaVersion: 1,
-      credentialGeneration: 1,
-      slackInstallationId: installation.id,
-      slackRouteKind: "default",
-      activatedAt: NOW,
-    })
-    .returning();
-  if (!binding) throw new Error("Slack binding fixture was not created");
-  return { binding, installation };
 }
 
 async function createFeishuBinding(agentId: string) {
@@ -267,25 +224,6 @@ async function createMcpMount(accountId: string, agentId: string) {
   return server;
 }
 
-async function createSkill(agentId: string) {
-  const [skill] = await unitDatabase.database
-    .insert(agentSkills)
-    .values({
-      agentId,
-      name: "release-notes",
-      description: "Writes release notes",
-      source: "web_upload",
-      objectKey: `agents/${agentId}/skills/release-notes.tar.gz`,
-      archiveSha256: "a".repeat(64),
-      archiveBytes: 128,
-      fileCount: 1,
-      files: [{ path: "SKILL.md", bytes: 42 }],
-    })
-    .returning();
-  if (!skill) throw new Error("Skill fixture was not created");
-  return skill;
-}
-
 async function createSchedule(agentId: string, targetSessionId: string) {
   const [schedule] = await unitDatabase.database
     .insert(agentSchedules)
@@ -304,19 +242,6 @@ async function createSchedule(agentId: string, targetSessionId: string) {
 }
 
 /** The Scheduler's own candidate predicate: enabled, with a claimable occurrence in the past. */
-function dueScheduleIds() {
-  return unitDatabase.database
-    .select({ id: agentSchedules.id })
-    .from(agentSchedules)
-    .where(
-      and(
-        eq(agentSchedules.enabled, true),
-        isNotNull(agentSchedules.nextTriggerAt),
-        lte(agentSchedules.nextTriggerAt, sql`clock_timestamp()`),
-      ),
-    );
-}
-
 async function agentRow(agentId: string) {
   const [row] = await unitDatabase.database.select().from(agents).where(eq(agents.id, agentId));
   if (!row) throw new Error("Agent row disappeared");
@@ -399,9 +324,8 @@ describe("transferAgent", () => {
     await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({ reason: "name_conflict" });
 
     await unitDatabase.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, namesake.id));
-    await expect(transfer({ agentId: created.id, targetAccountId })).resolves.toMatchObject({
-      agentId: created.id,
-      targetAccountId,
+    await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+      reason: "configuration_immutable",
     });
   });
 
@@ -494,245 +418,44 @@ describe("transferAgent", () => {
     });
   }
 
-  it("moves ownership, detaches the Computer, and keeps Account-independent data", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
+  it("refuses to transfer configured Agents without changing their identities or retained data", async () => {
+    const source = await createAccount("source"),
+      targetAccountId = await createAccount("target");
     const computer = await createComputer(source);
     const created = await suspendedAgent(source, computer.id);
     const binding = await createFeishuBinding(created.id);
     const session = await createSession(binding.id, computer.id);
-    const skill = await createSkill(created.id);
-    const schedule = await createSchedule(created.id, session.id);
-    const mcpServer = await createMcpMount(source, created.id);
-    const [runtimeConfigBefore] = await unitDatabase.database
-      .select()
-      .from(agentRuntimeConfigs)
-      .where(eq(agentRuntimeConfigs.agentId, created.id));
+    const before = await agentRow(created.id);
+    const placements = await unitDatabase.database.select().from(sessionPlacements);
+    await expect(transfer({ agentId: created.id, targetAccountId })).rejects.toMatchObject({
+      reason: "configuration_immutable",
+    });
+    expect(await agentRow(created.id)).toEqual(before);
+    expect(await unitDatabase.database.select().from(sessionPlacements)).toEqual(placements);
+    expect((await unitDatabase.database.select().from(imBindings))[0]).toMatchObject({
+      id: binding.id,
+      status: "active",
+    });
+    expect(session.id).toBeTruthy();
+  });
 
-    const result = await transfer({ agentId: created.id, targetAccountId, slack: "disable" });
-
-    expect(result).toMatchObject({
-      agentId: created.id,
-      imBinding: "disabled",
-      previousComputerId: computer.id,
-      revision: created.revision + 2,
-      runtimeConfigReset: [],
-      schedulesPaused: 1,
-      slack: "disable",
-      sourceAccountId: source,
+  it("allows an edited, unbound Agent to transfer and finish its initial Computer binding", async () => {
+    const source = await createAccount("source"),
+      targetAccountId = await createAccount("target");
+    const created = await createAgent(source, null);
+    await service().updateById(source, created.id, { expectedRevision: created.revision, displayName: "Edited" });
+    await service().suspendById(source, created.id);
+    await expect(transfer({ agentId: created.id, targetAccountId })).resolves.toMatchObject({
+      previousComputerId: null,
+      imBinding: "none",
       targetAccountId,
     });
-    expect(await agentRow(created.id)).toMatchObject({
-      createdByUserId: targetAccountId,
-      computerId: null,
-      revision: created.revision + 2,
-      status: "suspended",
+    await service().reactivateById(targetAccountId, created.id);
+    const target = await createComputer(targetAccountId);
+    await expect(service().rebindById(targetAccountId, created.id, target.id)).resolves.toMatchObject({
+      computerId: target.id,
+      displayName: "Edited",
     });
-
-    const [runtimeConfigAfter] = await unitDatabase.database
-      .select()
-      .from(agentRuntimeConfigs)
-      .where(eq(agentRuntimeConfigs.agentId, created.id));
-    expect(runtimeConfigAfter).toEqual(runtimeConfigBefore);
-    const [skillRow] = await unitDatabase.database.select().from(agentSkills).where(eq(agentSkills.id, skill.id));
-    expect(skillRow).toEqual(skill);
-    const [scheduleRow] = await unitDatabase.database
-      .select()
-      .from(agentSchedules)
-      .where(eq(agentSchedules.id, schedule.id));
-    // Kept as a record, paused because its pinned target Session ended with the transfer.
-    expect(scheduleRow).toMatchObject({
-      id: schedule.id,
-      prompt: schedule.prompt,
-      schedule: schedule.schedule,
-      enabled: false,
-      nextTriggerAt: null,
-    });
-    expect(scheduleRow?.revision).toBe(schedule.revision + 1);
-
-    expect(await unitDatabase.database.select().from(agentMcpServers)).toEqual([]);
-    expect(await unitDatabase.database.select().from(mcpServerAuthorizations)).toEqual([]);
-    // The definition stays with the source Account; only the new owner's mounts are gone.
-    expect(await unitDatabase.database.select().from(mcpServers).where(eq(mcpServers.id, mcpServer.id))).toHaveLength(
-      1,
-    );
-  });
-
-  it("disables the messaging binding by default and ends its Sessions", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
-    const { binding, installation } = await createSlackBinding(created.id);
-    const session = await createSession(binding.id, computer.id);
-    await unitDatabase.database.insert(slackOAuthNonces).values({
-      nonceHash: "b".repeat(64),
-      userId: source,
-      agentId: created.id,
-      intent: "create",
-      sessionBindingHash: "c".repeat(64),
-      expiresAt: new Date(NOW.getTime() + 600_000),
-      createdAt: NOW,
-    });
-
-    const result = await transfer({ agentId: created.id, targetAccountId });
-
-    expect(result.imBinding).toBe("disabled");
-    const [disabled] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, binding.id));
-    expect(disabled).toMatchObject({ status: "disabled", encryptedCredential: null });
-    const [releasedInstallation] = await unitDatabase.database
-      .select()
-      .from(slackInstallations)
-      .where(eq(slackInstallations.id, installation.id));
-    expect(releasedInstallation).toMatchObject({ status: "disabled", encryptedCredential: null });
-    const [endedSession] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
-    expect(endedSession?.endedAt).toEqual(NOW);
-    expect(await unitDatabase.database.select().from(slackOAuthNonces)).toEqual([]);
-  });
-
-  it("keeps a Slack binding serving the Agent under the new owner", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
-    const { binding, installation } = await createSlackBinding(created.id);
-    const session = await createSession(binding.id, computer.id);
-
-    const result = await transfer({ agentId: created.id, targetAccountId, slack: "keep" });
-
-    expect(result.imBinding).toBe("kept");
-    const [kept] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, binding.id));
-    expect(kept).toMatchObject({
-      status: "active",
-      credentialGeneration: binding.credentialGeneration,
-      slackInstallationId: installation.id,
-    });
-    const [keptInstallation] = await unitDatabase.database
-      .select()
-      .from(slackInstallations)
-      .where(eq(slackInstallations.id, installation.id));
-    expect(keptInstallation).toMatchObject({ status: "active", credentialGeneration: 1 });
-    // The previous owner's Session history is closed even though the installation stays live.
-    const [endedSession] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
-    expect(endedSession?.endedAt).toEqual(NOW);
-    await expect(service().getConfigById(targetAccountId, created.id)).resolves.toMatchObject({
-      createdByUserId: targetAccountId,
-      computerId: null,
-    });
-  });
-
-  for (const slack of ["disable", "keep"] as const) {
-    it(`pauses Schedules that can no longer dispatch (slack=${slack})`, async () => {
-      const source = await createAccount("source");
-      const targetAccountId = await createAccount("target");
-      const computer = await createComputer(source);
-      const created = await suspendedAgent(source, computer.id);
-      const { binding } = await createSlackBinding(created.id);
-      const session = await createSession(binding.id, computer.id);
-      const schedule = await createSchedule(created.id, session.id);
-      expect(await dueScheduleIds()).toEqual([{ id: schedule.id }]);
-
-      const result = await transfer({ agentId: created.id, targetAccountId, slack });
-
-      expect(result.schedulesPaused).toBe(1);
-      expect(await dueScheduleIds()).toEqual([]);
-      const [paused] = await unitDatabase.database
-        .select()
-        .from(agentSchedules)
-        .where(eq(agentSchedules.id, schedule.id));
-      expect(paused).toMatchObject({ enabled: false, nextTriggerAt: null });
-      // The target the Schedule pinned is gone, which is why the row had to be paused rather than kept live.
-      const [endedTarget] = await unitDatabase.database.select().from(sessions).where(eq(sessions.id, session.id));
-      expect(endedTarget?.endedAt).toEqual(NOW);
-    });
-  }
-
-  it("refuses to keep a Feishu binding", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
-    await createFeishuBinding(created.id);
-
-    await expect(transfer({ agentId: created.id, targetAccountId, slack: "keep" })).rejects.toMatchObject({
-      reason: "im_binding_keep_unsupported",
-    });
-    expect(await agentRow(created.id)).toMatchObject({ createdByUserId: source });
-  });
-
-  it("resets the Context Tree selection and a Cloud Computer model", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const cloudComputer = await createComputer(source, "cloud");
-    const [created] = await unitDatabase.database
-      .insert(agents)
-      .values({
-        createdByUserId: source,
-        computerId: cloudComputer.id,
-        name: "cloud-agent",
-        displayName: "Cloud agent",
-        runtimeProvider: "pi",
-        status: "suspended",
-      })
-      .returning();
-    if (!created) throw new Error("Agent fixture was not created");
-    await unitDatabase.database.insert(agentRuntimeConfigs).values({
-      ...DEFAULT_AGENT_RUNTIME_CONFIG,
-      agentId: created.id,
-      contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "example/product" }],
-      model: "router-only-model",
-      permissions: { approvalPolicy: "on-request", allowCommands: [] } satisfies AgentPermissions,
-    });
-
-    const result = await transfer({ agentId: created.id, targetAccountId });
-
-    expect(result.runtimeConfigReset).toEqual(["contextTrees", "model"]);
-    const [runtimeConfig] = await unitDatabase.database
-      .select()
-      .from(agentRuntimeConfigs)
-      .where(eq(agentRuntimeConfigs.agentId, created.id));
-    expect(runtimeConfig).toMatchObject({ contextTrees: [], model: null });
-  });
-
-  it("keeps a Local Computer's model but still clears the Context Tree selection", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
-    await unitDatabase.database
-      .update(agentRuntimeConfigs)
-      .set({
-        contextTrees: [{ kind: "git" as const, path: ".", ref: "main", repository: "example/product" }],
-        model: "gpt-5",
-      })
-      .where(eq(agentRuntimeConfigs.agentId, created.id));
-
-    const result = await transfer({ agentId: created.id, targetAccountId });
-
-    expect(result.runtimeConfigReset).toEqual(["contextTrees"]);
-    const [runtimeConfig] = await unitDatabase.database
-      .select()
-      .from(agentRuntimeConfigs)
-      .where(eq(agentRuntimeConfigs.agentId, created.id));
-    expect(runtimeConfig).toMatchObject({ contextTrees: [], model: "gpt-5" });
-  });
-
-  it("moves the Agent out of the previous owner's view without a rebind requirement", async () => {
-    const source = await createAccount("source");
-    const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
-    const oldService = service();
-    await expect(oldService.getById(source, created.id)).resolves.toMatchObject({ id: created.id });
-
-    await transfer({ agentId: created.id, targetAccountId });
-
-    await expect(oldService.getById(source, created.id)).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
-    const moved = await oldService.getById(targetAccountId, created.id);
-    expect(moved).toMatchObject({ id: created.id, createdBy: { userId: targetAccountId }, computer: null });
-    expect(moved).not.toHaveProperty("requiresComputerRebind");
-    expect((await oldService.listForAccount(targetAccountId)).agents.map((agent) => agent.id)).toEqual([created.id]);
-    expect((await oldService.listForAccount(source)).agents).toEqual([]);
   });
 
   it("validates the operator input strictly", async () => {
@@ -757,8 +480,7 @@ describe("transferAgent audit log", () => {
   it("logs a redacted success at info and a rejection at warn", async () => {
     const source = await createAccount("source");
     const targetAccountId = await createAccount("target");
-    const computer = await createComputer(source);
-    const created = await suspendedAgent(source, computer.id);
+    const created = await suspendedAgent(source, null);
     const entries: { level: string; bindings: Record<string, unknown>; message: string }[] = [];
     const logger = {
       debug: () => undefined,

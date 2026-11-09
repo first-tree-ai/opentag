@@ -32,6 +32,14 @@ const aliases = {
   inverse: ["--on-dark"],
   danger: ["--opentag-button-danger-bg"],
   dangerHover: ["--opentag-button-danger-hover"],
+  connectionAccent: ["--connection-accent"],
+  connectionAccentHover: ["--connection-accent-hover"],
+  connectionSurface: ["--connection-surface"],
+  connectionForeground: ["--connection-foreground"],
+  connectionSecondary: ["--connection-secondary"],
+  connectionBorder: ["--connection-border"],
+  connectionHover: ["--connection-hover"],
+  connectionOnAccent: ["--connection-on-accent"],
 };
 const semantic = {
   "--color-kumo-canvas": "--bg",

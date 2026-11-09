@@ -27,9 +27,20 @@ import {
   type PiDiagnosticSink,
   piDiagnosticError,
 } from "../observability/pi-diagnostics.js";
-import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { PiAgentRuntimeFactory, piCloudAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
-import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
+import {
+  buildAgentInput,
+  completionForError,
+  completionForResult,
+  type TurnCompletion,
+} from "../runtime/agent-turn-runner.js";
+import {
+  beginChannelTurn,
+  ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "../runtime/channel-idle-compaction.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import {
   type ManagedSessionContext,
@@ -44,7 +55,9 @@ import {
   type CloudContextTreePreparationInput,
   type CloudContextTreeStatus,
   prepareCloudContextTree,
+  withContextTreeReadPath,
 } from "./cloud-context-tree.js";
+import { cloudSteerResult, openCloudSteerControl } from "./cloud-steer-control.js";
 import {
   cloudSessionCliEnvironment,
   cloudWorkerInput,
@@ -52,7 +65,7 @@ import {
   cloudWorkerTimeout,
 } from "./cloud-worker-input.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
-import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js";
+import { type AssembledContextTreeSkills, assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js";
 
 /**
  * In-sandbox Cloud worker: one IM Turn or Session message inside the disposable Sandbox. The
@@ -103,7 +116,7 @@ const CLOUD_PI_IMAGE_INPUT_MODELS = new Set([
   "claude-opus-5.5",
 ]);
 /** The locked adapter lives with the Cloud image's Pi installation. */
-const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts";
+const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/opentag-runtime.mjs";
 
 const TURN_POLICY = {
   approvals: "never" as const,
@@ -208,6 +221,7 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
         [CLOUD_MODEL_PI_PROVIDER]: {
           api: "openai-completions",
           baseUrl: model.baseUrl,
+          headers: { "x-opentag-model-retry-owner": "proxy" },
           // The Server-selected window and output budget travel with the grant verbatim: Pi's
           // native compaction works against this real contextWindow instead of Pi's 128K
           // custom-model default, and the output budget is the issued capability (never a
@@ -233,6 +247,8 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
       // Pi native auto-compaction is explicitly enabled with its pinned defaults
       // (reserveTokens 16,384 / keepRecentTokens 20,000 stay untouched).
       compaction: { enabled: true },
+      // The model proxy owns retries; Pi must never replay an ambiguous or exhausted call.
+      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
       defaultModel: `${CLOUD_MODEL_PI_PROVIDER}/${model.model}`,
       defaultProvider: CLOUD_MODEL_PI_PROVIDER,
     },
@@ -292,6 +308,7 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
+  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<unknown>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
 }
@@ -331,6 +348,8 @@ export interface CloudTurnWorkerRunOptions {
    * `prepareCloudContextTree`). Receives only per-Turn, in-sandbox inputs.
    */
   readonly prepareContextTree?: (input: CloudContextTreePreparationInput) => Promise<CloudContextTreePreparation>;
+  /** Test seam: replace packaged Context Tree Skill assembly (production reads the pinned package). */
+  readonly assembleContextTreeSkills?: () => Promise<AssembledContextTreeSkills>;
   /** Test seam: override the bounded pre-run Context Tree preparation budget. */
   readonly contextTreePreparationBudgetMs?: number;
   /** Test seam: build the Pi factory for this turn (production builds the real one). */
@@ -362,8 +381,8 @@ function createTurnExecutionContext(
 }
 
 /**
- * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It is
- * fully awaited, so a stop leaves no CLI child or `git` writing after the Turn stopped waiting.
+ * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It only
+ * writes local configuration and the `context-tree` shim; the Agent syncs through the gateway.
  */
 function prepareTurnContextTree(
   request: RunnerCloudWorkerRequest,
@@ -386,6 +405,13 @@ function prepareTurnContextTree(
   });
 }
 
+/** A failed assembly leaves the Agent without `context-tree-read`; the prompt status reports it. */
+function assembleTurnContextTreeSkills(
+  options: CloudTurnWorkerRunOptions,
+): Promise<AssembledContextTreeSkills | undefined> {
+  return (options.assembleContextTreeSkills ?? assembleContextTreeSkills)().catch(() => undefined);
+}
+
 function cloudPiDiagnostics(
   sink: PiDiagnosticSink | undefined,
   execution: TurnExecutionContext,
@@ -395,7 +421,7 @@ function cloudPiDiagnostics(
   let started = preparationStarted;
   let failed = false;
   const emit: PiDiagnosticSink = (event) => {
-    phase = event.phase;
+    if (event.event !== "milestone") phase = event.phase;
     if (event.event === "start") started = performance.now();
     if (event.event === "failure") failed = true;
     emitPiDiagnostic(sink, { ...event, abortSource: execution.stopReason() ?? event.abortSource });
@@ -411,6 +437,19 @@ function cloudPiDiagnostics(
         error: piDiagnosticError(error),
       });
     },
+  };
+}
+
+/** Its activity time lives beside the Pi history it describes, and survives a native rootfs reset with it. */
+function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory: string, now = Date.now) {
+  const activity = new ChannelActivityStore(continuityDirectory);
+  const turn = {
+    sessionId: request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId,
+    channel: isChannelOutbox(request.outboxContext),
+  };
+  return {
+    begin: () => beginChannelTurn(activity, turn, now()),
+    end: () => endChannelTurn(activity, turn, now()),
   };
 }
 
@@ -454,17 +493,21 @@ export async function runCloudTurnWorker(
     const bindingFile = join(continuityDirectory, BINDING_FILE_NAME);
 
     // Per-execution proxy material published by the trusted Runner (read-only mount).
+    const proxyStartStarted = performance.now();
     const manifest = ProxyEnvironmentManifestSchema.parse(
       JSON.parse(await readFile(join(request.executionDir, "environment.json"), "utf8")),
     );
     await verifyProxyTransport(request.executionDir, manifest.environment, options);
     await prepareCliDirectories(manifest.environment, scratch);
+    const proxyStartMs = Math.max(0, performance.now() - proxyStartStarted);
 
     // The effective execution deadline and caller cancellation bound everything below, including
     // optional Context Tree preparation (which additionally has its own small budget).
     const execution = createTurnExecutionContext(request, options);
     const diagnostics = cloudPiDiagnostics(options.onDiagnostic, execution, preparationStarted);
+    const contextTreePreparationStarted = performance.now();
     const contextTree = await prepareTurnContextTree(request, options, execution, scratch, manifest.environment);
+    const contextTreePreparationMs = Math.max(0, performance.now() - contextTreePreparationStarted);
     if (execution.signal.aborted) {
       // The execution deadline or caller stop fired during preparation. The preparation child
       // (including any nested git) was stopped and awaited, so Pi must not start now.
@@ -474,6 +517,8 @@ export async function runCloudTurnWorker(
         event: "end",
         outcome: "aborted",
         durationMs: Math.max(0, performance.now() - preparationStarted),
+        proxyStartMs,
+        contextTreePreparationMs,
         abortSource,
       });
       return completionForError(new Error("The Turn stopped during Context Tree preparation"), abortSource);
@@ -521,9 +566,11 @@ export async function runCloudTurnWorker(
     // Reuse the packaged Context Tree skills and the E3 Runner tool skills (`git`/`gh`/
     // `lark-cli`/`slack`) through the same assembly and argument helper; a missing skill set is
     // the honest host-dev case, never a different runtime.
-    const contextTreeSkills = await assembleContextTreeSkills().catch(() => undefined);
+    const skillsAssembleStarted = performance.now();
+    const contextTreeSkills = await assembleTurnContextTreeSkills(options);
     const toolSkills = await assembleRunnerToolSkills();
     const skillPaths = [...(contextTreeSkills?.skillPaths ?? []), ...toolSkills.skills.map((skill) => skill.directory)];
+    const skillsAssembleMs = Math.max(0, performance.now() - skillsAssembleStarted);
     const factory =
       options.createPiFactory?.({
         environment: runtimeEnvironment,
@@ -537,7 +584,7 @@ export async function runCloudTurnWorker(
         process: {
           args: skillArgsOf(skillPaths),
           command: "pi",
-          env: environment,
+          env: piCloudAgentRuntimeEnvironment(environment),
           sessionDirectory,
           // E3 measured native Cloud Pi startup above the Local 5s default; keep the verified budget.
           probeTimeoutMs: 30_000,
@@ -554,7 +601,13 @@ export async function runCloudTurnWorker(
       policy: TURN_POLICY,
       systemPrompt: renderManagedSystemPrompt(
         cloudWorkerRuntime(request),
-        cloudManagedSessionContext(request, contextTree.status),
+        cloudManagedSessionContext(
+          request,
+          withContextTreeReadPath(contextTree.status, {
+            skills: contextTreeSkills !== undefined,
+            gateway: Boolean(manifest.environment.OPENTAG_CONTEXT_TREE_URL),
+          }),
+        ),
       ),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
@@ -567,15 +620,25 @@ export async function runCloudTurnWorker(
       phase: "worker_preparation",
       event: "end",
       durationMs: Math.max(0, performance.now() - preparationStarted),
+      proxyStartMs,
+      contextTreePreparationMs,
+      skillsAssembleMs,
     });
 
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
+    let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
+    const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
+      steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
+        diagnostics.failure(error);
+        return undefined;
+      });
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
+        ...(await channelTurn.begin()),
         input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
         signal: execution.signal,
       });
@@ -589,6 +652,8 @@ export async function runCloudTurnWorker(
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
+      await channelTurn.end();
+      await steering?.close().catch((error: unknown) => diagnostics.failure(error));
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }
@@ -771,4 +836,44 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
     await mkdir(directory, { mode: 0o700 });
     environment.LARKSUITE_CLI_CONFIG_DIR = directory;
   }
+}
+
+async function openWorkerSteering(
+  request: RunnerCloudWorkerRequest,
+  activeRuntime: CloudTurnPiRuntime,
+  options: CloudTurnWorkerRunOptions,
+) {
+  return request.kind === "turn" && request.steering
+    ? await openCloudSteerControl({
+        deliveryId: request.delivery.deliveryId,
+        token: request.steering.token,
+        steer: async (input) => {
+          if (
+            request.kind !== "turn" ||
+            !request.steering ||
+            input.rootDeliveryId !== request.delivery.deliveryId ||
+            input.expectedTurnId !== request.steering.turnId ||
+            input.sessionId !== request.delivery.sessionId ||
+            input.agentId !== request.delivery.agentId ||
+            input.placementGeneration !== request.delivery.placementGeneration
+          )
+            return cloudSteerResult(input, "rejected", "target_mismatch");
+          if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
+          try {
+            await activeRuntime.steer({
+              expectedRunId: randomTurnRunId(request),
+              input: buildAgentInput(
+                input,
+                undefined,
+                request.delivery.runtime,
+                new Date(options.now?.() ?? Date.now()),
+              ),
+            });
+            return cloudSteerResult(input, "steered");
+          } catch {
+            return cloudSteerResult(input, "deferred", "steer_state_unknown");
+          }
+        },
+      })
+    : undefined;
 }

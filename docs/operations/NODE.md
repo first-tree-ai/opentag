@@ -10,6 +10,8 @@ environments, and observing and diagnosing failures.
 
 ## Pages
 
+- **[Ownership gate reconciliation](ownership-gate.md)** — serializing status
+  writers across event-driven runs, sweeps, and retries.
 - **[Release guide](releasing.md)** — npm package identities, channels, and
   the release workflow.
 - **[Portable release guide](portable-release.md)** — self-contained tarballs

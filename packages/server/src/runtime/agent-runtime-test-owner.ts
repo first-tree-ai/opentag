@@ -118,14 +118,12 @@ export class AgentRuntimeTestOwner {
       this.#finish(requestId, failed("cancelled"), true);
     };
     input.signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      if (input.signal?.aborted) {
-        onAbort();
-      } else {
-        await this.#registry.send(computerId, instanceId, request);
-      }
-    } catch {
-      this.#finish(requestId, failed("computer_unavailable"), false);
+    if (input.signal?.aborted) {
+      onAbort();
+    } else {
+      void this.#registry.send(computerId, instanceId, request).catch(() => {
+        this.#finish(requestId, failed("computer_unavailable"), false);
+      });
     }
     try {
       return await promise;

@@ -3,6 +3,7 @@ import type { DatabaseClient } from "../db/client.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { AgentService } from "../services/agents/agent-service.js";
 import { AgentTransferError, type AgentTransferResult } from "../services/agents/agent-transfer.js";
+import type { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 
 /**
  * Operator-only Agent transfer. OpenTag has no runtime admin role, so this lives next to
@@ -35,11 +36,14 @@ export interface TransferAgentRawInput {
 export async function transferAgent(
   database: DatabaseClient,
   rawInput: TransferAgentRawInput,
-  options: { logger?: ServiceLogger; now?: () => Date } = {},
+  options: { logger?: ServiceLogger; now?: () => Date; mcpCredentialCipher?: McpCredentialCipher } = {},
 ): Promise<AgentTransferResult> {
   const input = TransferAgentInputSchema.parse(rawInput);
   try {
-    const result = await new AgentService(database, { now: options.now }).transferToAccount(input);
+    const result = await new AgentService(database, {
+      now: options.now,
+      mcpCredentialCipher: options.mcpCredentialCipher,
+    }).transferToAccount(input);
     options.logger?.info(
       {
         agentId: result.agentId,

@@ -278,7 +278,10 @@ describe("Cloud execution web tools", () => {
     const h = await harness();
     await h.run();
     // The open frame asks for both platform services; the Server decides each one.
-    expect(h.channel.requests[0]).toMatchObject({ type: "runtime:execution:open", services: ["mcp", "web"] });
+    expect(h.channel.requests[0]).toMatchObject({
+      type: "runtime:execution:open",
+      services: ["mcp", "web", "context-tree"],
+    });
     expect(h.events).toEqual(["open:/tmp/opentag-web-1.sock", "close:/tmp/opentag-web-1.sock"]);
     expect(h.channel.requests.some((frame) => frame.type === "runtime:web:gateway")).toBe(true);
     const stdin = JSON.parse(h.workerInputs[0] ?? "{}") as {

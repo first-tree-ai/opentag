@@ -1,4 +1,10 @@
-import type { SlackAutoSetupRuntimeRequest, SlackAutoSetupRuntimeResult, TurnActivityResult } from "@opentag/shared";
+import type {
+  SessionMessageOutcomeResult,
+  SessionRecoverResult,
+  SlackAutoSetupRuntimeRequest,
+  SlackAutoSetupRuntimeResult,
+  TurnActivityResult,
+} from "@opentag/shared";
 import {
   type AgentRuntimeOptions,
   type AgentRuntimeOptionsRequestFrame,
@@ -11,6 +17,7 @@ import {
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
   type InputRejectReason,
+  RUNTIME_CAPABILITY,
   type RuntimeApprovalDecision,
   type RuntimeApprovalResult,
   type RuntimeImSteerRequest,
@@ -47,6 +54,8 @@ type ResidualBusinessFrame = Extract<
       | "agent-runtime:test:cancel"
       | "turn:report:result"
       | "approval:decision"
+      | "session:message:outcome:result"
+      | "session:recover:result"
       | "turn:activity:result";
   }
 >;
@@ -65,6 +74,8 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnActivityResult?(result: TurnActivityResult): void;
+  handleSessionMessageOutcomeResult?(result: SessionMessageOutcomeResult): void;
+  handleSessionRecoverResult?(result: SessionRecoverResult): void;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequestV3,
@@ -122,30 +133,10 @@ export class ClientRuntime {
   }
 
   async #handleBusinessFrame(input: unknown): Promise<void> {
-    const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
-    if (!parsed.success || this.#abort.signal.aborted) return;
-    const frame = parsed.data;
+    const frame = ownedBusinessFrame(input, this.#abort.signal.aborted);
+    if (!frame) return;
     if (frame.type === "session:reconcile") {
-      const fields = {
-        agentId: frame.agentId,
-        placementGeneration: frame.placementGeneration,
-        requestId: frame.requestId,
-        sessionId: frame.sessionId,
-      };
-      this.#logger.debug(fields, "Session reconcile received");
-      const reconciled = await this.reconciler.reconcile(frame);
-      const result = SessionReconcileResultSchema.parse(
-        (await this.#options.prepareReconcileResult?.(frame, reconciled)) ?? reconciled,
-      );
-      try {
-        await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
-      } catch (error) {
-        this.#logger.warn({ ...fields, status: result.status }, "Session reconcile result send failed");
-        await this.#options.onReconcileResultSendFailed?.(frame, result, error);
-        throw error;
-      }
-      this.#logger.debug({ ...fields, reason: result.reason, status: result.status }, "Session reconcile completed");
-      await this.#options.onReconciled?.(frame, result);
+      await this.#handleReconcile(frame);
       return;
     }
     if (frame.type === "im:deliver") {
@@ -190,22 +181,101 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "session:message:deliver") {
-      const result = SessionMessageDeliveryResultSchema.parse(
-        (await this.#options.handleSessionMessageDelivery?.(frame)) ?? {
-          type: "session:message:deliver:result",
-          requestId: frame.requestId,
-          messageId: frame.messageId,
-          targetSessionId: frame.targetSessionId,
-          placementGeneration: frame.placementGeneration,
-          status: "rejected",
-          reason: "provider_unavailable",
-        },
-      );
+      const result = await this.#receiveSessionMessage(frame);
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      this.#logSessionMessageRejection(frame, result);
       return;
     }
     if (frame.type === "im:credential:result") return;
     await this.#handleResidualFrame(frame);
+  }
+
+  async #handleReconcile(frame: SessionReconcileRequest): Promise<void> {
+    const fields = {
+      agentId: frame.agentId,
+      placementGeneration: frame.placementGeneration,
+      requestId: frame.requestId,
+      sessionId: frame.sessionId,
+    };
+    this.#logger.debug(fields, "Session reconcile received");
+    if (frame.sessionMessage && this.#connection.capabilityVersion(RUNTIME_CAPABILITY.sessionMessageReconcile) !== 1) {
+      return;
+    }
+    const { inlineMessageReady, ...reconciled } = await this.reconciler.reconcile(frame);
+    const prepared = (await this.#options.prepareReconcileResult?.(frame, reconciled)) ?? reconciled;
+    const sessionMessage = await this.#inlineSessionMessage(frame, prepared, inlineMessageReady);
+    const result = SessionReconcileResultSchema.parse(
+      sessionMessage === undefined ? prepared : { ...prepared, sessionMessage },
+    );
+    try {
+      await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+    } catch (error) {
+      this.#logger.warn({ ...fields, status: result.status }, "Session reconcile result send failed");
+      await this.#options.onReconcileResultSendFailed?.(frame, result, error);
+      throw error;
+    }
+    this.#logger.debug({ ...fields, reason: result.reason, status: result.status }, "Session reconcile completed");
+    await this.#options.onReconciled?.(frame, result);
+  }
+
+  async #inlineSessionMessage(
+    request: SessionReconcileRequest,
+    result: SessionReconcileResult,
+    inlineMessageReady: true | undefined,
+  ): Promise<SessionReconcileResult["sessionMessage"]> {
+    if (!request.sessionMessage) return undefined;
+    if (
+      !request.runtime ||
+      !inlineMessageReady ||
+      !["ready", "running", "reporting"].includes(result.status) ||
+      result.retainedReports?.length ||
+      this.#abort.signal.aborted
+    ) {
+      return "deferred";
+    }
+    const delivery: SessionMessageDeliveryRequestV3 = {
+      type: "session:message:deliver",
+      requestId: request.requestId,
+      targetSessionId: request.sessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      runtime: request.runtime,
+      ...request.sessionMessage,
+    };
+    const receipt = await this.#receiveSessionMessage(delivery);
+    this.#logSessionMessageRejection(delivery, receipt);
+    return receipt;
+  }
+
+  async #receiveSessionMessage(frame: SessionMessageDeliveryRequestV3): Promise<SessionMessageDeliveryResult> {
+    return SessionMessageDeliveryResultSchema.parse(
+      (await this.#options.handleSessionMessageDelivery?.(frame)) ?? {
+        type: "session:message:deliver:result",
+        requestId: frame.requestId,
+        messageId: frame.messageId,
+        targetSessionId: frame.targetSessionId,
+        placementGeneration: frame.placementGeneration,
+        status: "rejected",
+        reason: "provider_unavailable",
+      },
+    );
+  }
+
+  #logSessionMessageRejection(frame: SessionMessageDeliveryRequestV3, result: SessionMessageDeliveryResult): void {
+    if (result.status !== "rejected") return;
+    this.#logger.warn(
+      {
+        agentId: frame.agentId,
+        messageId: frame.messageId,
+        placementGeneration: frame.placementGeneration,
+        reason: result.reason,
+        requestId: frame.requestId,
+        scheduled: frame.scheduledOrigin !== undefined,
+        sessionId: frame.targetSessionId,
+        status: result.status,
+      },
+      "Session message rejected",
+    );
   }
 
   async #setupSlack(frame: SlackAutoSetupRuntimeRequest): Promise<void> {
@@ -252,6 +322,8 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "turn:activity:result") this.#options.handleTurnActivityResult?.(frame);
+    if (frame.type === "session:message:outcome:result") this.#options.handleSessionMessageOutcomeResult?.(frame);
+    if (frame.type === "session:recover:result") this.#options.handleSessionRecoverResult?.(frame);
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
   }
 
@@ -321,4 +393,10 @@ function rejectedDelivery(request: DirectImMessageDeliveryRequest, reason: Input
     status: "rejected",
     reason,
   };
+}
+
+function ownedBusinessFrame(input: unknown, aborted: boolean) {
+  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
+  if (!parsed.success || aborted || parsed.data.type === "runtime:self-check") return undefined;
+  return parsed.data;
 }

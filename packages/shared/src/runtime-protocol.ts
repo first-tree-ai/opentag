@@ -38,11 +38,13 @@ export const RUNTIME_V0_CAPABILITIES = {
  * `runtime.sessionCollaboration` versions. Version 2 is the frozen ordinary Session-message
  * contract (`SessionMessageDeliveryRequestSchema`). Version 3 additionally understands the
  * Server-scheduled origin (`SessionMessageDeliveryRequestV3Schema`): a peer that negotiated only
- * version 2 must never receive a scheduled message. The outer Runtime protocol version does not
- * move for this capability extension.
+ * version 2 must never receive a scheduled message. Version 4 adds the Client-to-Server Run outcome
+ * report (`SessionMessageOutcomeReportSchema`) and implies version 3. Version checks are `>=`.
+ * The outer Runtime protocol version does not move for these capability extensions.
  */
 export const RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION = 2 as const;
 export const RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION = 3 as const;
+export const RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION = 4 as const;
 
 export const RUNTIME_CAPABILITY = {
   contextTreeSettings: "runtime.contextTreeSettings",
@@ -52,6 +54,7 @@ export const RUNTIME_CAPABILITY = {
   agentTrace: "runtime.agentTrace",
   approvalPresentation: "runtime.approvalPresentation",
   channelTarget: "runtime.channelTarget",
+  selfCheckHeartbeat: "runtime.selfCheckHeartbeat",
   imDelivery: "runtime.imDelivery",
   imSteer: "runtime.imSteer",
   imCredentialGrant: "runtime.imCredentialGrant",
@@ -60,8 +63,12 @@ export const RUNTIME_CAPABILITY = {
   providerProxy: "runtime.providerProxy",
   runtimeCredential: "runtime.runtimeCredential",
   githubUserTask: "runtime.githubUserTask",
+  contextTreeExecution: "runtime.contextTreeExecution",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
+  sessionMessageReconcile: "runtime.sessionMessageReconcile",
+  sessionRecovery: "runtime.sessionRecovery",
+  sessionConfiguration: "runtime.sessionConfiguration",
   turnReport: "runtime.turnReport",
   turnActivity: "runtime.turnActivity",
   webTools: "runtime.webTools",
@@ -78,19 +85,26 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.approvalPresentation]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 2 },
-  [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.selfCheckHeartbeat]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 3 },
+  [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 3 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerCliPrewarm]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.githubUserTask]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.contextTreeExecution]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: {
     min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
-    max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
+    max: RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.sessionMessageReconcile]: { min: 1, max: 1 },
+  // v1: the Client asks the Server to re-prepare a Session whose accepted work was interrupted.
+  [RUNTIME_CAPABILITY.sessionRecovery]: { min: 1, max: 1 },
+  // v1: the Client compares Agent configuration per Session, so the Server may run its Sessions concurrently.
+  [RUNTIME_CAPABILITY.sessionConfiguration]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 3 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },

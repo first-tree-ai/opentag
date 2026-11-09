@@ -105,8 +105,7 @@ describe("Cloud identity database decisions", () => {
     const setup = new AgentSetupService(
       unit.database,
       new AgentService(unit.database),
-      { getSetupBindingForAgent: async () => undefined },
-      { observeForAgent: async () => undefined },
+      { observeMessagingForAgent: async () => undefined },
       { prepareComputer },
     );
     const before = await setup.getSetupById(seeded.accountId, seeded.agent.id);
@@ -137,8 +136,7 @@ describe("Cloud identity database decisions", () => {
       const setup = new AgentSetupService(
         unit.database,
         agentService,
-        { getSetupBindingForAgent: async () => undefined },
-        { observeForAgent: async () => undefined },
+        { observeMessagingForAgent: async () => undefined },
         {
           slackOAuthAvailable,
           cloudAvailability: (now) => ({ enabled: true, available: true, reason: null, observedAt: now.toISOString() }),

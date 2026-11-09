@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import type { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ConnectionRegistry as Registry } from "../runtime/connection-registry.js";
 import { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
+import { deferred } from "./support/deferred.js";
 
 function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
   return {
@@ -186,3 +187,41 @@ describe("ProviderCliReconcileOwner proxy-mode validation", () => {
     owner.close();
   });
 });
+
+it.each([true, false])(
+  "does not start proxy=%s grant work after close during computer-kind lookup",
+  async (proxyMode) => {
+    const registry = new Registry();
+    const agentId = randomUUID(),
+      integrationId = randomUUID();
+    const entered = deferred(),
+      release = deferred();
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 3, expectedIdentity: identity },
+      ]),
+      computerKind: vi.fn(async () => {
+        entered.resolve();
+        await release.promise;
+        return "local" as const;
+      }),
+      issueRuntimeValidationRun: vi.fn(),
+      issueIntegrationCliValidationGrant: vi.fn(),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings);
+    const connection = await registered(registry, { proxyMode });
+    const result = driveToGrant(owner, connection, agentId, integrationId);
+    try {
+      await entered.promise;
+      const closing = owner.close();
+      release.resolve();
+      await Promise.all([closing, result]);
+      expect(bindings.issueRuntimeValidationRun).not.toHaveBeenCalled();
+      expect(bindings.issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await result;
+      await owner.close();
+    }
+  },
+);

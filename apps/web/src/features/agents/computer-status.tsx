@@ -20,10 +20,13 @@ export function ComputerIdentity({
   lastSeenAt,
   reserveStatusSpace = false,
   compact = false,
+  hideStatus = false,
   actions,
 }: {
   computer: Pick<AccountComputerSummary, "displayName" | "platform" | "kind">;
   connection: ComputerConnection;
+  /** A command window on the card owns the connection status: show only one. */
+  hideStatus?: boolean;
   lastSeenAt?: string | null;
   reserveStatusSpace?: boolean;
   compact?: boolean;
@@ -31,12 +34,7 @@ export function ComputerIdentity({
 }) {
   const cloud = computer.kind === "cloud";
   const status = computerStatus(connection, cloud);
-  const lastOnline =
-    !cloud && connection === "offline" && lastSeenAt ? (
-      <time className="text-xs text-kumo-subtle" dateTime={lastSeenAt} title={formatDateTime(lastSeenAt)}>
-        {m.computer_last_online({ time: formatRelativeTime(lastSeenAt) })}
-      </time>
-    ) : null;
+  const lastOnline = cloud ? null : lastOnlineLine(connection, lastSeenAt);
   if (compact) {
     return (
       <div
@@ -51,7 +49,8 @@ export function ComputerIdentity({
             {computer.displayName}
           </Text>
           <p className="text-sm text-kumo-subtle">
-            {cloud ? m.computer_cloud() : m.computer_local()} · {platformLabel(computer.platform)}
+            {/* The Cloud's platform is openTag's to choose and nothing a reader acts on. */}
+            {cloud ? m.computer_cloud() : `${m.computer_local()} · ${platformLabel(computer.platform)}`}
             {lastOnline ? <> · {lastOnline}</> : null}
           </p>
         </div>
@@ -59,7 +58,7 @@ export function ComputerIdentity({
           className="col-start-2 row-start-2 flex items-center pt-1 sm:col-start-3 sm:row-start-1 sm:self-center sm:pt-0"
           aria-live="polite"
         >
-          <StatusIndicator {...status} />
+          {hideStatus ? null : <StatusIndicator {...status} />}
         </div>
         <div className="col-start-3 row-start-1 flex items-center sm:col-start-4 sm:self-center">{actions}</div>
       </div>
@@ -78,16 +77,33 @@ export function ComputerIdentity({
             </Text>
           </div>
           <p className="text-sm text-kumo-subtle">
-            {cloud ? m.computer_cloud() : m.computer_local()} · {platformLabel(computer.platform)}
+            {cloud ? m.computer_cloud() : `${m.computer_local()} · ${platformLabel(computer.platform)}`}
           </p>
         </div>
         <div
           className={`flex flex-wrap content-start items-center gap-x-3 gap-y-2 ${reserveStatusSpace ? "min-h-12 sm:min-h-6" : ""}`}
         >
-          <StatusIndicator {...status} />
+          {hideStatus ? null : <StatusIndicator {...status} />}
           {lastOnline}
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Every offline or disconnected Local card says when it was last online, so two computers with the same
+ * name can be told apart. With no timestamp the line says there is no record rather than "never
+ * connected": earlier versions cleared the timestamp on every repair, so a missing value cannot tell a
+ * computer that never came online from one whose history was cleared. `undefined` means no reading.
+ */
+function lastOnlineLine(connection: ComputerConnection, lastSeenAt: string | null | undefined): ReactNode {
+  if (connection !== "offline" && connection !== "disconnected") return null;
+  if (lastSeenAt === null) return <span className="text-xs text-kumo-subtle">{m.computer_no_last_online()}</span>;
+  if (!lastSeenAt) return null;
+  return (
+    <time className="text-xs text-kumo-subtle" dateTime={lastSeenAt} title={formatDateTime(lastSeenAt)}>
+      {m.computer_last_online({ time: formatRelativeTime(lastSeenAt) })}
+    </time>
   );
 }

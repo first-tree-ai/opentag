@@ -1,7 +1,10 @@
-import type { GitHubManagementService } from "../github/github-management-service.js";
+import type {
+  GitHubExecutionCredentialReader,
+  GitHubExecutionCredentialRequest,
+} from "../github/agent-github-credential-service.js";
 import { GitPublicationError } from "./git-packets.js";
 
-type CredentialRequest = Parameters<GitHubManagementService["getExecutionUserCredential"]>[0] & {
+type CredentialRequest = GitHubExecutionCredentialRequest & {
   signal?: AbortSignal;
 };
 
@@ -9,7 +12,7 @@ export class GitHubExecutionCredentials {
   readonly #active = new Map<string, Set<() => Promise<void>>>();
   #closed = false;
 
-  constructor(private readonly management: Pick<GitHubManagementService, "getExecutionUserCredential">) {}
+  constructor(private readonly management: GitHubExecutionCredentialReader) {}
 
   async acquire(executionId: string, input: CredentialRequest): Promise<{ token: string; release(): Promise<void> }> {
     const entries = this.#active.get(executionId) ?? new Set<() => Promise<void>>();

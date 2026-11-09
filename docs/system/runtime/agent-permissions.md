@@ -6,17 +6,53 @@ description: "Per-Provider permission modes, native command rules, and the Slack
 # Agent permissions
 
 Local Codex Agents use `workspace-write` with `on-request` approvals and disabled sandbox network
-access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
-callback sends remaining requests to the task sender. Claude Code must support `auto` and
-`--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
-Claude loads no user or project settings and disables hooks and dynamic skill shell execution.
-Only explicitly synced skills and packaged Context Tree skills are linked into a private skills-only
-plugin as `opentag:<skill-name>`. Unavailable skills are skipped. Skills retain their native metadata
-and use their original instructions and resources; edits remain visible during a run. Claude honors
+access. Local Claude Code Agents use `acceptEdits`: allowlisted commands, native permission grants,
+and file edits and common filesystem commands in the working directory run without approval, while
+actions outside those rules prompt the task sender through `can_use_tool`. Claude Code must support
+`acceptEdits` and `--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
+Local Claude loads native user, project, and local settings, plugins, hooks, and Skill shell execution.
+Its environment preserves operator-provided plugin variables. Users and Agents manage these through
+native configuration and commands, preferably at project scope under the existing Agent Home.
+Provider homes, native login, and Session history locations stay unchanged. Global settings retain
+their native scope; project directories do not isolate them.
+Claude discovers synced project Skills natively. External packaged Skills, including Context Tree
+Skills, are linked into a private plugin with a fresh explicit `opentag-<random-id>` name per runtime,
+without linking project Skills a second time. Skill names use that runtime's namespace, as listed in
+the native catalog. Unavailable external Skills are skipped. Skills retain native metadata
+and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
-Subscription login is preserved.
-Pi always runs without approvals and has no permission settings or permission extension.
+OpenTag's supplementary temporary MCP configuration uses runtime-scoped service names with fresh
+execution credentials per Run, keeping platform tools and their grant rules separate from native
+user servers. The explicit supplementary configuration takes precedence when a project `.mcp.json`
+tries to register the same known runtime name; the native fixture checks that precedence for both
+gateway and hosted tools. The gateway name stays short enough to preserve its original tool-name
+budget. Native plugins and hooks execute as trusted local code and can run outside tool
+approvals, and a model-written project configuration can enable them on the next Run. The inherited
+daemon environment can include long-lived operator credentials; these are not fenced or revoked
+with an execution. See the [native trust contract](agent-runtime-contract.md#local-claude-native-configuration-and-trust).
+Subscription login is preserved. Provider readiness checks user-scoped authentication only, while
+Agent-project authentication must be checked natively from Agent Home. Routine model-option queries
+suppress hooks and MCP connections but still read native settings and may execute credential helpers;
+their success does not establish that an installed plugin loaded or its tools worked. Chrome integration
+also follows native configuration; OpenTag supplies no browser UI or additional browser isolation.
+Local Codex also admits native user/project settings, plugins, hooks, Skills, and direct or
+plugin-provided MCP services. Native feature choices and hook trust checks remain Codex's own;
+OpenTag supplies no hook trust bypass. It preserves custom environment variables and native shell
+filters, while inheritance is pinned to `all` for Session routing. Shell snapshots and login shells
+remain disabled, with managed `ZDOTDIR` retained for Session CLI routing. File-system/network policy
+and approval mappings remain unchanged. Required
+per-execution Unix socket exceptions override only their own network-proxy feature key and named
+permission profile. Other native feature choices and profiles remain intact. Native helpers,
+trusted hooks, and stdio MCP subprocesses are trusted local code outside model tool isolation.
+See the [Codex native trust contract](agent-runtime-contract.md#local-codex-native-configuration-and-trust).
+
+Pi has no model approval bridge or OS sandbox. Local execution admits native resources and passes
+`--approve` for the selected cwd without writing persistent project trust. Native extensions can
+execute outside the requested model tool restrictions and inherit custom plugin variables and
+operator credentials. Cloud retains disabled implicit discovery. See the
+[Pi native resource contract](agent-runtime-contract.md#local-pi-native-resources-and-trust) for
+headless command and UI compatibility limits.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
 lookup, native attachment commands, and `opentag` (`opentag-dev`, `opentag-staging`) and
@@ -31,10 +67,10 @@ rule with literal execution proxy/CA arguments and the returned handle path. Onl
 routing fields are read from the environment file; the shell does not source it.
 
 Local Codex and Claude Code Agent Model settings let an owner turn off approvals for future work
-or add command prefixes, including arguments after the prefix. Claude auto mode can still review
-broad execution rules. Built-in commands are not shown in the list. Approval requests go to the
-Slack or Feishu user who sent the task; no approver ID or account linking is needed. Cloud Agents
-always run with full permissions and have no permission settings.
+or add command prefixes, including arguments after the prefix. Built-in commands are not shown in
+the list. Approval requests go to the Slack or Feishu user who sent the task; no approver ID or
+account linking is needed. Cloud Agents always run with full permissions and have no permission
+settings.
 
 The Agent's self-configuration API cannot modify permission settings.
 
@@ -49,6 +85,8 @@ New QR registrations include this callback; existing Apps need it enabled in the
 
 Approval requests appear in a private message to the task sender with **Approve** and **Deny** buttons.
 Cards show the reason and action, without provider transport metadata or user IDs.
+Both cards include a small footer: "Whitelist command or disable approvals in Agent Model Settings".
+Only "Agent Model Settings" is linked, opening that Agent's Model settings directly.
 Slack cards use a bold title at the same size as the body text and a separate explanation.
 When the Client supplies structured command presentation, the full redacted command appears
 in a native code block, preserving line breaks and literal formatting characters. The reason and

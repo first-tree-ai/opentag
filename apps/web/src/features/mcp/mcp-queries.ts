@@ -104,6 +104,17 @@ export function useAgentMcpServers(agentId: string) {
   });
 }
 
+export function useConnectMcpOAuth(agentId: string) {
+  const invalidate = useMcpInvalidation();
+  return useMutation({
+    mutationFn: (input: { mcpServerId: string; scopes?: readonly string[] }) =>
+      browserApi.connectMcpOAuth(agentId, input.mcpServerId, input.scopes),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
 export function useAvailableMcpServers(agentId: string, enabled: boolean) {
   return useQuery({
     ...liveResourceQueryOptions,
@@ -119,11 +130,11 @@ export function useAvailableMcpServers(agentId: string, enabled: boolean) {
  * definition edit also invalidates every other Agent that uses it, which the pool invalidation and
  * the live cadence between them cover.
  */
-export function useMcpInvalidation(agentId?: string) {
+export function useMcpInvalidation(_agentId?: string) {
   const queryClient = useQueryClient();
   return async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: agentId ? queryKeys.mcp.agentServers(agentId) : ["mcp", "agents"] }),
+      queryClient.invalidateQueries({ queryKey: ["mcp", "agents"] }),
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers() }),
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.serverRoot() }),
     ]);

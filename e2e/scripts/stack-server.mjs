@@ -41,6 +41,8 @@ function connectionTarget(url) {
 // socket only, so every statement here goes over TCP inside the container, which only the real server
 // answers. A socket connection cannot tell the two apart and lands in the handover as
 // `FATAL: the database system is shutting down`.
+// This relies on the official image setting listen_addresses = '*' in postgresql.conf.sample.
+// Revisit all container probes if we mount a custom postgresql.conf or change the image family.
 async function psql(url, sql) {
   const { database, password, username } = connectionTarget(url);
   const { stdout } = await execFileAsync(

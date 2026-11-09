@@ -76,13 +76,16 @@ class Socket extends EventEmitter {
 /** Production broker, task authority, user-identity adapter and data transport; no public network or real user token. */
 describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority", (origin) => {
   it.each(["preparing", "streaming", "credit"] as const)(
-    "cancels a disconnected account while %s without revoking its shared token",
+    "cancels an unavailable Agent connector while %s",
     async (stage) => {
       const executions = new RuntimeExecutionRegistry();
       const capabilities = new RuntimeCapabilityStore();
-      const snapshot = scopeSnapshot();
+      const snapshot = {
+        ...scopeSnapshot(),
+        contextTrees: [{ kind: "git" as const, repository: "owner/repo", path: ".", ref: "main" }],
+      };
       const connectionId = randomUUID();
-      const record = executions.open({
+      const parent = executions.open({
         runId: randomUUID(),
         accountId: snapshot.computer.ownerAccountId,
         agentId: AGENT,
@@ -109,14 +112,20 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority
           ],
         ]),
       });
+      const target = { kind: "git" as const, repository: "owner/repo", path: ".", ref: "main" };
+      parent.services = [{ service: "context-tree", scopes: ["context-tree:git"] }];
+      const record = executions.open({
+        ...parent,
+        purpose: "context-tree",
+        contextTree: { ...target, parentExecutionId: parent.executionId },
+      });
       const connection = {
         id: connectionId,
         accountId: record.accountId,
-        status: "active",
-        authorizationVersion: "7",
+        authorizationVersion: "mcp:fixture",
         credentialGeneration: "3",
-        accessExpiresAt: new Date(Date.now() + 60000).toISOString(),
       };
+      let connected = true;
       const database = {
         select: (projection: Record<string, unknown>) => {
           const chain = {
@@ -130,7 +139,7 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority
       };
       const policy = new GitHubRuntimePolicy({
         database: database as never,
-        management: { getOverview: async () => ({ connection }) } as never,
+        management: { getOverview: async () => ({ connection: connected ? connection : null }) },
       });
       const broker = new RuntimeCredentialBroker({
         capabilities,
@@ -229,7 +238,7 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority
           headers: { "x-opentag-provider-origin": "github.com" },
         });
         await ready;
-        connection.status = "disconnected";
+        connected = false;
         await vi.waitFor(() =>
           expect(socket.json()).toContainEqual(
             expect.objectContaining({

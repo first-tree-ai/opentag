@@ -23,12 +23,14 @@ The application uses the website's supplied artwork:
 
 The four site SVGs retain their drawing paths and add an accessibility title; PNGs are rasterized
 from them. The two generated additions are resized from the approved images in
-`testing/web-ui/site-redesign/avatar-concepts/`. Their SVGs embed the same PNG bytes to preserve
+[the retained design record](https://github.com/first-tree-ai/opentag/issues/1280#issuecomment-6634856747).
+Their SVGs embed the same PNG bytes to preserve
 the existing SVG URLs without approximating or redrawing the approved artwork. They are raster-backed
-SVGs, not editable vector masters. Source concepts and generation prompts are preserved in that directory.
+SVGs, not editable vector masters. Source concepts and generation prompts are linked from that record to their
+immutable source revision.
 
 Browser icons are derived from `site-brand-mark.png`: transparent 16px and 32px PNGs, identical multi-size ICOs
 (16px, 32px, and 48px) at `public/favicon.ico` and `public/icons/favicon.ico`, and a 180px Apple touch icon with
 the 156px mark centred on white. These local assets replace the deprecated cat logos and SVG favicon.
 The icon links include a version query so browsers refresh previously cached cat artwork. No runtime artwork
-request goes to the website. The README marks in `docs/.assets/` also use the current teal artwork.
+request goes to the website. The README marks in `.github/assets/` (kept outside the `docs/` Context Tree) also use the current teal artwork.

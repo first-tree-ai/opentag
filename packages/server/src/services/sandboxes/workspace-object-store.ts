@@ -34,11 +34,23 @@ export interface WorkspaceObjectWriteInput {
   sha256: string;
   md5: string;
   sealed: boolean;
+  writeId?: string;
+}
+
+export interface WorkspaceWriteInspection {
+  id: string;
+  generation: string;
+  metageneration: string;
 }
 
 export interface WorkspaceObjectStore {
   /** Initialization is reserved for the Server before its first allocation; Runner claims never seed. */
-  claim(scope: WorkspaceObjectScope, options?: { initialize?: boolean }): Promise<WorkspaceObject>;
+  claim(
+    scope: WorkspaceObjectScope,
+    options?: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean },
+  ): Promise<WorkspaceObject>;
+  seal(scope: WorkspaceObjectScope, previous: WorkspaceObject): Promise<WorkspaceObject>;
+  inspectWrite(scope: WorkspaceObjectScope, input: WorkspaceWriteInspection): Promise<WorkspaceObject>;
   head(scope: WorkspaceObjectScope): Promise<WorkspaceObject | undefined>;
   read(scope: WorkspaceObjectScope, object: WorkspaceObject): Promise<ReadableStream<Uint8Array>>;
   write(
@@ -98,6 +110,7 @@ const OWNER_PATTERN = /^[1-9][0-9]{0,9}$/;
 const SIZE_PATTERN = /^(0|[1-9][0-9]{0,9})$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MD5_PATTERN = /^[A-Za-z0-9+/]{22}==$/;
+const WRITE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const META_SCHEMA = "schema";
 const META_SANDBOX = "sandbox";
@@ -129,7 +142,12 @@ interface ObjectLocation {
 }
 
 /** Validated snapshot; identical to the wire contract once identity checks passed. */
-type StoredSnapshot = RunnerWorkspaceObject;
+type StoredSnapshot = RunnerWorkspaceObject & { writeId?: string; contentDisposition?: string };
+
+function publicSnapshot(snapshot: StoredSnapshot): WorkspaceObject {
+  const { writeId: _writeId, contentDisposition: _contentDisposition, ...object } = snapshot;
+  return object;
+}
 
 function sanitizeMessage(message: string): string {
   return redactForLog(message.slice(0, MESSAGE_MAX_CHARS * 2))
@@ -250,7 +268,26 @@ function parseSnapshot(resource: unknown, location: ObjectLocation, scope: Works
   if (typeof md5Hash !== "string" || !MD5_PATTERN.test(md5Hash)) {
     fail("corrupt", "GCS object md5Hash is not a base64 digest");
   }
-  return parseCustomMetadata(record(body.metadata), scope, { generation, metageneration, bytes, md5: md5Hash });
+  return {
+    ...parseCustomMetadata(record(body.metadata), scope, { generation, metageneration, bytes, md5: md5Hash }),
+    ...parseWriteDisposition(body.contentDisposition),
+  };
+}
+
+function parseWriteDisposition(value: unknown): Pick<StoredSnapshot, "writeId" | "contentDisposition"> {
+  if (typeof value !== "string") return {};
+  const writeId = /^attachment;\s*filename="state-([a-f0-9-]{36})\.tar\.gz"(?:\s*;.*)?$/.exec(value)?.[1];
+  return { contentDisposition: value, ...(writeId && WRITE_ID_PATTERN.test(writeId) ? { writeId } : {}) };
+}
+
+function formatWriteDisposition(writeId?: string): string | undefined {
+  return writeId ? `attachment; filename="state-${writeId}.tar.gz"` : undefined;
+}
+
+function nextFenceDisposition(current: StoredSnapshot): string {
+  const base = formatWriteDisposition(current.writeId) ?? 'attachment; filename="state.tar.gz"';
+  const previous = /;\s*opentag-fence\s*=\s*"?([01])"?\s*(?:;|$)/.exec(current.contentDisposition ?? "")?.[1];
+  return `${base}; opentag-fence=${previous === "0" ? "1" : "0"}`;
 }
 
 function parseCustomMetadata(
@@ -331,14 +368,47 @@ function snapshotsEqual(snapshot: StoredSnapshot, object: WorkspaceObject): bool
   );
 }
 
+function assertFenceDeadline(signal: AbortSignal): void {
+  if (signal.aborted) fail("timeout", "Workspace fencing claim exceeded its deadline");
+}
+
+function requireFenceSnapshot(
+  scope: WorkspaceObjectScope,
+  current: StoredSnapshot | undefined,
+  sameOwnerOnly: boolean,
+): StoredSnapshot {
+  if (!current) fail("missing", "The expected workspace archive is absent");
+  if (
+    current.ownerGeneration > scope.environmentGeneration ||
+    (sameOwnerOnly && current.ownerGeneration !== scope.environmentGeneration)
+  ) {
+    fail("stale", "Workspace owner does not permit this fencing claim");
+  }
+  return current;
+}
+
+function assertUnchangedFenceSnapshot(observed: StoredSnapshot | undefined, original: StoredSnapshot): void {
+  if (
+    !observed ||
+    !snapshotsEqual(observed, original) ||
+    observed.writeId !== original.writeId ||
+    observed.contentDisposition !== original.contentDisposition
+  ) {
+    fail("unknown_result", "Workspace fencing result cannot be attributed to this claim");
+  }
+}
+
 function validateWriteInput(input: WorkspaceObjectWriteInput): void {
   if (!input || typeof input !== "object") fail("invalid_input", "Workspace write input is required");
   if (!Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.bytes > RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES) {
-    fail("invalid_input", "Workspace archive byte length is zero or outside the 128 MiB bound");
+    fail("invalid_input", "Workspace archive byte length is zero or outside the 512 MiB bound");
   }
   if (!SHA256_PATTERN.test(input.sha256)) fail("invalid_input", "Workspace archive sha256 is not a hex digest");
   if (!MD5_PATTERN.test(input.md5)) fail("invalid_input", "Workspace archive md5 is not a base64 digest");
   if (typeof input.sealed !== "boolean") fail("invalid_input", "Workspace archive seal flag is not a boolean");
+  if (input.writeId !== undefined && !WRITE_ID_PATTERN.test(input.writeId)) {
+    fail("invalid_input", "Workspace write identity is malformed");
+  }
   const body = input.body as Partial<AsyncIterable<Uint8Array>> | undefined;
   if (!body || typeof body[Symbol.asyncIterator] !== "function") {
     fail("invalid_input", "Workspace archive body must be an AsyncIterable of bytes");
@@ -492,13 +562,18 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
    * allocation 1 may seed an empty object (`ifGenerationMatch=0`); every restore of a missing
    * object fails closed, even in generation 1. Ownership advances via a
    * generation+metageneration PATCH that keeps content, checksums and `saved`; conflicts re-read
-   * with bounded retries and never regress the owner.
+   * with bounded retries and never regress the owner. Fencing claims also advance a same-owner
+   * unsealed object's metageneration; readback claims and same-owner sealed objects stay unchanged.
    */
-  async claim(scope: WorkspaceObjectScope, options: { initialize?: boolean } = {}): Promise<WorkspaceObject> {
+  async claim(
+    scope: WorkspaceObjectScope,
+    options: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean } = {},
+  ): Promise<WorkspaceObject> {
     const location = locationFor(scope);
+    if (options.fence) return publicSnapshot(await this.#fenceClaim(location, scope, options.sameOwnerOnly === true));
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.#claimAttempt(location, scope, options.initialize === true);
+        return publicSnapshot(await this.#claimAttempt(location, scope, options.initialize === true));
       } catch (error) {
         const retryable =
           error instanceof WorkspaceObjectStoreError &&
@@ -513,7 +588,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     location: ObjectLocation,
     scope: WorkspaceObjectScope,
     initialize: boolean,
-  ): Promise<WorkspaceObject> {
+  ): Promise<StoredSnapshot> {
     const current = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
     if (current === undefined) {
       if (!initialize || scope.environmentGeneration !== 1) {
@@ -525,14 +600,94 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       fail("stale", "Workspace is owned by a newer environment generation");
     }
     if (current.ownerGeneration === scope.environmentGeneration) return current;
-    return this.#patchOwner(location, scope, current, scope.environmentGeneration);
+    return this.#patchMetadata(location, scope, current, scope.environmentGeneration, false);
+  }
+
+  async #fenceClaim(
+    location: ObjectLocation,
+    scope: WorkspaceObjectScope,
+    sameOwnerOnly: boolean,
+  ): Promise<StoredSnapshot> {
+    const signal = AbortSignal.timeout(this.#timeoutMs);
+    const original = requireFenceSnapshot(scope, await this.#getMetadata(location, scope, signal), sameOwnerOnly);
+    if (original.ownerGeneration === scope.environmentGeneration && original.sealed) return original;
+    const contentDisposition = nextFenceDisposition(original);
+    for (let attempt = 0; ; attempt += 1) {
+      assertFenceDeadline(signal);
+      try {
+        return await this.#patchMetadata(
+          location,
+          scope,
+          original,
+          scope.environmentGeneration,
+          false,
+          signal,
+          contentDisposition,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof WorkspaceObjectStoreError) ||
+          error.code === "conflict" ||
+          !CLAIM_RETRYABLE.has(error.code)
+        )
+          throw error;
+        assertFenceDeadline(signal);
+        const observed = await this.#getMetadata(location, scope, signal);
+        assertUnchangedFenceSnapshot(observed, original);
+        if (attempt + 1 >= MAX_CLAIM_ATTEMPTS) throw error;
+      }
+    }
+  }
+
+  /** Seal only the exact saved snapshot; no archive bytes or retention properties are changed. */
+  async seal(scope: WorkspaceObjectScope, previous: WorkspaceObject): Promise<WorkspaceObject> {
+    const location = locationFor(scope);
+    assertSnapshotInput(previous);
+    if (previous.ownerGeneration !== scope.environmentGeneration) fail("stale", "Workspace owner changed");
+    if (!previous.saved || previous.sealed) fail("sealed", "Only an unsealed saved archive can be sealed");
+    const current = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
+    if (!current) fail("missing", "Workspace archive object is absent");
+    if (!snapshotsEqual(current, previous)) fail("conflict", "Workspace changed before sealing");
+    const expected = {
+      ...previous,
+      metageneration: String(BigInt(previous.metageneration) + 1n),
+      sealed: true,
+    };
+    try {
+      return publicSnapshot(await this.#patchMetadata(location, scope, current, scope.environmentGeneration, true));
+    } catch (error) {
+      if (!(error instanceof WorkspaceObjectStoreError) || !CLAIM_RETRYABLE.has(error.code)) throw error;
+      // A PATCH may have committed before its response was lost. Read once; never rebase/retry.
+      const observed = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
+      if (observed && snapshotsEqual(observed, expected)) return publicSnapshot(observed);
+      fail("unknown_result", "Workspace seal outcome did not verify against the intended snapshot");
+    }
+  }
+
+  /** Readback for one upload identity, or its unchanged original CAS base; never a newer writer. */
+  async inspectWrite(scope: WorkspaceObjectScope, input: WorkspaceWriteInspection): Promise<WorkspaceObject> {
+    const location = locationFor(scope);
+    if (
+      !WRITE_ID_PATTERN.test(input.id) ||
+      !GENERATION_PATTERN.test(input.generation) ||
+      !GENERATION_PATTERN.test(input.metageneration)
+    ) {
+      fail("invalid_input", "Workspace write inspection is malformed");
+    }
+    const current = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
+    if (!current) fail("missing", "Workspace archive object is absent");
+    if (current.ownerGeneration !== scope.environmentGeneration) fail("stale", "Workspace owner changed");
+    const unchanged = current.generation === input.generation && current.metageneration === input.metageneration;
+    const committed = current.writeId === input.id && current.metageneration === "1";
+    if (!unchanged && !committed) fail("conflict", "Workspace write readback belongs to another attempt or fence");
+    return publicSnapshot(current);
   }
 
   /** Returns the current validated snapshot, or undefined when no object exists yet. */
   async head(scope: WorkspaceObjectScope): Promise<WorkspaceObject | undefined> {
     const location = locationFor(scope);
     const current = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
-    return current === undefined ? undefined : current;
+    return current === undefined ? undefined : publicSnapshot(current);
   }
 
   /**
@@ -585,6 +740,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     const location = locationFor(scope);
     assertSnapshotInput(previous);
     validateWriteInput(input);
+    const write = { ...input, writeId: input.writeId ?? randomUUID() };
     if (previous.ownerGeneration !== scope.environmentGeneration) {
       fail("stale", "Workspace object belongs to another environment generation; claim first");
     }
@@ -606,15 +762,24 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     const conditions = `ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`;
     let snapshot: StoredSnapshot;
     try {
-      snapshot = await this.#insertMultipart(location, scope, metadata, input.md5, input.bytes, input.body, conditions);
+      snapshot = await this.#insertMultipart(
+        location,
+        scope,
+        metadata,
+        input.md5,
+        input.bytes,
+        input.body,
+        conditions,
+        write.writeId,
+      );
     } catch (error) {
       if (error instanceof WorkspaceObjectStoreError && error.code === "unknown_result") {
-        return this.#verifyWrite(location, scope, previous, input);
+        return this.#verifyWrite(location, scope, previous, write);
       }
       throw error;
     }
-    if (this.#matchesAttempt(snapshot, scope, previous, input)) return snapshot;
-    return this.#verifyWrite(location, scope, previous, input);
+    if (this.#matchesAttempt(snapshot, scope, previous, write)) return publicSnapshot(snapshot);
+    return this.#verifyWrite(location, scope, previous, write);
   }
 
   #matchesAttempt(
@@ -625,6 +790,8 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
   ): boolean {
     return (
       snapshot.generation !== previous.generation &&
+      snapshot.metageneration === "1" &&
+      snapshot.writeId === input.writeId &&
       snapshot.ownerGeneration === scope.environmentGeneration &&
       snapshot.saved &&
       snapshot.sealed === input.sealed &&
@@ -647,7 +814,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     } catch {
       fail("unknown_result", "Workspace write outcome is uncertain and verification could not read the object");
     }
-    if (current !== undefined && this.#matchesAttempt(current, scope, previous, input)) return current;
+    if (current !== undefined && this.#matchesAttempt(current, scope, previous, input)) return publicSnapshot(current);
     fail("unknown_result", "Workspace write outcome is uncertain and did not verify against the latest object");
   }
 
@@ -666,54 +833,59 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     return parseSnapshot(await this.#boundedJson(response), location, scope);
   }
 
-  /** Conditional metadata PATCH advancing the owner and clearing the seal; content is untouched. */
-  async #patchOwner(
+  /** Conditional metadata mutation; content and storage retention properties remain untouched. */
+  async #patchMetadata(
     location: ObjectLocation,
     scope: WorkspaceObjectScope,
     current: StoredSnapshot,
     nextOwner: number,
+    sealed: boolean,
+    signal = AbortSignal.timeout(this.#timeoutMs),
+    contentDisposition?: string,
   ): Promise<StoredSnapshot> {
     // The full validated metadata map is resent so the result is identical whether GCS merges or
     // replaces custom metadata under PATCH semantics.
     const metadata = metadataFor(scope, {
       ownerGeneration: nextOwner,
       saved: current.saved,
-      sealed: false,
+      sealed,
       sha256: current.sha256,
     });
     const url = `${metadataUrl(location)}?ifGenerationMatch=${current.generation}&ifMetagenerationMatch=${current.metageneration}`;
     const response = await this.#send("PATCH", url, {
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ metadata }),
-      signal: AbortSignal.timeout(this.#timeoutMs),
+      body: JSON.stringify({ metadata, ...(contentDisposition === undefined ? {} : { contentDisposition }) }),
+      signal,
     });
     if (response.status === 404) {
       cancelQuietly(response);
-      fail("conflict", "Workspace object changed during claim; re-reading");
+      fail("conflict", "Workspace object changed during metadata update");
     }
-    if (!response.ok) throw this.#httpError(response, "claim");
+    if (!response.ok) throw this.#httpError(response, "metadata update");
     let parsed: unknown;
     try {
       parsed = await this.#boundedJson(response);
     } catch {
-      fail("unknown_result", "Workspace claim response could not be decoded; re-reading");
+      fail("unknown_result", "Workspace metadata update response could not be decoded");
     }
     let snapshot: StoredSnapshot;
     try {
       snapshot = parseSnapshot(parsed, location, scope);
     } catch {
-      fail("unknown_result", "Workspace claim response did not parse; re-reading");
+      fail("unknown_result", "Workspace metadata update response did not parse");
     }
     if (
       snapshot.generation !== current.generation ||
+      snapshot.metageneration !== String(BigInt(current.metageneration) + 1n) ||
       snapshot.ownerGeneration !== nextOwner ||
-      snapshot.sealed ||
+      snapshot.sealed !== sealed ||
       snapshot.saved !== current.saved ||
       snapshot.bytes !== current.bytes ||
       snapshot.sha256 !== current.sha256 ||
-      snapshot.md5 !== current.md5
+      snapshot.md5 !== current.md5 ||
+      snapshot.writeId !== current.writeId
     ) {
-      fail("unknown_result", "Workspace claim response did not match the patched snapshot; re-reading");
+      fail("unknown_result", "Workspace metadata update response did not match the patched snapshot");
     }
     return snapshot;
   }
@@ -756,6 +928,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     bytes: number,
     body: AsyncIterable<Uint8Array>,
     conditionQuery: string,
+    writeId?: string,
   ): Promise<StoredSnapshot> {
     const boundary = `ot-${randomUUID().replaceAll("-", "")}`;
     const resource = JSON.stringify({
@@ -763,6 +936,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       contentType: "application/octet-stream",
       md5Hash: md5,
       metadata,
+      contentDisposition: formatWriteDisposition(writeId),
     });
     const preamble = Buffer.from(
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${resource}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,

@@ -13,14 +13,14 @@ import {
   SCHEDULE_ERROR_CODES,
   type UpdateAgentScheduleRequest,
 } from "@opentag/shared";
-import { and, desc, eq, isNull, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSchedules, agents, imBindings, sessions } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { AgentOwnerResolver } from "../agents/agent-self-service.js";
 import { resourceNotFound } from "../agents/errors.js";
-import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
+import type { SessionCliProofService, SessionCliSourceContext } from "../sessions/session-cli-proof-service.js";
 import {
   normalizeIanaTimezone,
   previewSchedule,
@@ -33,8 +33,8 @@ import { ScheduleServiceError, scheduleInvalidRequest } from "./errors.js";
 /*
  * ScheduleService — the Schedule management plane.
  *
- * A Schedule belongs to exactly one Agent and pins one visible Session as its fixed target at
- * creation; the target can never change afterwards. Two caller surfaces reach the same
+ * A Schedule belongs to exactly one Agent and pins the Session that created it as its fixed target;
+ * the target can never change afterwards. Two caller surfaces reach the same
  * operations: the Agent itself through a Session CLI proof (`/api/v1/runtime/agent/schedules`),
  * and the owning Account through the Web session (`/api/v1/agents/:agentId/schedules`,
  * read/pause/resume/delete only). Both conceal foreign or missing schedules as 404.
@@ -46,8 +46,14 @@ import { ScheduleServiceError, scheduleInvalidRequest } from "./errors.js";
  * scheduler worker) never bump the revision; only actual management edits and auto-disable do.
  */
 
+interface ScheduleAuthority {
+  readonly accountId: string;
+  readonly source?: SessionCliSourceContext;
+}
+
 /** The authenticated Agent self scope. Only `authenticate` creates one; callers pass it back unchanged. */
 export interface AgentScheduleScope {
+  readonly source: SessionCliSourceContext;
   readonly accountId: string;
   readonly agentId: string;
   readonly sessionId: string;
@@ -80,7 +86,7 @@ export const scheduleDatabaseClock: ScheduleClock = {
 export interface ScheduleServiceOptions {
   database: DatabaseClient;
   owners: AgentOwnerResolver;
-  proofs: Pick<SessionCliProofService, "authenticate">;
+  proofs: Pick<SessionCliProofService, "authenticate" | "assertCurrentSource" | "lockCurrentSource">;
   /** The deployment's trusted public origin; the only base ever used for Schedule detail links. */
   publicUrl: string;
   clock?: ScheduleClock;
@@ -156,8 +162,9 @@ export class ScheduleService {
     const source = executionId
       ? await this.#options.proofs.authenticate(proof, executionId)
       : await this.#options.proofs.authenticate(proof);
-    const accountId = await this.#options.owners.resolveAccountId(source.agentId);
+    const { accountId } = await this.#options.owners.resolve(source.agentId);
     return {
+      source,
       accountId,
       agentId: source.agentId,
       sessionId: source.sessionId,
@@ -172,6 +179,7 @@ export class ScheduleService {
 
   async createForAgent(scope: AgentScheduleScope, input: CreateAgentScheduleRequest): Promise<AgentSchedule> {
     const created = await this.#options.database.transaction(async (transaction) => {
+      await this.#lockAgent(transaction, scope, scope.agentId);
       const now = await this.#clock.now(transaction);
       const target = await this.#resolveCreateTarget(transaction, scope);
       const { rule, timezone } = this.#ruleFromInput(input.schedule, input.timezone, now);
@@ -201,11 +209,11 @@ export class ScheduleService {
   }
 
   async listForAgent(scope: AgentScheduleScope, query: AgentScheduleListQuery): Promise<AgentScheduleListResponse> {
-    return this.#list(scope.agentId, query);
+    return this.#list(scope, scope.agentId, query);
   }
 
   async getForAgent(scope: AgentScheduleScope, scheduleId: string): Promise<AgentSchedule> {
-    return this.#get(scope.agentId, scheduleId);
+    return this.#get(scope, scope.agentId, scheduleId);
   }
 
   async updateForAgent(
@@ -214,7 +222,7 @@ export class ScheduleService {
     input: UpdateAgentScheduleRequest,
   ): Promise<AgentSchedule> {
     const updated = await this.#options.database.transaction(async (transaction) => {
-      const locked = await this.#lockOwned(transaction, scope.agentId, scheduleId);
+      const locked = await this.#lockOwned(transaction, scope, scope.agentId, scheduleId);
       this.#requireRevision(locked, input.expectedRevision);
       const now = await this.#clock.now(transaction);
       const timing = this.#resolveEditedTiming(locked, input, now);
@@ -274,7 +282,7 @@ export class ScheduleService {
   }
 
   async pauseForAgent(scope: AgentScheduleScope, scheduleId: string, expectedRevision: number): Promise<AgentSchedule> {
-    return this.#pause(scope.agentId, scheduleId, expectedRevision);
+    return this.#pause(scope, scope.agentId, scheduleId, expectedRevision);
   }
 
   async resumeForAgent(
@@ -282,11 +290,11 @@ export class ScheduleService {
     scheduleId: string,
     expectedRevision: number,
   ): Promise<AgentSchedule> {
-    return this.#resume(scope.agentId, scheduleId, expectedRevision, scope.userTaskSource ?? null);
+    return this.#resume(scope, scope.agentId, scheduleId, expectedRevision, scope.userTaskSource ?? null);
   }
 
   async deleteForAgent(scope: AgentScheduleScope, scheduleId: string, expectedRevision: number): Promise<void> {
-    await this.#remove(scope.agentId, scheduleId, expectedRevision);
+    await this.#remove(scope, scope.agentId, scheduleId, expectedRevision);
     this.#audit("schedule.deleted", { agentId: scope.agentId, scheduleId });
   }
 
@@ -294,15 +302,15 @@ export class ScheduleService {
     scope: AgentScheduleScope,
     input: { scheduleId: string } | { schedule: AgentScheduleInput; timezone: string },
   ): Promise<AgentSchedulePreview> {
-    if ("scheduleId" in input) {
-      const row = await this.#findOwned(this.#options.database, scope.agentId, input.scheduleId);
-      const now = await this.#clock.now(this.#options.database);
-      return this.#preview(row.schedule, row.timezone, now);
-    }
-    const now = await this.#clock.now(this.#options.database);
-    // An ad-hoc `every` preview assumes creation at this database instant, so its anchor is now.
-    const { rule, timezone } = this.#ruleFromInput(input.schedule, input.timezone, now);
-    return this.#preview(rule, timezone, now);
+    return this.#readOwned(scope, scope.agentId, async (transaction) => {
+      if ("scheduleId" in input) {
+        const row = await this.#findOwned(transaction, scope.agentId, input.scheduleId);
+        return this.#preview(row.schedule, row.timezone, await this.#clock.now(transaction));
+      }
+      const now = await this.#clock.now(transaction);
+      const { rule, timezone } = this.#ruleFromInput(input.schedule, input.timezone, now);
+      return this.#preview(rule, timezone, now);
+    });
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -314,13 +322,11 @@ export class ScheduleService {
     agentId: string,
     query: AgentScheduleListQuery,
   ): Promise<AgentScheduleListResponse> {
-    await this.#requireOwnedAgent(accountId, agentId);
-    return this.#list(agentId, query);
+    return this.#list({ accountId }, agentId, query);
   }
 
   async getForAccount(accountId: string, agentId: string, scheduleId: string): Promise<AgentSchedule> {
-    await this.#requireOwnedAgent(accountId, agentId);
-    return this.#get(agentId, scheduleId);
+    return this.#get({ accountId }, agentId, scheduleId);
   }
 
   async pauseForAccount(
@@ -329,8 +335,7 @@ export class ScheduleService {
     scheduleId: string,
     expectedRevision: number,
   ): Promise<AgentSchedule> {
-    await this.#requireOwnedAgent(accountId, agentId);
-    return this.#pause(agentId, scheduleId, expectedRevision);
+    return this.#pause({ accountId }, agentId, scheduleId, expectedRevision);
   }
 
   async resumeForAccount(
@@ -339,8 +344,7 @@ export class ScheduleService {
     scheduleId: string,
     expectedRevision: number,
   ): Promise<AgentSchedule> {
-    await this.#requireOwnedAgent(accountId, agentId);
-    return this.#resume(agentId, scheduleId, expectedRevision);
+    return this.#resume({ accountId }, agentId, scheduleId, expectedRevision);
   }
 
   async deleteForAccount(
@@ -349,8 +353,7 @@ export class ScheduleService {
     scheduleId: string,
     expectedRevision: number,
   ): Promise<void> {
-    await this.#requireOwnedAgent(accountId, agentId);
-    await this.#remove(agentId, scheduleId, expectedRevision);
+    await this.#remove({ accountId }, agentId, scheduleId, expectedRevision);
     this.#audit("schedule.deleted", { agentId, scheduleId });
   }
 
@@ -358,7 +361,19 @@ export class ScheduleService {
    * Shared scoped operations
    * ---------------------------------------------------------------------------------------- */
 
-  async #list(agentId: string, query: AgentScheduleListQuery): Promise<AgentScheduleListResponse> {
+  async #list(
+    authority: ScheduleAuthority,
+    agentId: string,
+    query: AgentScheduleListQuery,
+  ): Promise<AgentScheduleListResponse> {
+    return this.#readOwned(authority, agentId, (transaction) => this.#listRows(transaction, agentId, query));
+  }
+
+  async #listRows(
+    executor: ScheduleDbExecutor,
+    agentId: string,
+    query: AgentScheduleListQuery,
+  ): Promise<AgentScheduleListResponse> {
     const cursor = decodeListCursor(agentId, query.cursor);
     const conditions: (SQL | undefined)[] = [eq(agentSchedules.agentId, agentId)];
     if (cursor) {
@@ -366,7 +381,7 @@ export class ScheduleService {
         sql`(${agentSchedules.createdAt}, ${agentSchedules.id}) < (${cursor.at.toISOString()}::timestamptz, ${cursor.id}::uuid)`,
       );
     }
-    const rows = await this.#options.database
+    const rows = await executor
       .select({ schedule: agentSchedules, target: targetFactsColumns() })
       .from(agentSchedules)
       .innerJoin(sessions, eq(sessions.id, agentSchedules.targetSessionId))
@@ -385,14 +400,21 @@ export class ScheduleService {
     };
   }
 
-  async #get(agentId: string, scheduleId: string): Promise<AgentSchedule> {
-    const row = await this.#findOwned(this.#options.database, agentId, scheduleId);
-    return this.#detailForRow(row);
+  async #get(authority: ScheduleAuthority, agentId: string, scheduleId: string): Promise<AgentSchedule> {
+    return this.#readOwned(authority, agentId, async (transaction) => {
+      const row = await this.#findOwned(transaction, agentId, scheduleId);
+      return this.#detailForRow(row, transaction);
+    });
   }
 
-  async #pause(agentId: string, scheduleId: string, expectedRevision: number): Promise<AgentSchedule> {
+  async #pause(
+    authority: ScheduleAuthority,
+    agentId: string,
+    scheduleId: string,
+    expectedRevision: number,
+  ): Promise<AgentSchedule> {
     const row = await this.#options.database.transaction(async (transaction) => {
-      const locked = await this.#lockOwned(transaction, agentId, scheduleId);
+      const locked = await this.#lockOwned(transaction, authority, agentId, scheduleId);
       this.#requireRevision(locked, expectedRevision);
       // A repeated pause that changed nothing validates the revision and returns as-is.
       if (!locked.enabled) return locked;
@@ -409,13 +431,14 @@ export class ScheduleService {
   }
 
   async #resume(
+    authority: ScheduleAuthority,
     agentId: string,
     scheduleId: string,
     expectedRevision: number,
     userTaskSource?: RuntimeUserTaskSource | null,
   ): Promise<AgentSchedule> {
     const row = await this.#options.database.transaction(async (transaction) => {
-      const locked = await this.#lockOwned(transaction, agentId, scheduleId);
+      const locked = await this.#lockOwned(transaction, authority, agentId, scheduleId);
       this.#requireRevision(locked, expectedRevision);
       const now = await this.#clock.now(transaction);
       /*
@@ -444,9 +467,14 @@ export class ScheduleService {
     return this.#detailForRow(row);
   }
 
-  async #remove(agentId: string, scheduleId: string, expectedRevision: number): Promise<void> {
+  async #remove(
+    authority: ScheduleAuthority,
+    agentId: string,
+    scheduleId: string,
+    expectedRevision: number,
+  ): Promise<void> {
     await this.#options.database.transaction(async (transaction) => {
-      const locked = await this.#lockOwned(transaction, agentId, scheduleId);
+      const locked = await this.#lockOwned(transaction, authority, agentId, scheduleId);
       this.#requireRevision(locked, expectedRevision);
       // Hard delete: already-generated messages keep their scheduledOrigin traceability snapshot
       // and their execution eligibility; nothing cascades.
@@ -459,59 +487,23 @@ export class ScheduleService {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * Resolve the fixed create target from the proof's Session. A channel/thread Session pins
-   * itself; an internal Session resolves exactly one existing active visible Session of the same
-   * IM binding, channel, conversation kind, and thread scope — never a fallback, never a new
-   * Session.
+   * The fixed create target is the proof's own Session, whatever its kind. Nothing a caller sends can
+   * name another Session, so a Session can only schedule itself.
    */
   async #resolveCreateTarget(transaction: DatabaseTransaction, scope: AgentScheduleScope): Promise<TargetFactsRow> {
     const [source] = await transaction
-      .select({
-        id: sessions.id,
-        kind: sessions.kind,
-        imBindingId: sessions.imBindingId,
-        channelId: sessions.channelId,
-        conversationKind: sessions.conversationKind,
-        threadKey: sessions.threadKey,
-        endedAt: sessions.endedAt,
-      })
+      .select({ endedAt: sessions.endedAt })
       .from(sessions)
       .where(eq(sessions.id, scope.sessionId))
       .limit(1);
     if (!source || source.endedAt) {
       throw new ScheduleServiceError(
         SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
-        "A schedule requires an active visible conversation as its fixed target",
+        "A schedule requires an active Session as its fixed target",
       );
     }
-    if (source.kind === "channel" || source.kind === "thread") {
-      const target = await this.#targetFacts(transaction, source.id);
-      if (!target) throw new Error("The proof's Session is missing its target facts");
-      return target;
-    }
-    const candidates = await transaction
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(
-        and(
-          eq(sessions.imBindingId, source.imBindingId),
-          eq(sessions.channelId, source.channelId),
-          eq(sessions.conversationKind, source.conversationKind),
-          source.threadKey === null
-            ? eq(sessions.kind, "channel")
-            : and(eq(sessions.kind, "thread"), eq(sessions.threadKey, source.threadKey)),
-          isNull(sessions.endedAt),
-        ),
-      )
-      .limit(2);
-    if (candidates.length !== 1) {
-      throw new ScheduleServiceError(
-        SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
-        "No existing visible Session matches this conversation; start one in the target Chat first",
-      );
-    }
-    const target = await this.#targetFacts(transaction, (candidates[0] as { id: string }).id);
-    if (!target) throw new Error("The resolved target Session is missing its target facts");
+    const target = await this.#targetFacts(transaction, scope.sessionId);
+    if (!target) throw new Error("The proof's Session is missing its target facts");
     return target;
   }
 
@@ -538,7 +530,7 @@ export class ScheduleService {
     if (!valid) {
       throw new ScheduleServiceError(
         SCHEDULE_ERROR_CODES.TARGET_INVALID,
-        "The schedule's fixed target is no longer valid; create a new schedule from an active conversation",
+        "The schedule's fixed target is no longer valid; create a new schedule from an active Session",
       );
     }
   }
@@ -565,7 +557,13 @@ export class ScheduleService {
   }
 
   /** Lock the owned schedule row for a mutation; concurrent writers serialize on this lock. */
-  async #lockOwned(transaction: DatabaseTransaction, agentId: string, scheduleId: string): Promise<ScheduleRow> {
+  async #lockOwned(
+    transaction: DatabaseTransaction,
+    authority: ScheduleAuthority,
+    agentId: string,
+    scheduleId: string,
+  ): Promise<ScheduleRow> {
+    await this.#lockAgent(transaction, authority, agentId);
     const [row] = await transaction
       .select()
       .from(agentSchedules)
@@ -585,13 +583,47 @@ export class ScheduleService {
     }
   }
 
-  async #requireOwnedAgent(accountId: string, agentId: string): Promise<void> {
-    const [row] = await this.#options.database
+  async #requireOwnedAgent(accountId: string, agentId: string, executor: ScheduleDbExecutor): Promise<void> {
+    const [row] = await executor
       .select({ id: agents.id })
       .from(agents)
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
+  }
+
+  async #readOwned<T>(
+    authority: ScheduleAuthority,
+    agentId: string,
+    read: (transaction: DatabaseTransaction) => Promise<T>,
+  ): Promise<T> {
+    return this.#options.database.transaction(
+      async (transaction) => {
+        if (authority.source && authority.source.agentId !== agentId) throw resourceNotFound();
+        await this.#requireOwnedAgent(authority.accountId, agentId, transaction);
+        if (authority.source) await this.#options.proofs.assertCurrentSource(transaction, authority.source);
+        return read(transaction);
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+  }
+
+  async #lockAgent(transaction: DatabaseTransaction, authority: ScheduleAuthority, agentId: string): Promise<void> {
+    const [agent] = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.id, agentId),
+          eq(agents.createdByUserId, authority.accountId),
+          ne(agents.status, "deleted"),
+          authority.source ? eq(agents.id, authority.source.agentId) : undefined,
+        ),
+      )
+      .limit(1)
+      .for("no key update");
+    if (!agent) throw resourceNotFound();
+    if (authority.source) await this.#options.proofs.lockCurrentSource(transaction, authority.source);
   }
 
   #ruleFromInput(
@@ -645,8 +677,8 @@ export class ScheduleService {
     return now;
   }
 
-  async #detailForRow(row: ScheduleRow): Promise<AgentSchedule> {
-    const target = await this.#targetFacts(this.#options.database, row.targetSessionId);
+  async #detailForRow(row: ScheduleRow, executor: ScheduleDbExecutor = this.#options.database): Promise<AgentSchedule> {
+    const target = await this.#targetFacts(executor, row.targetSessionId);
     if (!target) throw new Error("The schedule's pinned target Session is missing");
     return this.#toDetail(row, target);
   }
@@ -702,15 +734,13 @@ function targetFactsColumns() {
 }
 
 function toScheduleTarget(row: TargetFactsRow): AgentScheduleTarget {
-  if (row.sessionKind !== "channel" && row.sessionKind !== "thread") {
-    // Unreachable through management: creation only ever pins a visible Session.
-    throw new Error("A schedule target must be a visible channel or thread Session");
-  }
+  const internal = row.sessionKind === "internal";
   return {
     sessionId: row.sessionId,
     provider: row.provider,
-    sessionKind: row.sessionKind,
+    sessionKind: row.threadKey === null ? "channel" : "thread",
     channelId: row.channelId,
     threadKey: row.threadKey,
+    ...(internal ? { internal } : {}),
   };
 }

@@ -1,4 +1,4 @@
-import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import type { AgentStatusReason, AgentStatusSnapshot, AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
@@ -10,13 +10,13 @@ import {
   accountComputerLink,
   agentSettingsSectionLink,
   agentSetupLink,
+  agentSetupSignInLink,
 } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
- * The card states what is true and how urgent it is. It carries no recovery of its own, because
- * what to do about a broken dependency depends on which one broke, and that explanation lives on
- * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
+ * The card states what is true and how urgent it is. Its single next step, when the reader can fix
+ * the state, comes separately from `agentRowAction`.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -25,6 +25,12 @@ type AgentCardStatus = {
 };
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+  const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
+  const detail = agentActivityDetail(agent);
+  return detail ? { ...status, detail } : status;
+}
+
+function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
     return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
@@ -32,7 +38,7 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_unavailable(), tone: "neutral" };
   }
   if (agent.availability.state === "ready") {
-    return readyAgentCardStatus(agent);
+    return { label: m.agents_card_status_ready(), tone: "success" };
   }
   // A delivery check the Computer is still running resolves by itself, like a runtime check does.
   if (agent.availability.reason === "handoff_checking") {
@@ -47,15 +53,39 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   return blockedAgentCardStatus(agent);
 }
 
-function readyAgentCardStatus(agent: AgentListItem): AgentCardStatus {
-  return {
-    detail:
-      agent.activity.state === "working"
-        ? m.agents_card_activity_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) })
-        : undefined,
-    label: m.agents_card_status_ready(),
-    tone: "success",
-  };
+/**
+ * How many Tasks the Agent is running and how many are queued for it. Work in progress and queued
+ * work are facts whatever the Agent's status, so they show on every row; queued Tasks beside an
+ * offline Computer are how an admin sees work piling up. An idle Agent with nothing queued says
+ * nothing beside its status: "Waiting" beside Ready only repeated what Ready already says, and read
+ * as the Agent being stuck. An unknown activity says nothing about running work.
+ */
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">): string | undefined {
+  const { activity } = agent;
+  const queued = queuedTasksDetail(activity.queuedTaskCount);
+  if (activity.state === "working") {
+    const running = runningTasksDetail(activity);
+    return queued ? `${running} · ${queued}` : running;
+  }
+  return queued;
+}
+
+function runningTasksDetail(activity: Extract<AgentListItem["activity"], { state: "working" }>): string {
+  const count = activity.runningTaskCount;
+  if (count === undefined) {
+    // A Server without the count still reports when the work started.
+    return m.agents_card_activity_working({ elapsed: formatElapsedCompact(activity.startedAt) });
+  }
+  return count === 1
+    ? m.agents_card_activity_running_tasks_single({ count })
+    : m.agents_card_activity_running_tasks_plural({ count });
+}
+
+function queuedTasksDetail(count: number | undefined): string | undefined {
+  if (!count) return undefined;
+  return count === 1
+    ? m.agents_card_activity_queued_tasks_single({ count })
+    : m.agents_card_activity_queued_tasks_plural({ count });
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
@@ -63,7 +93,10 @@ function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
   if (agent.availability.reason === "computer_offline") {
-    return { label: m.agents_card_status_computer_offline(), tone: "warning" };
+    // The same word the computer's own card uses, so one computer never reads as two states.
+    return agent.availability.dependencies.computer.disconnected
+      ? { label: m.agents_card_status_computer_disconnected(), tone: "warning" }
+      : { label: m.agents_card_status_computer_offline(), tone: "warning" };
   }
   if (agent.availability.reason === "runtime_unavailable") {
     return runtimeAgentCardStatus(agent);
@@ -132,7 +165,8 @@ export function imBindingStateLabel(binding: ImBindingSummary): string {
   return {
     active: m.im_connected(),
     provisioning: m.im_connecting(),
-    reauthorization_required: m.im_permissions_required(),
+    // One wording for this state everywhere it is shown.
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.im_connection_error(),
     disabled: m.im_disconnected(),
   }[binding.bindingState];
@@ -182,24 +216,23 @@ export function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): 
  * runtime, and collapsing those facts into one warning made the old status impossible to interpret.
  */
 export function agentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
+  return serverStatusPresentation(agent) ?? legacyAgentStatusPresentation(agent);
+}
+
+function legacyAgentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
   const { availability } = agent;
   if (availability.state === "ready") {
     return agent.activity.state === "working"
       ? { label: "Working", tone: "info" }
       : { label: "Ready", tone: "success" };
   }
-  if (availability.state === "suspended") return { label: "Suspended", tone: "neutral" };
+  if (availability.state === "suspended") return { label: m.agents_card_status_paused(), tone: "neutral" };
 
   /*
    * Unreadable evidence is one situation to a viewer -- nothing to act on, retried automatically --
    * so it is named for the dependency it covers rather than for which read failed.
    */
-  if (availability.state === "unconfirmed") {
-    if (availability.reason === "computer_unconfirmed" || availability.reason === "runtime_unconfirmed") {
-      return { label: "Computer unknown", tone: "neutral" };
-    }
-    return { label: "Status unknown", tone: "neutral" };
-  }
+  if (availability.state === "unconfirmed") return unconfirmedStatus(availability);
 
   if (availability.reason === "computer_not_bound") {
     return { label: m.agents_computer_not_bound_label(), tone: "warning" };
@@ -230,6 +263,16 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
 }
 
 /** The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not. */
+function unconfirmedStatus(availability: AgentAvailability): { label: string; tone: StatusTone } {
+  return {
+    label:
+      availability.reason === "computer_unconfirmed" || availability.reason === "runtime_unconfirmed"
+        ? "Computer unknown"
+        : "Status unknown",
+    tone: "neutral",
+  };
+}
+
 function runtimeStatusPresentation({ provider, status }: AgentAvailability["dependencies"]["runtime"]): {
   label: string;
   tone: StatusTone;
@@ -359,8 +402,19 @@ export type AgentDependencyStatus = {
   tone: StatusTone;
 };
 
-function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
-  return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+/**
+ * The one setup link for an Agent. A runtime that only needs signing in gets "Sign in", which opens
+ * the same setup step with its sign-in steps shown; every other setup reason continues setup.
+ */
+function continueSetupAction(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): NonNullable<AgentDependencyStatus["action"]> {
+  const runtime = agent.availability.dependencies.runtime;
+  if (agent.availability.reason === "runtime_unavailable" && runtime.status === "sign-in") {
+    return { label: m.agents_runtime_sign_in_action(), link: agentSetupSignInLink(agent.id) };
+  }
+  return { label: m.agents_continue_setup(), link: agentSetupLink(agent.id) };
 }
 
 /**
@@ -393,8 +447,81 @@ const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
 export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
+  serverStatus?: AgentStatusSnapshot;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+  // Setup owns a reason only while no Server verdict says the dependency was set up and broke since.
+  const owned = SETUP_REASONS.has(agent.availability.reason) && serverStatusRepair(agent) === undefined;
+  return owned ? continueSetupAction(agent) : undefined;
+}
+
+/**
+ * Server verdicts about a dependency that setup already finished. The Server reports each of them
+ * only after the messaging binding is active and the runtime answered, so the legacy reason they
+ * project to (`handoff_unavailable`, `runtime_unavailable`) must not be read as setup left
+ * unfinished: the card names the verdict, and its action has to repair that verdict.
+ *
+ * `null` marks a verdict that resolves on its own -- a check that timed out, was rate limited or could
+ * not reach the provider is retried by the Computer, and an expired report is replaced by the next one -- so it offers nothing.
+ */
+const SERVER_REPAIRS: Partial<Record<AgentStatusReason, { label: () => string } | null>> = {
+  credential_validation_failed: { label: m.agents_status_action_reconnect_channel },
+  messaging_cli_unavailable: { label: m.agents_status_action_fix_messaging },
+  credential_validation_timeout: null,
+  credential_rate_limited: null,
+  credential_provider_unreachable: null,
+  messaging_cli_check_timed_out: null,
+  runtime_check_timed_out: null,
+  self_check_report_stale: null,
+};
+
+/**
+ * The repair a Server verdict asks for: an action, `null` when the verdict asks for none, or
+ * `undefined` when the verdict is not one of these and the legacy reason still decides.
+ */
+function serverStatusRepair(agent: {
+  availability: AgentAvailability;
+  id: string;
+  serverStatus?: AgentStatusSnapshot;
+}): AgentDependencyStatus["action"] | null {
+  const reason = agent.serverStatus?.reason;
+  if (!reason || agent.availability.state === "unconfirmed" || !(reason in SERVER_REPAIRS)) return undefined;
+  const repair = SERVER_REPAIRS[reason];
+  return repair ? settingsAction(agent.id, repair.label(), "messaging") : null;
+}
+
+/**
+ * The one action a list row offers: the place where the state it shows gets fixed.
+ *
+ * Every blocked state the reader can repair carries the same single link, so no fixable row reads as
+ * a dead end beside one that offers a way out. Setup-owned reasons continue setup; messaging that
+ * needs new permissions or a reconnect opens the Agent's messaging settings; an offline Computer
+ * opens its connection recovery. A paused Agent was paused on purpose and states that fact without
+ * an action, and states that resolve on their own (checks, unknown evidence) offer nothing.
+ *
+ * A Server verdict the card names is answered first, so the action never contradicts the label: a
+ * credential check that failed on a finished setup opens messaging settings, never setup.
+ */
+export function agentRowAction(agent: {
+  availability: AgentAvailability;
+  computer: AgentListItem["computer"];
+  id: string;
+  serverStatus?: AgentStatusSnapshot;
+}): AgentDependencyStatus["action"] {
+  const repair = serverStatusRepair(agent);
+  if (repair !== undefined) return repair ?? undefined;
+  const setup = agentSetupContinuation(agent);
+  if (setup) return setup;
+  const { reason } = agent.availability;
+  if (reason === "im_reauthorization_required") {
+    return settingsAction(agent.id, m.agents_status_action_update_permissions(), "messaging");
+  }
+  if (reason === "im_error" || reason === "im_disabled") {
+    return settingsAction(agent.id, m.agents_status_action_reconnect_channel(), "messaging");
+  }
+  if (reason === "computer_offline") {
+    return { label: m.computer_recovery_heading(), link: accountComputerLink(agent.computer?.computerId, agent.id) };
+  }
+  return undefined;
 }
 
 function settingsAction(
@@ -415,7 +542,10 @@ function setupOrMaintenanceAction(
   setupReason: NonNullable<AgentAvailability["reason"]>,
   maintenance?: NonNullable<AgentDependencyStatus["action"]>,
 ): AgentDependencyStatus["action"] {
-  return agent.availability.reason === setupReason ? continueSetupAction(agent.id) : maintenance;
+  if (agent.availability.reason !== setupReason) return maintenance;
+  const repair = serverStatusRepair(agent);
+  if (repair !== undefined) return repair ?? undefined;
+  return continueSetupAction(agent);
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
@@ -502,6 +632,12 @@ export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatu
 }
 
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  if (agent.status === "suspended" && agent.serverStatus?.state !== "computer_offline") {
+    return storedMessagingStatus(agent);
+  }
+  if (agent.serverStatus && agent.availability.dependencies.handoff.state === "unconfirmed") {
+    return { label: m.agents_status_unknown(), tone: "neutral" };
+  }
   if (agent.messaging.kind === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
@@ -521,12 +657,12 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "neutral",
     };
   }
-  const handoff = agent.availability.dependencies.handoff;
+  const handoff = agent.status === "suspended" ? undefined : agent.availability.dependencies.handoff;
   /*
    * The Computer is re-verifying delivery on a connected channel. The phase names what it is doing
    * so the row reads as progress rather than as a verdict; there is no action because none is asked.
    */
-  if (binding.bindingState === "active" && handoff.state === "checking") {
+  if (binding.bindingState === "active" && handoff?.state === "checking") {
     return {
       label:
         handoff.providerCli?.phase === "preparing_cli"
@@ -535,7 +671,7 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "info",
     };
   }
-  if (binding.bindingState === "active" && handoff.state === "action_required") {
+  if (binding.bindingState === "active" && handoff?.state === "action_required") {
     return {
       action: setupOrMaintenanceAction(
         agent,
@@ -547,10 +683,10 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     };
   }
   /*
-   * An active binding whose delivery evidence could not be read is `handoff_unconfirmed`. The
+   * A running Agent whose delivery evidence could not be read is `handoff_unconfirmed`. The
    * channel may well be fine, but this row states what is known, and "Connected" is not known.
    */
-  if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
+  if (binding.bindingState === "active" && handoff?.state === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
       label: m.agents_status_unknown(),
@@ -575,13 +711,43 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
   };
 }
 
+function storedMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  if (agent.messaging.kind === "unconfirmed") return { label: m.agents_status_unknown(), tone: "neutral" };
+  const binding = agent.messaging.value;
+  return binding
+    ? { label: agentMessagingConnectionLabel(binding), tone: messagingConnectionTone(binding) }
+    : { label: m.agents_status_channel_not_connected(), tone: "neutral" };
+}
+
 function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
   const labels: Record<ImBindingSummary["bindingState"], string> = {
     active: m.agents_status_channel_connected(),
     provisioning: m.agents_status_channel_setting_up(),
-    reauthorization_required: m.agents_status_channel_permissions_update_required(),
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.agents_status_channel_connection_error(),
     disabled: m.agents_status_channel_disabled(),
   };
   return labels[binding.bindingState];
+}
+
+function serverStatusPresentation(
+  agent: Pick<AgentStatusSource, "serverStatus" | "availability">,
+): AgentCardStatus | undefined {
+  const status = agent.serverStatus;
+  if (!status || agent.availability.state === "unconfirmed") return undefined;
+  if (status.state === "computer_offline") return { label: m.agents_card_status_computer_offline(), tone: "warning" };
+  if (status.state === "initializing") return { label: m.agents_status_initializing(), tone: "neutral" };
+  const labels: Partial<Record<NonNullable<typeof status.reason>, () => string>> = {
+    runtime_check_timed_out: m.agents_status_runtime_timeout,
+    self_check_report_stale: m.agents_status_report_stale,
+    messaging_cli_check_timed_out: m.agents_status_cli_timeout,
+    messaging_cli_unavailable: m.agents_status_cli_unavailable,
+    credential_validation_failed: m.agents_status_credential_failed,
+    credential_validation_timeout: m.agents_status_credential_timeout,
+    credential_rate_limited: m.agents_status_credential_rate_limited,
+    credential_provider_unreachable: m.agents_status_credential_provider_unreachable,
+    computer_access_required: m.agents_status_computer_access,
+  };
+  const label = status.reason ? labels[status.reason]?.() : undefined;
+  return label ? { label, tone: "warning" } : undefined;
 }

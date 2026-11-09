@@ -47,6 +47,17 @@ const MESSAGE_TYPE_MAX_BYTES = 160;
 const PROVIDER_TIME_MAX_BYTES = 64;
 const SLACK_PROJECTION_MAX_ITEMS = 8;
 
+export interface InjectedSessionFooter {
+  shortId: string;
+  sessionUrl?: string;
+  slackTextAppended?: string;
+  slackBlockTextAppended?: string;
+  feishuTextAppended?: string;
+  feishuPostLocalesAppended?: readonly string[];
+  feishuPostSegmentText?: string;
+  feishuPostSegmentHref?: string;
+}
+
 /** One verified send/reply observation handed over by the proxy after platform success. */
 export interface OutboundCaptureEvent {
   provider: RuntimeCredentialProvider;
@@ -60,6 +71,8 @@ export interface OutboundCaptureEvent {
   requestBody: unknown;
   /** Native JSON response exactly as the platform returned it, before any handle rewriting. */
   responsePayload: unknown;
+  /** Present only when the proxy actually appended a Session ID footer to this outbound request. */
+  injectedSessionFooter?: InjectedSessionFooter;
   /** When the Server observed the confirmed response; the fallback time, honestly labeled. */
   observedAt: Date;
 }
@@ -259,6 +272,45 @@ function buildContent(input: ContentInput): ImContentV1 {
   });
 }
 
+function stripSlackTextFooter(value: string, footer: InjectedSessionFooter | undefined): string {
+  const appended = footer?.slackTextAppended;
+  if (!appended) return value;
+  const normalized = appended.replaceAll("\r\n", "\n");
+  const crlf = normalized.replaceAll("\n", "\r\n");
+  const trimmedEnd = value.trimEnd();
+  if (trimmedEnd.endsWith(normalized)) return trimmedEnd.slice(0, -normalized.length);
+  if (trimmedEnd.endsWith(crlf)) return trimmedEnd.slice(0, -crlf.length);
+  if (value.trim() === normalized.trim()) return "";
+  return value;
+}
+
+function stripSlackBlockElementText(value: string, footer: InjectedSessionFooter | undefined): string {
+  const appended = footer?.slackBlockTextAppended;
+  if (!appended) return value;
+  return value.trim() === appended ? "" : value;
+}
+
+function stripFeishuTextSessionFooter(value: string, footer: InjectedSessionFooter | undefined): string {
+  const appended = footer?.feishuTextAppended;
+  if (!appended) return value;
+  const normalized = appended.replaceAll("\r\n", "\n");
+  const crlf = normalized.replaceAll("\n", "\r\n");
+  const trimmedEnd = value.trimEnd();
+  if (trimmedEnd.endsWith(normalized)) return trimmedEnd.slice(0, -normalized.length);
+  if (trimmedEnd.endsWith(crlf)) return trimmedEnd.slice(0, -crlf.length);
+  return value;
+}
+
+function isFeishuSessionFooterParagraph(paragraph: unknown, footer: InjectedSessionFooter | undefined): boolean {
+  if (!footer?.feishuPostSegmentText || !Array.isArray(paragraph) || paragraph.length !== 1) return false;
+  const record = asRecord(paragraph[0]);
+  if (!record || record.text !== footer.feishuPostSegmentText) return false;
+  if (footer.feishuPostSegmentHref !== undefined) {
+    return record.tag === "a" && record.href === footer.feishuPostSegmentHref;
+  }
+  return record.tag === "text";
+}
+
 /** One Feishu post paragraph is a sequence of tagged segments; only their text runs display. */
 function feishuPostLine(paragraph: unknown): string {
   if (!Array.isArray(paragraph)) return "";
@@ -283,11 +335,23 @@ function feishuPostField(body: Record<string, unknown>, key: "title" | "content"
   return undefined;
 }
 
+function feishuPostContentField(body: Record<string, unknown>): { localeKey: string; content: unknown } | undefined {
+  if (body.content !== undefined) return { localeKey: "$top", content: body.content };
+  for (const [localeKey, value] of Object.entries(body)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const nested = (value as Record<string, unknown>).content;
+    if (nested !== undefined) return { localeKey, content: nested };
+  }
+  return undefined;
+}
+
 /** Tagged post paragraphs joined by lines; only their display runs are read. */
-function feishuPostParagraphs(paragraphs: unknown): string {
+function feishuPostParagraphs(paragraphs: unknown, footer: InjectedSessionFooter | undefined): string {
   if (!Array.isArray(paragraphs)) return "";
   const lines: string[] = [];
-  for (const paragraph of paragraphs) {
+  for (let index = 0; index < paragraphs.length; index += 1) {
+    const paragraph = paragraphs[index];
+    if (index === paragraphs.length - 1 && isFeishuSessionFooterParagraph(paragraph, footer)) continue;
     const line = feishuPostLine(paragraph);
     if (line.length > 0) lines.push(line);
   }
@@ -298,11 +362,19 @@ function feishuPostParagraphs(paragraphs: unknown): string {
  * Post display text, at the top level or under the locale key older shapes wrap it in. The tagged
  * form wins; the same content sent as markdown (content_v2) is read only when it has no text.
  */
-function feishuPostText(body: Record<string, unknown>): string | undefined {
+function feishuPostText(body: Record<string, unknown>, footer: InjectedSessionFooter | undefined): string | undefined {
   const title = feishuPostField(body, "title");
-  const tagged = feishuPostParagraphs(feishuPostField(body, "content"));
+  const contentEntry = feishuPostContentField(body);
+  const stripLocale =
+    contentEntry !== undefined && (footer?.feishuPostLocalesAppended?.includes(contentEntry.localeKey) ?? false);
+  const tagged = feishuPostParagraphs(contentEntry?.content, stripLocale ? footer : undefined);
   const markdown = feishuPostField(body, "content_v2");
-  const bodyText = tagged.length > 0 ? tagged : typeof markdown === "string" ? markdown.trim() : "";
+  const bodyText =
+    tagged.length > 0
+      ? tagged
+      : typeof markdown === "string"
+        ? stripFeishuTextSessionFooter(markdown, footer).trim()
+        : "";
   const parts = [typeof title === "string" ? title.trim() : "", bodyText].filter((part) => part.length > 0);
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
@@ -346,11 +418,14 @@ function feishuBodyContent(
   msgType: string | undefined,
   body: Record<string, unknown> | undefined,
   timeSource: TimeSource,
+  footer: InjectedSessionFooter | undefined,
 ) {
   const resource = msgType ? feishuResource(msgType, body) : undefined;
   return buildContent({
-    ...(msgType === "text" ? { text: typeof body?.text === "string" ? body.text : undefined } : {}),
-    ...(msgType === "post" ? { text: body ? feishuPostText(body) : undefined } : {}),
+    ...(msgType === "text"
+      ? { text: typeof body?.text === "string" ? stripFeishuTextSessionFooter(body.text, footer) : undefined }
+      : {}),
+    ...(msgType === "post" ? { text: body ? feishuPostText(body, footer) : undefined } : {}),
     ...(resource ? { blocks: [resource.block], resources: [resource.resource] } : {}),
     ...(msgType && !resource && msgType !== "text" && msgType !== "post" ? { unsupportedType: msgType } : {}),
     ...(msgType ? { messageType: msgType } : {}),
@@ -397,37 +472,47 @@ function slackAttachmentText(message: Record<string, unknown>): string[] {
 }
 
 /** Bounded Block Kit text, read only when the response carries no plain text of its own. */
-function slackBlockText(message: Record<string, unknown>): string[] {
+function slackBlockText(message: Record<string, unknown>, footer: InjectedSessionFooter | undefined): string[] {
   if (!Array.isArray(message.blocks)) return [];
   const parts: string[] = [];
   for (const block of message.blocks.slice(0, SLACK_PROJECTION_MAX_ITEMS)) {
     const record = asRecord(block);
     if (!record) continue;
     const text = asRecord(record.text);
-    if (typeof text?.text === "string" && text.text.trim().length > 0) parts.push(text.text.trim());
-    collectSlackRichText(record.elements, parts, 2);
+    const cleaned = typeof text?.text === "string" ? stripSlackBlockElementText(text.text, footer).trim() : "";
+    if (cleaned.length > 0) parts.push(cleaned);
+    collectSlackRichText(record.elements, parts, 2, footer);
   }
   return parts;
 }
 
-function collectSlackRichText(elements: unknown, parts: string[], depth: number): void {
+function collectSlackRichText(
+  elements: unknown,
+  parts: string[],
+  depth: number,
+  footer: InjectedSessionFooter | undefined,
+): void {
   if (depth <= 0 || !Array.isArray(elements) || parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
   for (const element of elements) {
     if (parts.length >= SLACK_PROJECTION_MAX_ITEMS) return;
     const record = asRecord(element);
     if (!record) continue;
-    if (typeof record.text === "string" && record.text.trim().length > 0) parts.push(record.text.trim());
-    collectSlackRichText(record.elements, parts, depth - 1);
+    const cleaned = typeof record.text === "string" ? stripSlackBlockElementText(record.text, footer).trim() : "";
+    if (cleaned.length > 0) parts.push(cleaned);
+    collectSlackRichText(record.elements, parts, depth - 1, footer);
   }
 }
 
 /** The display body Slack confirms: message text plus bounded attachment/rich-text descriptions. */
-function slackMessageText(message: Record<string, unknown> | undefined): string | undefined {
+function slackMessageText(
+  message: Record<string, unknown> | undefined,
+  footer: InjectedSessionFooter | undefined,
+): string | undefined {
   if (!message) return undefined;
-  const primary = typeof message.text === "string" ? message.text : "";
+  const primary = typeof message.text === "string" ? stripSlackTextFooter(message.text, footer) : "";
   const parts = primary.trim().length > 0 ? [primary] : [];
   parts.push(...slackAttachmentText(message));
-  if (primary.trim().length === 0) parts.push(...slackBlockText(message));
+  if (primary.trim().length === 0) parts.push(...slackBlockText(message, footer));
   const unique = parts.filter((part, index) => parts.indexOf(part) === index);
   return unique.length > 0 ? unique.join("\n") : undefined;
 }
@@ -446,7 +531,7 @@ function parseSlackPostMessage(event: OutboundCaptureEvent): OutboundCapturePars
   const threadTs = bounded(message?.thread_ts, ID_MAX_BYTES) ?? bounded(request.thread_ts, ID_MAX_BYTES) ?? null;
   const messageType =
     bounded(message?.subtype, MESSAGE_TYPE_MAX_BYTES) ?? bounded(message?.type, MESSAGE_TYPE_MAX_BYTES);
-  const text = slackMessageText(message);
+  const text = slackMessageText(message, event.injectedSessionFooter);
   const providerAt = slackEpochToDate(externalMessageId);
   const timeSource: TimeSource = providerAt ? "provider" : "observed";
   return {
@@ -532,6 +617,25 @@ function feishuReplyConflict(meta: FeishuResponseMeta): boolean {
   return meta.replyTargetExternalId !== null && meta.parentId !== meta.replyTargetExternalId;
 }
 
+function inheritParentFeishuContext(
+  current: ProviderInboundContext,
+  parent: StoredMessageContext,
+  rootId: string | null,
+): ProviderInboundContext {
+  if (current.provider !== "feishu") return current;
+  const parentFeishu = parent.providerContext.provider === "feishu" ? parent.providerContext : undefined;
+  const parentChatMode = parentFeishu?.chatMode;
+  const parentGroupMessageType = parentFeishu?.groupMessageType;
+  const parentThreadId = parentFeishu?.threadId;
+  return {
+    ...current,
+    ...(parentThreadId && !current.threadId ? { threadId: parentThreadId } : {}),
+    ...(rootId && !current.rootId ? { rootId } : {}),
+    ...(parentChatMode && !current.chatMode ? { chatMode: parentChatMode } : {}),
+    ...(parentGroupMessageType && !current.groupMessageType ? { groupMessageType: parentGroupMessageType } : {}),
+  };
+}
+
 function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundCaptureParse {
   const response = asRecord(event.responsePayload);
   if (response?.code !== 0) return skipped("platform_not_successful");
@@ -551,10 +655,12 @@ function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundC
     message: {
       channelId: channel.channelId,
       externalMessageId,
-      threadKey: meta.threadId ?? meta.rootId,
+      // Only a real Feishu thread names a thread. Without `thread_id`, `root_id` is the top of a
+      // quote chain, so the reply's topic is resolved from the message it answers instead.
+      threadKey: meta.threadId,
       replyToExternalId: meta.replyToExternalId,
       responseAuthorExternalId: meta.responseAuthorExternalId,
-      content: feishuBodyContent(msgType, body, timeSource),
+      content: feishuBodyContent(msgType, body, timeSource, event.injectedSessionFooter),
       providerContext: {
         provider: "feishu",
         ...(meta.threadId ? { threadId: meta.threadId } : {}),
@@ -666,6 +772,9 @@ export class ImOutboundCapture {
   readonly #now: () => Date;
   readonly #deadlineMs: number;
   readonly #slackWorkingStatus: boolean;
+  #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #work = new Set<Promise<unknown>>();
 
   constructor(database: DatabaseClient, options: ImOutboundCaptureOptions = {}) {
     this.#database = database;
@@ -675,12 +784,35 @@ export class ImOutboundCapture {
     this.#deadlineMs = options.deadlineMs ?? OUTBOUND_CAPTURE_DEADLINE_MS;
   }
 
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    this.#closing = (async () => {
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
   /**
    * Persist one verified observation. This is the isolation boundary the proxy relies on: it
    * resolves never with an error, so a capture failure can never rewrite the confirmed send's
    * outcome or cause a resend. Failures land in the structured log with codes only.
    */
-  async capture(event: OutboundCaptureEvent): Promise<void> {
+  capture(event: OutboundCaptureEvent): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return this.#track(this.#capture(event));
+  }
+
+  async #capture(event: OutboundCaptureEvent): Promise<void> {
     const deadlineAt = Date.now() + this.#deadlineMs;
     try {
       await this.#persist(event, deadlineAt);
@@ -757,12 +889,13 @@ export class ImOutboundCapture {
     if (remainingMs <= 0) throw new OutboundCaptureDeadlineError();
     const compiled = statement.toSQL();
     const pending = this.#database.$client.unsafe<T[]>(compiled.sql, compiled.params as never[]);
+    const actual = this.#track(Promise.resolve(pending));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), remainingMs);
     });
     try {
-      const result = await Promise.race([pending, timedOut]);
+      const result = await Promise.race([actual, timedOut]);
       if (result === "timeout") {
         await cancelPendingStatement(pending, OUTBOUND_CAPTURE_CANCEL_GRACE_MS);
         throw new OutboundCaptureDeadlineError();
@@ -822,7 +955,10 @@ export class ImOutboundCapture {
     message: CapturedOutboundMessage,
     deadlineAt: number,
   ): Promise<{ threadKey: string | null; providerContext: ProviderInboundContext }> {
-    if (message.threadKey !== null || !message.replyTargetExternalId) {
+    if (
+      !message.replyTargetExternalId ||
+      (message.threadKey !== null && message.providerContext.provider !== "feishu")
+    ) {
       return { threadKey: message.threadKey, providerContext: message.providerContext };
     }
     const parent = await this.#storedMessageContext(
@@ -831,14 +967,16 @@ export class ImOutboundCapture {
       message.replyTargetExternalId,
       deadlineAt,
     );
-    if (!parent) return { threadKey: null, providerContext: message.providerContext };
+    if (!parent) return { threadKey: message.threadKey, providerContext: message.providerContext };
     const parentRootId = parent.providerContext.provider === "feishu" ? (parent.providerContext.rootId ?? null) : null;
     const rootId = parentRootId ?? (parent.threadKey ? null : parent.externalMessageId);
-    const providerContext =
-      message.providerContext.provider === "feishu" && rootId && !message.providerContext.rootId
-        ? { ...message.providerContext, rootId }
-        : message.providerContext;
-    return { threadKey: parent.threadKey ?? parentRootId ?? parent.externalMessageId, providerContext };
+    const providerContext = inheritParentFeishuContext(message.providerContext, parent, rootId);
+    return {
+      // An unthreaded reply joins the topic of the message it answers: the parent's own thread when
+      // it has one, otherwise the parent itself. A quote chain's `root_id` never names the topic.
+      threadKey: message.threadKey ?? parent.threadKey ?? parent.externalMessageId,
+      providerContext,
+    };
   }
 
   /** The locally stored same-binding, same-channel message a reply targets, newest revision first. */

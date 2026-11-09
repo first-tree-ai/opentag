@@ -9,6 +9,7 @@ import { onlineManager, useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { mockDetail } from "../__tests__/support/task-detail-fixture.js";
 import { ApiError, browserApi } from "../api.js";
 import { AgentUsageOverview, AgentUsageTab } from "../features/agent-usage.js";
 import { useAgentDetailView, useAgentListView, useComputersQuery } from "../features/agents/agent-queries.js";
@@ -182,6 +183,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+  vi.spyOn(browserApi, "taskInternalSessions").mockResolvedValue({ items: [], nextCursor: null });
 });
 
 describe("shared live resource queries", () => {
@@ -456,7 +458,7 @@ describe("task and usage live revalidation", () => {
   });
 
   it("rereads task details on focus", async () => {
-    const request = vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    const { detail: request } = mockDetail(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     expect(await screen.findByText(completedTask.title)).toBeTruthy();
     await act(async () => {
@@ -485,7 +487,7 @@ describe("task and usage live revalidation", () => {
     const usageRead = vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
     await renderInRouter(<AgentUsageTab agentId={agentId} />);
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(usageRead).toHaveBeenCalledWith(agentId, 30);
+    expect(usageRead).toHaveBeenCalledWith(agentId, 30, expect.any(String));
   });
 
   it("keeps a terminal usage refusal across a later 503 until recovery", async () => {

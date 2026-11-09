@@ -1,6 +1,7 @@
 import { SKILL_ERROR_CODES, type Skill, type SkillArchiveFormat } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
+import { InlineActionSentence } from "../../components/inline-action-sentence.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, DropdownMenu, Icon, Loader, Text } from "../../ui/design-system.js";
@@ -115,13 +116,14 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
    * a delayed confirmation reached the wrong one.
    */
   const uploadArchive = async (archive: PendingReplace, replace: boolean) => {
-    await upload.mutateAsync({
+    const installed = await upload.mutateAsync({
       agentId: archive.agentId,
       file: archive.file,
       sha256: archive.sha256,
       format: archive.format,
       replace,
     });
+    if (alive.current) setInstallationNotice(m.skills_upload_success({ name: installed.name }));
   };
 
   /**
@@ -221,7 +223,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       ref={pageRef}
       tabIndex={-1}
     >
-      <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
+      <PageHeader title={m.skills_page_title()} titleId="skills-page-title">
         {/*
          * A native file input is the only way to open the browser's file chooser; it stays hidden
          * and is triggered by the button. `type` precedes the change handler so the Kumo contract's
@@ -265,7 +267,10 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
 
       <SkillList
         hasData={skills.data !== undefined}
+        importDisabled={!storageAvailable || uploadBusy}
         isPending={skills.isPending}
+        onInstall={openInstaller}
+        onUpload={openFilePicker}
         onViewDetails={(skill, trigger) => {
           detailsTrigger.current = trigger;
           setDetailsTarget(skill);
@@ -318,13 +323,19 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
  */
 function SkillList({
   hasData,
+  importDisabled,
   isPending,
   onDelete,
+  onInstall,
+  onUpload,
   onViewDetails,
   skills,
 }: {
   hasData: boolean;
+  importDisabled: boolean;
   isPending: boolean;
+  onInstall: () => void;
+  onUpload: () => void;
   onDelete: (skill: Skill, trigger: HTMLButtonElement) => void;
   onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skills: Skill[];
@@ -348,7 +359,11 @@ function SkillList({
             {m.skills_empty()}
           </Text>
           <Text as="p" size="sm" variant="secondary">
-            {m.skills_empty_description()}
+            <InlineActionSentence
+              render={({ first, second }) => m.skills_empty_description({ install: first, upload: second })}
+              first={{ label: m.skills_empty_install(), disabled: importDisabled, onClick: onInstall }}
+              second={{ label: m.skills_empty_upload(), disabled: importDisabled, onClick: onUpload }}
+            />
           </Text>
         </div>
       </div>

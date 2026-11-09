@@ -12,17 +12,6 @@
  * styling that stays its own.
  */
 
-@keyframes ots-fade {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
 /* Command block ---------------------------------------------------------- */
 
 /* Grid parents must be allowed to size the command surface to the viewport instead of inheriting
@@ -70,10 +59,30 @@
   color: var(--fg-2);
 }
 
-/* Assistant recovery instructions grow with the page instead of nesting a scrollable reader. */
-.ots-command[data-flowing="true"] .ots-command__body {
+/*
+ * The connect window shows the whole copied text: it grows with the command instead of scrolling inside a
+ * fixed box, so a narrow screen never hides part of what is pasted. The floor keeps a reissued command
+ * from changing the window's height.
+ */
+[data-ui="computer-connect"] .ots-command__body {
   height: auto;
   min-height: 132px;
+}
+
+[data-ui="computer-connect"] .ots-command__code {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Task instructions size to their text and grow with the page instead of nesting a scrollable reader. */
+.ots-command[data-flowing="true"] .ots-command__body {
+  height: auto;
+  min-height: 0;
+}
+
+/* A collapsed one-line task sits level with its copy control. */
+.ots-command[data-flowing="true"]:not([data-expanded="true"]) .ots-command__body {
+  align-items: center;
 }
 
 .ots-command[data-flowing="true"] .ots-command__code {
@@ -191,15 +200,6 @@
  * Anything that changes length while someone is reading is given the height of its tallest state,
  * so what sits under it keeps one position. These are measured, not chosen.
  */
-
-/* The waiting dot carries its own animation. */
-.ots-pulse {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-kumo-brand);
-  animation: ots-fade 1.4s ease-in-out infinite;
-}
 
 /*
  * The connect status: waiting on one line, connected on another. The class is written by

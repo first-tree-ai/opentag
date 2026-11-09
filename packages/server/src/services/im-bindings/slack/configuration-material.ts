@@ -5,9 +5,9 @@ import type { ApplicationCipher } from "../../crypto.js";
 import { decodeSlackCredential } from "../credential-material.js";
 import type { SlackInstallationIngress } from "../im-binding-service.js";
 
-/** Called only after management authorization. Includes revoked/pending installs; never a runtime grant. */
+/** Called only after Account read or management authorization. Includes revoked/pending installs; never a runtime grant. */
 export async function readSlackConfigurationMaterial(
-  database: DatabaseClient,
+  database: Pick<DatabaseClient, "select">,
   cipher: ApplicationCipher | undefined,
   agentId: string,
 ): Promise<(SlackInstallationIngress & { observedConnectedAt: Date | null }) | undefined> {

@@ -6,6 +6,7 @@ import type {
   AgentPromptRequest,
   AgentProviderRunContext,
   AgentProviderRunResult,
+  AgentProviderSteerCustody,
   AgentRuntimeCapabilities,
   AgentRuntimeEvent,
   AgentSteerRequest,
@@ -258,8 +259,9 @@ describe("BaseAgentRuntime contract", () => {
     const run = runtime.prompt(prompt("run-1", "one"));
 
     await expect(runtime.steer({ expectedRunId: "stale", input: input("change") })).rejects.toMatchObject({
-      code: "run_mismatch",
+      code: "steer_not_sent",
     });
+    expect(runtime.steers).toHaveLength(0);
     await expect(runtime.abort({ expectedRunId: "stale" })).rejects.toMatchObject({ code: "run_mismatch" });
     await runtime.steer({ expectedRunId: "run-1", input: input("change") });
     expect(runtime.steers).toHaveLength(1);
@@ -267,6 +269,102 @@ describe("BaseAgentRuntime contract", () => {
     gate.resolve();
     await run;
     await runtime.close();
+  });
+
+  it.each([
+    ["provider custody", undefined, "completed", "processed"],
+    ["provider custody", undefined, "aborted", "interrupted"],
+    ["started", true, "completed", "processed"],
+    ["started", true, "aborted", "interrupted"],
+    ["never started", false, "aborted", "not_started"],
+    ["never started", false, "completed", "not_started"],
+  ] as const)("reports steered input with %s as %s after a %s Run → %s", async (_label, started, status, outcome) => {
+    const gate = deferred<void>();
+    const runtime = new TestRuntime({
+      eventSink: () => undefined,
+      execute: async () => {
+        await gate.promise;
+        return { status };
+      },
+    });
+    let startedNow = false;
+    if (started !== undefined) runtime.steerCustody = { started: () => startedNow };
+    const run = runtime.prompt(prompt("run-1", "one"));
+    const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("change") });
+    startedNow = started === true;
+    gate.resolve();
+    await run;
+    await expect(receipt.outcome).resolves.toBe(outcome);
+    await runtime.close();
+  });
+
+  it.each([
+    ["completed", "processed"],
+    ["aborted", "interrupted"],
+    ["failed", "interrupted"],
+  ] as const)(
+    "keeps Provider-owned input (no custody probe) when the Run settles %s during steer acceptance → %s",
+    async (status, outcome) => {
+      const gate = deferred<void>();
+      const runtime = new TestRuntime({
+        eventSink: () => undefined,
+        execute: async () => {
+          await gate.promise;
+          return { status };
+        },
+      });
+      const run = runtime.prompt(prompt("run-1", "one"));
+      runtime.beforeSteerAccepted = async () => {
+        gate.resolve();
+        await run;
+      };
+      // Codex and Pi resolve without a probe once their steer RPC succeeded; refusing here would invite a replay.
+      const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("change") });
+      await expect(receipt.outcome).resolves.toBe(outcome);
+      await runtime.close();
+    },
+  );
+
+  it("keeps input the provider already started when the Run settles during steer acceptance", async () => {
+    const gate = deferred<void>();
+    const runtime = new TestRuntime({
+      eventSink: () => undefined,
+      execute: async () => {
+        await gate.promise;
+        return { status: "completed" };
+      },
+    });
+    let started = true;
+    runtime.steerCustody = { started: () => started };
+    let run = runtime.prompt(prompt("run-1", "one"));
+    runtime.beforeSteerAccepted = async () => {
+      gate.resolve();
+      await run;
+    };
+    // Refusing input the provider already started would invite the caller to deliver it twice.
+    const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("change") });
+    await expect(receipt.outcome).resolves.toBe("processed");
+
+    const nextGate = deferred<void>();
+    const next = new TestRuntime({
+      eventSink: () => undefined,
+      execute: async () => {
+        await nextGate.promise;
+        return { status: "completed" };
+      },
+    });
+    started = false;
+    next.steerCustody = { started: () => started };
+    run = next.prompt(prompt("run-2", "two"));
+    next.beforeSteerAccepted = async () => {
+      nextGate.resolve();
+      await run;
+    };
+    await expect(next.steer({ expectedRunId: "run-2", input: input("late") })).rejects.toMatchObject({
+      code: "steer_not_sent",
+    });
+    await runtime.close();
+    await next.close();
   });
 });
 
@@ -296,8 +394,13 @@ class TestRuntime extends BaseAgentRuntime {
     return this.#executeHandler(request, context);
   }
 
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  steerCustody?: AgentProviderSteerCustody;
+  beforeSteerAccepted?: () => Promise<void>;
+
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody | undefined> {
     this.steers.push(request);
+    await this.beforeSteerAccepted?.();
+    return this.steerCustody;
   }
 
   protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {

@@ -18,7 +18,11 @@
     "test": "vitest run --maxWorkers=1",
     "test:agent-runtime:coverage": "vitest run --config vitest.agent-runtime.config.ts",
     "test:e2e:claude-code-agent-runtime": "tsx src/smoke/claude-code-agent-runtime-e2e.ts",
+    "test:e2e:claude-code-native-plugins": "node src/__tests__/manual/claude-code-native-plugins.mjs",
+    "test:e2e:codex-native-plugins": "node src/__tests__/manual/codex-native-plugins.mjs",
     "test:e2e:codex-agent-runtime": "tsx src/smoke/codex-agent-runtime-e2e.ts",
+    "test:e2e:pi-native-lifecycle": "node src/__tests__/manual/pi-native-lifecycle.mjs",
+    "test:e2e:pi-native-plugins": "node src/__tests__/manual/pi-native-plugins.mjs",
     "test:e2e:pi-agent-runtime": "tsx src/smoke/pi-agent-runtime-e2e.ts"
   },
   "dependencies": {
@@ -31,7 +35,7 @@
     "tar-stream": "3.2.0",
     "ws": "^8.21.3",
     "zod": "^4.5.1",
-    "@first-tree-ai/context-tree": "1.0.1"
+    "@first-tree-ai/context-tree": "1.1.1"
   },
   "devDependencies": {
     "@types/semver": "^7.8.0",

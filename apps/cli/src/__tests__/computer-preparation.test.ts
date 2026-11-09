@@ -148,10 +148,31 @@ describe("targeted local Computer preparation", () => {
         "[im-cli:slack] ready — 1.0.0",
       ].join("\n"),
     );
-    const output = await invoke();
+    const output = await invoke(["--verbose"]);
     expect(output.text).toContain("Local computer preparation: READY");
     expect(output.text).toContain(preparation.SERVER_CONFIRMATION_GUIDANCE);
     expect(output.text).not.toMatch(/choose Lark|choose Slack|Server ready|Computer.*online/);
+  });
+
+  it("prints only the outcome by default and keeps the checks behind --verbose", async () => {
+    const output = await invoke();
+    expect(output.out).toBe(`${connection.message}\n`);
+    expect(output.err).toBe("");
+    expect(output.exitCode).toBe(0);
+
+    vi.mocked(provider.runProviderCliEnsure).mockResolvedValue({
+      exitCode: 0,
+      results: [failedProvider("feishu", "install_incomplete"), readyProvider("slack")],
+      nextActions: [],
+    });
+    const blocked = await invoke();
+    const [outcome, next, extra] = blocked.err.split("\n");
+    expect(outcome).toBe(connection.message);
+    expect(next).toMatch(/^Next: \S/);
+    expect(extra).toBe("");
+    expect(blocked.out).toBe("");
+    expect(blocked.text).not.toMatch(/\[im-cli|NEEDS_ATTENTION|Blocked by:/);
+    expect(blocked.exitCode).toBe(3);
   });
 
   const scenarios = [
@@ -215,7 +236,7 @@ describe("targeted local Computer preparation", () => {
       });
       const parsed = LocalComputerPreparationResultSchema.parse(document.result.preparation);
       expect(preparation.preparationBlockerCodes(parsed)).toEqual(codes);
-      const human = await invoke();
+      const human = await invoke(["--verbose"]);
       expect(human.err).toContain("Local computer preparation: NEEDS_ATTENTION");
       expect(human.err).toContain(`${count} / 4 ready`);
       expect(human.exitCode).toBe(json.exitCode);
@@ -328,7 +349,7 @@ describe("targeted local Computer preparation", () => {
       blocking: false,
       warnings: [{ code: "global_path_not_configured", blocking: false }],
     });
-    const human = await invoke();
+    const human = await invoke(["--verbose"]);
     expect(human.text).toContain("4 / 4 ready");
     expect(human.text).toContain("warning (non-blocking): global_path_not_configured");
   });
@@ -445,11 +466,15 @@ describe("targeted local Computer preparation", () => {
     expect(json.out).toBe("");
     expect(json.exitCode).toBe(3);
     const human = await invoke();
-    expect(human.err).toContain("Do not reuse it");
-    expect(human.err).toContain("previous credentials may no longer work");
-    expect(human.err).toContain("computer repair-local --installation-id 22222222-2222-4222-8222-222222222222");
-    expect(human.err).toContain(`--home '/tmp/f3 home '"'"'quoted'"'"''`);
-    expect(human.err).toContain("NEW connect/repair code");
+    const [reason, next, extra] = human.err.split("\n");
+    expect(reason).toContain("(credentials: disk full)");
+    expect(next).toMatch(/^Next: .*get a new connect command from openTag and run it/);
+    expect(extra).toBe("");
+    const guidance = JSON.parse(json.err).result.guidance as string[];
+    expect(guidance.join("\n")).toContain(
+      "computer repair-local --installation-id 22222222-2222-4222-8222-222222222222",
+    );
+    expect(guidance.join("\n")).toContain(`--home '/tmp/f3 home '"'"'quoted'"'"''`);
     expect(provider.runProviderCliEnsure).not.toHaveBeenCalled();
     expect(runtime.probeRuntimeComponent).not.toHaveBeenCalled();
   });
@@ -473,7 +498,7 @@ describe("targeted local Computer preparation", () => {
       options?.onPhase?.({ provider, phase: "verify", status: "completed", detail: "actual artifact verified" });
       return readyProvider(provider);
     });
-    const human = await invoke();
+    const human = await invoke(["--verbose"]);
     expect(human.out).toContain("[im-cli:lark] verify: completed — actual artifact verified");
     expect(human.out).toContain("[im-cli:slack] verify: completed — actual artifact verified");
     const json = await invoke(["--json"]);

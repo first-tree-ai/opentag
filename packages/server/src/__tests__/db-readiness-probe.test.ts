@@ -1,6 +1,10 @@
 import type { Sql } from "postgres";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDedicatedDatabaseReadinessProbe, DatabaseProbeTimeoutError } from "../db/readiness-probe.js";
+import {
+  createApplicationDatabaseReadinessProbe,
+  createDedicatedDatabaseReadinessProbe,
+  DatabaseProbeTimeoutError,
+} from "../db/readiness-probe.js";
 
 type FakeClient = Sql & { end: ReturnType<typeof vi.fn>; queries: number };
 
@@ -96,5 +100,30 @@ describe("createDedicatedDatabaseReadinessProbe", () => {
     await probe.close();
 
     expect(connect).not.toHaveBeenCalled();
+  });
+});
+
+describe("application pool readiness", () => {
+  it("shares a failed check until both sides settle, then permits a fresh attempt", async () => {
+    let release!: () => void;
+    const connectivity = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failure = new Error("application pool unavailable");
+    const unsafe = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce([]);
+    const run = createApplicationDatabaseReadinessProbe({ unsafe } as unknown as Sql, {
+      run: vi.fn(() => connectivity),
+      close: async () => {},
+    });
+    const first = run();
+    const outcome = first.catch((error) => error);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(run()).toBe(first);
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    release();
+    expect(await outcome).toMatchObject({ message: "Application database pool readiness failed", cause: failure });
+    await expect(run()).resolves.toBeUndefined();
+    expect(unsafe).toHaveBeenCalledTimes(2);
   });
 });

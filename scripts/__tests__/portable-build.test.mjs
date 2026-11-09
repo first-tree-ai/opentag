@@ -268,7 +268,7 @@ test("the installer only commits a release after it verifies and smoke-tests the
   assert.match(source, /"\$VALIDATION_DIR\/node\/bin\/node" "\$VALIDATION_DIR\/\$INSTALL_ENTRY" --version/);
 
   // The up-to-date short-circuit must decide before the payload download, or it saves nothing.
-  const shortCircuitIndex = source.indexOf("already installed and up to date");
+  const shortCircuitIndex = source.indexOf("is already installed");
   const payloadDownloadIndex = source.indexOf('download_to "$ASSET_URL" "$TARBALL"');
   assert.ok(shortCircuitIndex > 0 && shortCircuitIndex < payloadDownloadIndex);
   assert.match(source, /if \[ "\$FORCE" -eq 0 \] && portable_install_is_current "\$VERSION" "\$BIN_NAME"; then/);
@@ -373,6 +373,29 @@ test("channel pointers are single-writer, monotonic, and ordered installer-first
     assert.doesNotMatch(command, /--tag latest/);
   }
   assert.match(workflow, /node scripts\/resolve-npm-dist-tag\.mjs/);
+
+  for (const [publishStep, verifyStep, portableStep] of [
+    [
+      "- name: Publish staging package",
+      "- name: Verify published staging package",
+      "- name: Publish portable staging release",
+    ],
+    [
+      "- name: Publish production package",
+      "- name: Verify published production package",
+      "- name: Publish portable production release",
+    ],
+  ]) {
+    const publishIndex = workflow.indexOf(publishStep);
+    const verifyIndex = workflow.indexOf(verifyStep);
+    const portableIndex = workflow.indexOf(portableStep);
+    assert.ok(publishIndex > 0 && verifyIndex > publishIndex, `${verifyStep} must follow ${publishStep}`);
+    assert.ok(portableIndex > verifyIndex, `${verifyStep} must run before ${portableStep}`);
+    const verifyBlock = workflow.slice(verifyIndex, portableIndex);
+    assert.match(verifyBlock, /timeout-minutes: 35/);
+    assert.match(verifyBlock, /node scripts\/check-npm-version\.mjs/);
+    assert.match(verifyBlock, /--require-published/);
+  }
 });
 
 test("the uploader treats the version prefix as immutable and flips channel pointers last", async () => {
@@ -472,5 +495,83 @@ test("every supported platform is a Node.js distribution target", () => {
     const { arch, os } = parsePlatform(platform);
     assert.ok(["darwin", "linux"].includes(os));
     assert.ok(["arm64", "x64"].includes(arch));
+  }
+});
+
+test("portable download helpers retry transient curl exit 56 resets and clean up partial files", async () => {
+  for (const [name, fnName] of [
+    ["install.sh", "download_to()"],
+    ["release-gcs.sh", "download_url()"],
+    ["upload-gcs.sh", "download_url()"],
+  ]) {
+    const source = await readFile(join(portableDir, name), "utf8");
+    const start = source.indexOf(`${fnName} {`);
+    assert.ok(start >= 0, `${name} must define ${fnName}`);
+    const body = source.slice(start, source.indexOf("\n}\n", start) + 3);
+    assert.match(body, /max_attempts=4/, `${name} ${fnName} must bound outer download attempts`);
+    assert.match(body, /rm -f "\$dest"/, `${name} ${fnName} must remove partial target files between attempts`);
+    assert.match(body, /sleep "\$retry_delay"/, `${name} ${fnName} must back off before retrying`);
+  }
+
+  // Exercise upload-gcs.sh's download_url directly against a simulated curl exit 56 reset that
+  // writes partial bytes on attempts 1 and 2 before succeeding on attempt 3.
+  const uploadSource = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+  const start = uploadSource.indexOf("download_url() {");
+  const downloadUrlFn = uploadSource.slice(start, uploadSource.indexOf("\n}\n", start) + 3);
+  const root = await mkdtemp(join(tmpdir(), "opentag-upload-download-retry-"));
+  try {
+    const fakeBin = join(root, "bin");
+    await mkdir(fakeBin, { recursive: true });
+    const attemptsFile = join(root, "attempts");
+    const destFile = join(root, "downloaded.bin");
+    await writeFile(
+      join(fakeBin, "curl"),
+      `#!/bin/sh
+set -eu
+dest=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    dest="$arg"
+    prev=""
+    continue
+  fi
+  [ "$arg" = "-o" ] && prev="-o"
+done
+if [ -e "$dest" ]; then
+  echo "partial file was not cleaned up before retry" >&2
+  exit 99
+fi
+count=0
+[ -f "${attemptsFile}" ] && count="$(cat "${attemptsFile}")"
+count=$((count + 1))
+printf '%s' "$count" > "${attemptsFile}"
+if [ "$count" -le 2 ]; then
+  printf 'partial-content' > "$dest"
+  echo "curl: (56) Recv failure: Connection reset by peer" >&2
+  exit 56
+fi
+printf 'complete-content' > "$dest"
+`,
+      { mode: 0o755 },
+    );
+
+    const run = spawnSync(
+      "bash",
+      ["-c", `set -euo pipefail\n${downloadUrlFn}\ndownload_url "https://example.test/asset.tar.gz" "${destFile}"`],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY: "0",
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+    assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+    assert.equal(await readFile(attemptsFile, "utf8"), "3");
+    assert.equal(await readFile(destFile, "utf8"), "complete-content");
+  } finally {
+    await rm(root, { force: true, recursive: true });
   }
 });

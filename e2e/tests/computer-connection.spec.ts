@@ -12,7 +12,7 @@ import { expect, test } from "./fixtures.js";
 
 const execFileAsync = promisify(execFile);
 const cli = join(repositoryRoot, "apps/cli/dist/cli/index.mjs");
-const codePattern = /\bconnect --server\s+'?([^\s']+)'?\s+--\s+'?(otcc_[A-Za-z0-9_-]+)'?/u;
+const codePattern = /\bconnect --server\s+'?([^\s']+)'?(?:\s+--computer\s+\S+)?\s+--\s+'?(otcc_[A-Za-z0-9_-]+)'?/u;
 
 function connectCode(task: string): string {
   const match = codePattern.exec(task);
@@ -80,7 +80,7 @@ async function registerOffline(page: Page, displayName: string): Promise<string>
 
 async function copyTask(page: Page, scope: Page | Locator = page): Promise<string> {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  const copy = scope.getByRole("button", { name: "Copy for AI assistant", exact: true });
+  const copy = scope.getByRole("button", { name: "Copy", exact: true });
   await expect(copy).toBeVisible();
   await copy.click();
   await expect(scope.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
@@ -169,17 +169,24 @@ test("copies the current-computer task and waits for its actual daemon before co
   const agentId = await createAgent(page);
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(page.getByRole("heading", { name: "Connect your computer", exact: true })).toBeVisible();
-  await expect(page.getByText("Copy the task to your AI assistant on this computer.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Run this in a terminal on this computer, or send it to your Agent there.", { exact: true }),
+  ).toBeVisible();
   const task = await copyTask(page);
-  expect(task).toContain("Preserve a working connection");
-  expect(task).toContain("server-side online status");
+  // The copied text is the command itself, led by one inert line for an Agent.
+  expect(task).toMatch(/^: 'openTag: connect this computer to my account\. Run the next line as-is/);
+  expect(task.split("\n")).toHaveLength(2);
   const machine = await temporaryComputer();
   try {
     const computerId = await machine.connect(task);
     // An Agent-targeted connection binds on exchange before the daemon starts. Wait for the
     // observed bound-offline state, then verify setup remains blocked without a live daemon.
-    await expect(page.locator('[data-ui="agent-setup-computer-summary"]')).toContainText("Offline");
-    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    // The repair command window is the only status while the computer is offline, and the step
+    // offers no Continue until it is online.
+    await expect(page.locator('[data-ui="computer-recovery"] .ots-slot--status > [role="status"]')).toContainText(
+      "to reconnect",
+    );
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
     expect(await computers(page)).toMatchObject([{ computerId, connectionStatus: "offline" }]);
     machine.start();
     await expect(page.getByRole("heading", { name: "Prepare this computer", exact: true })).toBeVisible();
@@ -201,11 +208,11 @@ test("automatically repairs the sole disconnected Computer in place", async ({ p
   });
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(
-    page.getByText("Copy the task to your AI assistant on Office Linux to restore the connection.", { exact: true }),
+    page.getByText("Run this in a terminal on Office Linux, or send it to your Agent there.", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Use this computer:/ })).toHaveCount(0);
   const task = await copyTask(page);
-  expect(task).toContain(`Computer ID: ${computerId}`);
+  expect(task).toContain(`--computer ${computerId}`);
   expect(issued).toEqual([{ mode: "repair", targetAgentId: agentId, targetComputerId: computerId }]);
   const machine = await temporaryComputer();
   try {
@@ -238,7 +245,6 @@ test("lists multiple disconnected Computers without creating a connection or sel
   });
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(page.getByRole("heading", { name: "Choose a computer for this Agent", exact: true })).toBeVisible();
-  await expect(page.getByText("No computer selected for this Agent", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Use this computer:/ })).toHaveCount(2);
   expect(issued).toEqual([]);
   const config = (await (await page.request.get(`/api/v1/agents/${agentId}/config`)).json()) as {
@@ -255,34 +261,53 @@ test("lists multiple disconnected Computers without creating a connection or sel
   await page.getByRole("button", { name: "Use this computer: Office Linux", exact: true }).focus();
   await page.keyboard.press("Enter");
   const task = await copyTask(page);
-  expect(task).toContain(`Computer ID: ${officeId}`);
+  expect(task).toContain(`--computer ${officeId}`);
   expect(issued).toEqual([{ mode: "repair", targetAgentId: agentId, targetComputerId: officeId }]);
 });
 
-test("connects another Computer without moving an existing Agent", async ({ page, e2eRuntime }) => {
+test("connects another Computer from Agent settings without moving the Agent", async ({
+  page,
+  e2eRuntime,
+}, testInfo) => {
   const accountId = await signUp(page);
   await e2eRuntime.setSetupComplete(accountId);
   const existingId = await registerOffline(page, "Office Linux");
   const agentId = await createAgent(page);
   await post(page, `/api/v1/agents/${agentId}/computer/rebind`, { computerId: existingId });
-  await page.goto("/agents/computers");
-  await page.getByRole("button", { name: "Connect another computer", exact: true }).click();
+  const issued: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/computer-connect-codes"))
+      issued.push(request.postDataJSON());
+  });
+  await page.goto(`/agents/${agentId}/settings/computer`);
+  const entry = page.getByRole("link", { name: "Connect a new computer", exact: true });
+  await expect(entry).toBeVisible();
+  await testInfo.attach("agent-settings-connect-another", { body: await page.screenshot(), contentType: "image/png" });
+  await entry.click();
+  await expect(page).toHaveURL((url) => url.pathname === "/agents/computers" && !url.searchParams.has("connect"));
   await expect(
-    page.getByText(
-      "Copy the task to your AI assistant on the target computer. Return here to continue setup when it connects.",
-      { exact: true },
-    ),
+    page.getByText("Run this in a terminal on the computer you want to connect, or send it to your Agent there.", {
+      exact: true,
+    }),
   ).toBeVisible();
   const task = await copyTask(page, page.locator('[data-ui="computer-connect"]'));
-  expect(task).toContain("this computer's current environment");
+  // The same two-line text as every connect surface: the inert Agent line, then the command.
+  expect(task).toMatch(/^: 'openTag: connect this computer to my account\. Run the next line as-is/);
+  expect(task.split("\n")).toHaveLength(2);
   const machine = await temporaryComputer();
   try {
     const newId = await machine.connect(task);
     expect(newId).not.toBe(existingId);
-    await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Office Linux", exact: true })).toBeVisible();
     machine.start();
-    await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toBeVisible();
+    await testInfo.attach("second-computer-connected", { body: await page.screenshot(), contentType: "image/png" });
+    // An offline card on the Computers page issues its own recovery command; only the requested create belongs here.
+    expect(issued.filter((body) => (body as { mode?: string }).mode === "create")).toEqual([{ mode: "create" }]);
+    const repairs = issued.filter((body) => (body as { mode?: string }).mode !== "create");
+    expect(repairs.length).toBeLessThanOrEqual(1);
+    for (const repair of repairs) expect(repair).toMatchObject({ mode: "repair", targetComputerId: existingId });
     expect(await computers(page)).toHaveLength(2);
     const config = (await (await page.request.get(`/api/v1/agents/${agentId}/config`)).json()) as {
       computerId: string;
@@ -317,10 +342,12 @@ test("uses first-Local guidance when the inventory contains only Cloud", async (
   });
   await page.goto("/agents/computers");
   await expect(page.getByRole("heading", { name: "Cloud", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Connect another computer", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect a new computer", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Connect computer", exact: true }).click();
-  await expect(page.getByText("Copy the task to your AI assistant on this computer.", { exact: true })).toBeVisible();
-  expect(await copyTask(page)).toContain("Preserve a working connection");
+  await expect(
+    page.getByText("Run this in a terminal on this computer, or send it to your Agent there.", { exact: true }),
+  ).toBeVisible();
+  expect(await copyTask(page)).toMatch(/^: 'openTag: connect this computer/);
   await expectNoPageOverflow(page);
   await expectAccessible(page);
 });

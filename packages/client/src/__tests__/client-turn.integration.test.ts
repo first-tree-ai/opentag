@@ -36,12 +36,13 @@ import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { MemoryRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
 import { sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
-import { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { TurnReportOwner, type TurnReportOwnerOptions } from "../runtime/turn-report-owner.js";
 import { writeDurableJson } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
@@ -52,6 +53,149 @@ afterEach(async () => {
 });
 
 describe("Agent Runtime Client Turn vertical", () => {
+  it.each(["transport", "persistence"] as const)(
+    "recovers a completed %s dead letter and releases live custody",
+    async (outage) => {
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const write = vi.spyOn(persistence, "write");
+      if (outage === "persistence") write.mockRejectedValue(new Error("disk full"));
+      const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "codex", undefined, undefined, {
+        persistence,
+        retryPolicy: { maxAttempts: 1 },
+      });
+      const originalSend = fixture.connection.send.bind(fixture.connection);
+      const send = vi.spyOn(fixture.connection, "send").mockImplementation(async (frame) => {
+        if (outage === "transport" && (frame as { type: string }).type === "turn:report")
+          throw new Error("socket failed");
+        return originalSend(frame);
+      });
+      try {
+        const decision = await fixture.custody.accept(delivery(fixture.runtime, "delivery-1", "complete once"));
+        await decision.onAcceptedSent?.();
+        await vi.waitFor(() =>
+          expect(fixture.logs.some((entry) => entry.message === "Turn Report submission failed")).toBe(true),
+        );
+        expect(fixture.reportOwner.pendingCount).toBe(0);
+        expect(fixture.reportOwner.getState("turn-1")?.status).toBe(outage === "transport" ? "dead-letter" : undefined);
+        const binding = await fixture.store.read("agent-1", "session-1");
+        const report = binding?.unresolvedTurn?.report;
+        expect(report).toMatchObject({ outcome: "completed", finalText: "answer-1" });
+        if (!report) throw new Error("Expected a durably retained report");
+        expect(fixture.custody.admission.get("session-1")?.phase).toBe("reporting");
+        write.mockRestore();
+        send.mockImplementation(originalSend);
+        const request: SessionReconcileRequest = {
+          ...fixture.reconcileRequest,
+          requestId: randomUUID(),
+          desired: "stopped",
+          runtime: undefined,
+        };
+        for (const changed of [{ installationId: randomUUID() }, { placementGeneration: 2 }]) {
+          const invalid = { ...request, ...changed, requestId: randomUUID() };
+          const result = await fixture.recovery.prepare(invalid, await fixture.reconciler.reconcile(invalid));
+          expect(result.retainedReports).toBeUndefined();
+        }
+        for (const activity of [
+          { phase: "running" as const, turnId: report.turnId, deliveryId: report.deliveryId },
+          { phase: "reporting" as const, turnId: "another-turn", deliveryId: report.deliveryId },
+          { phase: "reporting" as const, turnId: report.turnId, deliveryId: "another-delivery" },
+        ]) {
+          fixture.reconciler.setActivity(report.sessionId, activity);
+          const busy = { ...request, requestId: randomUUID() };
+          const result = await fixture.recovery.prepare(busy, await fixture.reconciler.reconcile(busy));
+          expect(result.retainedReports).toBeUndefined();
+        }
+        fixture.reconciler.setActivity(report.sessionId, {
+          phase: "reporting",
+          turnId: report.turnId,
+          deliveryId: report.deliveryId,
+        });
+        const cancelled = { ...request, requestId: randomUUID() };
+        const cancelledResult = await fixture.recovery.prepare(
+          cancelled,
+          await fixture.reconciler.reconcile(cancelled),
+        );
+        fixture.recovery.cancel(cancelled, cancelledResult);
+        fixture.recovery.afterReconciled(cancelled, cancelledResult);
+        expect(fixture.connection.reports()).toHaveLength(0);
+        const result = await fixture.recovery.prepare(request, await fixture.reconciler.reconcile(request));
+        expect(result.retainedReports).toHaveLength(1);
+        fixture.recovery.afterReconciled(request, result);
+        await vi.waitFor(() => expect(fixture.connection.reports()).toEqual([report]));
+        expect(fixture.custody.admission.get("session-1")?.phase).toBe("reporting");
+        const duplicate = { ...request, requestId: randomUUID() };
+        const duplicateResult = await fixture.recovery.prepare(
+          duplicate,
+          await fixture.reconciler.reconcile(duplicate),
+        );
+        fixture.recovery.afterReconciled(duplicate, duplicateResult);
+        await fixture.reportOwner.settled();
+        expect(fixture.connection.reports()).toEqual([report]);
+        await fixture.record(report);
+        await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+        expect(fixture.custody.liveTurnCount).toBe(0);
+        expect(fixture.reconciler.protectedWorkSnapshot()).toEqual({ activities: [], recoveries: [] });
+        expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toBeUndefined();
+        expect(fixture.clients[0]?.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+        const next = await fixture.custody.accept(delivery(fixture.runtime, "delivery-2", "after recovery"));
+        expect(next.result.status).toBe("accepted");
+        await next.onAcceptedSent?.();
+        const nextReport = await fixture.waitForReport(1);
+        expect(nextReport).toMatchObject({ deliveryId: "delivery-2", finalText: "answer-2" });
+        await fixture.record(nextReport);
+        expect(fixture.custody.liveTurnCount).toBe(0);
+      } finally {
+        fixture.reportOwner.stop();
+        await fixture.reportOwner.settled();
+        await fixture.runtimeManager.close();
+      }
+    },
+  );
+
+  it.each(["sending", "awaiting_ack"] as const)(
+    "joins an existing %s report without a duplicate send",
+    async (phase) => {
+      const fixture = await runtimeFixture();
+      let releaseSend!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseSend = resolve;
+      });
+      const originalSend = fixture.connection.send.bind(fixture.connection);
+      const submitReport = vi.spyOn(fixture.reportOwner, "submit");
+      vi.spyOn(fixture.connection, "send").mockImplementation(async (frame) => {
+        await originalSend(frame);
+        if (phase === "sending" && (frame as { type: string }).type === "turn:report") await gate;
+      });
+      try {
+        const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-1", "complete once"));
+        await accepted.onAcceptedSent?.();
+        const report = await fixture.waitForReport(0);
+        if (phase === "awaiting_ack") await fixture.reportOwner.settled();
+        const request: SessionReconcileRequest = {
+          ...fixture.reconcileRequest,
+          requestId: randomUUID(),
+          desired: "stopped",
+          runtime: undefined,
+        };
+        const result = await fixture.recovery.prepare(request, await fixture.reconciler.reconcile(request));
+        expect(result.retainedReports).toHaveLength(1);
+        fixture.recovery.afterReconciled(request, result);
+        await vi.waitFor(() => expect(submitReport).toHaveBeenCalledTimes(2));
+        releaseSend();
+        await fixture.reportOwner.settled();
+        expect(fixture.connection.reports()).toEqual([report]);
+        await fixture.record(report);
+        await vi.waitFor(() => expect(fixture.custody.liveTurnCount).toBe(0));
+        expect(fixture.custody.admission.snapshot().client).toBe(0);
+      } finally {
+        releaseSend();
+        fixture.reportOwner.stop();
+        await fixture.reportOwner.settled();
+        await fixture.runtimeManager.close();
+      }
+    },
+  );
+
   it("maps the rejected disabled-network Codex snapshot without silently enabling it", () => {
     const disabled = { ...snapshot(), execution: { approvalPolicy: "never" as const, networkAccess: false } };
     expect(codexRuntimePolicy(disabled).network).toBe("disabled");
@@ -140,6 +284,19 @@ describe("Agent Runtime Client Turn vertical", () => {
       expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn?.phase).toBe("running");
     });
 
+    const stopped: SessionReconcileRequest = {
+      ...fixture.reconcileRequest,
+      requestId: randomUUID(),
+      desired: "stopped",
+      runtime: undefined,
+    };
+    const active = await fixture.recovery.prepare(stopped, await fixture.reconciler.reconcile(stopped));
+    expect(active).toMatchObject({ status: "busy", reason: "active_turn" });
+    expect(active.retainedReports).toBeUndefined();
+    fixture.recovery.afterReconciled(stopped, active);
+    expect(fixture.connection.reports()).toHaveLength(0);
+    expect(fixture.custody.admission.get("session-1")?.phase).toBe("active");
+
     fixture.connection.setState("stopped");
     releaseTerminal?.();
     await vi.waitFor(() => expect(fixture.reportOwner.pendingCount).toBe(1));
@@ -167,7 +324,7 @@ describe("Agent Runtime Client Turn vertical", () => {
       finalText: "claude-answer",
     });
     expect(fixture.claudeProcesses).toHaveLength(1);
-    expect(fixture.claudeProcesses[0]?.args).toContain("--strict-mcp-config");
+    expect(fixture.claudeProcesses[0]?.args).toContain("--plugin-dir");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
       provider: "claude-code",
       runtimeBinding: { providerId: "claude-code", schemaVersion: 1 },
@@ -486,23 +643,21 @@ describe("Agent Runtime Client Turn vertical", () => {
     const launched = fixture.claudeProcesses[0];
     expect(launched).toBeDefined();
 
-    // The file exists, is the one named on the command line, and carries the gateway entry.
     const configuration = JSON.parse(launched?.mcpConfig ?? "{}") as {
       mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>;
     };
-    expect(configuration.mcpServers["opentag-mcp"]).toEqual({
+    expect(Object.values(configuration.mcpServers)[0]).toEqual({
       type: "http",
       url: gateway.url,
       headers: { Authorization: `Bearer ${gateway.token}` },
     });
 
-    // And the CLI is actually pointed at it, with the whole-server rule that admits every
-    // aggregated tool — the names of which are not known when this file is written.
     const args = launched?.args ?? [];
-    expect(args).toContain("--strict-mcp-config");
-    expect(args[args.indexOf("--mcp-config") + 1]).toBeTruthy();
+    expect(args).not.toContain("--strict-mcp-config");
+    expect(args).toContain("--mcp-config");
+    expect(args[args.indexOf("--plugin-dir") + 1]).toBeTruthy();
     expect(args).toContain("--allowedTools");
-    expect(args).toContain("mcp__opentag-mcp");
+    expect(args).toContain(`mcp__${Object.keys(configuration.mcpServers)[0]}`);
   });
 
   it("writes no gateway entry when the Server granted no MCP service", async () => {
@@ -512,7 +667,47 @@ describe("Agent Runtime Client Turn vertical", () => {
     await fixture.waitForReport(0);
     const launched = fixture.claudeProcesses[0];
     expect(JSON.parse(launched?.mcpConfig ?? "{}")).toEqual({ mcpServers: {} });
-    expect(launched?.args ?? []).not.toContain("mcp__opentag-mcp");
+    expect(launched?.args ?? []).not.toContainEqual(expect.stringMatching(/^mcp__g[a-f0-9]{10}$/));
+  });
+
+  it("refreshes Claude MCP grants after snapshot changes and isolates newly created Sessions", async () => {
+    const gateway = { url: "https://server.example.test/api/v1/mcp", token: "otmg_initial_fixture" };
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code", undefined, gateway);
+    const namespaces: string[] = [];
+    try {
+      for (const [index, sessionId] of ["session-1", "session-1", "session-2"].entries()) {
+        gateway.token = `otmg_fixture_${index}`;
+        const runtime = snapshot(index + 1, "claude-code");
+        await expect(
+          fixture.reconciler.reconcile({
+            ...fixture.reconcileRequest,
+            requestId: randomUUID(),
+            sessionId,
+            runtime,
+          }),
+        ).resolves.toMatchObject({ status: "ready" });
+        const accepted = await fixture.custody.accept({
+          ...delivery(runtime, `delivery-${index}`, "local fixture"),
+          sessionId,
+        });
+        await accepted.onAcceptedSent?.();
+        const report = await fixture.waitForReport(index);
+        expect(report.outcome).toBe("completed");
+        await fixture.record(report);
+        await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+        const launched = fixture.claudeProcesses[index];
+        const config = JSON.parse(launched?.mcpConfig ?? "{}");
+        const name = Object.keys(config.mcpServers)[0] as string;
+        namespaces.push(name);
+        expect(config.mcpServers[name].headers.Authorization).toBe(`Bearer ${gateway.token}`);
+        expect(launched?.args.join(" ")).not.toContain("otmg_");
+        expect(JSON.stringify(await fixture.store.read("agent-1", sessionId))).not.toContain("otmg_");
+      }
+      expect(new Set(namespaces).size).toBe(3);
+      expect(JSON.stringify(fixture.logs)).not.toContain("otmg_");
+    } finally {
+      await fixture.runtimeManager.close();
+    }
   });
 });
 
@@ -522,6 +717,7 @@ async function runtimeFixture(
   provider: "codex" | "claude-code" = "codex",
   claudeFailure?: "bridge" | "process" | "spawn",
   mcp?: { url: string; token: string },
+  reportOptions: Pick<TurnReportOwnerOptions, "persistence" | "retryPolicy" | "scheduler"> = {},
 ) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-turn-integration-"));
   directories.push(home);
@@ -530,7 +726,7 @@ async function runtimeFixture(
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const connection = new FakeConnection();
-  const reportOwner = new TurnReportOwner({ connection });
+  const reportOwner = new TurnReportOwner({ connection, ...reportOptions });
   const clients: ScriptedTurnClient[] = [];
   const claudeProcesses: ScriptedClaudeCodeProcess[] = [];
   const logs: RecordedLog[] = [];
@@ -608,14 +804,8 @@ async function runtimeFixture(
     runtime,
   };
   await reconciler.reconcile(reconcile);
-  const recovery = new MvpTurnReportRecovery({ bindingStore: store, reconciler, reportOwner });
+  const recovery = new MvpTurnReportRecovery({ bindingStore: store, custody, reconciler, reportOwner });
 
-  const waitForReport = async (index: number): Promise<TurnReportRequest> => {
-    await vi.waitFor(() => expect(connection.reports().length).toBeGreaterThan(index));
-    const report = connection.reports()[index];
-    if (!report) throw new Error("Expected a Turn Report");
-    return report;
-  };
   const record = (report: TurnReportRequest) =>
     reportOwner.handleResult({
       type: "turn:report:result",
@@ -639,7 +829,7 @@ async function runtimeFixture(
     runtimeManager,
     runtime,
     store,
-    waitForReport,
+    waitForReport: (index: number) => connection.waitForReport(index),
     workspace,
   };
 }
@@ -813,7 +1003,7 @@ async function recoveryFixture(
     },
     logger: recordingLogger(logs),
   });
-  const recovery = new MvpTurnReportRecovery({ bindingStore: store, reconciler, reportOwner });
+  const recovery = new MvpTurnReportRecovery({ bindingStore: store, custody, reconciler, reportOwner });
   const prepareSpy = vi.spyOn(runtimeManager, "prepareSession");
   return {
     clients,
@@ -988,11 +1178,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
-  /**
-   * The `--mcp-config` file as it stood when the process was created — which is exactly when the
-   * real CLI reads it, and after which the bridge deletes it. Captured here because no assertion
-   * outside the run can see it.
-   */
+  /** Capture the private plugin configuration before per-run cleanup deletes it. */
   readonly mcpConfig: string | undefined;
   readonly #failSpawn: boolean;
   readonly #terminalGate: Promise<void>;

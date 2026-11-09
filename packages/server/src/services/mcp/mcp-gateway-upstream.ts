@@ -34,6 +34,7 @@ export interface McpUpstreamCallInput {
   params: Record<string, unknown>;
   /** `params.name`, required by the transport headers for `tools/call`. */
   name?: string;
+  inputSchema?: unknown;
   /** The era cached on this authorization row, or null when unknown. */
   cachedEra: "modern" | "legacy" | null;
   cachedVersion: string | null;
@@ -104,6 +105,7 @@ export class McpUpstreamCaller {
   #dispatchModern(transport: McpTransport, input: McpUpstreamCallInput): Promise<unknown> {
     return transport.call(input.accountId, input.url, input.method, input.params, input.authHeaders, {
       ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.inputSchema === undefined ? {} : { inputSchema: input.inputSchema }),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   }
@@ -113,21 +115,29 @@ export class McpUpstreamCaller {
    *
    * The handshake is repeated per call rather than cached. A legacy session is connection state the
    * peer may drop at any time, and a stale session id fails the call it was meant to serve; paying
-   * one extra round trip on the rarer era is the cheaper mistake. Both requests come out of the same
-   * per-Account concurrency budget, so this cannot be used to double an Account's outbound spend.
+   * one extra round trip on the rarer era is the cheaper mistake. All three requests come out of the
+   * same per-Account concurrency budget, so this cannot be used to double an Account's outbound
+   * spend.
+   *
+   * The caller's `signal` is bound to the fetcher for this call, so it reaches every hop rather than
+   * only the `tools/call` the turn asked for. A cancelled turn must not open a session and then close
+   * it by disappearing: that spends the Account's outbound budget and leaves the peer mid-handshake
+   * for an answer nobody will read. So a pre-aborted signal dials nothing at all, and one that fires
+   * mid-handshake ends the call at the hop in flight rather than at the tool call.
    */
   async #callLegacy(input: McpUpstreamCallInput): Promise<McpUpstreamCallResult> {
-    const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
+    const transport = new McpTransport({
+      clientInfo: this.#clientInfo,
+      fetcher: withCallerSignal(this.#fetcher, input.signal),
+    });
     const { sessionId, result: handshake } = await transport.initialize(input.accountId, input.url, input.authHeaders);
-    if (sessionId) {
-      await transport.notifyLegacy(
-        input.accountId,
-        input.url,
-        "notifications/initialized",
-        input.authHeaders,
-        sessionId,
-      );
-    }
+    /*
+     * Sent unconditionally, because it is the notification that closes the handshake rather than a
+     * session-scoped message: a peer may answer `initialize` without issuing `Mcp-Session-Id` and
+     * still wait for it. `notifyLegacy` adds the session header only when there is a session, so one
+     * call covers both peers, and no tool is dispatched if it fails.
+     */
+    await transport.notifyLegacy(input.accountId, input.url, "notifications/initialized", input.authHeaders, sessionId);
     /*
      * The negotiated version is checked against the *legacy* list before it is spoken, for the same
      * reason the probe does it: the supported set includes the modern version, so a legacy peer that
@@ -182,4 +192,22 @@ function retryableVersionRefusal(error: unknown): readonly string[] | undefined 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Bind the caller's cancellation to every request one legacy handshake makes.
+ *
+ * The handshake is three requests inside `McpTransport` — `initialize`, `notifications/initialized`,
+ * then the call — and the signal has to reach all of them. Binding it here, at the single seam every
+ * hop already passes through, also keeps the transport's own shape intact: `initialize` records the
+ * negotiated legacy revision for `notifyLegacy`, so the version state must not be reconstructed one
+ * layer up. A hop therefore refuses before dialing once the caller has left, and a hop in flight is
+ * closed by the gateway's own deadline handling.
+ */
+function withCallerSignal(fetcher: McpOutboundFetcher, signal: AbortSignal | undefined): McpOutboundFetcher {
+  if (signal === undefined) return fetcher;
+  const wrapper: Pick<McpOutboundFetcher, "fetchOutbound"> = {
+    fetchOutbound: (accountId, url, init = {}) => fetcher.fetchOutbound(accountId, url, { ...init, signal }),
+  };
+  return wrapper as McpOutboundFetcher;
 }

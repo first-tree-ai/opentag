@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import {
+  computeDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
+  computeRuntimeImSteerInputHash,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { computers, imMessageDeliveries, imMessages, sessionPlacements, sessions } from "../../db/schema/index.js";
 import { runImDeliverySteerRecovery } from "../../runtime/im-delivery-janitor.js";
+import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { SessionService } from "../../services/sessions/session-service.js";
 import { deferred } from "../support/deferred.js";
@@ -57,6 +63,164 @@ function settled<T>(operation: Promise<T>) {
     (error) => ({ status: "rejected" as const, error }),
   );
 }
+
+it("preserves the frozen head when recovery skips one locked batch member", async () => {
+  const c = await connections();
+  const reached = deferred();
+  const release = deferred();
+  let gate: Promise<unknown> | undefined;
+  try {
+    const f = await createFixture(c.observer.database);
+    const custody = new PostgresRuntimeCustodyStore(c.second.database);
+    const rootHash = computeDirectInputHash(f.rootRequest);
+    await custody.beginDeliveryDispatch(f.rootRequest, rootHash, f.dispatchContext);
+    await custody.acceptDelivery(f.rootRequest, rootHash, f.rootTurnId, f.context);
+    const [first, second] = f.steerRequests;
+    const request = {
+      ...first,
+      batch: [
+        {
+          deliveryId: second.deliveryId,
+          imMessageId: second.imMessageId,
+          inputHash: computeRuntimeImMessageSemanticHash(second),
+        },
+      ],
+    };
+    await custody.beginSteerDispatch(request, computeRuntimeImSteerInputHash(request), f.dispatchContext);
+    gate = c.gate.sql.begin(async (sql) => {
+      await sql`select id from im_message_deliveries where id = ${second.deliveryId} for update`;
+      reached.resolve();
+      await release.promise;
+    });
+    await reached.promise;
+    expect(await custody.recordTurn(turnReport(f, "failed", "turn_timeout"), f.context)).toBe("recorded");
+    const skipped = (await deliveryRows(c.observer.database, f)).children;
+    expect(skipped[0]).toMatchObject({ state: "pending", dispatchRequestId: request.requestId });
+    expect(skipped[1]).toMatchObject({
+      state: "pending",
+      reason: "batch_pending",
+      steerTargetDeliveryId: first.deliveryId,
+    });
+    release.resolve();
+    await gate;
+    await runImDeliverySteerRecovery(c.second.database, { clock: () => new Date(), expiryBatchSize: 100 });
+    expect(
+      (await deliveryRows(c.observer.database, f)).children.every(
+        (row) =>
+          row.state === "pending" &&
+          row.dispatchRequestId === null &&
+          row.steerTargetDeliveryId === null &&
+          row.reason === null,
+      ),
+    ).toBe(true);
+  } finally {
+    release.resolve();
+    await gate;
+    await c.close();
+  }
+}, 20_000);
+
+it.each(["failed", "cancelled", "unknown"] as const)(
+  "keeps a locked frozen batch intact until %s Root recovery can acquire it",
+  async (outcome) => {
+    const c = await connections();
+    const reached = deferred();
+    const release = deferred();
+    let worker: ImDeliveryWorker | undefined;
+    let run: Promise<unknown> | undefined;
+    try {
+      const f = await createFixture(c.observer.database);
+      const now = new Date(Date.now() + 1_000);
+      const custody = new PostgresRuntimeCustodyStore(c.second.database, { now: () => now });
+      const rootHash = computeDirectInputHash(f.rootRequest);
+      await custody.beginDeliveryDispatch(f.rootRequest, rootHash, f.dispatchContext);
+      await custody.acceptDelivery(f.rootRequest, rootHash, f.rootTurnId, f.context);
+      const [first, second] = f.steerRequests;
+      const request = {
+        ...first,
+        batch: [
+          {
+            deliveryId: second.deliveryId,
+            imMessageId: second.imMessageId,
+            inputHash: computeRuntimeImMessageSemanticHash(second),
+          },
+        ],
+      };
+      const hash = computeRuntimeImSteerInputHash(request);
+      await custody.beginSteerDispatch(request, hash, f.dispatchContext);
+      await custody.releaseSteerDispatch(request, hash, "uncertain");
+      await c.observer.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() + 60_000) })
+        .where(eq(imMessageDeliveries.id, f.rootDeliveryId));
+      await c.observer.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 1_000) })
+        .where(eq(imMessageDeliveries.id, first.deliveryId));
+      worker = new ImDeliveryWorker({
+        database: pauseAfterFirstSelectLock(
+          c.first.database,
+          reached,
+          release,
+          (statement) => statement.includes('from "im_message_deliveries"') && statement.includes("for update"),
+        ),
+        domain: {} as never,
+        assembler: { assembleForSession: vi.fn(async () => f.runtime) },
+        registry: {
+          currentInstanceId: () => f.context.instanceId,
+          supportsCapability: () => true,
+          capabilityVersion: () => 3,
+          canReceiveSnapshot: () => true,
+        } as never,
+        now: () => now,
+        intervalMs: 60_000,
+      });
+      run = worker.runOnce();
+      await reached.promise;
+      expect(
+        await custody.recordTurn(
+          turnReport(
+            f,
+            outcome,
+            outcome === "failed" ? "turn_timeout" : outcome === "cancelled" ? "client_shutdown" : "turn_state_unknown",
+          ),
+          f.context,
+        ),
+      ).toBe("recorded");
+      const skipped = (await deliveryRows(c.observer.database, f)).children;
+      expect(skipped[0]).toMatchObject({ state: "pending", dispatchRequestId: request.requestId });
+      expect(skipped[1]).toMatchObject({
+        state: "pending",
+        reason: "batch_pending",
+        steerTargetDeliveryId: first.deliveryId,
+      });
+      release.resolve();
+      await run;
+      expect((await deliveryRows(c.observer.database, f)).children[0]).toMatchObject({
+        state: "pending",
+        dispatchRequestId: request.requestId,
+      });
+      await runImDeliverySteerRecovery(c.second.database, { clock: () => now, expiryBatchSize: 100 });
+      const recovered = (await deliveryRows(c.observer.database, f)).children;
+      expect(
+        recovered.every(
+          (row) =>
+            row.state === "pending" &&
+            row.reason === null &&
+            row.dispatchRequestId === null &&
+            row.steerTargetDeliveryId === null,
+        ),
+      ).toBe(true);
+      expect(recovered[0]?.nextAttemptAt.getTime()).toBeLessThan(recovered[1]?.nextAttemptAt.getTime() ?? 0);
+    } finally {
+      release.resolve();
+      await run;
+      await worker?.stop();
+      await c.close();
+    }
+  },
+  20_000,
+);
 
 it.each(["failed", "cancelled", "unknown"] as const)(
   "commits a %s report and concurrent collaboration without a lock cycle",
@@ -264,10 +428,12 @@ it("keeps completed reports independent of the recovery Session lock", async () 
   }
 }, 20_000);
 
-function pauseAfterFirstSessionLock(
+function pauseAfterFirstSelectLock(
   database: ReturnType<typeof createDatabaseClient>["database"],
   reached: ReturnType<typeof deferred<void>>,
   release: ReturnType<typeof deferred<void>>,
+  matches: (statement: string) => boolean = (statement) =>
+    statement.includes('from "sessions"') && statement.includes("for no key update"),
 ) {
   let paused = false;
   const wrap = (query: object): object =>
@@ -281,11 +447,7 @@ function pauseAfterFirstSessionLock(
               typeof toSQL === "function" ? (Reflect.apply(toSQL, target, []) as { sql: string }) : undefined;
             return Promise.resolve(Reflect.apply(value, target, []))
               .then(async (rows) => {
-                if (
-                  !paused &&
-                  statement?.sql.includes('from "sessions"') &&
-                  statement.sql.includes("for no key update")
-                ) {
+                if (!paused && statement !== undefined && matches(statement.sql)) {
                   paused = true;
                   reached.resolve();
                   await release.promise;
@@ -409,7 +571,7 @@ it.each(["ended-first", "active-first"] as const)(
       });
       const [janitorPid, collaboratorPid] = await Promise.all([backend(c.first), backend(c.second)]);
       const janitor = settled(
-        runImDeliverySteerRecovery(pauseAfterFirstSessionLock(c.first.database, reached, release), {
+        runImDeliverySteerRecovery(pauseAfterFirstSelectLock(c.first.database, reached, release), {
           clock: () => f.now,
           expiryBatchSize: 100,
         }),

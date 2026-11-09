@@ -33,12 +33,12 @@ describe("RuntimeTestAction", () => {
     vi.restoreAllMocks();
   });
 
-  it("explains that the test uses saved settings and provider quota without running until clicked", () => {
+  it("explains that the test uses saved settings and a little usage without running until clicked", () => {
     const testRuntime = vi.spyOn(browserApi, "testAgentRuntime");
     renderAction();
 
     expect(screen.getByText(/saved model settings/)).toBeTruthy();
-    expect(screen.getByText(/provider quota/)).toBeTruthy();
+    expect(screen.getByText(/small amount of usage/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Run test" })).toBeTruthy();
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -208,7 +208,7 @@ describe("RuntimeTestAction", () => {
     const hang = deferred<AgentRuntimeTestResponse>();
     vi.spyOn(browserApi, "testAgentRuntime").mockReturnValueOnce(hang.promise);
     const pendingView = renderAction();
-    expect(screen.getByText("使用已保存的模型设置发送一个简短请求。此操作可能会消耗 Provider 配额。")).toBeTruthy();
+    expect(screen.getByText("使用已保存的模型设置发送一个简短请求，可能产生少量用量。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
     expect(await screen.findByRole("button", { name: "正在测试…" })).toBeTruthy();
     pendingView.unmount();

@@ -10,6 +10,7 @@ import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
+import { contextTreeExecutionIsCurrent } from "./context-tree-execution.js";
 import {
   type RuntimeControlAuthority,
   type RuntimeCredentialBroker,
@@ -35,6 +36,7 @@ type ExecutionOpenFrame = Extract<RuntimeCredentialClientFrame, { type: "runtime
 type CandidateProvider = "github" | "slack" | "feishu";
 
 export interface RuntimeSessionExecutionDeps {
+  signal?: AbortSignal;
   registry: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   authority: RuntimeExecutionAuthority;
@@ -70,9 +72,11 @@ export async function openRuntimeSessionExecution(
     status: "rejected",
     code,
   });
+  deps.signal?.throwIfAborted();
   const connectionId = context.connectionId;
   if (!connectionId) return rejected("capability_unsupported");
   const checked = checkSessionOpen(frame, context, await deps.scopeResolver.load(frame.sessionId));
+  deps.signal?.throwIfAborted();
   if (!checked.ok) return rejected(checked.code);
   const snapshot = checked.snapshot;
   const internal = checked.internal;
@@ -81,6 +85,7 @@ export async function openRuntimeSessionExecution(
   if (snapshot.computer.kind === "cloud" && !(await cloudControlActive(deps, context.computerId))) {
     return rejected("execution_authority_denied");
   }
+  deps.signal?.throwIfAborted();
   const decision = await deps.authority.authorize(frame.source, {
     sessionId: frame.sessionId,
     agentId: frame.agentId,
@@ -88,31 +93,50 @@ export async function openRuntimeSessionExecution(
     instanceId: context.instanceId,
     placementGeneration: frame.placementGeneration,
   });
+  deps.signal?.throwIfAborted();
   if (decision.status === "not_ready") return rejected("execution_not_ready");
   if (decision.status === "invalid") return rejected("execution_source_invalid");
-  const purpose: RuntimeExecutionPurpose = decision.validation ? "validation" : "execution";
+  if (!contextTreeCapabilityAllowed(frame, context, !!decision.validation)) return rejected("capability_unsupported");
+  const purpose = executionPurpose(frame, !!decision.validation);
   const candidates = await candidateProviders(
     deps,
     snapshot,
     decision.validation,
     frame.source,
     internal,
-    context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.githubUserTask] === 1,
+    frame.contextTree !== undefined,
   );
-  const services = await describeSessionServices(deps, frame, context, snapshot);
+  deps.signal?.throwIfAborted();
+  const services = frame.contextTree ? [] : await describeSessionServices(deps, frame, context, snapshot);
   /*
-   * An internal Cloud collaboration child can legitimately run with no provider and no platform
+   * An internal collaboration child can legitimately run with no provider and no platform
    * service: its authority is the explicit collaboration negotiation plus the accepted Session
    * message, and its Session CLI proof is the actual capability it needs. It still never receives
    * a provider binding — an internal child must not inherit the parent/visible IM credential.
    */
-  if (candidates.length === 0 && services.length === 0 && !internal) {
+  deps.signal?.throwIfAborted();
+  if (!hasOpenAuthority(candidates.length, services, internal)) {
     return rejected("execution_authority_denied");
   }
   const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services, internal);
   if (!record) return rejected("owner_unavailable");
-  const providers = await describeSessionCandidates(deps, record, candidates);
-  if (providers.size === 0 && services.length === 0 && !internal) {
+  if (
+    record.contextTree &&
+    !contextTreeExecutionIsCurrent(record, deps.executions.get(record.contextTree.parentExecutionId), snapshot)
+  ) {
+    deps.executions.close(record.executionId, "execution_closed");
+    return rejected("execution_authority_denied");
+  }
+  const providers = await describeSessionCandidates(deps, record, candidates)
+    .then((providers) => {
+      deps.signal?.throwIfAborted();
+      return providers;
+    })
+    .catch((error) => {
+      deps.executions.close(record.executionId, "execution_closed");
+      throw error;
+    });
+  if (!hasOpenAuthority(providers.size, services, internal)) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
@@ -144,9 +168,7 @@ function checkSessionOpen(
   | { ok: true; snapshot: RuntimeScopeSnapshot; internal: boolean }
   | { ok: false; code: RuntimeExecutionOpenRejectCode } {
   if (!snapshot) return { ok: false, code: "agent_mismatch" };
-  // An internal Session is denied unless the exact open is an explicitly negotiated Cloud
-  // collaboration child of an accepted Session message. Local internal Sessions keep the existing
-  // denial, and a Cloud frame without the negotiated capability stays denied as well.
+  // Internal execution requires an explicitly negotiated collaboration message, never an IM delivery.
   const internal = internalCollaborationAuthorized(frame, context, snapshot);
   if (snapshot.sessionKind === "internal" && !internal) {
     return { ok: false, code: "execution_authority_denied" };
@@ -169,11 +191,11 @@ function checkSessionOpen(
 }
 
 /**
- * The narrow internal-authority predicate: an internal Cloud Session whose accepted Session
+ * The narrow internal-authority predicate: an internal Session whose accepted Session
  * message opens over a connection that explicitly negotiated Session collaboration. The exact
  * connection, current Sandbox allocation, current Runner, and accepted source are all fenced
  * separately, so this predicate only establishes that an internal child is the intended subject
- * at all. It is never true for Local internal Sessions.
+ * at all. Internal children never inherit the visible Session's IM provider.
  */
 function internalCollaborationAuthorized(
   frame: ExecutionOpenFrame,
@@ -182,7 +204,6 @@ function internalCollaborationAuthorized(
 ): boolean {
   return (
     snapshot.sessionKind === "internal" &&
-    snapshot.computer.kind === "cloud" &&
     frame.source.kind === "session-message" &&
     // Any negotiated Session-collaboration version qualifies: the capability's minimum (2) is the
     // version that introduced Session messages; newer versions only widen the message vocabulary.
@@ -238,12 +259,18 @@ function openSessionRecord(
       placementGeneration: frame.placementGeneration,
       source: frame.source,
       purpose,
+      ...(frame.contextTree ? { contextTree: frame.contextTree } : {}),
       computerKind: snapshot.computer.kind,
-      ...(internal ? { internalAuthority: "cloud-session-collaboration" as const } : {}),
+      ...(internal ? { internalAuthority: `${snapshot.computer.kind}-session-collaboration` as const } : {}),
       ...(frame.sandbox ? { sandbox: frame.sandbox } : {}),
       providers: new Map(),
       ...(services.length > 0 ? { services } : {}),
-      maxLifetimeMs: purpose === "validation" ? VALIDATION_EXECUTION_MAX_LIFETIME_MS : undefined,
+      maxLifetimeMs:
+        purpose === "validation"
+          ? VALIDATION_EXECUTION_MAX_LIFETIME_MS
+          : purpose === "context-tree"
+            ? 120_000
+            : undefined,
     });
   } catch {
     return undefined;
@@ -257,9 +284,33 @@ function openSessionRecord(
  * exactly: a service whose capability the peer did not negotiate must be neither granted here nor
  * put on the wire below, and a single shared table is what makes those two statements one fact.
  */
+function executionPurpose(frame: ExecutionOpenFrame, validation: boolean): RuntimeExecutionPurpose {
+  if (frame.contextTree) return "context-tree";
+  return validation ? "validation" : "execution";
+}
+
+function hasOpenAuthority(
+  providerCount: number,
+  services: readonly RuntimeExecutionService[],
+  internal: boolean,
+): boolean {
+  return providerCount > 0 || services.length > 0 || internal;
+}
+function contextTreeCapabilityAllowed(
+  frame: ExecutionOpenFrame,
+  context: RuntimeBusinessContext,
+  validation: boolean,
+): boolean {
+  return (
+    !frame.contextTree ||
+    (!validation && context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.contextTreeExecution] === 1)
+  );
+}
+
 const SERVICE_CAPABILITY: Record<RuntimeExecutionService["service"], string> = {
   web: RUNTIME_CAPABILITY.webTools,
   mcp: RUNTIME_CAPABILITY.mcpGateway,
+  "context-tree": RUNTIME_CAPABILITY.contextTreeExecution,
 };
 
 function negotiated(context: RuntimeBusinessContext, service: RuntimeExecutionService["service"]): boolean {
@@ -284,7 +335,24 @@ async function describeSessionServices(
     if (scopes && scopes.length > 0) services.push({ service: "web", scopes: [...scopes] });
   }
   const mcp = await describeMcpService(deps, frame, context, snapshot);
+  deps.signal?.throwIfAborted();
   if (mcp) services.push(mcp);
+  if (
+    negotiated(context, "context-tree") &&
+    frame.services?.includes("context-tree") &&
+    snapshot.contextTrees?.length
+  ) {
+    const admission = await deps.gitHubAdmission
+      .admit({
+        accountId: snapshot.computer.ownerAccountId,
+        agentId: snapshot.agent.id,
+        sessionId: snapshot.sessionId,
+        source: frame.source,
+        signal: deps.signal,
+      })
+      .catch(() => undefined);
+    if (admission) services.push({ service: "context-tree", scopes: ["context-tree:git"] });
+  }
   return services;
 }
 
@@ -313,6 +381,7 @@ async function describeMcpService(
     );
     return undefined;
   };
+  deps.signal?.throwIfAborted();
   if (!negotiated(context, "mcp")) return withheld("capability_not_negotiated");
   // A Client in legacy credential mode opens no execution through the relay at all; one that does
   // open an execution without naming the service has the capability but did not opt in.
@@ -334,6 +403,7 @@ async function describeSessionCandidates(
 ): Promise<Map<string, RuntimeExecutionProviderBinding>> {
   const providers = new Map<string, RuntimeExecutionProviderBinding>();
   for (const candidate of candidates) {
+    deps.signal?.throwIfAborted();
     const described = await describeProvider(deps, record, candidate.provider, candidate.bindingId);
     if (!described) continue;
     providers.set(
@@ -356,20 +426,21 @@ async function candidateProviders(
   validation: { provider: CandidateProvider; bindingId: string } | undefined,
   source: RuntimeExecutionSource,
   internal: boolean,
-  githubUserTask: boolean,
+  contextTree: boolean,
 ): Promise<{ provider: CandidateProvider; bindingId: string }[]> {
   if (validation) return [{ provider: validation.provider, bindingId: validation.bindingId }];
   const candidates: { provider: CandidateProvider; bindingId: string }[] = [];
-  if (!internal) {
+  if (!internal && !contextTree) {
     candidates.push({ provider: snapshot.binding.provider, bindingId: snapshot.binding.id });
   }
-  if (!githubUserTask) return candidates;
+  if (!contextTree) return candidates;
   const admission = await deps.gitHubAdmission
     .admit({
       accountId: snapshot.computer.ownerAccountId,
       agentId: snapshot.agent.id,
       sessionId: snapshot.sessionId,
       source,
+      signal: deps.signal,
     })
     .catch(() => undefined);
   if (admission) candidates.push({ provider: "github", bindingId: admission.connectionId });
@@ -383,7 +454,7 @@ async function describeProvider(
   bindingId: string,
 ): Promise<RuntimeScopeMaterial | undefined> {
   try {
-    return await deps.broker.describeProvider({ execution: record, provider, bindingId });
+    return await deps.broker.describeProvider({ execution: record, provider, bindingId, signal: deps.signal });
   } catch (error) {
     if (error instanceof RuntimeCredentialError) return undefined;
     throw error;

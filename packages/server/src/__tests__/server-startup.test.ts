@@ -1,4 +1,7 @@
+import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
@@ -15,6 +18,8 @@ const state = vi.hoisted(() => ({
   verifyDatabaseMigrations: vi.fn(),
   createDatabaseClient: vi.fn(),
   createApp: vi.fn(),
+  loadCloudBilling: vi.fn(),
+  shutdownTelemetry: vi.fn(),
   platformAuth: { verifyMachineToken: vi.fn() },
   credentialOwner: { issueValidationRun: vi.fn() },
   proxyTransport: { attach: vi.fn() },
@@ -27,8 +32,10 @@ const state = vi.hoisted(() => ({
   machineAuthOptions: undefined as unknown,
   agentOptions: undefined as unknown,
   domainRequestReconcile: vi.fn(),
+  stopSignal: undefined as AbortSignal | undefined,
   sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
+  ensureActiveReadiness: vi.fn().mockResolvedValue(undefined),
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
   feishuConnectionStart: vi.fn(),
@@ -43,12 +50,18 @@ const state = vi.hoisted(() => ({
   schedulerStart: vi.fn(),
   schedulerStop: vi.fn(),
   domainOptions: undefined as unknown,
+  notifyRunOutcomeInBackground: vi.fn().mockResolvedValue("retry"),
   issueRuntimeCredentialGrant: vi.fn(),
   devAuthArgs: undefined as unknown,
   slackAdapterOptions: undefined as unknown,
 }));
 
 vi.mock("../app.js", () => ({ createApp: state.createApp }));
+vi.mock("../services/cloud-billing-module.js", () => ({ loadCloudBilling: state.loadCloudBilling }));
+vi.mock("../observability/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../observability/index.js")>()),
+  shutdownTelemetry: state.shutdownTelemetry,
+}));
 vi.mock("../services/cloud-run/runner-image-prewarm-worker.js", () => ({
   createRunnerImagePrewarmWorker: () =>
     state.prewarmEnabled
@@ -130,15 +143,15 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
     stop() {
       state.events.push("worker:stop");
-      state.workerStop();
+      return state.workerStop();
     }
   },
 }));
 vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
 vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   ProviderCliReconcileOwner: class {
-    ensureActiveReadiness() {
-      return Promise.resolve();
+    ensureActiveReadiness(input: unknown) {
+      return state.ensureActiveReadiness(input);
     }
     onAgentPlacementChanged() {
       return Promise.resolve();
@@ -146,8 +159,8 @@ vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   },
 }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
-vi.mock("../runtime/agent-session-stopper.js", () => ({
-  stopAgentSessions: vi.fn(
+vi.mock("../runtime/agent-session-stopper.js", () => {
+  const stopAgentSessions = vi.fn(
     async (
       _database: unknown,
       targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
@@ -158,27 +171,55 @@ vi.mock("../runtime/agent-session-stopper.js", () => ({
           instanceId: string | undefined,
           request: unknown,
           onDispatched?: () => void,
+          admission?: unknown,
+          signal?: AbortSignal,
         ): Promise<unknown>;
       },
     ) => {
+      state.stopSignal = new AbortController().signal;
       for (const target of targets) {
         const instanceId = dependencies.currentInstanceId(target.computerId);
-        await dependencies.requestReconcile(target.computerId, instanceId, {
-          type: "session:reconcile",
-          desired: "stopped",
-        });
+        await dependencies.requestReconcile(
+          target.computerId,
+          instanceId,
+          {
+            type: "session:reconcile",
+            desired: "stopped",
+          },
+          undefined,
+          undefined,
+          state.stopSignal,
+        );
       }
     },
-  ),
-}));
+  );
+  return {
+    stopAgentSessions,
+    stopCloudThenLocalAgentSessions: vi.fn(
+      async (
+        database: unknown,
+        targets: Parameters<typeof stopAgentSessions>[1],
+        _cloud: unknown,
+        dependencies: Parameters<typeof stopAgentSessions>[2],
+      ) => stopAgentSessions(database, targets, dependencies),
+    ),
+  };
+});
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
   RuntimeDomainOwner: class {
     constructor(_registry: unknown, _store: unknown, options: unknown) {
       state.domainOptions = options;
     }
-    requestReconcile(computerId: string, instanceId: string | undefined, request: unknown, onDispatched?: () => void) {
-      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched);
+    requestReconcile(
+      computerId: string,
+      instanceId: string | undefined,
+      request: unknown,
+      onDispatched?: () => void,
+      admission?: unknown,
+      signal?: AbortSignal,
+    ) {
+      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched, admission, signal);
     }
   },
   RuntimeDomainRequestError: class extends Error {},
@@ -190,7 +231,14 @@ vi.mock("../services/sessions/index.js", () => ({
       return state.sessionCliPrepareReconcile(computerId, connectionInstanceId, request);
     }
   },
-  SessionCollaborationService: class {},
+  SessionCollaborationService: class {
+    notifyRunOutcomeInBackground(input: unknown) {
+      return state.notifyRunOutcomeInBackground(input);
+    }
+    close() {
+      state.events.push("outcome-notices:close");
+    }
+  },
   SessionService: class {},
   SessionServiceError: class extends Error {},
 }));
@@ -206,7 +254,7 @@ vi.mock("../services/agents/index.js", () => ({
   AgentSetupService: class {},
   DatabaseAgentOwnerResolver: class {},
 }));
-vi.mock("../services/auth/index.js", () => ({
+vi.mock("../services/auth/index.js", async () => ({
   AuthService: class {},
   AuthServiceError: class extends Error {},
   ConnectCodeService: class {},
@@ -215,12 +263,7 @@ vi.mock("../services/auth/index.js", () => ({
       state.devAuthArgs = args;
     }
   },
-  formatStartupError: (error: unknown, knownSecrets: string[]) => {
-    let detail = error instanceof Error ? error.message : String(error);
-    for (const secret of knownSecrets) if (secret) detail = detail.replaceAll(secret, "[REDACTED]");
-    return detail;
-  },
-  PostAuthenticationService: class {},
+  formatStartupError: (await import("../services/auth/security.js")).formatStartupError,
 }));
 vi.mock("../services/channel-target/index.js", () => ({
   createChannelTargetPoller: () => ({
@@ -240,7 +283,11 @@ vi.mock("../services/computers/index.js", () => ({
 }));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
-  ImMessageInbox: class {},
+  ImMessageInbox: class {
+    close() {
+      state.events.push("inbox:close");
+    }
+  },
   ImResourceService: class {},
 }));
 vi.mock("../services/im-bindings/feishu/index.js", () => ({
@@ -302,6 +349,19 @@ vi.mock("../services/setup/index.js", () => ({
   AccountSetupService: class {},
 }));
 vi.mock("../services/schedules/index.js", () => ({
+  // Delegates like the real one for an unscheduled report, so these tests still prove the Local route.
+  ScheduledFailureNotifier: class {
+    readonly #runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> };
+    constructor(options: { runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> } }) {
+      this.#runOutcomes = options.runOutcomes;
+    }
+    notifyRunOutcomeInBackground(input: unknown) {
+      return this.#runOutcomes.notifyRunOutcomeInBackground(input);
+    }
+    close() {
+      state.events.push("scheduled-failures:close");
+    }
+  },
   ScheduleService: class {},
   ScheduleServiceError: class extends Error {},
   ScheduleScheduler: class {
@@ -379,6 +439,10 @@ function defaultConfig() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.schedulerStop.mockReset();
+  state.workerStop.mockReset();
+  state.loadCloudBilling.mockReset().mockResolvedValue(undefined);
+  state.shutdownTelemetry.mockReset().mockResolvedValue(undefined);
   state.events.length = 0;
   state.prewarmEnabled = false;
   state.config = defaultConfig();
@@ -421,9 +485,11 @@ beforeEach(() => {
     code: "binding_inactive",
   });
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const closeHooks: (() => unknown)[] = [];
+  state.onClose = () => closeServerResources(closeHooks.map((hook) => ["application hook", hook] as const));
   state.app = {
-    addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
-      state.onClose = hook;
+    addHook: vi.fn((name: string, hook: () => Promise<void>) => {
+      if (name === "onClose") closeHooks.unshift(hook);
     }),
     listen: vi.fn(async () => state.events.push("listen")),
     close: vi.fn(async () => {
@@ -432,10 +498,33 @@ beforeEach(() => {
     }),
     log,
   };
-  state.createApp.mockImplementation((options: unknown) => {
-    state.appOptions = options;
-    return state.app;
-  });
+  state.createApp.mockImplementation(
+    (options: {
+      beginShutdown?: () => unknown;
+      closeResources?: () => unknown;
+      cloudBilling?: { close(): Promise<void> };
+    }) => {
+      state.appOptions = options;
+      const app = state.app as ReturnType<typeof Fastify>;
+      let stopping: Promise<void> | undefined;
+      const begin = () => {
+        stopping ??= startClosingServerResources([["server producers", () => options.beginShutdown?.()]]);
+        void stopping.catch(() => undefined);
+        return stopping;
+      };
+      app.addHook("preClose", async () => {
+        void begin();
+      });
+      app.addHook("onClose", () =>
+        closeServerResources([
+          ["server producers", begin],
+          ["cloud billing", () => options.cloudBilling?.close()],
+          ["shared resources", () => options.closeResources?.()],
+        ]),
+      );
+      return app;
+    },
+  );
   process.env.OPENTAG_DATABASE_URL = "postgres://db-user:db-password@localhost/opentag";
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
@@ -524,7 +613,13 @@ describe("Server startup", () => {
 
     const imCliReadiness = (
       state.imBindingOptions as {
-        imCliReadiness(agentId: string, provider: "feishu" | "slack"): Promise<unknown>;
+        imCliReadiness(
+          agentId: string,
+          provider: "feishu" | "slack",
+          integrationId?: string,
+          generation?: number,
+          refresh?: boolean,
+        ): Promise<unknown>;
       }
     ).imCliReadiness;
     state.registryImCliReadiness.mockReturnValue([
@@ -545,6 +640,24 @@ describe("Server startup", () => {
     await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("checking");
     state.imBindingGetAgentComputerId.mockResolvedValueOnce(undefined);
     await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("unavailable");
+
+    state.ensureActiveReadiness.mockClear();
+    await imCliReadiness("agent-1", "slack", undefined, undefined, false);
+    const credentialReadiness = (
+      state.imBindingOptions as {
+        credentialExecutionReadiness(
+          agentId: string,
+          provider: "feishu" | "slack",
+          integrationId?: string,
+          generation?: number,
+          refresh?: boolean,
+        ): Promise<unknown>;
+      }
+    ).credentialExecutionReadiness;
+    await credentialReadiness("agent-1", "slack", undefined, undefined, false);
+    expect(state.ensureActiveReadiness).not.toHaveBeenCalled();
+    await imCliReadiness("agent-1", "slack");
+    expect(state.ensureActiveReadiness).toHaveBeenCalledWith({ agentId: "agent-1", computerId: "computer-1" });
 
     const agentRuntimeReadiness = (
       state.imBindingOptions as { agentRuntimeReadiness(agentId: string): Promise<string> }
@@ -599,7 +712,7 @@ describe("Server startup", () => {
 
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");
     expect((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error).toHaveBeenCalledWith(
-      { code: "IM_DELIVERY_FAILED" },
+      { code: "IM_DELIVERY_FAILED", errorCode: "IM_DELIVERY_FAILED" },
       "Server diagnostic",
     );
 
@@ -608,15 +721,41 @@ describe("Server startup", () => {
     await app.close();
     // The schedule scanner stops first: no new claims and no late hand-off frames once the
     // Runtime and the database begin their own shutdown.
-    expect(state.events.slice(-7)).toEqual([
+    expect(state.events.slice(-10)).toEqual([
       "app:close",
       "scheduler:stop",
+      "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
       "sql:end",
     ]);
+  });
+
+  it("routes Local Run outcome frames through the background notifier", async () => {
+    await startServer();
+    const frame = {
+      targetSessionId: "child",
+      messageId: "message",
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      placementGeneration: 3,
+    };
+    const context = { computerId: "computer", instanceId: "instance" };
+    const handler = (
+      state.domainOptions as { onSessionMessageOutcome(frame: unknown, context: unknown): Promise<string> }
+    ).onSessionMessageOutcome;
+    await expect(handler(frame, context)).resolves.toBe("retry");
+    expect(state.notifyRunOutcomeInBackground).toHaveBeenCalledWith({
+      childSessionId: "child",
+      messageId: "message",
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      source: { computerId: "computer", connectionInstanceId: "instance", placementGeneration: 3 },
+    });
   });
 
   it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
@@ -657,6 +796,8 @@ describe("Server startup", () => {
       "instance-3",
       expect.objectContaining({ desired: "stopped" }),
       undefined,
+      undefined,
+      state.stopSignal,
     );
   });
 
@@ -676,27 +817,31 @@ describe("Server startup", () => {
     );
   });
 
-  it("reports ignored GitHub App configuration names without logging their values", async () => {
-    vi.stubEnv("OPENTAG_GITHUB_APP_CLIENT_ID", "legacy-client-id");
-    vi.stubEnv("OPENTAG_GITHUB_APP_CLIENT_SECRET", "legacy-client-secret");
-    vi.stubEnv("OPENTAG_GITHUB_APP_PRIVATE_KEY", " ");
-    try {
-      await startServer();
-      const warn = (state.app as { log: { warn: ReturnType<typeof vi.fn> } }).log.warn;
-      expect(warn).toHaveBeenCalledWith(
-        {
-          event: "github_app_configuration_ignored",
-          variables: ["OPENTAG_GITHUB_APP_CLIENT_ID", "OPENTAG_GITHUB_APP_CLIENT_SECRET"],
-        },
-        expect.stringContaining("OPENTAG_GITHUB_OAUTH_*"),
-      );
-      expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-id");
-      expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-secret");
-      expect(state.events).toContain("listen");
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
+  it.each(["APP", "OAUTH"])(
+    "reports ignored GitHub %s configuration names without logging their values",
+    async (kind) => {
+      const prefix = `OPENTAG_GITHUB_${kind}`;
+      vi.stubEnv(`${prefix}_CLIENT_ID`, "legacy-client-id");
+      vi.stubEnv(`${prefix}_CLIENT_SECRET`, "legacy-client-secret");
+      vi.stubEnv(`${prefix}_UNUSED`, " ");
+      try {
+        await startServer();
+        const warn = (state.app as { log: { warn: ReturnType<typeof vi.fn> } }).log.warn;
+        expect(warn).toHaveBeenCalledWith(
+          {
+            event: "github_app_configuration_ignored",
+            variables: [`${prefix}_CLIENT_ID`, `${prefix}_CLIENT_SECRET`],
+          },
+          expect.stringContaining("OPENTAG_MCP_GITHUB_CLIENT_ID"),
+        );
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-id");
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("legacy-client-secret");
+        expect(state.events).toContain("listen");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("verifies checked-in migrations before listening when auto-migrate is disabled", async () => {
     state.config = { ...defaultConfig(), autoMigrate: false, google: undefined, devAuth: undefined };
@@ -772,14 +917,17 @@ describe("Server startup", () => {
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
     expect(state.events).not.toContain("prewarm:start");
-    expect(state.events.slice(-8)).toEqual([
+    expect(state.events.slice(-11)).toEqual([
       "app:close",
-      "prewarm:stop",
       "scheduler:stop",
+      "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
+      "prewarm:stop",
       "sql:end",
     ]);
     const logged = JSON.stringify(app.log.error.mock.calls);
@@ -797,4 +945,184 @@ describe("Server startup", () => {
       expect(logged).not.toContain(secret);
     }
   });
+
+  it.each([false, true])(
+    "settles a listen failure after onClose rejects, including outer cleanup failures=%s",
+    async (outerFailures) => {
+      const app = Fastify();
+      const listenError = new Error("listen failed jwt-secret");
+      const workerError = new Error("scheduler failed encryption-secret");
+      const billingError = new Error("billing failed slack-client-secret");
+      const telemetryError = new Error("telemetry failed google-secret");
+      const listen = vi.spyOn(app, "listen").mockRejectedValue(listenError);
+      const close = vi.spyOn(app, "close");
+      const report = vi.spyOn(app.log, "error");
+      state.app = app;
+      state.schedulerStop.mockRejectedValue(workerError);
+      state.loadCloudBilling.mockResolvedValue({
+        close: async () => {
+          state.events.push("billing:close");
+          if (outerFailures) throw billingError;
+        },
+      });
+      state.shutdownTelemetry.mockImplementation(async () => {
+        state.events.push("telemetry:close");
+        if (outerFailures) throw telemetryError;
+      });
+
+      await expect(startServer()).resolves.toBeUndefined();
+
+      expect(listen).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(1);
+      expect(state.events).not.toContain("ready:listen");
+      expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("scheduler:stop"));
+      expect(state.events.indexOf("billing:close")).toBeLessThan(state.events.indexOf("sql:end"));
+      expect(state.events.slice(-3)).toEqual(["billing:close", "sql:end", "telemetry:close"]);
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      expect(report).toHaveBeenCalledOnce();
+      const logged = JSON.stringify(report.mock.calls);
+      expect(logged).toContain("Server startup and resource cleanup failed");
+      expect(logged).toContain("listen failed");
+      expect(logged).toContain("Failed to close application");
+      expect(logged).toContain("Failed to close schedule scheduler");
+      expect(logged).toContain("scheduler failed");
+      if (outerFailures) {
+        expect(logged).toContain("Failed to close cloud billing");
+        expect(logged).toContain("billing failed");
+        expect(logged).toContain("telemetry failed");
+      }
+      for (const secret of ["jwt-secret", "encryption-secret", "slack-client-secret", "google-secret"]) {
+        expect(logged).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each([false, true])("closes the pool before App creation, including cleanup failure=%s", async (closeFails) => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.loadCloudBilling.mockRejectedValue(new Error("initialization failed jwt-secret"));
+    if (closeFails) state.sql.end.mockRejectedValue(new Error("database close failed encryption-secret"));
+    try {
+      await expect(startServer()).resolves.toBeUndefined();
+      expect(state.createDatabaseClient).toHaveBeenCalledOnce();
+      expect(state.createApp).not.toHaveBeenCalled();
+      expect(state.sql.end).toHaveBeenCalledExactlyOnceWith({ timeout: 1 });
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(1);
+      const output = stderr.mock.calls.flat().join(" ");
+      expect(output).toContain("initialization failed");
+      if (closeFails) expect(output).toContain("database close failed");
+      expect(output).not.toContain("jwt-secret");
+      expect(output).not.toContain("encryption-secret");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("closes the pool even when App close fails before its resource hook", async () => {
+    const app = state.app as {
+      listen: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+      log: { error: ReturnType<typeof vi.fn> };
+    };
+    app.listen.mockRejectedValue(new Error("listen failed"));
+    app.close.mockRejectedValue(new Error("App close failed"));
+    await expect(startServer()).resolves.toBeUndefined();
+    expect(state.sql.end).toHaveBeenCalledExactlyOnceWith({ timeout: 1 });
+    expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+    expect(process.exitCode).toBe(1);
+    expect(JSON.stringify(app.log.error.mock.calls)).toContain("App close failed");
+  });
+
+  it("reports a pre-creation failure even when telemetry cleanup rejects", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.parseServerConfig.mockImplementation(() => {
+      throw new Error("configuration failed jwt-secret");
+    });
+    state.shutdownTelemetry.mockRejectedValue(new Error("telemetry failed google-secret"));
+    try {
+      await expect(startServer()).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+      expect(state.createApp).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledOnce();
+      const output = stderr.mock.calls.flat().join(" ");
+      expect(output).toContain("configuration failed");
+      expect(output).toContain("telemetry failed");
+      expect(output).not.toContain("jwt-secret");
+      expect(output).not.toContain("google-secret");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+});
+
+it.each([false, true])("joins pending listen before signal cleanup (stop failure=%s)", async (stopFails) => {
+  state.prewarmEnabled = true;
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const app = state.app as { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+  app.listen.mockImplementation(async () => {
+    markEntered();
+    await gate;
+    state.events.push("listen");
+  });
+  if (stopFails) {
+    state.schedulerStop.mockRejectedValue(new Error("Controlled stop error jwt-secret"));
+    state.workerStop.mockRejectedValue(new Error("Worker stop error google-secret"));
+    state.sql.end.mockRejectedValue(new Error("Database close error encryption-secret"));
+  }
+  const starting = startServer();
+  try {
+    await entered;
+    process.listeners("SIGTERM").at(-1)?.("SIGTERM");
+    expect((state.appOptions as { shutdownSignal: AbortSignal }).shutdownSignal.aborted).toBe(true);
+    expect(state.events).toContain("scheduler:stop");
+    expect(state.events).toContain("inbox:close");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(app.close).not.toHaveBeenCalled();
+    expect(state.sql.end).not.toHaveBeenCalled();
+    release();
+    await starting;
+    await vi.waitFor(() => expect(state.sql.end).toHaveBeenCalledOnce());
+    expect(state.events).not.toContain("ready:listen");
+    expect(state.events).not.toContain("prewarm:start");
+    expect(app.close).toHaveBeenCalledOnce();
+    if (stopFails) {
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+      const logged = JSON.stringify((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error.mock.calls);
+      expect(logged).toContain("Failed to close schedule scheduler");
+      expect(logged).toContain("Controlled stop error");
+      expect(logged).toContain("Worker stop error");
+      expect(logged).toContain("Database close error");
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      for (const secret of ["jwt-secret", "google-secret", "encryption-secret"]) expect(logged).not.toContain(secret);
+    }
+  } finally {
+    release();
+    await starting;
+  }
+});
+
+it("joins feedback actions after producer shutdown and before the pool", async () => {
+  const feedbackClose = vi.spyOn(ImFeedbackActionsService.prototype, "close").mockImplementation(async () => {
+    state.events.push("feedback:close");
+  });
+  try {
+    await startServer();
+    const options = state.appOptions as { beginShutdown(): Promise<void> };
+    await options.beginShutdown();
+    expect(feedbackClose).not.toHaveBeenCalled();
+    await (state.app as { close(): Promise<void> }).close();
+    expect(feedbackClose).toHaveBeenCalledOnce();
+    expect(state.events.indexOf("feedback:close")).toBeGreaterThan(state.events.indexOf("feishu-connections:stop"));
+    expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("feedback:close"));
+  } finally {
+    feedbackClose.mockRestore();
+  }
 });

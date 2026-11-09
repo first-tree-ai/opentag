@@ -28,6 +28,8 @@ export interface ProviderCliLockDeps {
   /** Total acquire attempts before reporting busy. */
   readonly maxAttempts?: number;
   readonly retryDelayMs?: number;
+  /** Stops waiting for a busy lock; the run itself observes cancellation on its own. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
@@ -86,6 +88,7 @@ export async function withProviderCliLock<T>(
 
   let acquired = false;
   for (let attempt = 0; attempt < maxAttempts && !acquired; attempt += 1) {
+    deps.signal?.throwIfAborted();
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       handle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);

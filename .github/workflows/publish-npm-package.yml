@@ -185,6 +185,15 @@ jobs:
         working-directory: apps/cli
         run: npm publish --tag "${{ steps.dist_tag.outputs.tag }}" --access public
 
+      - name: Verify published staging package
+        timeout-minutes: 35
+        run: >-
+          node scripts/check-npm-version.mjs
+          --package "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --git-head "${{ steps.revision.outputs.sha }}"
+          --require-published
+
       # Reuses the preflighted artifacts so the published bytes are the ones that were checked.
       - name: Publish portable staging release
         if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -377,6 +386,15 @@ jobs:
         if: steps.registry.outputs.publish == 'true'
         working-directory: apps/cli
         run: npm publish --tag "${{ steps.dist_tag.outputs.tag }}" --access public --provenance
+
+      - name: Verify published production package
+        timeout-minutes: 35
+        run: >-
+          node scripts/check-npm-version.mjs
+          --package "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --git-head "${{ steps.revision.outputs.sha }}"
+          --require-published
 
       # Reuses the preflighted artifacts so the published bytes are the ones that were checked.
       - name: Publish portable production release

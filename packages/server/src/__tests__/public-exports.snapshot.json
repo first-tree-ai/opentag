@@ -39,6 +39,7 @@
   "createApp",
   "createDatabaseClient",
   "createPlatformRuntime",
+  "installProcessFatalHandlers",
   "isHostedEnvironment",
   "migrateDatabase",
   "parseDatabaseConfig",

@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -8,19 +9,24 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
+  rename,
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createWorkspaceArchive,
+  fingerprintWorkspace,
   restoreWorkspaceArchive,
   WORKSPACE_ARCHIVE_MAX_BYTES,
   WORKSPACE_MAX_BYTES,
@@ -30,6 +36,7 @@ import {
   type WorkspaceArchiveInfo,
 } from "../runner/workspace-archive.js";
 
+const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -200,10 +207,48 @@ async function populateWorkspace(workspace: string): Promise<void> {
   await writeFile(join(workspace, "bin", "notes.txt"), "not executable\n");
 }
 
+describe("saved workspace fingerprints", () => {
+  it.each(["add", "remove", "rename", "mode", "mtime", "symlink"])("detects %s changes", async (change) => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const first = join(workspace, "first");
+    await writeFile(first, "first payload");
+    await writeFile(join(workspace, "second"), "second payload");
+    await symlink("first", join(workspace, "link"));
+    const baseline = await fingerprintWorkspace(workspace);
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    if (change === "add") await mkdir(join(workspace, "new-empty-directory"));
+    if (change === "remove") await rm(join(workspace, "second"));
+    if (change === "rename") await rename(join(workspace, "second"), join(workspace, "renamed"));
+    if (change === "mode") await chmod(first, 0o600);
+    if (change === "mtime") await utimes(first, new Date(0), new Date(0));
+    if (change === "symlink") {
+      await rm(join(workspace, "link"));
+      await symlink("second", join(workspace, "link"));
+    }
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+
+  it("uses archive exclusions while retaining unpublished Context Tree state", async () => {
+    const workspace = await makeRoot();
+    const home = join(workspace, ".opentag/context-tree/home/.context-tree");
+    await mkdir(join(home, "cleanup"), { recursive: true });
+    await mkdir(join(home, "sessions"));
+    await writeFile(join(home, "cleanup/log"), "old log");
+    await writeFile(join(home, "sessions/draft"), "unpublished work");
+    const baseline = await fingerprintWorkspace(workspace);
+    await writeFile(join(home, "cleanup/log"), "new log");
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    await writeFile(join(home, "sessions/draft"), "changed unpublished work");
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+});
+
 describe("workspace archive limits", () => {
   it("exposes the documented safety ceilings", () => {
-    expect(WORKSPACE_ARCHIVE_MAX_BYTES).toBe(128 * 1024 * 1024);
-    expect(WORKSPACE_MAX_BYTES).toBe(256 * 1024 * 1024);
+    expect(WORKSPACE_ARCHIVE_MAX_BYTES).toBe(512 * 1024 * 1024);
+    expect(WORKSPACE_MAX_BYTES).toBe(512 * 1024 * 1024);
     expect(WORKSPACE_MAX_ENTRIES).toBe(50_000);
   });
 });
@@ -237,6 +282,85 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     expect(notesMode & 0o111).toBe(0);
     const binding = await readFile(join(restored, ".opentag", "pi-session", "9f86d081", "binding.json"), "utf8");
     expect(JSON.parse(binding)).toEqual({ sessionId: "9f86d081", workspaceFingerprint: "abc123" });
+  });
+
+  describe("Context Tree state retention", () => {
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    };
+
+    async function createCleanSnapshotFixture() {
+      const root = await realpath(await makeRoot());
+      const seed = join(root, "seed");
+      await mkdir(seed, { recursive: true });
+      await execFileAsync("git", ["init", "-b", "main", seed], { env: gitEnv });
+      await writeFile(join(seed, "NODE.md"), "# tree\n");
+      await execFileAsync("git", ["-C", seed, "add", "NODE.md"], { env: gitEnv });
+      await execFileAsync("git", ["-C", seed, "commit", "-m", "init"], { env: gitEnv });
+
+      const workspace = join(root, "workspace");
+      const projectDir = join(workspace, ".opentag", "context-tree", "project");
+      const ctHome = join(workspace, ".opentag", "context-tree", "home", ".context-tree");
+      const bareRepo = join(ctHome, "repositories", "repo.git");
+      const snapshotDir = join(ctHome, "snapshots", "repo-main");
+      await mkdir(projectDir, { recursive: true });
+      await mkdir(join(ctHome, "repositories"), { recursive: true });
+      await mkdir(join(ctHome, "snapshots"), { recursive: true });
+      await mkdir(join(ctHome, "cleanup", "logs"), { recursive: true });
+      await writeFile(join(projectDir, ".context-tree.json"), '{"schemaVersion":3,"trees":[]}\n');
+      await writeFile(join(ctHome, "cleanup", "logs", "events.jsonl"), "{}\n");
+      await execFileAsync("git", ["clone", "--bare", "--no-hardlinks", seed, bareRepo], { env: gitEnv });
+      await execFileAsync(
+        "git",
+        ["-c", "safe.bareRepository=all", "--git-dir", bareRepo, "worktree", "add", "--detach", snapshotDir, "HEAD"],
+        { env: gitEnv },
+      );
+      return { root, workspace, ctHome };
+    }
+
+    it("always keeps repository caches and clean snapshots without write sessions, and omits cleanup logs", async () => {
+      const fixture = await createCleanSnapshotFixture();
+      const archivePath = join(fixture.root, "clean.tar.gz");
+      const info = await createWorkspaceArchive(fixture.workspace, archivePath);
+      const restored = join(fixture.root, "restored");
+      await restoreWorkspaceArchive(archivePath, restored, info);
+
+      const restoredHome = join(restored, ".opentag", "context-tree", "home", ".context-tree");
+      expect(await readFile(join(restored, ".opentag", "context-tree", "project", ".context-tree.json"), "utf8")).toBe(
+        '{"schemaVersion":3,"trees":[]}\n',
+      );
+      expect((await lstat(join(restoredHome, "repositories", "repo.git", "HEAD"))).isFile()).toBe(true);
+      expect(await readFile(join(restoredHome, "snapshots", "repo-main", "NODE.md"), "utf8")).toBe("# tree\n");
+      expect(await readFile(join(restoredHome, "snapshots", "repo-main", ".git"), "utf8")).toBe(
+        await readFile(join(fixture.ctHome, "snapshots", "repo-main", ".git"), "utf8"),
+      );
+      await expect(lstat(join(restoredHome, "cleanup"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("keeps write sessions alongside the caches", async () => {
+      const fixture = await createCleanSnapshotFixture();
+      await mkdir(join(fixture.ctHome, "sessions"), { recursive: true });
+      await mkdir(join(fixture.ctHome, "worktrees", "session-1"), { recursive: true });
+      await writeFile(join(fixture.ctHome, "sessions", "session-1.json"), '{"id":"session-1"}\n');
+      await writeFile(join(fixture.ctHome, "worktrees", "session-1", "draft.md"), "unpublished draft\n");
+
+      const archivePath = join(fixture.root, "with-session.tar.gz");
+      const info = await createWorkspaceArchive(fixture.workspace, archivePath);
+      const restored = join(fixture.root, "restored");
+      await restoreWorkspaceArchive(archivePath, restored, info);
+
+      const restoredHome = join(restored, ".opentag", "context-tree", "home", ".context-tree");
+      expect(await readFile(join(restoredHome, "worktrees", "session-1", "draft.md"), "utf8")).toBe(
+        "unpublished draft\n",
+      );
+      expect(await readFile(join(restoredHome, "snapshots", "repo-main", "NODE.md"), "utf8")).toBe("# tree\n");
+      expect((await lstat(join(restoredHome, "repositories", "repo.git"))).isDirectory()).toBe(true);
+      await expect(lstat(join(restoredHome, "cleanup"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
   });
 
   it("round-trips safe relative symlinks, including chained node_modules layouts", async () => {

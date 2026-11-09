@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import type { ApprovalStore, PendingApproval } from "../runtime/approval-store.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { type ApprovalAction, RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
+import { deferred } from "./support/deferred.js";
 
 function setup(provider: "slack" | "feishu" = "slack") {
   let now = Date.now();
@@ -497,4 +498,65 @@ describe("Runtime approvals", () => {
     expect(s.row().status).toBe("stale");
     expect(s.options.onError).toHaveBeenCalled();
   });
+});
+
+it.each(["request", "poll", "decide", "complete"] as const)("joins actual approval %s work on close", async (phase) => {
+  const s = setup(),
+    entered = deferred(),
+    resume = deferred();
+  if (phase === "decide" || phase === "complete") await s.owner.request(s.request, s.context);
+  if (phase === "complete") s.rows.set(s.row().id, { ...s.row(), status: "accept" });
+  if (phase === "request")
+    s.messenger.post.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return { messageId: "approval-message", channelId: "sender-dm" };
+    });
+  if (phase === "poll") {
+    const original = s.options.store.list.bind(s.options.store);
+    vi.spyOn(s.options.store, "list").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+  }
+  if (phase === "decide" || phase === "complete") {
+    const original = s.options.store.update.bind(s.options.store);
+    vi.spyOn(s.options.store, "update").mockImplementation(async (...args) => {
+      const result = await original(...args);
+      entered.resolve();
+      await resume.promise;
+      return result;
+    });
+  }
+  const { title: _title, description: _description, expiresAt: _expiresAt, ...identity } = s.request;
+  const operations = {
+    request: () => s.owner.request(s.request, s.context),
+    poll: () => s.owner.poll(),
+    decide: () => s.owner.decide(s.action()),
+    complete: () =>
+      s.owner.businessOptions().handle({ ...identity, type: "approval:result", status: "applied" }, s.context),
+  };
+  let drained = false;
+  const operation = operations[phase]();
+  try {
+    await entered.promise;
+    const closing = s.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    expect(await s.owner.request(s.request, s.context)).toMatchObject({ decision: "decline" });
+    resume.resolve();
+    await operation;
+    await closing;
+    if (phase === "decide") expect(s.row().status).toBe("accept");
+    if (phase === "complete") expect(s.row().status).toBe("approved");
+  } finally {
+    resume.resolve();
+    await operation;
+    await s.owner.close();
+    vi.restoreAllMocks();
+  }
 });

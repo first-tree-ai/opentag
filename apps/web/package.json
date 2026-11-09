@@ -8,7 +8,11 @@
     "dev": "vite",
     "paraglide": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --output-structure message-modules --strategy localStorage preferredLanguage baseLocale",
     "test": "vitest run --maxWorkers=1",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:bot-preview": "pnpm prepare:bot-preview && vite --config vite.bot-preview.config.ts",
+    "build:bot-preview": "pnpm prepare:bot-preview && vite build --config vite.bot-preview.config.ts",
+    "preview:bot-preview": "vite preview --config vite.bot-preview.config.ts",
+    "prepare:bot-preview": "pnpm --filter @opentag/shared build && pnpm --filter @opentag/mcp-presets build"
   },
   "dependencies": {
     "@cloudflare/kumo": "2.13.1",

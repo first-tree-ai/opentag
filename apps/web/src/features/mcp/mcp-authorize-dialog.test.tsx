@@ -94,12 +94,30 @@ describe("MCP inline authentication", () => {
     await openDetails("Firecrawl");
     click("Authorize");
     const failure = await within(screen.getByRole("dialog")).findByRole("alert");
-    expect(failure.textContent).toBe("Authorization failed");
+    expect(failure.textContent).toBe("Authorization didn't finish. Try again.");
     expect(failure.closest(".mcp-preset-feedback")).toBeTruthy();
     expect(within(screen.getByRole("dialog")).getByRole("combobox", { name: "Authentication" })).toBeTruthy();
     click("Authorize");
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+  it("names an unreachable address when OAuth cannot start for it", async () => {
+    stub([
+      entry({
+        name: "firecrawl",
+        effective: { ...entry().effective, url: "https://mcp.firecrawl.dev/v2/mcp-oauth", extraHeaders: {} },
+        authorization: { ...authorization(), kind: "oauth", hasCredential: false },
+      }),
+    ]);
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(
+      new ApiError(400, "The outbound URL resolves to a non-public address", "MCP_URL_BLOCKED"),
+    );
+    vi.spyOn(window, "open").mockReturnValue(null);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails("Firecrawl");
+    click("Authorize");
+    const failure = await within(screen.getByRole("dialog")).findByRole("alert");
+    expect(failure.textContent).toBe("Can't reach this address. Check the connector address.");
   });
   it("shows a preset's visible read-only address and only supported alternative methods", async () => {
     const preset = installableEntries(MCP_CATALOG_ENTRIES).find((item) => item.id === "firecrawl");

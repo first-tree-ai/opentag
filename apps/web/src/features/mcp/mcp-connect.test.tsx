@@ -47,7 +47,7 @@ describe("MCP recovery actions", () => {
       wrap(<McpPage agentId={AGENT_ID} />);
       await openDetails();
       fireEvent.click(await screen.findByRole("button", { name: "Reauthorize" }));
-      await within(screen.getByRole("dialog")).findByText("Authorization failed");
+      await within(screen.getByRole("dialog")).findByText("Authorization didn't finish. Try again.");
       expect(screen.getByRole("dialog")).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
       await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
@@ -99,7 +99,7 @@ describe("MCP recovery actions", () => {
     await openDetails();
     const dialog = within(screen.getByRole("dialog"));
     const retry = await dialog.findByRole("button", { name: "Retry" });
-    expect(dialog.getByText("Request timed out")).toBeTruthy();
+    expect(dialog.getByText("The service timed out. Try again.")).toBeTruthy();
     fireEvent.click(retry);
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
     expect(dialog.getByText("Loading tools…")).toBeTruthy();

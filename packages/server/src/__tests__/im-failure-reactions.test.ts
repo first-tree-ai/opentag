@@ -22,6 +22,78 @@ beforeEach(async () => {
 });
 const fixture = () => createFailureReactionFixture(db.database, () => clock);
 describe("best-effort message failure reactions", () => {
+  it.each([9, 10, 99])("adds backlog feedback starting at 10 pending inputs (%s)", async (size) => {
+    const h = await fixture();
+    const entries = [];
+    for (let i = 0; i < size; i += 1) entries.push(await h.delivery());
+    await db.database.update(imMessageDeliveries).set({
+      state: "pending",
+      inputHash: null,
+      turnId: null,
+      reportOwnerInstanceId: null,
+      acceptedAt: null,
+      dispatchRequestId: null,
+      dispatchInputHash: null,
+      dispatchPayload: null,
+    });
+    const last = entries.at(-1);
+    if (!last) throw new Error("missing backlog input");
+    await h.reactions.sync(last.frame.deliveryId);
+    if (size < 10) expect(h.setFailureReaction).not.toHaveBeenCalled();
+    else expect(h.setFailureReaction).toHaveBeenCalledWith(expect.objectContaining({ failed: true }));
+  });
+
+  it("clears an ambient backlog marker after successful processing", async () => {
+    const h = await fixture();
+    const entries = [];
+    for (let index = 0; index < 10; index += 1) entries.push(await h.delivery());
+    const last = entries.at(-1);
+    if (!last) throw new Error("missing pending message");
+    const [original] = await db.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, last.frame.deliveryId));
+    if (!original) throw new Error("missing original custody");
+    await db.database.update(imMessageDeliveries).set({
+      state: "pending",
+      attention: "ambient",
+      inputHash: null,
+      turnId: null,
+      reportOwnerInstanceId: null,
+      acceptedAt: null,
+      dispatchRequestId: null,
+      dispatchInputHash: null,
+      dispatchPayload: null,
+    });
+    await h.reactions.sync(last.frame.deliveryId);
+    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true]);
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ ...original, attention: "ambient" })
+      .where(eq(imMessageDeliveries.id, original.id));
+    await h.report(last.frame, "completed");
+    await h.reactions.sync(last.frame.deliveryId);
+    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false]);
+  });
+
+  it("does not label a suppressed repeat as a failure", async () => {
+    const h = await fixture();
+    const entry = await h.delivery();
+    await db.database.update(imMessageDeliveries).set({
+      state: "expired",
+      reason: "duplicate_pending",
+      inputHash: null,
+      turnId: null,
+      reportOwnerInstanceId: null,
+      acceptedAt: null,
+      dispatchRequestId: null,
+      dispatchInputHash: null,
+      dispatchPayload: null,
+    });
+    await h.reactions.sync(entry.frame.deliveryId);
+    expect(h.setFailureReaction).not.toHaveBeenCalled();
+  });
+
   it("adds a failure marker once and removes it when a later revision of that message succeeds", async () => {
     const h = await fixture(),
       failed = await h.delivery();

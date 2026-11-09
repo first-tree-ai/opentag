@@ -138,6 +138,51 @@ changes presentation only, never approval authority or decision semantics.
 Decision frames contain only the request identity and decision. Request-only presentation fields
 are never copied into decisions, including automatic declines and expired requests.
 
+The Server checks the durable Computer/connection and approval status under their row
+locks through synchronous decision enqueue. It releases SQL before waiting for the
+WebSocket callback. An uncertain send retains the owner's no-replay fence; late
+transport errors cannot replace an acknowledged decision because status updates
+require the expected status. Runtime test callers wait on their existing result
+TTL/cancellation promise immediately after dispatch; a delayed send callback does
+not extend that budget. Transport completion remains owned by the registry/socket.
+
+## Session configuration
+
+The optional `runtime.sessionConfiguration` capability (version 1) has no frames. A Client that offers it compares Agent
+configuration against what each Session prepared on, and keeps a recovering Turn on its pinned snapshot when another
+Session has already prepared a newer revision. Only for such a Client does the Server run Local IM Turns of one Agent
+concurrently. A Client without it compares per Agent and would abandon that recovery, so the Server keeps one Turn per
+Agent for it.
+
+Rollback: a downgraded Client can inherit Turns accepted concurrently on different revisions. The Server then recovers them
+oldest revision first, answering `session:recover` with `retry` (`older_configuration_recovering`) until the older Turns
+have reported. The Client's recover attempts bound that wait at about 5 minutes. After that, it reports the waiting Turn
+through its ordinary failure path, so that Turn gets an error card and isn't resumed.
+
+## Session recovery
+
+The optional `runtime.sessionRecovery` capability (version 1) lets a restarted Local daemon ask the Server to prepare
+a Session whose accepted work it is about to retry. The Client sends `session:recover` with the Session, Agent and
+placement generation, plus the delivery and Turn identity when the interrupted work is an accepted IM Turn. The Server
+answers `session:recover:result`:
+
+- `scheduled`: it moved the named Turn's report ownership to the requesting connection and will send an ordinary
+  `session:reconcile` (`desired: ready`) for the Session. For an IM Turn the reconcile carries the frozen dispatch
+  snapshot; otherwise it carries the current assembled snapshot (with `sessionKind: internal` and the creator for an
+  internal Session).
+- `rejected` (final, with a reason such as `session_ended`, `placement_stale` or `turn_not_recoverable`), `retry`
+  (transient), or `unsupported_capability`.
+
+Only the exact current connection of the Session's placement Computer is served; a superseded connection is rejected.
+Authorization and the report-owner takeover run in one transaction that locks the Agent and binding, the Session,
+its placement, and the Computer (whose `current_instance_id` must equal the requesting connection) before the delivery
+row, so a concurrent end, move, suspend, or reconnect either wins and refuses the request or waits for it. `scheduled`
+does not end the Client's ownership: the Client keeps the recovery until the ready reconcile prepares the Session and
+sends the request again when it does not arrive.
+The request never redelivers input and never writes a Turn Report. A Client whose Server did not negotiate the
+capability keeps the previous behavior: it reports interrupted IM Turns and fails waiting Session messages instead of
+retrying them. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
@@ -169,3 +214,60 @@ Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion:
 It retains the legacy failure vocabulary: new provider categories become `provider_failed`
 before the Runner hashes or journals the report. Replay preserves that compatible reason and
 hash. Categorized Cloud delivery reports require a future Cloud protocol extension.
+
+## Context Tree command executions
+
+`runtime.contextTreeExecution` version 1 gates both the `context-tree` service request/grant and the optional execution-open `contextTree` selector with `parentExecutionId`. A parent receives only the pure `context-tree:git` service. A separate short-lived child receives the GitHub provider binding after exact parent and authoritative tree checks. Ordinary executions never receive GitHub bindings or acquire GitHub credentials.
+
+Runner authentication advertises `contextTreeExecutionVersion: 1`; the Server echoes the supported version and includes it in the Cloud runtime fence. Local capability negotiation follows the ordinary runtime offer. Emit the new service or selector only after Server support is established. Deploy the Server before updated Clients and Runner images. Old peers retain IM/MCP behavior but require an upgrade for managed Context Tree commands.
+
+## Local self-check heartbeat
+
+The composed daemon offers `runtime.selfCheckHeartbeat` version 1. The Server requests a fresh
+`runtime:self-check` epoch on registration and explicit Check again. Completed reports carry that
+epoch, an increasing sequence, a checked-at timestamp, runtime observations and messaging CLI
+observations. The current connection fence and epoch reject late results. Exact duplicate reports
+do not renew freshness. A new check retains the previous complete result while actual work runs.
+Runtime checks are shared by Computer and Provider; credential checks remain scoped to Agent,
+binding and credential generation.
+
+The daemon checks local runtime and CLI state every 30 seconds and publishes completed results
+immediately. Each component has a ten-second logical deadline. A timeout reports a named problem;
+the owner retains the actual work until settlement, preventing overlapping probes and joining it
+on shutdown. Freshness starts at registration even if no first report is accepted. A missing completed report
+becomes stale after 75 seconds; heartbeats and rejected reports do not extend that deadline. Heartbeats run every
+30 seconds independently of the previous acknowledgement, with at most three outstanding IDs.
+Delayed and out-of-order acknowledgements keep their exact connection fence. Read-time presence
+uses a monotonic 90-second deadline; the stale socket sweep runs at most five seconds apart.
+
+Credential validation runs on registration or a changed binding generation, explicit Check again,
+a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
+makes one external attempt within the existing 15-second grant budget and the provider's ten-second
+request deadline. It does not add automatic retry attempts. A Computer runs one validation process,
+so a check it answers as busy made no external attempt; the Server sends it again within the same
+budget. Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
+or replaying the original operation. The first check can expose a neutral initialization for at most
+15 seconds. Later checks preserve the previous complete answer until they settle, including an
+explicit timeout failure. A ready answer stands for 60 seconds past the ten-minute interval, because
+a recheck can start late and still use its whole budget; after that it reads as a timeout.
+
+Only a verdict from the provider is a failed credential check. A check that could not reach the
+provider (network, DNS, HTTP 5xx, a token endpoint outage) reads as provider unreachable, and rate
+limiting and timeouts keep their own reasons. These resolve on the next check, so they never ask the
+user to reconnect, and they do not replace a rejection the provider already gave for the same
+credential generation. Feishu's rate limit code `99991400` counts as rate limiting on any HTTP status.
+A Server-side token exchange that Feishu refuses is answered to the CLI in Feishu's own shape, so
+proxied checks reach the same verdict as direct ones. A reconnect may reuse one unexpired credential result only for the same
+Computer, installation, binding and credential generation, until its original ten-minute expiry.
+Offline presence always overrides it. No readiness survives Server restart.
+
+The implementation uses the existing single-replica in-memory registry. There is no Redis status
+store. Status never grants execution authority: Account ownership, active machine credentials,
+current connection and binding generations are still checked at their owning boundaries. Peers
+without the capability retain the existing preparation, readiness TTL and demand-refresh protocol.
+
+The foreground web status poll is ten seconds. A local change is ordinarily visible within roughly
+30 seconds to the next probe, ten seconds for the probe and ten seconds for the next poll, plus
+transport delay. Credential changes without an explicit hint can take ten minutes plus validation
+and polling time. These are cadence bounds, not a guarantee against network or service outages.

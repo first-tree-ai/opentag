@@ -1,10 +1,14 @@
 import { lookup as dnsLookup, type LookupAddress, type LookupAllOptions } from "node:dns";
 import { isIP, type LookupFunction } from "node:net";
+import { domainToASCII } from "node:url";
 import { isBlockedAddress, isLoopbackHostname } from "@opentag/shared";
 import { Agent, type Dispatcher, fetch as undiciFetch } from "undici";
 import type { ExternalCallTransport } from "./external-call-policy.js";
 
 const AVATAR_DESTINATION_BLOCKED = "IM_AVATAR_DESTINATION_BLOCKED";
+const AVATAR_REDIRECT_REJECTED = "IM_AVATAR_REDIRECT_REJECTED";
+const MAX_AVATAR_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export type AvatarAddressResolver = (
   hostname: string,
@@ -24,6 +28,65 @@ function blockedDestination(hostname: string): NodeJS.ErrnoException {
   const error = new Error(`Avatar destination is not public: ${hostname}`) as NodeJS.ErrnoException;
   error.code = AVATAR_DESTINATION_BLOCKED;
   return error;
+}
+
+function redirectRejectedError(message: string, cause?: unknown): NodeJS.ErrnoException {
+  const error = new Error(message, cause === undefined ? undefined : { cause }) as NodeJS.ErrnoException;
+  error.code = AVATAR_REDIRECT_REJECTED;
+  return error;
+}
+
+function isIpLiteral(hostname: string): boolean {
+  const candidate = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (isIP(candidate) !== 0) return true;
+  try {
+    return isIP(decodeURIComponent(candidate)) !== 0;
+  } catch {
+    return true;
+  }
+}
+
+function hasEncodedAuthority(input: string): boolean {
+  const authority = /^(?:[a-z][a-z\d+.-]*:)?\/\/([^/?#]*)/i.exec(input)?.[1];
+  if (!authority) return false;
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+  return hostPort.includes("%");
+}
+
+function admitAvatarRedirectUrl(location: string, currentUrl: string | URL): URL {
+  if (hasEncodedAuthority(location)) {
+    throw redirectRejectedError("Encoded avatar redirect hosts are not allowed");
+  }
+  let target: URL;
+  try {
+    target = new URL(location, currentUrl);
+  } catch (error) {
+    throw redirectRejectedError("Avatar redirect target URL is invalid", error);
+  }
+  if (target.protocol !== "https:" || target.port !== "") {
+    throw redirectRejectedError("Avatar redirect target must use HTTPS and its default port");
+  }
+  if (target.username !== "" || target.password !== "") {
+    throw redirectRejectedError("Avatar redirect target must not include credentials");
+  }
+  const hostname = target.hostname;
+  const bareHost = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (!bareHost || isIpLiteral(bareHost) || isLoopbackHostname(hostname)) {
+    throw blockedDestination(hostname || target.toString());
+  }
+  const asciiHost = domainToASCII(bareHost.replace(/\.+$/, ""));
+  if (!asciiHost) {
+    throw redirectRejectedError("Avatar redirect target hostname is invalid");
+  }
+  return target;
+}
+
+async function cancelResponseBody(response: { body: ReadableStream<Uint8Array> | null }): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Best effort: intermediate redirect responses are never relayed.
+  }
 }
 
 function isUnsafeAddress(address: string): boolean {
@@ -81,13 +144,35 @@ export function createAvatarTransport(
 ): AvatarTransport {
   const dispatcher = dispatcherFactory(resolve);
   const transport: ExternalCallTransport = async (input, init = {}) => {
-    const requestHeaders = init.headers === undefined ? undefined : Array.from(new Headers(init.headers).entries());
-    const response = await undiciFetch(input, {
+    let currentUrl: string | URL = input;
+    let requestHeaders = init.headers === undefined ? undefined : Array.from(new Headers(init.headers).entries());
+    let response = await undiciFetch(currentUrl, {
       headers: requestHeaders,
-      redirect: init.redirect,
+      redirect: "manual",
       signal: init.signal,
       dispatcher,
     });
+
+    for (let redirects = 0; REDIRECT_STATUSES.has(response.status); ) {
+      const location = response.headers.get("location")?.trim();
+      await cancelResponseBody(response);
+      redirects += 1;
+      if (redirects > MAX_AVATAR_REDIRECTS) {
+        throw redirectRejectedError(`Avatar redirect limit (${MAX_AVATAR_REDIRECTS}) exceeded`);
+      }
+      if (!location) {
+        throw redirectRejectedError("Avatar redirect is missing a Location header");
+      }
+      currentUrl = admitAvatarRedirectUrl(location, currentUrl);
+      requestHeaders = [["accept", "image/*"]];
+      response = await undiciFetch(currentUrl, {
+        headers: requestHeaders,
+        redirect: "manual",
+        signal: init.signal,
+        dispatcher,
+      });
+    }
+
     const responseHeaders = Array.from(response.headers.entries()).filter(
       ([name]) => name !== "content-length" && name !== "content-encoding",
     );

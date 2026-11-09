@@ -28,7 +28,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: /Restore connection$/ }));
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
@@ -46,7 +46,8 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => status });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online")).toBeTruthy();
@@ -103,6 +104,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
+    // The row names its next step: sign in, on the setup step that shows how and re-runs the check.
+    expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}#sign-in`,
+    );
+    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
     expect(screen.queryByText("Cannot receive new work")).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
     expect(screen.queryByText("Available")).toBeNull();
@@ -171,12 +177,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const notice = screen.getByRole("region", { name: "Agent status: Suspended" });
-    expect(within(notice).getByText("Suspended")).toBeTruthy();
+    const notice = screen.getByRole("region", { name: "Agent status: Paused" });
+    expect(within(notice).getByText("Paused")).toBeTruthy();
     expect(within(notice).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
-    expect(within(notice).getByRole("link", { name: "Pause or delete Agent" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/manage`,
-    );
+    // The notice resumes the Agent itself rather than sending the reader to the pause/delete page.
+    expect(within(notice).queryByRole("link", { name: "Pause or delete Agent" })).toBeNull();
+    expect(within(notice).getByRole("button", { name: "Resume Agent" })).toBeTruthy();
   });
 
   it("keeps unreadable Computer and Messaging evidence out of the success states", async () => {
@@ -257,8 +263,8 @@ describe("OpenTag Web App Shell", () => {
         options: { computerProviderReadiness: readiness("install") },
       },
       {
-        exit: "Continue setup",
-        href: `/agents/setup?agentId=${agentId}`,
+        exit: "Sign in",
+        href: `/agents/setup?agentId=${agentId}#sign-in`,
         label: "Codex sign-in required",
         options: { computerProviderReadiness: readiness("sign-in") },
       },
@@ -359,10 +365,10 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const card = screen.getByRole("region", { name: "Agent status" });
     expect(card.querySelector('[data-ui="agent-status-provider"]')?.textContent).toBe(name);
-    const details = within(card).getByRole("button", { name: /^Computer: Online/ });
-    expect(details.getAttribute("aria-label")).toContain(`Ada's Mac · macOS · ${name}`);
-    fireEvent.click(details);
-    expect(await screen.findByText(`Ada's Mac · macOS · ${name}`)).toBeTruthy();
+    // A healthy row is plain text, not a control; its full identity stays available to assistive
+    // technology and as the row's title, where the narrow layout truncates it.
+    expect(within(card).queryByRole("button", { name: /^Computer: Online/ })).toBeNull();
+    expect(within(card).getByText(/^Computer: Online/).textContent).toContain(`Ada's Mac · macOS · ${name}`);
   });
 
   it("does not let a paused Agent make the Computer row contradict itself", async () => {

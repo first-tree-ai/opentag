@@ -10,6 +10,7 @@ import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import { useAccount } from "../../session/session-context.js";
 import { AgentAvatar } from "../agent-avatar.js";
 import type { AgentDetailView } from "../agent-model.js";
+import { agentComputerStatus, agentRuntimeIssue } from "../agent-presentation.js";
 import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
@@ -40,13 +41,20 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
             ? agentDetailLink(returnAgentId)
             : agentSettingsLink(agent.id)
           : agentDetailLink(agent.id);
-        const backLabel = selected ? (routeState.returnLabel ?? m.agent_settings_title()) : agent.displayName;
+        /*
+         * The Agent's home is named by its place in the navigation, not by the Agent's name: a long
+         * name made the back link wrap, and the name is already beside it.
+         */
+        const backText =
+          selected && !returnAgentId
+            ? m.agent_settings_back_to({ label: m.agent_settings_title() })
+            : m.agent_settings_back_to_overview();
         return (
           <section className="grid gap-6">
             <div className="grid gap-4">
               <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" {...back}>
                 <Icon name="arrow-left" />
-                {m.agent_settings_back_to({ label: backLabel })}
+                {backText}
               </Link>
               <div className="min-w-0">
                 <AgentSettingsContent
@@ -105,6 +113,7 @@ export function AgentConfigSettingsContent({
               computerKind={agent.computerKind}
               computerOnline={agent.availability.dependencies.computer.state === "ready"}
               initialConfig={config}
+              onAgentChanged={onAgentChanged}
               save={(input) => browserApi.updateAgent(config.id, input)}
               section={section}
             />
@@ -171,28 +180,37 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         /*
                          * Every row opens its page. A row that is a link only sometimes cannot be
                          * predicted from looking at the list, and the Computer page is worth reading
-                         * whether or not the Computer currently needs attention.
+                         * whether or not the Computer currently needs attention. A row whose state the
+                         * reader can fix also carries the same single fix the Agent list and home offer,
+                         * as its own link beside the row's.
                          */
-                        const computerNeedsReview =
-                          item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
+                        const fix = agentSettingsFix(agent, item.key);
                         return (
-                          <Link
-                            className="flex items-center gap-3 border-b border-kumo-line p-4 outline-none transition-colors last:border-b-0 hover:bg-kumo-tint active:bg-kumo-recessed focus-visible:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
+                          <div
+                            className="relative flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-kumo-line p-4 transition-colors last:border-b-0 hover:bg-kumo-tint has-[a:first-child:focus-visible]:bg-kumo-tint"
                             key={item.key}
-                            data-ui="agent-settings-entry"
-                            {...agentSettingsSectionLink(agent.id, item.key)}
                           >
-                            {content}
-                            <span
-                              className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
-                              aria-hidden="true"
+                            <Link
+                              className="flex min-w-0 flex-1 items-center gap-3 outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-kumo-brand focus-visible:after:ring-inset"
+                              data-ui="agent-settings-entry"
+                              {...agentSettingsSectionLink(agent.id, item.key)}
                             >
-                              {computerNeedsReview ? (
-                                <span className="text-xs">{m.agent_settings_review_action()}</span>
-                              ) : null}
-                              <Icon name="chevron-right" />
-                            </span>
-                          </Link>
+                              {content}
+                            </Link>
+                            {fix ? (
+                              <Link
+                                // On phones the fix takes its own line under the summary, so the summary keeps its width.
+                                className="relative z-10 shrink-0 text-sm font-medium text-kumo-link underline-offset-4 hover:underline max-[640px]:order-last max-[640px]:basis-full max-[640px]:pl-11"
+                                aria-label={m.agent_settings_fix_label({ action: fix.label, section: item.label() })}
+                                data-ui="agent-settings-fix"
+                                state={{ agent, returnAgentId: agent.id }}
+                                {...fix.link}
+                              >
+                                {fix.label}
+                              </Link>
+                            ) : null}
+                            <Icon className="shrink-0 text-kumo-subtle" name="chevron-right" aria-hidden="true" />
+                          </div>
                         );
                       })}
                   </div>
@@ -219,4 +237,15 @@ export function AgentSettingsDirectoryLoading() {
       <span>{m.agent_settings_loading_title()}…</span>
     </div>
   );
+}
+
+/** The single fix a settings row carries: the same action the Agent list and home give for that state. */
+function agentSettingsFix(agent: AgentDetailView, section: AgentSettingsSection) {
+  if (section === "computer") {
+    return agent.availability.dependencies.computer.state === "action_required"
+      ? agentComputerStatus(agent).action
+      : undefined;
+  }
+  if (section === "execution") return agentRuntimeIssue(agent)?.action;
+  return undefined;
 }

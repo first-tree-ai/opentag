@@ -1,8 +1,11 @@
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountAgentCreationIntentPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
+  agentContextTreePath,
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
@@ -12,6 +15,7 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AgentServiceError } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -194,14 +198,14 @@ describe("Agent HTTP API", () => {
       payload: {
         displayName: " Reviewer ",
         expectedRevision: 1,
-        runtimeConfig: { maxDurationMs: null, model: null },
+        runtimeConfig: { instructions: null, maxDurationMs: null, model: null },
       },
     });
     expect(update.statusCode).toBe(200);
     expect(service.updateById).toHaveBeenCalledWith(userId, agentId, {
       displayName: "Reviewer",
       expectedRevision: 1,
-      runtimeConfig: { maxDurationMs: null, model: null },
+      runtimeConfig: { instructions: null, maxDurationMs: null, model: null },
     });
     const suspended = await app.inject({ method: "POST", url: agentSuspendPath(agentId), headers: authorization });
     expect(suspended.statusCode).toBe(200);
@@ -257,16 +261,36 @@ describe("Agent HTTP API", () => {
     });
   });
 
-  it("gets Agent usage through a strict supported period", async () => {
+  it("gets Agent usage through a strict supported period and optional IANA timezone", async () => {
     const { app, service } = appWith();
     const response = await app.inject({ method: "GET", url: agentUsagePath(agentId, 30), headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(agentUsage);
-    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "UTC");
+
+    const localized = await app.inject({
+      method: "GET",
+      url: agentUsagePath(agentId, 30, "Asia/Shanghai"),
+      headers: authorization,
+    });
+    expect(localized.statusCode).toBe(200);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "Asia/Shanghai");
 
     const invalid = await app.inject({ method: "GET", url: agentUsagePath(agentId, 14), headers: authorization });
     expect(invalid.statusCode).toBe(400);
-    expect(service.getUsageById).toHaveBeenCalledTimes(1);
+    const invalidOffset = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=%2B08%3A00`,
+      headers: authorization,
+    });
+    expect(invalidOffset.statusCode).toBe(400);
+    const invalidZone = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=Mars%2FPhobos`,
+      headers: authorization,
+    });
+    expect(invalidZone.statusCode).toBe(400);
+    expect(service.getUsageById).toHaveBeenCalledTimes(2);
   });
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {
@@ -295,7 +319,7 @@ describe("Agent HTTP API", () => {
       url: HTTP_PATHS.accountAgents,
       headers: authorization,
       payload: {
-        name: "Bestony",
+        name: "Best ony",
         displayName: "Bestony",
         runtimeProvider: "codex",
         computerId,
@@ -312,7 +336,7 @@ describe("Agent HTTP API", () => {
             path: ["name"],
             code: "invalid_format",
             message:
-              "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+              "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
           },
         ],
       },
@@ -368,6 +392,57 @@ describe("Agent HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code, category: "deterministic" } });
   });
 
+  it("sends the detail's running Task count only to clients that declare they read it", async () => {
+    const service = agentService();
+    const working = { state: "working" as const, startedAt: agentDetail.updatedAt, runningTaskCount: 3 };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: working });
+    const { app } = appWith(service);
+
+    const legacy = await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization });
+    expect(legacy.json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+
+    const current = await app.inject({
+      method: "GET",
+      url: agentByIdPath(agentId),
+      headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
+    });
+    expect(current.json().activity).toEqual(working);
+  });
+
+  it("returns each activity count only to clients that declared it", async () => {
+    const service = agentService();
+    const queued = {
+      state: "working" as const,
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+      queuedTaskCount: 2,
+    };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: queued });
+    const { app } = appWith(service);
+    const read = (headers: Record<string, string>) =>
+      app.inject({ method: "GET", url: agentByIdPath(agentId), headers: { ...authorization, ...headers } });
+    const running = { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" };
+    const waiting = { [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: "1" };
+
+    expect((await read({})).json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+    expect((await read(running)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+    });
+    expect((await read(waiting)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      queuedTaskCount: 2,
+    });
+    expect((await read({ ...running, ...waiting })).json().activity).toEqual(queued);
+    // An unknown version is not a declaration.
+    expect((await read({ [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "2" })).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+    });
+  });
+
   it("preserves malformed JSON as a typed client error", async () => {
     const { app } = appWith();
     const response = await app.inject({
@@ -389,4 +464,34 @@ describe("Agent HTTP API", () => {
     expect(response.statusCode).toBe(500);
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
+});
+
+it("serves authenticated, uncached Context Tree availability with Account-scoped Agent ownership", async () => {
+  const service = agentService();
+  const availability = vi.fn(async () => ({ status: "failed" as const, code: "github_not_configured" as const }));
+  const contextTree = new ContextTreeOperationService(
+    { getConfigById: service.getConfigById, updateContextTreeSelection: vi.fn() },
+    { currentInstanceId: () => "peer", supportsCapability: () => true },
+    { availability, computerKind: async () => "local", run: vi.fn() },
+  );
+  const app = createApp({
+    authService: authService(),
+    agentService: service as unknown as AgentService,
+    contextTreeOperationService: contextTree,
+  });
+  apps.push(app);
+  const response = await app.inject({ method: "GET", url: agentContextTreePath(agentId), headers: authorization });
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["cache-control"]).toBe("no-store");
+  expect(response.json()).toEqual({ status: "failed", code: "github_not_configured" });
+  expect(service.getConfigById).toHaveBeenCalledWith(userId, agentId);
+  expect(availability).toHaveBeenCalledWith(userId, agentId);
+  service.getConfigById.mockRejectedValueOnce(
+    new AgentServiceError("RESOURCE_NOT_FOUND", "deterministic", "Agent not found", 404),
+  );
+  expect(
+    (await app.inject({ method: "GET", url: agentContextTreePath(agentId), headers: authorization })).statusCode,
+  ).toBe(404);
+  expect(availability).toHaveBeenCalledOnce();
+  expect((await app.inject({ method: "GET", url: agentContextTreePath(agentId) })).statusCode).toBe(401);
 });

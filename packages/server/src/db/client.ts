@@ -1,6 +1,8 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { applyQueryDeadline, assertQueryDeadlineSupport } from "./query-deadline.js";
+import type { PerformanceLogger } from "../observability/performance-logger.js";
+import { applyQueryDeadline } from "./query-deadline.js";
+import { instrumentDatabaseSql } from "./query-performance.js";
 import * as schema from "./schema/index.js";
 import {
   DATABASE_CONNECT_TIMEOUT_SECONDS,
@@ -12,6 +14,7 @@ import {
 export interface DatabaseClientOptions extends Partial<DatabaseTimeouts> {
   max?: number;
   onQueryTimeout?: (event: { timeoutMs: number }) => void;
+  performanceLogger?: PerformanceLogger;
 }
 
 export function createDatabaseClient(databaseUrl: string, options: DatabaseClientOptions = {}) {
@@ -21,7 +24,7 @@ export function createDatabaseClient(databaseUrl: string, options: DatabaseClien
     idleInTransactionTimeoutMs:
       options.idleInTransactionTimeoutMs ?? DEFAULT_DATABASE_TIMEOUTS.idleInTransactionTimeoutMs,
   };
-  const sql = postgres(databaseUrl, {
+  const rawSql = postgres(databaseUrl, {
     // Per-process ceiling, not a cluster-wide one: every replica holds up to this many connections
     // plus one for the dedicated readiness probe, so size it against max_connections / replicas.
     max: options.max ?? 20,
@@ -33,11 +36,11 @@ export function createDatabaseClient(databaseUrl: string, options: DatabaseClien
     },
     onnotice: () => undefined,
   });
-  assertQueryDeadlineSupport(sql);
-  applyQueryDeadline(sql, {
+  applyQueryDeadline(rawSql, {
     timeoutMs: timeouts.queryTimeoutMs,
     ...(options.onQueryTimeout ? { onTimeout: options.onQueryTimeout } : {}),
   });
+  const sql = instrumentDatabaseSql(rawSql, options.performanceLogger);
   const database = drizzle(sql, { schema });
   return { database, sql, timeouts };
 }

@@ -125,6 +125,125 @@ describe("MCP transport headers", () => {
     expect(encoded).toBe(`=?base64?${Buffer.from("=?base64?odd?=", "utf8").toString("base64")}?=`);
     expect(decodeHeaderValue(encoded as string)).toBe("=?base64?odd?=");
   });
+
+  it("preserves a whitespace-padded tool name on the wire", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: {} }) }]);
+    await new McpTransport({ fetcher }).call(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/call",
+      { name: " padded " },
+      {},
+    );
+    const header = headersOf(calls[0] as { init: RequestInit })["mcp-name"];
+    expect(header).toBe("=?base64?IHBhZGRlZCA=?=");
+    expect(decodeHeaderValue(header as string)).toBe(" padded ");
+  });
+
+  it("mirrors only annotated primitive arguments at their exact property paths", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: {} }) }]);
+    const inputSchema = {
+      type: "object",
+      properties: {
+        owner: { type: "string", "x-mcp-header": "owner" },
+        nested: { type: "object", properties: { id: { type: "integer", "x-mcp-header": "Id" } } },
+        enabled: { type: "boolean", "x-mcp-header": "Enabled" },
+        omitted: { type: "string", "x-mcp-header": "Omitted" },
+        nil: { type: "string", "x-mcp-header": "Nil" },
+        body: { type: "string" },
+      },
+    };
+    const args = {
+      owner: "first-tree-ai",
+      nested: { id: 42 },
+      id: 999,
+      enabled: false,
+      nil: null,
+      body: "private body",
+    };
+    await new McpTransport({ fetcher }).call(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/call",
+      { name: "issue_write", arguments: args },
+      { authorization: "Bearer t" },
+      { inputSchema },
+    );
+    const headers = headersOf(calls[0] as { init: RequestInit });
+    expect(Object.fromEntries(Object.entries(headers).filter(([key]) => key.startsWith("mcp-param-")))).toEqual({
+      "mcp-param-owner": "first-tree-ai",
+      "mcp-param-id": "42",
+      "mcp-param-enabled": "false",
+    });
+    expect(headers.authorization).toBe("Bearer t");
+    expect((bodyOf(calls[0] as { init: RequestInit }).params as Record<string, unknown>).arguments).toEqual(args);
+  });
+
+  it.each(["", " padded ", "工具箱", "line1\r\nline2", "=?base64?literal?="])(
+    "preserves parameter header value %j through HTTP header normalization",
+    async (value) => {
+      const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: {} }) }]);
+      await new McpTransport({ fetcher }).call(
+        ACCOUNT,
+        "https://mcp.example.com/mcp",
+        "tools/call",
+        { name: "read", arguments: { value } },
+        {},
+        { inputSchema: { properties: { value: { type: "string", "x-mcp-header": "Value" } } } },
+      );
+      const encoded = headersOf(calls[0] as { init: RequestInit })["mcp-param-value"];
+      expect(encoded).toBeDefined();
+      expect(decodeHeaderValue(encoded as string)).toBe(value);
+    },
+  );
+
+  it.each([
+    { type: "string", "x-mcp-header": "Owner" },
+    { properties: { owners: { items: { type: "string", "x-mcp-header": "Owner" } } } },
+    { $defs: { owner: { type: "string", "x-mcp-header": "Owner" } } },
+    { properties: { owner: { type: "string", "x-mcp-header": "bad\r\nheader" } } },
+    { properties: { owner: { type: "string", "x-mcp-header": "" } } },
+    { properties: { owner: { type: "string", "x-mcp-header": true } } },
+    { properties: { owner: { type: "object", "x-mcp-header": "Owner" } } },
+    { properties: { owner: { type: ["string"], "x-mcp-header": "Owner" } } },
+    {
+      properties: {
+        owner: { type: "string", "x-mcp-header": "Owner" },
+        repo: { type: "string", "x-mcp-header": "owner" },
+      },
+    },
+  ])("rejects malformed parameter header metadata before dispatch: %j", async (inputSchema) => {
+    const { calls, fetcher } = stubFetch([]);
+    await expect(
+      new McpTransport({ fetcher }).call(
+        ACCOUNT,
+        "https://mcp.example.com/mcp",
+        "tools/call",
+        { name: "write", arguments: { owner: "private value" } },
+        {},
+        { inputSchema },
+      ),
+    ).rejects.toThrow("invalid parameter header metadata");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([1.5, Number.MAX_SAFE_INTEGER + 1, "42", {}, []])(
+    "refuses a non-safe-integer mirrored argument %j without dialing",
+    async (value) => {
+      const { calls, fetcher } = stubFetch([]);
+      await expect(
+        new McpTransport({ fetcher }).call(
+          ACCOUNT,
+          "https://mcp.example.com/mcp",
+          "tools/call",
+          { name: "write", arguments: { value } },
+          {},
+          { inputSchema: { properties: { value: { type: "integer", "x-mcp-header": "Value" } } } },
+        ),
+      ).rejects.toThrow("declared primitive type");
+      expect(calls).toHaveLength(0);
+    },
+  );
 });
 
 describe("MCP response parsing", () => {

@@ -2,7 +2,7 @@ import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { evictAgentFromLists } from "../../../query/agent-sync.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -71,11 +71,26 @@ export function AgentManageSettings({
     }
   }
 
+  /*
+   * The Server deletes only a paused Agent. The reader has already confirmed the delete, so an
+   * active Agent is paused first, in the same action. Each step that fails says what state it left.
+   */
   async function deleteAgent() {
+    setBusy(true);
+    setMessage(undefined);
+    setConfirmationError(undefined);
+    const pauseFirst = config.status === "active";
+    if (pauseFirst) {
+      try {
+        setConfig(await browserApi.suspendAgent(config.id));
+        onAgentChanged();
+      } catch (cause) {
+        setConfirmationError(deleteFailure(cause, "pause"));
+        setBusy(false);
+        return;
+      }
+    }
     try {
-      setBusy(true);
-      setMessage(undefined);
-      setConfirmationError(undefined);
       await browserApi.deleteAgent(config.id);
       // A confirmed delete is stronger than a later list revalidation. Evict the Agent from every
       // cached list and remove its detail/config/evidence entries before the navigation can render
@@ -86,8 +101,8 @@ export function AgentManageSettings({
       queryClient.removeQueries({ queryKey: queryKeys.agents.all(config.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.computers() });
       void navigate({ to: "/agents" });
-    } catch {
-      setConfirmationError(m.agent_settings_delete_failed());
+    } catch (cause) {
+      setConfirmationError(deleteFailure(cause, pauseFirst ? "delete-after-pause" : "delete"));
       setBusy(false);
     }
   }
@@ -116,12 +131,14 @@ export function AgentManageSettings({
         >
           <div className="flex justify-start @min-[44rem]/content:justify-end">
             <Button
+              aria-busy={busy || undefined}
               aria-describedby={statusDescriptionId}
               className="w-full @min-[44rem]/content:w-auto"
-              disabled={busy}
               ref={pauseButtonRef}
               variant={active ? "secondary" : "primary"}
               onClick={() => {
+                // Stays enabled while busy so keyboard focus is kept; repeats are ignored instead.
+                if (busy) return;
                 if (working) {
                   setConfirmationError(undefined);
                   setConfirmation("pause");
@@ -144,18 +161,14 @@ export function AgentManageSettings({
 
       <SettingsList>
         <SettingsRow
-          description={
-            <span id={deleteDescriptionId}>
-              {active ? m.agent_settings_delete_active_description() : m.agent_settings_delete_paused_description()}
-            </span>
-          }
+          description={<span id={deleteDescriptionId}>{m.agent_settings_delete_paused_description()}</span>}
           label={m.agent_settings_delete_button()}
         >
           <div className="flex justify-start @min-[44rem]/content:justify-end">
             <Button
               aria-describedby={deleteDescriptionId}
               className="w-full @min-[44rem]/content:w-auto"
-              disabled={active}
+              disabled={busy}
               ref={deleteButtonRef}
               variant="danger"
               onClick={() => {
@@ -236,4 +249,12 @@ export function AgentManageSettings({
       ) : null}
     </section>
   );
+}
+
+/** A failed step of the delete, in the reader's terms: what happened and what state it left. */
+function deleteFailure(cause: unknown, step: "pause" | "delete" | "delete-after-pause"): string {
+  if (cause instanceof ApiError && cause.status === 403) return m.agent_settings_delete_forbidden();
+  if (step === "pause") return m.agent_settings_delete_pause_failed();
+  if (step === "delete-after-pause") return m.agent_settings_delete_failed_after_pause();
+  return m.agent_settings_delete_failed();
 }

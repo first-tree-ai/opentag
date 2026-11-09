@@ -3,9 +3,13 @@ import type { DatabaseClient } from "../db/client.js";
 import { imMessageDeliveries, sandboxes } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
-import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
+import type { CloudSessionAllocationPort, ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
 
-const CLOUD_READINESS_RETRY_CODES = ["IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", "IM_DELIVERY_CLOUD_RUNNER_NOT_READY"];
+const CLOUD_READINESS_RETRY_CODES = [
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING",
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+  "IM_DELIVERY_CLOUD_RUNNER_NOT_READY",
+];
 
 export function isCloudReadinessRetry(code: string): boolean {
   return CLOUD_READINESS_RETRY_CODES.includes(code);
@@ -17,7 +21,7 @@ interface ReadyWakeupInput {
   runSession: (sessionId: string) => Promise<void>;
   now: () => Date;
   supervisor?: BackgroundFailureSupervisor;
-  onDiagnostic: (code: string) => void;
+  onDiagnostic: ImDeliveryDiagnosticReporter;
 }
 
 /** A transient notification bridge; the persisted queue and regular retry remain authoritative. */
@@ -25,12 +29,20 @@ export class ImDeliveryReadyWakeup {
   readonly #input: ReadyWakeupInput;
   readonly #readyWakeups = new Map<string, { requested: boolean; operation: Promise<void> }>();
   #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #rechecks = new Set<Promise<void>>();
 
   constructor(input: ReadyWakeupInput) {
     this.#input = input;
   }
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
+    this.#closing = Promise.allSettled([
+      ...[...this.#readyWakeups.values()].map((wakeup) => wakeup.operation),
+      ...this.#rechecks,
+    ]).then(() => undefined);
+    return this.#closing;
   }
 
   /** Wake due initial inputs and readiness retries through the existing claim/lane fences. */
@@ -110,7 +122,13 @@ export class ImDeliveryReadyWakeup {
   }
 
   recheck(deliveryId: string): void {
+    if (this.#closed) return;
     const operation = this.#recheck(deliveryId);
+    this.#rechecks.add(operation);
+    void operation.then(
+      () => this.#rechecks.delete(operation),
+      () => this.#rechecks.delete(operation),
+    );
     if (this.#input.supervisor)
       this.#input.supervisor.track(operation, {
         code: "IM_DELIVERY_READY_WAKEUP_FAILED",
@@ -119,7 +137,7 @@ export class ImDeliveryReadyWakeup {
         phase: "worker",
         operation: "im-delivery-worker.ready-recheck",
       });
-    else void operation.catch(() => this.#input.onDiagnostic("IM_DELIVERY_READY_WAKEUP_FAILED"));
+    else void operation.catch(() => this.#input.onDiagnostic("IM_DELIVERY_READY_WAKEUP_FAILED", { phase: "worker" }));
   }
 
   async #recheck(deliveryId: string): Promise<void> {

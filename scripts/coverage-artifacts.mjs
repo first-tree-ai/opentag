@@ -53,16 +53,59 @@ function assertMetricTotals(entry, metric) {
   }
 }
 
-function coverageFilePath(file, project, repositoryRoot) {
-  const normalized = file.replaceAll("\\", "/");
-  const marker = `/${project.sources}/`;
-  const index = normalized.lastIndexOf(marker);
-  if (index < 0) throw new Error(`Coverage entry outside ${project.name}: ${file}`);
-  const suffix = normalized.slice(index + marker.length);
-  if (!suffix || suffix.split("/").some((part) => part === ".." || part === ".")) {
+/**
+ * The measured source roots of a project, validated.
+ *
+ * A project may declare more than one root (`packages/server/src` and `packages/server/scripts`), so a
+ * coverage artifact has to be attributed to exactly one of them. The list is rejected rather than
+ * coerced when it is empty or holds something that is not a plain repository-relative path: an artifact
+ * consumer that silently guesses ownership would attribute a report to the wrong workspace.
+ */
+export function projectSourceRoots(project) {
+  const declared = Array.isArray(project?.sources) ? project.sources : [project?.sources];
+  const roots = [];
+  for (const root of declared) {
+    if (typeof root !== "string" || root.length === 0) {
+      throw new Error(`Coverage project ${project?.name ?? "(unknown)"} declares an invalid source root`);
+    }
+    const normalized = root.replaceAll("\\", "/").replace(/\/+$/, "");
+    if (
+      normalized.startsWith("/") ||
+      normalized.split("/").some((part) => part === "" || part === "." || part === "..")
+    ) {
+      throw new Error(`Coverage project ${project.name} declares an unsafe source root: ${root}`);
+    }
+    if (!roots.includes(normalized)) roots.push(normalized);
+  }
+  if (roots.length === 0) throw new Error(`Coverage project ${project.name} declares no source roots`);
+  return roots;
+}
+
+/**
+ * Attribute one artifact path to the project's declared source root it belongs to.
+ *
+ * The deepest matching root wins, so a project that measures both a directory and a subdirectory of it
+ * cannot attribute a nested entry to the shorter marker. An entry that matches no root, an empty suffix,
+ * a `.`/`..` segment, or a resolve that escapes the root is rejected: the artifact consumer fails closed
+ * instead of importing a file another workspace owns.
+ */
+export function coverageFilePath(file, project, repositoryRoot) {
+  const normalized = String(file).replaceAll("\\", "/");
+  const roots = projectSourceRoots(project);
+  const matches = roots
+    .map((root) => ({ index: normalized.lastIndexOf(`/${root}/`), root }))
+    .filter((entry) => entry.index >= 0)
+    .sort((left, right) => right.root.length - left.root.length);
+  const match = matches[0];
+  if (!match) throw new Error(`Coverage entry outside ${project.name}: ${file}`);
+  const suffix = normalized.slice(match.index + match.root.length + 2);
+  if (!suffix || suffix.split("/").some((part) => part === ".." || part === "." || part === "")) {
     throw new Error(`Invalid coverage entry: ${file}`);
   }
-  return resolve(repositoryRoot, project.sources, suffix);
+  const path = resolve(repositoryRoot, match.root, suffix);
+  const escapeMarker = `${resolve(repositoryRoot, match.root)}/`;
+  if (!path.startsWith(escapeMarker)) throw new Error(`Invalid coverage entry: ${file}`);
+  return path;
 }
 
 /** Artifact producers may have different checkout roots; retain one owner per source file. */

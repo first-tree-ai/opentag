@@ -335,11 +335,11 @@ function internalToolsFixtureResponse(input: {
   method: string | undefined;
   offered: boolean | undefined;
   path: string;
-  readNavigation: () => { integrations: boolean };
   resetSetup: () => void;
-  writeNavigation: (value: { integrations: boolean }) => void;
 }): Response | undefined {
-  if (input.path === "/api/v1/cloud/billing/usage") return json({ enabled: false });
+  if (input.path === "/api/v1/cloud/billing/usage" || input.path.startsWith("/api/v1/cloud/billing/usage?")) {
+    return json({ enabled: false });
+  }
   if (input.path === "/api/v1/cloud/billing") return json({ enabled: false });
   // The Account GitHub overview: unavailable unless a test installs a real one.
   if (input.path === "/api/v2/integrations/github") {
@@ -357,11 +357,7 @@ function internalToolsFixtureResponse(input: {
     input.resetSetup();
     return new Response(null, { status: 204 });
   }
-  if (input.path !== "/api/v1/internal/navigation-visibility" || !input.offered) return undefined;
-  if (input.method === "PUT") {
-    input.writeNavigation(JSON.parse(String(input.body)) as { integrations: boolean });
-  }
-  return json(input.readNavigation());
+  return undefined;
 }
 
 function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "feishu" }) {
@@ -447,6 +443,8 @@ export function installApi(
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bindingState?: "provisioning" | "active";
+    /** Serves a binding the Server stopped connecting (`error`), with this public reason. */
+    bindingConnectionFailure?: "credentials_rejected" | "app_unavailable" | "connection_rejected" | "bot_mismatch";
     bound?: boolean;
     computers?:
       | readonly Record<string, unknown>[]
@@ -465,7 +463,6 @@ export function installApi(
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
     initialStatus?: "active" | "suspended";
-    internalNavigationVisibility?: { integrations: boolean };
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: AgentRuntimeProvider;
@@ -495,7 +492,6 @@ export function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
-  let internalNavigationVisibility = options.internalNavigationVisibility ?? { integrations: false };
   // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
   // the Server answers differently once the reader has chosen.
   let agentUnbound = options.agentUnbound ?? false;
@@ -630,63 +626,72 @@ export function installApi(
       method: init?.method,
       offered: options.internalToolsOffered,
       path,
-      readNavigation: () => internalNavigationVisibility,
       resetSetup: () => {
         setupCompletedAt = null;
-      },
-      writeNavigation: (value) => {
-        internalNavigationVisibility = value;
       },
     });
     if (internalToolsResponse) return internalToolsResponse;
     if (path === "/api/v1/sessions" || path.startsWith("/api/v1/sessions?")) {
       return json({ tasks: [taskSummary], nextCursor: null });
     }
-    if (path === `/api/v1/sessions/${taskSessionId}`) {
+    // The bounded detail: one page per section, each with its own cursor. A caller that names
+    // sections gets only those, exactly as the Server answers.
+    const storedTaskTurns = [
+      {
+        deliveryId: "33333333-3333-4333-8333-333333333333",
+        attention: "direct",
+        delivery: {
+          state: "accepted",
+          attemptCount: 1,
+          acceptedAt: "2026-08-20T00:01:00.000Z",
+          steeredAt: null,
+          expiresAt: "2026-08-21T00:00:00.000Z",
+          reason: null,
+          lastErrorCode: null,
+        },
+        message: {
+          id: "44444444-4444-4444-8444-444444444444",
+          externalMessageId: "om_debug",
+          operation: "created",
+          authorKind: "human",
+          authorDisplayName: "Mia",
+          fallbackText: "Please investigate the failed deployment.",
+          truncated: false,
+          occurredAt: "2026-08-20T00:00:00.000Z",
+        },
+        absorbedBy: null,
+        report: {
+          turnId: "turn-debug",
+          outcome: "completed",
+          executionEffects: "completed",
+          finalText: "Stored runtime output",
+          errorReason: null,
+          usage: null,
+          traceSummary: { lastSequence: 2, droppedEvents: 0 },
+          outgoingReplies: null,
+          reportedAt: "2026-08-20T00:02:00.000Z",
+        },
+      },
+    ];
+    if (path === `/api/v1/sessions/${taskSessionId}/detail`) {
       return json({
         task: taskSummary,
-        turns: [
-          {
-            deliveryId: "33333333-3333-4333-8333-333333333333",
-            attention: "direct",
-            delivery: {
-              state: "accepted",
-              attemptCount: 1,
-              acceptedAt: "2026-08-20T00:01:00.000Z",
-              steeredAt: null,
-              expiresAt: "2026-08-21T00:00:00.000Z",
-              reason: null,
-              lastErrorCode: null,
-            },
-            message: {
-              id: "44444444-4444-4444-8444-444444444444",
-              externalMessageId: "om_debug",
-              operation: "created",
-              authorKind: "human",
-              authorDisplayName: "Mia",
-              fallbackText: "Please investigate the failed deployment.",
-              truncated: false,
-              occurredAt: "2026-08-20T00:00:00.000Z",
-            },
-            absorbedBy: null,
-            report: {
-              turnId: "turn-debug",
-              outcome: "completed",
-              executionEffects: "completed",
-              finalText: "Stored runtime output",
-              errorReason: null,
-              usage: null,
-              traceSummary: { lastSequence: 2, droppedEvents: 0 },
-              outgoingReplies: null,
-              reportedAt: "2026-08-20T00:02:00.000Z",
-            },
-          },
-        ],
-        internalSessions: [],
-        collaborationMessages: [],
-        nextCursor: null,
+        turns: { items: storedTaskTurns, nextCursor: null },
+        internalSessions: { items: [], nextCursor: null },
+        collaborationMessages: { items: [], nextCursor: null },
       });
     }
+    // The conversation's first page names the Turns alone; a later page continues that section.
+    if (path === `/api/v1/sessions/${taskSessionId}/detail?sections=turns`) {
+      return json({ task: taskSummary, turns: { items: storedTaskTurns, nextCursor: null } });
+    }
+    if (path === `/api/v1/sessions/${taskSessionId}/detail/turns`) {
+      return json({ items: [], nextCursor: null });
+    }
+    if (path === `/api/v1/sessions/${taskSessionId}/detail/internal-sessions`) {
+      return json({ items: [], nextCursor: null });
+    }
+
     if (path === "/api/v1/agents" && init?.method === "POST") {
       if (options.agentCreateError) {
         if (options.agentCreateError === "conflict") {
@@ -896,7 +901,7 @@ export function installApi(
         );
       }
       if (!options.bound) return new Response(null, { status: 204 });
-      const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
+      const bindingState = handoffBindingState(options);
       return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
     const slackResponse = slackConfigurationResponse(path, init?.method, options);
@@ -919,12 +924,12 @@ export function installApi(
         id: options.provider === "slack" ? agentId : crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
-        bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
         lastInboundAt: null,
         lastValidatedAt: "2026-08-20T00:00:00.000Z",
         lastRuntimeObservationAt: null,
+        ...summaryBindingState(options),
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`) {
@@ -945,6 +950,25 @@ export function installApi(
     });
   });
   scriptRefusals(options);
+}
+
+type BindingStateOptions = Pick<
+  Parameters<typeof installApi>[0] & object,
+  "bindingConnectionFailure" | "bindingReauth" | "bindingState"
+>;
+
+/** The handoff's view of the served binding: a stopped binding is `error`, as the Server reports it. */
+function handoffBindingState(options: BindingStateOptions) {
+  if (options.bindingConnectionFailure) return "error";
+  return options.bindingReauth ? "reauthorization_required" : "active";
+}
+
+/** The served binding's state, and for a binding the Server stopped, why it stopped. */
+function summaryBindingState(options: BindingStateOptions) {
+  if (options.bindingConnectionFailure) {
+    return { bindingState: "error", connectionFailure: options.bindingConnectionFailure };
+  }
+  return { bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active") };
 }
 
 /** Layers scripted refusals over the installed fixture, kept apart so the fixture itself stays simple. */

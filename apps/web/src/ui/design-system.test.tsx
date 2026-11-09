@@ -4,6 +4,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { designTokens } from "./design.tokens.js";
 import {
+  Banner,
   Button,
   buttonClassName,
   Dialog,
@@ -21,6 +22,41 @@ import {
 } from "./design-system.js";
 
 describe("Kumo semantic adapter", () => {
+  it("preserves banner refs, action callbacks, variants, and disabled state", () => {
+    const onClick = vi.fn();
+    const bannerRef = createRef<HTMLDivElement>();
+    const actionRef = createRef<HTMLButtonElement>();
+    const { rerender } = render(
+      <Banner
+        ref={bannerRef}
+        role="alert"
+        variant="error"
+        title="Unavailable"
+        action={
+          <Banner.Action ref={actionRef} onClick={onClick}>
+            Retry
+          </Banner.Action>
+        }
+      />,
+    );
+    expect(bannerRef.current).toBe(screen.getByRole("alert"));
+    const action = screen.getByRole("button", { name: "Retry" });
+    expect(actionRef.current).toBe(action);
+    fireEvent.click(action);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    rerender(
+      <Banner
+        title="Unavailable"
+        action={
+          <Banner.Action disabled onClick={onClick}>
+            Retry
+          </Banner.Action>
+        }
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
   it.each(["section", "body"] as const)("preserves document heading levels with %s typography", (headingSize) => {
     render(
       <>

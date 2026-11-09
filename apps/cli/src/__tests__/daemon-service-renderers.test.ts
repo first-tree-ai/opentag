@@ -251,7 +251,7 @@ describe("systemd service backend", () => {
     );
   });
 
-  it("renders the service with the newly installed binary before a stale PATH shim", async () => {
+  it("renders the service with the running installation despite a stale PATH shim", async () => {
     const root = await temporaryDirectory("opentag-systemd-path-");
     const userHome = join(root, "user");
     const home = join(root, "home");
@@ -276,25 +276,34 @@ describe("systemd service backend", () => {
       if (args.includes("MainPID")) return result(0, "321", "");
       return result(0, "", "");
     });
-    const manager = await createDaemonServiceManager({
-      env: { PATH: `${installedBin}:${staleBin}` },
-      home,
-      platform: "linux",
-      runner,
-      uid: 1000,
-      userHome,
-      username: "test",
-    });
+    const argv = process.argv;
+    process.argv = [process.execPath, installedCli];
+    let manager: Awaited<ReturnType<typeof createDaemonServiceManager>>;
+    try {
+      manager = await createDaemonServiceManager({
+        env: { PATH: `${staleBin}:${installedBin}` },
+        home,
+        platform: "linux",
+        runner,
+        uid: 1000,
+        userHome,
+        username: "test",
+      });
+    } finally {
+      process.argv = argv;
+    }
 
     await expect(manager.installAndStart()).resolves.toMatchObject({ state: "active" });
     const unit = await readFile(
       join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`),
       "utf8",
     );
-    expect(unit).toContain(`"${installedCli}" "daemon" "service-run"`);
+    expect(unit).toContain(`"${await realpath(installedCli)}" "daemon" "service-run"`);
+    const executable = unit.match(/"([^"\n]+)" "[^"\n]+" "daemon" "service-run"/)?.[1];
+    expect(executable).toBeDefined();
+    expect(await realpath(executable as string)).toBe(await realpath(process.execPath));
     expect(unit).not.toContain(staleCli);
     expect(unit).toContain(staleBin);
-    expect(unit.indexOf(installedBin)).toBeLessThan(unit.indexOf(staleBin));
   });
 
   it("detects and reconciles an active service whose PATH predates user-directory inheritance", async () => {

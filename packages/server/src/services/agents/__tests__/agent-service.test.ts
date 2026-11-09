@@ -21,6 +21,7 @@ import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
+import { AGENT_USAGE_EXCEPTION_BATCH_SIZE } from "../agent-usage.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
@@ -220,6 +221,49 @@ async function createDelivery(
     .returning();
   if (!delivery) throw new Error("Delivery fixture was not created");
   return delivery;
+}
+
+/**
+ * One inbound message in a Session's own channel and its delivery.
+ */
+async function createSessionDelivery(
+  session: { id: string; imBindingId: string; channelId: string; threadKey: string | null },
+  options: { state: "pending" | "accepted"; attention?: "direct" | "ambient" },
+) {
+  const externalMessageId = `message-${crypto.randomUUID()}`;
+  const [message] = await unitDatabase.database
+    .insert(imMessages)
+    .values({
+      imBindingId: session.imBindingId,
+      providerEventId: `event-${crypto.randomUUID()}`,
+      channelId: session.channelId,
+      externalMessageId,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "human-fixture",
+      content: { version: 1, fallbackText: "Request", blocks: [{ type: "text", text: "Request" }], truncated: false },
+      providerContext: { provider: "feishu", chatType: "group" },
+      threadKey: session.threadKey,
+      occurredAt: NOW,
+    })
+    .returning();
+  if (!message) throw new Error("Message fixture was not created");
+  const accepted = options.state === "accepted";
+  await unitDatabase.database.insert(imMessageDeliveries).values({
+    messageId: message.id,
+    sessionId: session.id,
+    attention: options.attention ?? "direct",
+    state: options.state,
+    placementGeneration: 1,
+    inputHash: accepted ? crypto.randomUUID() : null,
+    turnId: accepted ? `turn-${crypto.randomUUID()}` : null,
+    reportOwnerInstanceId: accepted ? REPORT_OWNER : null,
+    acceptedAt: accepted ? NOW : null,
+    expiresAt: new Date(NOW.getTime() + 60_000),
+  });
+  return { externalMessageId };
 }
 
 describe("AgentService", () => {
@@ -461,6 +505,123 @@ describe("AgentService", () => {
     });
   });
 
+  it("buckets the usage window by UTC day and recomputes non-canonical reports exactly", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "bucketed-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const firstDay = new Date("2026-08-20T23:30:00.000Z");
+    const secondDay = new Date("2026-08-22T00:30:00.000Z");
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: firstDay,
+      reportedAt: firstDay,
+      usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 1 },
+    });
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: secondDay,
+      reportedAt: secondDay,
+      outcome: "failed",
+      usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 3 },
+    });
+    // `Number("1e3")` is a safe integer, so this report must count even though SQL cannot prove it;
+    // the per-row parser stays authoritative for every value the aggregate skips.
+    const nonCanonical = await createDelivery(binding.id, session.id, {
+      acceptedAt: secondDay,
+      reportedAt: secondDay,
+      usage: {},
+    });
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":"1e3"},"outcome":"completed"}'::jsonb where id = $1`,
+      [nonCanonical.id],
+    );
+
+    const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
+    expect(usage).toMatchObject({
+      tasks: 3,
+      failed: 1,
+      measuredTasks: 3,
+      inputTokens: 1016,
+      cachedInputTokens: 4,
+      outputTokens: 4,
+      tokens: 1020,
+    });
+    expect(usage.daily).toHaveLength(31);
+    expect(usage.daily.filter((point) => point.tasks > 0)).toEqual([
+      expect.objectContaining({ date: "2026-08-20", tasks: 1, tokens: 15 }),
+      expect.objectContaining({ date: "2026-08-22", tasks: 2, tokens: 1005 }),
+    ]);
+    expect(usage.daily.filter((point) => point.tasks === 0).every((point) => point.tokens === 0)).toBe(true);
+
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":"not-a-number"}}'::jsonb where id = $1`,
+      [nonCanonical.id],
+    );
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
+  });
+
+  it("classifies unusual report text without relying on cast order", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "unusual-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    // `1000.00` is a valid `Number()` and not a canonical integer text; `"1.5"`, `"true"` and an object
+    // are not safe integers at all. A plan that reached `::numeric` before the digit test would raise
+    // 22P02 here instead of reporting the parser's own verdict.
+    const valid = await createDelivery(binding.id, session.id, { acceptedAt: NOW, reportedAt: NOW, usage: {} });
+    await unitDatabase.engine.query(
+      `update im_message_deliveries set turn_report = '{"usage":{"inputTokens":1000.00}}'::jsonb where id = $1`,
+      [valid.id],
+    );
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: 1,
+      measuredTasks: 1,
+      inputTokens: 1000,
+      tokens: 1000,
+    });
+
+    for (const text of ["1.5", "-5", "not-a-number", "true", '{"a": 1}', "9007199254740992"]) {
+      await unitDatabase.engine.query(`update im_message_deliveries set turn_report = $2::jsonb where id = $1`, [
+        valid.id,
+        JSON.stringify({ usage: { inputTokens: text }, outcome: "completed" }),
+      ]);
+      await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
+    }
+  });
+
+  it("sums more than one batch of non-canonical reports through the service", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "batched-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const reports = AGENT_USAGE_EXCEPTION_BATCH_SIZE * 2 + 1;
+    // Every report shares one `accepted_at`, so the batch cursor can only advance on the ID tiebreak.
+    await unitDatabase.engine.exec(`
+      insert into im_messages (
+        im_binding_id, channel_id, external_message_id, provider_revision_key, operation, direction,
+        author_kind, author_external_id, content, occurred_at, provider_context
+      )
+      select '${binding.id}', 'bulk', 'bulk-' || n, '1', 'created', 'inbound', 'human', 'h',
+        '{"version":1,"fallbackText":"x","blocks":[],"truncated":false}'::jsonb, '${NOW.toISOString()}', '{}'::jsonb
+      from generate_series(1, ${reports}) n
+    `);
+    await unitDatabase.engine.exec(`
+      insert into im_message_deliveries (
+        message_id, session_id, attention, state, placement_generation, input_hash, turn_id,
+        report_owner_instance_id, turn_report, reported_at, accepted_at, expires_at, result_hash
+      )
+      select m.id, '${session.id}', 'direct', 'accepted', 1, 'i-' || m.external_message_id,
+        't-' || m.external_message_id, '${REPORT_OWNER}', '{"usage":{"inputTokens":"1000.00"}}'::jsonb,
+        '${NOW.toISOString()}', '${NOW.toISOString()}', '${new Date(NOW.getTime() + 86_400_000).toISOString()}', 'r-' || m.external_message_id
+      from im_messages m where m.channel_id = 'bulk'
+    `);
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: reports,
+      measuredTasks: reports,
+      inputTokens: reports * 1_000,
+      tokens: reports * 1_000,
+    });
+  }, 120_000);
+
   it("counts cloud ledger tokens once while preserving local reports and task counts", async () => {
     const { bootstrap, computer, service: original } = await fixture();
     const created = await createAgent(original, bootstrap.userId, computer.id, "mixed-agent", "pi");
@@ -527,6 +688,45 @@ describe("AgentService", () => {
     });
     expect(usage.daily.reduce((total, point) => total + point.measuredTasks, 0)).toBe(1);
     expect(usage.daily.reduce((total, point) => total + point.tokens, 0)).toBe(165);
+
+    const lateUtc = new Date("2026-08-23T18:00:00.000Z");
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: lateUtc,
+      reportedAt: lateUtc,
+      usage: { inputTokens: 4, cachedInputTokens: 0, outputTokens: 1 },
+    });
+    const lateCloudId = await calls.create(
+      { accountId: bootstrap.userId, agentId: created.id, sessionId: session.id, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
+      null,
+    );
+    await calls.finalize(
+      lateCloudId,
+      {
+        status: "complete",
+        usage: { inputTokens: 8, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2 },
+      },
+      { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
+    );
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [lateCloudId, lateUtc.toISOString()]);
+
+    const utcUsage = await service.getUsageById(bootstrap.userId, created.id, 30, "UTC");
+    expect(utcUsage.daily.find((point) => point.date === "2026-08-23")).toMatchObject({
+      tasks: 1,
+      measuredTasks: 1,
+      tokens: 15,
+    });
+    const shanghaiUsage = await service.getUsageById(bootstrap.userId, created.id, 30, "Asia/Shanghai");
+    expect(shanghaiUsage.daily.find((point) => point.date === "2026-08-23")).toMatchObject({
+      tasks: 0,
+      measuredTasks: 0,
+      tokens: 0,
+    });
+    expect(shanghaiUsage.daily.find((point) => point.date === "2026-08-24")).toMatchObject({
+      tasks: 3,
+      measuredTasks: 2,
+      tokens: 180,
+    });
   });
   it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {
     const { bootstrap, computer, service } = await fixture();
@@ -564,6 +764,167 @@ describe("AgentService", () => {
     expect(listed.agents.find((agent) => agent.id === agentB.id)).toMatchObject({
       activity: { state: "working", startedAt: NOW.toISOString() },
     });
+  });
+
+  it("counts the Tasks with an unreported accepted Turn, not the Turns", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "counted-agent");
+    const binding = await createBinding(created.id);
+    const busy = await createSession(binding.id);
+    const second = await createSession(binding.id);
+    const finished = await createSession(binding.id);
+    const earlier = new Date(NOW.getTime() - 60_000);
+    await createDelivery(binding.id, busy.id, { acceptedAt: earlier, usage: {} });
+    await createDelivery(binding.id, busy.id, { acceptedAt: NOW, usage: {} });
+    await createDelivery(binding.id, second.id, { acceptedAt: earlier, usage: {} });
+    await createDelivery(binding.id, finished.id, { acceptedAt: earlier, reportedAt: earlier, usage: {} });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 2,
+    });
+    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(listed.agents[0]?.activity);
+  });
+
+  it("counts each live Session holding a direct pending delivery once, per Agent", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "queued-agent");
+    const other = await createAgent(service, bootstrap.userId, computer.id, "queued-agent-other");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    const thread = await createSession(binding.id, undefined, { kind: "thread" });
+    const ended = await createSession(binding.id);
+    // However many messages wait in one Session, it is one Task.
+    await createSessionDelivery(channel, { state: "pending" });
+    await createSessionDelivery(channel, { state: "pending" });
+    await createSessionDelivery(thread, { state: "pending" });
+    await createSessionDelivery(ended, { state: "pending" });
+    await unitDatabase.database.update(sessions).set({ endedAt: NOW }).where(eq(sessions.id, ended.id));
+    await createSessionDelivery(await createSession((await createBinding(other.id)).id), { state: "pending" });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents.find((agent) => agent.id === created.id)?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 2,
+    });
+    expect(listed.agents.find((agent) => agent.id === other.id)?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 2,
+    });
+  });
+
+  it("does not count a pending message the Agent only overheard", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "ambient-queue-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    await createSessionDelivery(channel, { state: "pending", attention: "ambient" });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
+  });
+
+  it("reads a running Session with a pending follow-up as running, not queued", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "running-queue-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    await createSessionDelivery(channel, { state: "accepted" });
+    await createSessionDelivery(channel, { state: "pending" });
+    // A request waiting in another conversation is queued, and both counts are reported together.
+    await createSessionDelivery(await createSession(binding.id), { state: "pending" });
+
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 1,
+      queuedTaskCount: 1,
+    });
+  });
+
+  it("reads a private chat as one Task across its Sessions", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "private-queue-agent");
+    const binding = await createBinding(created.id);
+    const [channel, thread] = await unitDatabase.database
+      .insert(sessions)
+      .values([
+        { imBindingId: binding.id, channelId: "private", conversationKind: "dm", kind: "channel", createdAt: NOW },
+        {
+          imBindingId: binding.id,
+          channelId: "private",
+          conversationKind: "dm",
+          kind: "thread",
+          threadKey: "private-thread",
+          createdAt: NOW,
+        },
+      ])
+      .returning();
+    if (!channel || !thread) throw new Error("Private chat fixture was not created");
+    await createSessionDelivery(channel, { state: "pending" });
+    await createSessionDelivery(thread, { state: "pending" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+
+    // A Turn running in either Session makes the whole private chat running.
+    await createSessionDelivery(thread, { state: "accepted" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 1,
+    });
+  });
+
+  it("counts an overheard message in a Session somebody addressed, as the Task list does", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "follow-up-queue-agent");
+    const thread = await createSession((await createBinding(created.id)).id, undefined, { kind: "thread" });
+    await createSessionDelivery(thread, { state: "accepted" });
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ reportedAt: NOW, turnReport: report(), resultHash: "a".repeat(64) })
+      .where(eq(imMessageDeliveries.sessionId, thread.id));
+    await createSessionDelivery(thread, { state: "pending", attention: "ambient" });
+
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+  });
+
+  it("counts queued Tasks until the binding is disabled", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "disabled-queue-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    await createSessionDelivery(session, { state: "pending" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, binding.id));
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ status: "disabled", encryptedCredential: null, disabledAt: NOW })
+      .where(eq(imBindings.id, binding.id));
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
   });
 
   it("keeps a maximum-duration unresolved delivery working", async () => {
@@ -642,6 +1003,11 @@ describe("AgentService", () => {
       runtimeConfig: { instructions: "Changed", maxDurationMs: 5_000 },
     });
     expect(changed).toMatchObject({ revision: 3, runtimeConfig: { instructions: "Changed", maxDurationMs: 5_000 } });
+    const cleared = await service.updateById(bootstrap.userId, created.id, {
+      expectedRevision: 3,
+      runtimeConfig: { instructions: null },
+    });
+    expect(cleared).toMatchObject({ revision: 4, runtimeConfig: { instructions: "", maxDurationMs: 5_000 } });
     await expect(
       service.updateById(bootstrap.userId, created.id, { expectedRevision: 2, displayName: "Stale" }),
     ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", statusCode: 409 });
@@ -656,7 +1022,7 @@ describe("AgentService", () => {
     const binding = await createBinding(agent.id);
     const session = await createSession(binding.id, computer.id);
     const assembler = new EffectiveRuntimeSnapshotAssembler(unitDatabase.database);
-    for (const selfConfigurationEnabled of [true, false]) {
+    for (const selfConfigurationEnabled of [false, true]) {
       const previous = await assembler.assembleForSession(session.id);
       agent = await service.updateById(bootstrap.userId, agent.id, {
         expectedRevision: agent.revision,
@@ -676,32 +1042,34 @@ describe("AgentService", () => {
   it("retains the runtime revision for unchanged opt-in and profile-only edits", async () => {
     const { bootstrap, computer, service } = await fixture();
     let agent = await createAgent(service, bootstrap.userId, computer.id);
+    expect(agent.selfConfigurationEnabled).toBe(true);
     const runtimeConfig = agent.runtimeConfig;
     for (const input of [
-      { selfConfigurationEnabled: false },
+      { selfConfigurationEnabled: true },
       { displayName: "Renamed" },
       { receiveMode: "mention_only" as const },
-      { selfConfigurationEnabled: false, runtimeConfig: { instructions: runtimeConfig.instructions } },
+      { selfConfigurationEnabled: true, runtimeConfig: { instructions: runtimeConfig.instructions } },
     ]) {
       agent = await service.updateById(bootstrap.userId, agent.id, { expectedRevision: agent.revision, ...input });
       expect(agent.runtimeConfig).toEqual(runtimeConfig);
     }
   });
 
-  it("allocates one runtime revision for a combined opt-in and Soul change and rejects stale retries", async () => {
+  it("allocates one runtime revision for a combined self-configuration and Soul change and rejects stale retries", async () => {
     const { bootstrap, computer, service } = await fixture();
     const agent = await createAgent(service, bootstrap.userId, computer.id);
+    expect(agent.selfConfigurationEnabled).toBe(true);
     const updated = await service.updateById(bootstrap.userId, agent.id, {
       expectedRevision: agent.revision,
-      selfConfigurationEnabled: true,
+      selfConfigurationEnabled: false,
       runtimeConfig: { instructions: "Updated Soul" },
     });
     expect(updated.runtimeConfig.revision).toBe(agent.runtimeConfig.revision + 1);
-    expect(updated).toMatchObject({ selfConfigurationEnabled: true, runtimeConfig: { instructions: "Updated Soul" } });
+    expect(updated).toMatchObject({ selfConfigurationEnabled: false, runtimeConfig: { instructions: "Updated Soul" } });
     await expect(
       service.updateById(bootstrap.userId, agent.id, {
         expectedRevision: agent.revision,
-        selfConfigurationEnabled: false,
+        selfConfigurationEnabled: true,
       }),
     ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
     expect(await service.getConfigById(bootstrap.userId, agent.id)).toEqual(updated);
@@ -752,6 +1120,7 @@ describe("AgentService", () => {
     expect(stopSessions).toHaveBeenCalledWith([
       {
         agentId: created.id,
+        agentRevision: suspended.revision,
         computerId: computer.id,
         installationId: computer.installationId,
         placementGeneration: 1,
@@ -782,7 +1151,7 @@ describe("AgentService", () => {
     await expect(failing.getById(bootstrap.userId, created.id)).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
   });
 
-  it("rebinds active Sessions, rejects unsafe custody, and handles no-op and missing targets", async () => {
+  it("rejects replacement without moving Sessions and handles same-Computer no-ops", async () => {
     const { bootstrap, computer, service } = await fixture();
     const target = await createComputer(bootstrap.userId, "target");
     const created = await createAgent(service, bootstrap.userId, computer.id, "rebind-agent");
@@ -792,7 +1161,7 @@ describe("AgentService", () => {
     expect(noOp).toMatchObject({ computerId: computer.id });
     const pending = await createDelivery(binding.id, session.id, { state: "pending" });
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, pending.id));
     const accepted = await createDelivery(binding.id, session.id, {
@@ -801,7 +1170,7 @@ describe("AgentService", () => {
       reportedAt: null,
     });
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, accepted.id));
     const expired = await createDelivery(binding.id, session.id, { state: "expired" });
@@ -810,16 +1179,21 @@ describe("AgentService", () => {
       .set({ dispatchRequestId: crypto.randomUUID(), dispatchInputHash: "e".repeat(64), dispatchPayload: {} as never })
       .where(eq(imMessageDeliveries.id, expired.id));
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, expired.id));
-    const rebound = await service.rebindById(bootstrap.userId, created.id, target.id);
-    expect(rebound).toMatchObject({ computerId: target.id, revision: 2 });
+    await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    expect(await service.getConfigById(bootstrap.userId, created.id)).toMatchObject({
+      computerId: computer.id,
+      revision: 1,
+    });
     const [placement] = await unitDatabase.database
       .select()
       .from(sessionPlacements)
       .where(eq(sessionPlacements.sessionId, session.id));
-    expect(placement).toMatchObject({ computerId: target.id, generation: 2 });
+    expect(placement).toMatchObject({ computerId: computer.id, generation: 1 });
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });
@@ -854,13 +1228,10 @@ describe("AgentService", () => {
     onProviderCliPlacementChanged.mockClear();
     await hooked.rebindById(bootstrap.userId, created.id, computer.id);
     expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
-    await hooked.rebindById(bootstrap.userId, created.id, target.id);
-    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
-      agentId: created.id,
-      previousComputerId: computer.id,
-      computerId: target.id,
-      runtimeProvider: "codex",
+    await expect(hooked.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
+    expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
     const diagnostics: string[] = [];
     const failing = new AgentService(unitDatabase.database, {
       now: () => NOW,

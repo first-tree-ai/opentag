@@ -11,6 +11,7 @@ import {
   type ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
@@ -44,11 +45,16 @@ function renderSetup(
   props: Omit<AgentSetupPageProps, "adapter" | "agentId"> & { agentId?: string } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const subject = (
     <QueryClientProvider client={queryClient}>
       <AgentSetupPage adapter={adapter} {...props} agentId={props.agentId ?? SETUP_AGENT_ID} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: createRootRoute({ component: () => subject }),
+  });
+  return render(<RouterProvider router={router as never} />);
 }
 
 /** The in-memory model with one write replaced, so a refusal can be scripted where it happens. */
@@ -154,7 +160,11 @@ describe("AgentSetupPage action failures", () => {
     expect(within(dialog).getByRole("alert").textContent).toBe("Couldn’t disconnect Lark. Try again.");
     // The failure is said inside the confirmation, not repeated behind it.
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-    expect(screen.getByText("Lark authorization didn't complete. Disconnect Lark, then reconnect it.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Keep connected" }));
     await settle();
@@ -185,7 +195,11 @@ describe("AgentSetupPage action failures", () => {
       new ApiError(502, "upstream", "SLACK_UPSTREAM_UNAVAILABLE", "transient"),
       "Slack is unavailable right now. Check the connection and try again.",
     ],
-    ["no code", new Error("network"), "Connection failed. Try again."],
+    [
+      "no code",
+      new Error("network"),
+      "The connection result could not be confirmed. Check your network, then Retry to continue the current setup. No request will be repeated automatically.",
+    ],
   ])("explains a refused Slack start with %s", async (_label, cause, message) => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     vi.mocked(browserApi.autoSetupSlack).mockRejectedValue(cause);
@@ -198,7 +212,7 @@ describe("AgentSetupPage action failures", () => {
     await settle();
 
     expect(screen.getByRole("alert").textContent).toBe(message);
-    expect(screen.getByRole("button", { name: "Close Connect Slack" })).not.toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Cancel" })).not.toHaveProperty("disabled", true);
   });
 
   it.each([
@@ -344,7 +358,7 @@ describe("AgentSetupPage messaging recovery", () => {
     const unbind = vi.spyOn(memory.adapter, "unbindMessaging");
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByText(/In Slack, open a direct message/)).toBeTruthy();
+    expect(screen.getByText(/Open the Bot’s DM in Slack/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -354,7 +368,7 @@ describe("AgentSetupPage messaging recovery", () => {
 
     expect(unbind).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByText("Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByText("Authorization saved. Checking whether the Agent is ready…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -364,7 +378,8 @@ describe("AgentSetupPage messaging recovery", () => {
 
     expect(unbind).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeTruthy();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 
   it("explains a Provider-reported problem with a plain Reconnect", async () => {
@@ -375,7 +390,11 @@ describe("AgentSetupPage messaging recovery", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Slack reported a problem. Reconnect it to continue.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
@@ -387,13 +406,10 @@ describe("AgentSetupPage messaging recovery", () => {
   it.each([
     [{ phase: "preparing_cli" }, "Confirming the computer can connect to Slack…"],
     [{ phase: "checking_credentials" }, "Checking credentials"],
-    [
-      { phase: "needs_attention" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
-    ],
+    [{ phase: "needs_attention" }, "Repair the Slack connection in your Agent on this computer, then check again."],
     [
       { phase: "needs_attention", reason: "upgrade_required" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
+      "Repair the Slack connection in your Agent on this computer, then check again.",
     ],
     [
       { phase: "needs_attention", reason: "credential_rejected" },
@@ -416,7 +432,7 @@ describe("AgentSetupPage messaging recovery", () => {
       await settle();
 
       expect(screen.getByText(copy)).toBeTruthy();
-      expect(screen.queryByText(/In Slack, open a direct message/)).toBeNull();
+      expect(screen.queryByText(/Open the Bot’s DM in Slack/)).toBeNull();
     },
   );
 
@@ -488,7 +504,11 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
 
     expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
-    expect(screen.getByText("Slack authorization didn't complete. Disconnect Slack, then reconnect it.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The server did not provide a specific cause. Retry the connection; if this persists, ask an administrator to investigate.",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Disconnect Slack/ })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]')).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]')).toBeNull();
@@ -505,7 +525,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
     continueFromPreparation();
 
-    expect(screen.getByText("Pick the app your team already works in.")).toBeTruthy();
+    expect(screen.queryByText("Pick the app your team already works in.")).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 });
@@ -531,9 +551,9 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
-    expect(screen.queryByText("Waiting for Review Mac to reconnect…")).toBeNull();
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
 
     act(() => memory.controls.completeComputerConnection());
     await advance(1_600);

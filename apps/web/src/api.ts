@@ -1,54 +1,50 @@
 import {
+  type AccountApiEndpoint,
+  type AccountApiNoContentEndpoint,
   type AccountCloudComputerEnsureResponse,
   AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type AccountSandboxRunnerStopRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
   type AgentAdminConfig,
-  AgentAdminConfigSchema,
   type AgentCloudOverview,
   AgentCloudOverviewSchema,
   type AgentDetail,
-  AgentDetailSchema,
   type AgentRuntimeOptions,
   AgentRuntimeOptionsSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
-  AgentRuntimeTestResponseSchema,
   type AgentSchedule,
   type AgentScheduleListResponse,
   AgentScheduleListResponseSchema,
   AgentScheduleSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
+  type AgentStatusResponse,
+  AgentStatusResponseSchema,
   type AgentUsageDetail,
-  AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AttachMCPServerRequest,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountApiEndpoints,
   accountComputerByIdPath,
-  accountComputerConnectCodePath,
   accountComputerDisconnectPath,
-  agentByIdPath,
+  accountSandboxRunnerPath,
+  accountSandboxRunnerStopPath,
   agentCloudPath,
-  agentComputerRebindPath,
-  agentConfigPath,
   agentContextTreePath,
   agentFeishuSetupAttemptsPath,
-  agentImBindingConfigPath,
   agentImBindingHandoffPath,
-  agentImBindingPath,
   agentImBindingUnbindPath,
-  agentMcpAuthorizationOAuthPath,
+  agentImFeedbackPath,
   agentMcpAuthorizationPath,
-  agentMcpProbePath,
-  agentMcpServerPath,
   agentMcpServersPath,
-  agentReactivatePath,
   agentRuntimeOptionsPath,
-  agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
   agentScheduleResumePath,
@@ -58,19 +54,14 @@ import {
   agentSkillBundlePath,
   agentSkillFilePath,
   agentSkillPath,
-  agentSkillPresetInstallPath,
-  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
   agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
-  agentSlackOAuthStartPath,
-  agentSuspendPath,
-  agentUsagePath,
+  agentStatusesPath,
   CLOUD_BILLING_CHECKOUT_PATH,
   CLOUD_BILLING_PATH,
-  CLOUD_IDENTITY_CAPABILITY_HEADER,
   CLOUD_USAGE_PATH,
   type CloudAvailability,
   CloudAvailabilitySchema,
@@ -81,11 +72,11 @@ import {
   CloudModelOptionsSchema,
   CloudUsageSummarySchema,
   type CloudUsageWindowDays,
-  COMPUTER_ACCESS_CAPABILITY_HEADER,
   type ComputerConnectCodeIssueResponse,
-  ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
-  ComputerConnectCodeStatusSchema,
+  ConnectMCPOAuthResponseSchema,
+  type ContextTreeAvailabilityResponse,
+  ContextTreeAvailabilityResponseSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
@@ -96,9 +87,7 @@ import {
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
-  feishuSetupAttemptCancelPath,
   feishuSetupAttemptCheckPath,
-  feishuSetupAttemptPath,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
   GITHUB_INTEGRATION_PATH,
@@ -111,65 +100,49 @@ import {
   githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
-  ImBindingAdminDetailSchema,
   type ImBindingDiagnostics,
-  ImBindingDiagnosticsSchema,
   type ImBindingHandoffStatus,
   ImBindingHandoffStatusSchema,
   type ImBindingMessagingExpectation,
   type ImBindingSummary,
-  ImBindingSummarySchema,
   type ImBindingUnbindRequiredDetail,
+  type ImFeedbackActionRequest,
+  type ImFeedbackList,
+  ImFeedbackListSchema,
+  type ImFeedbackView,
+  ImFeedbackViewSchema,
   type InstallRemoteSkillsResponse,
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
-  InstallSkillPresetResponseSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
-  imBindingDiagnosticsPath,
-  imBindingDisablePath,
+  imFeedbackActionsPath,
+  imFeedbackPath,
   type ListAccountComputersResponse,
-  ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
-  ListAgentMCPServersResponseSchema,
   type ListAgentSkillsResponse,
-  ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
-  ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
-  ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
-  ListMCPServersResponseSchema,
   type ListSkillPresetsResponse,
-  ListSkillPresetsResponseSchema,
   type ListTaskRepliesResponse,
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
   MCP_CATALOG_ENDPOINTS_PATH,
   type MCPAgentServer,
-  MCPAgentServerSchema,
   type MCPCatalogEndpointsResponse,
   MCPCatalogEndpointsResponseSchema,
   type MCPProbeResponse,
-  MCPProbeResponseSchema,
   type MCPServer,
   type MCPServerDetail,
-  MCPServerDetailSchema,
-  MCPServerSchema,
   type MeResponse,
-  MeResponseSchema,
-  mcpServerPath,
-  mcpServersPath,
   PROVIDER_CLI_REASON_V2_HEADER,
-  PROVIDER_READINESS_V1_HEADER,
-  PROVIDER_READINESS_V2_HEADER,
+  parseResponseIgnoringUnknownKeys,
   type ReadSkillFileResponse,
   ReadSkillFileResponseSchema,
-  type RebindAgentComputerRequest,
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
   ResolveRemoteSkillsResponseSchema,
+  ReusableMCPInstallationResponseSchema,
   type SaveSlackConfigurationRequest,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
@@ -192,18 +165,27 @@ import {
   StartGitHubAuthorizationResponseSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
-  StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
-  StartSlackOAuthResponseSchema,
   TaskCancelResponseSchema,
+  type TaskCollaborationMessagePage,
+  TaskCollaborationMessagePageSchema,
   type TaskDetail,
-  TaskDetailSchema,
+  type TaskDetailPage,
+  TaskDetailPageSchema,
+  type TaskDetailSection,
+  type TaskInternalSessionPage,
+  TaskInternalSessionPageSchema,
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
+  type TaskTurnPage,
+  TaskTurnPageSchema,
   taskByIdPath,
   taskCancelPath,
+  taskDetailPath,
+  taskDetailSectionPath,
   taskRepliesPath,
+  toAccountApiRequestInit,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateMCPBindingRequest,
@@ -220,6 +202,7 @@ import {
   normalizeError,
   routeTemplate,
 } from "./observability/diagnostics.js";
+import { viewerTimezone } from "./query/keys.js";
 
 interface RuntimeSchema<T> {
   safeParse(
@@ -252,34 +235,46 @@ export class CancelledRequestError extends Error {
 
 /** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
 export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+/** Covers the Server's 480-second seal wait and the final response. */
+export const CLOUD_WORKSPACE_RELEASE_TIMEOUT_MS = 510_000;
 
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
  * best-effort; the deadline itself always rejects, including while a response body is hanging.
+ * An optional observer signal cancels through baseline abort events, with listener cleanup.
  */
-export async function withDeadline<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withDeadline<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  if (externalSignal?.aborted) throw new CancelledRequestError(externalSignal.reason);
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeoutError = (): CancelledRequestError => {
-    const cause = new Error("The operation timed out.");
-    cause.name = "TimeoutError";
-    return new CancelledRequestError(cause);
-  };
-  const operation = Promise.resolve().then(() => run(controller.signal));
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      const error = timeoutError();
+  let onAbort: (() => void) | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    const cancel = (error: CancelledRequestError) => {
       controller.abort(error);
       reject(error);
+    };
+    onAbort = () => cancel(new CancelledRequestError(externalSignal?.reason));
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const cause = new Error("The operation timed out.");
+      cause.name = "TimeoutError";
+      cancel(new CancelledRequestError(cause));
     }, timeoutMs);
   });
+  const operation = Promise.resolve().then(() => {
+    // The observer can disappear before this microtask starts the transport.
+    if (controller.signal.aborted) throw controller.signal.reason;
+    return run(controller.signal);
+  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([operation, cancellation]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) void operation.catch(() => undefined);
+    if (onAbort) externalSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -299,14 +294,73 @@ export class ApiError extends Error {
   }
 }
 
+function generateRequestId(): string {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function extractTraceId(headers: Headers): string | undefined {
+  return headers.get("x-trace-id") ?? headers.get("traceparent")?.split("-")[1] ?? undefined;
+}
+
+async function reportHttpFailure(
+  reporter: DiagnosticReporter,
+  apiError: (response: Response, body: unknown) => ApiError,
+  path: string,
+  response: Response,
+  requestId: string,
+): Promise<void> {
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  const error = apiError(response, body);
+  const level = response.status >= 500 ? "error" : "warn";
+  const traceId = extractTraceId(response.headers);
+  reporter.report(
+    {
+      source: "api",
+      code: error.code ?? `http_${response.status}`,
+      routeTemplate: routeTemplate(path),
+      status: response.status,
+      category: error.category,
+      requestId: error.requestId ?? requestId,
+      ...(traceId ? { traceId } : {}),
+      retryAfterSeconds: error.retryAfterSeconds,
+    },
+    level,
+  );
+}
+
+function handleFetchException(
+  reporter: DiagnosticReporter,
+  cause: unknown,
+  signal: AbortSignal | null | undefined,
+  path: string,
+): never {
+  if (signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+    throw new CancelledRequestError(cause);
+  }
+  const normalized = normalizeError(cause, "network_error");
+  reporter.report({
+    source: "api",
+    code: normalized.code,
+    routeTemplate: routeTemplate(path),
+    error: { name: normalized.error.name },
+  });
+  throw cause;
+}
+
 export class BrowserApi {
   constructor(
     readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
     readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
   ) {}
 
-  cloudUsage(windowDays: CloudUsageWindowDays) {
-    return this.request(`${CLOUD_USAGE_PATH}?windowDays=${windowDays}`, CloudUsageSummarySchema);
+  cloudUsage(windowDays: CloudUsageWindowDays, timezone = viewerTimezone()) {
+    const query = new URLSearchParams({ windowDays: String(windowDays), timezone });
+    return this.request(`${CLOUD_USAGE_PATH}?${query.toString()}`, CloudUsageSummarySchema);
   }
 
   cloudBilling() {
@@ -330,7 +384,7 @@ export class BrowserApi {
   }
 
   me(): Promise<MeResponse> {
-    return this.request("/api/v1/me", MeResponseSchema);
+    return this.requestAccount(accountApiEndpoints.me());
   }
 
   updateProfile(input: UpdateUserProfileRequest): Promise<UserProfile> {
@@ -354,7 +408,11 @@ export class BrowserApi {
   }
 
   agents(): Promise<ListAgentsResponse> {
-    return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAgents({ includeActivityAndStatus: true }));
+  }
+
+  agentStatuses(ids: readonly string[]): Promise<AgentStatusResponse> {
+    return this.request(agentStatusesPath(ids), AgentStatusResponseSchema);
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
@@ -366,9 +424,37 @@ export class BrowserApi {
     return this.request(`${HTTP_PATHS.accountTasks}${suffix}`, ListTasksResponseSchema);
   }
 
-  task(sessionId: string, cursor?: string): Promise<TaskDetail> {
+  /**
+   * The bounded Task detail: one page of the named sections — all of them when none is named — each
+   * with its own cursor. Naming a subset is what keeps a view from paying for a section it discards;
+   * the legacy complete answer at `taskByIdPath` is not read here, so no view can depend on an
+   * unbounded section.
+   */
+  taskDetail(sessionId: string, sections?: readonly TaskDetailSection[]): Promise<TaskDetailPage> {
+    const query = sections ? `?${new URLSearchParams({ sections: sections.join(",") }).toString()}` : "";
+    return this.request(`${taskDetailPath(sessionId)}${query}`, TaskDetailPageSchema);
+  }
+
+  taskTurns(sessionId: string, cursor?: string): Promise<TaskTurnPage> {
+    return this.#taskSection(sessionId, "turns", cursor, TaskTurnPageSchema);
+  }
+
+  taskInternalSessions(sessionId: string, cursor?: string): Promise<TaskInternalSessionPage> {
+    return this.#taskSection(sessionId, "internal-sessions", cursor, TaskInternalSessionPageSchema);
+  }
+
+  taskCollaborationMessages(sessionId: string, cursor?: string): Promise<TaskCollaborationMessagePage> {
+    return this.#taskSection(sessionId, "collaboration-messages", cursor, TaskCollaborationMessagePageSchema);
+  }
+
+  #taskSection<T>(
+    sessionId: string,
+    section: "turns" | "internal-sessions" | "collaboration-messages",
+    cursor: string | undefined,
+    schema: RuntimeSchema<T>,
+  ): Promise<T> {
     const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
-    return this.request(`${taskByIdPath(sessionId)}${query}`, TaskDetailSchema);
+    return this.request(`${taskDetailSectionPath(sessionId, section)}${query}`, schema);
   }
 
   /** The Task's platform-confirmed outbound replies, paged independently of its Turns. */
@@ -394,7 +480,7 @@ export class BrowserApi {
   }
 
   agent(agentId: string): Promise<AgentDetail> {
-    return this.request(agentByIdPath(agentId), AgentDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getAgent(agentId, { includeActivity: true }));
   }
 
   agentSchedules(agentId: string, query: { limit?: number; cursor?: string } = {}): Promise<AgentScheduleListResponse> {
@@ -433,12 +519,16 @@ export class BrowserApi {
     });
   }
 
-  agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
-    return this.request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema);
+  agentUsage(
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+    timezone = viewerTimezone(),
+  ): Promise<AgentUsageDetail> {
+    return this.requestAccount(accountApiEndpoints.getAgentUsage(agentId, windowDays, timezone));
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
+    return this.requestAccount(accountApiEndpoints.getAgentConfig(agentId));
   }
 
   /**
@@ -464,19 +554,15 @@ export class BrowserApi {
   }
 
   createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createAgent(input));
   }
 
   updateAgent(agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(agentByIdPath(agentId), AgentAdminConfigSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateAgent(agentId, input));
+  }
+
+  contextTreeAvailability(agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeAvailabilityResponseSchema);
   }
 
   contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
@@ -501,34 +587,19 @@ export class BrowserApi {
     input: AgentRuntimeTestRequest,
     signal?: AbortSignal,
   ): Promise<AgentRuntimeTestResponse> {
-    return this.request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-      ...(signal ? { signal } : {}),
-    });
+    return this.requestAccount(accountApiEndpoints.testAgentRuntime(agentId, input), signal ? { signal } : undefined);
   }
 
   suspendAgent(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.suspendAgent(agentId));
   }
 
   rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
-    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.rebindAgentComputer(agentId, computerId));
   }
 
   reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.reactivateAgent(agentId));
   }
 
   disconnectComputer(computerId: string): Promise<void> {
@@ -549,14 +620,11 @@ export class BrowserApi {
   }
 
   deleteAgent(agentId: string): Promise<void> {
-    return this.requestNoContent(agentByIdPath(agentId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.deleteAgent(agentId));
   }
 
   imBinding(agentId: string): Promise<ImBindingSummary | undefined> {
-    return this.requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema);
+    return this.requestOptionalAccount(accountApiEndpoints.getAgentImBinding(agentId));
   }
 
   imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
@@ -566,7 +634,7 @@ export class BrowserApi {
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
-    return this.requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema);
+    return this.requestOptionalAccount(accountApiEndpoints.getAgentImBindingConfig(agentId));
   }
 
   unbindAgentMessaging(agentId: string, input: UnbindAgentMessagingRequest): Promise<void> {
@@ -582,15 +650,11 @@ export class BrowserApi {
     intent: "create" | "reauthorize" | "replace" = "create",
     expectedMessaging?: ImBindingMessagingExpectation,
   ): Promise<FeishuSetupAttempt> {
-    return this.request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
-      method: "POST",
-      body: JSON.stringify({ intent, ...(expectedMessaging ? { expectedMessaging } : {}) }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createFeishuSetupAttempt(agentId, intent, expectedMessaging));
   }
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+    return this.requestAccount(accountApiEndpoints.getFeishuSetupAttempt(attemptId));
   }
 
   currentFeishuSetupAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
@@ -605,18 +669,11 @@ export class BrowserApi {
   }
 
   cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.cancelFeishuSetupAttempt(attemptId));
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
-    return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.startSlackOAuth(agentId, input));
   }
 
   autoSetupSlack(agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
@@ -627,8 +684,10 @@ export class BrowserApi {
     });
   }
 
-  slackConfiguration(agentId: string): Promise<SlackConfigurationView> {
-    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema);
+  slackConfiguration(agentId: string, signal?: AbortSignal): Promise<SlackConfigurationView> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema, {
+      ...(signal ? { signal } : {}),
+    });
   }
 
   saveSlackConfiguration(agentId: string, input: SaveSlackConfigurationRequest): Promise<SlackConfigurationResult> {
@@ -640,28 +699,15 @@ export class BrowserApi {
   }
 
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
-    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
-      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
-    });
+    return this.requestAccount(accountApiEndpoints.getImBindingDiagnostics(imBindingId));
   }
 
   disableImBinding(imBindingId: string): Promise<void> {
-    return this.requestNoContent(imBindingDisablePath(imBindingId), {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.disableImBinding(imBindingId));
   }
 
   computers(): Promise<ListAccountComputersResponse> {
-    return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: {
-        [CLOUD_IDENTITY_CAPABILITY_HEADER]: "1",
-        [COMPUTER_ACCESS_CAPABILITY_HEADER]: "1",
-        [PROVIDER_READINESS_V1_HEADER]: "1",
-        [PROVIDER_READINESS_V2_HEADER]: "2",
-        [PROVIDER_CLI_REASON_V2_HEADER]: "2",
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.listAccountComputers({ includeBrowserCapabilities: true }));
   }
 
   cloudAvailability(): Promise<CloudAvailability> {
@@ -684,9 +730,45 @@ export class BrowserApi {
     });
   }
 
+  imFeedbackList(agentId: string, cursor?: string): Promise<ImFeedbackList> {
+    return this.request(agentImFeedbackPath(agentId, cursor), ImFeedbackListSchema);
+  }
+
+  imFeedback(feedbackId: string): Promise<ImFeedbackView> {
+    return this.request(imFeedbackPath(feedbackId), ImFeedbackViewSchema);
+  }
+
+  imFeedbackAction(feedbackId: string, input: ImFeedbackActionRequest): Promise<ImFeedbackView> {
+    return this.request(imFeedbackActionsPath(feedbackId), ImFeedbackViewSchema, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      body: JSON.stringify(input),
+    });
+  }
+
   agentCloudOverview(agentId: string, options: { cursor?: string; limit?: number } = {}): Promise<AgentCloudOverview> {
     return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
       this.request(agentCloudPath(agentId, options), AgentCloudOverviewSchema, { signal }),
+    );
+  }
+
+  cloudWorkspaceStatus(sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, { signal }),
+    );
+  }
+
+  releaseCloudWorkspace(
+    sandboxId: string,
+    input: AccountSandboxRunnerStopRequest,
+  ): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(CLOUD_WORKSPACE_RELEASE_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+        body: JSON.stringify(input),
+        signal,
+      }),
     );
   }
 
@@ -696,11 +778,7 @@ export class BrowserApi {
    * it keeps its identity rather than becoming a second Computer beside the one it replaced.
    */
   issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {
-    return this.request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {}),
-      headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.issueComputerConnectCode(input));
   }
 
   /**
@@ -712,27 +790,6 @@ export class BrowserApi {
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
-  }
-
-  /**
-   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
-   * which is the same product answer as both previews being hidden.
-   */
-  async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
-    try {
-      return await this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema);
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) return { integrations: false };
-      throw cause;
-    }
-  }
-
-  updateInternalNavigationVisibility(input: InternalNavigationVisibility): Promise<InternalNavigationVisibility> {
-    return this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   /*
@@ -777,7 +834,7 @@ export class BrowserApi {
    * deployment-fixed rather than chosen here.
    */
   mcpServers(): Promise<ListMCPServersResponse> {
-    return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listMcpServers());
   }
 
   /** The catalog endpoints this deployment replaces because it configured a client for them. */
@@ -786,61 +843,59 @@ export class BrowserApi {
   }
 
   mcpServer(mcpServerId: string): Promise<MCPServerDetail> {
-    return this.request(mcpServerPath(mcpServerId), MCPServerDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getMcpServer(mcpServerId));
+  }
+
+  reusableMcpInstallation(agentId: string, input: CreateMCPServerRequest, scopes: readonly string[] = []) {
+    return this.request(
+      `${agentMcpServersPath(agentId)}/reusable-installation`,
+      ReusableMCPInstallationResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ ...input, scopes }),
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      },
+    );
   }
 
   createMcpServer(input: CreateMCPServerRequest): Promise<MCPServer> {
-    return this.request(mcpServersPath(), MCPServerSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createMcpServer(input));
   }
 
   updateMcpServer(mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
-    return this.request(mcpServerPath(mcpServerId), MCPServerSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateMcpServer(mcpServerId, input));
   }
 
   removeMcpServer(mcpServerId: string): Promise<void> {
-    return this.requestNoContent(mcpServerPath(mcpServerId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.removeMcpServer(mcpServerId));
   }
 
   agentMcpServers(agentId: string): Promise<ListAgentMCPServersResponse> {
-    return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAgentMcpServers(agentId));
+  }
+
+  connectMcpOAuth(agentId: string, mcpServerId: string, scopes: readonly string[] = []) {
+    return this.request(`${agentMcpAuthorizationPath(agentId, mcpServerId)}/connect`, ConnectMCPOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ scopes }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   availableMcpServers(agentId: string): Promise<ListAvailableMCPServersResponse> {
-    return this.request(`${agentMcpServersPath(agentId)}/available`, ListAvailableMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAvailableMcpServers(agentId));
   }
 
   attachMcpServer(agentId: string, input: AttachMCPServerRequest): Promise<MCPAgentServer> {
-    return this.request(agentMcpServersPath(agentId), MCPAgentServerSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.attachMcpServer(agentId, input));
   }
 
   updateAgentMcpServer(agentId: string, mcpServerId: string, input: UpdateMCPBindingRequest): Promise<MCPAgentServer> {
-    return this.request(agentMcpServerPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateAgentMcpServer(agentId, mcpServerId, input));
   }
 
   detachMcpServer(agentId: string, mcpServerId: string): Promise<void> {
-    return this.requestNoContent(agentMcpServerPath(agentId, mcpServerId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.detachMcpServer(agentId, mcpServerId));
   }
 
   setMcpAuthorization(
@@ -848,22 +903,11 @@ export class BrowserApi {
     mcpServerId: string,
     input: SetMCPAuthorizationRequest,
   ): Promise<MCPAgentServer> {
-    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.setMcpAuthorization(agentId, mcpServerId, input));
   }
 
   revokeMcpAuthorization(agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<MCPAgentServer> {
-    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "DELETE",
-      ...(expectedOAuthState !== undefined ? { body: JSON.stringify({ expectedOAuthState }) } : {}),
-      headers: {
-        ...(expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
-        ...this.csrfHeaders(),
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.revokeMcpAuthorization(agentId, mcpServerId, expectedOAuthState));
   }
 
   startMcpOAuth(
@@ -871,18 +915,11 @@ export class BrowserApi {
     mcpServerId: string,
     input: StartMCPOAuthRequest = {},
   ): Promise<StartMCPOAuthResponse> {
-    return this.request(agentMcpAuthorizationOAuthPath(agentId, mcpServerId), StartMCPOAuthResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.startMcpOAuth(agentId, mcpServerId, input));
   }
 
   probeMcpServer(agentId: string, mcpServerId: string): Promise<MCPProbeResponse> {
-    return this.request(agentMcpProbePath(agentId, mcpServerId), MCPProbeResponseSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.probeMcpServer(agentId, mcpServerId));
   }
 
   /*
@@ -892,11 +929,11 @@ export class BrowserApi {
    * the browser's own navigation carries the session cookie and the Server's `Content-Disposition`.
    */
   agentSkills(agentId: string): Promise<ListAgentSkillsResponse> {
-    return this.request(agentSkillsPath(agentId), ListAgentSkillsResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAgentSkills(agentId));
   }
 
   agentSkill(agentId: string, skillId: string): Promise<SkillDetail> {
-    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getAgentSkill(agentId, skillId));
   }
 
   agentSkillFile(
@@ -944,10 +981,7 @@ export class BrowserApi {
   }
 
   removeAgentSkill(agentId: string, skillId: string): Promise<void> {
-    return this.requestNoContent(agentSkillPath(agentId, skillId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.removeAgentSkill(agentId, skillId));
   }
 
   /** The same-origin bundle download path, built from the shared template rather than a string. */
@@ -985,15 +1019,11 @@ export class BrowserApi {
    * `preset` provenance.
    */
   skillPresets(agentId: string): Promise<ListSkillPresetsResponse> {
-    return this.request(agentSkillPresetsPath(agentId), ListSkillPresetsResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listSkillPresets(agentId));
   }
 
   installSkillPreset(agentId: string, presetName: string): Promise<InstallSkillPresetResponse> {
-    return this.request(agentSkillPresetInstallPath(agentId, presetName), InstallSkillPresetResponseSchema, {
-      method: "POST",
-      body: JSON.stringify({}),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.installSkillPreset(agentId, presetName));
   }
 
   /**
@@ -1014,7 +1044,7 @@ export class BrowserApi {
    * page learns which Computer its command connected.
    */
   computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
-    return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);
+    return this.requestAccount(accountApiEndpoints.computerConnectCodeStatus(connectCodeId));
   }
 
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {
@@ -1056,11 +1086,33 @@ export class BrowserApi {
     });
   }
 
+  private requestAccount<T>(endpoint: AccountApiEndpoint<T>, options?: { signal?: AbortSignal }): Promise<T> {
+    return this.request(endpoint.path, endpoint.schema, {
+      ...toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  private requestOptionalAccount<T>(endpoint: AccountApiEndpoint<T>): Promise<T | undefined> {
+    return this.requestOptional(
+      endpoint.path,
+      endpoint.schema,
+      toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+    );
+  }
+
+  private requestNoContentAccount(endpoint: AccountApiNoContentEndpoint): Promise<void> {
+    return this.requestNoContent(
+      endpoint.path,
+      toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+    );
+  }
+
   private async request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit = {}): Promise<T> {
     const response = await this.fetchWithRefresh(path, init);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    return this.parseResponse(path, schema, body);
+    return this.parseResponse(path, schema, body, response);
   }
 
   private async requestOptional<T>(
@@ -1072,7 +1124,7 @@ export class BrowserApi {
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    return this.parseResponse(path, schema, body);
+    return this.parseResponse(path, schema, body, response);
   }
 
   private async requestNoContent(path: string, init: RequestInit): Promise<void> {
@@ -1085,8 +1137,13 @@ export class BrowserApi {
    * is genuinely gone, and the retry this used to make could only ever have failed a second time.
    */
   private async fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
+    const requestId = generateRequestId();
+    const headers = new Headers(init.headers);
+    if (!headers.has("x-request-id")) {
+      headers.set("x-request-id", requestId);
+    }
     const method = (init.method ?? "GET").toString().toUpperCase();
-    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(init.headers)) {
+    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(headers)) {
       this.diagnosticReporter.report({
         source: "api",
         code: "csrf_token_missing",
@@ -1096,36 +1153,13 @@ export class BrowserApi {
     }
 
     try {
-      const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
+      const response = await this.fetchImpl(path, { ...init, headers, credentials: "same-origin" });
       if (!response.ok) {
-        const body = await response
-          .clone()
-          .json()
-          .catch(() => undefined);
-        const error = this.apiError(response, body);
-        this.diagnosticReporter.report({
-          source: "api",
-          code: error.code ?? `http_${response.status}`,
-          routeTemplate: routeTemplate(path),
-          status: response.status,
-          category: error.category,
-          requestId: error.requestId,
-          retryAfterSeconds: error.retryAfterSeconds,
-        });
+        await reportHttpFailure(this.diagnosticReporter, (res, b) => this.apiError(res, b), path, response, requestId);
       }
       return response;
     } catch (cause) {
-      if (init.signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
-        throw new CancelledRequestError(cause);
-      }
-      const normalized = normalizeError(cause, "network_error");
-      this.diagnosticReporter.report({
-        source: "api",
-        code: normalized.code,
-        routeTemplate: routeTemplate(path),
-        error: { name: normalized.error.name },
-      });
-      throw cause;
+      handleFetchException(this.diagnosticReporter, cause, init.signal, path);
     }
   }
 
@@ -1147,23 +1181,30 @@ export class BrowserApi {
     );
   }
 
-  private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown): T {
-    const parsed = schema.safeParse(body);
+  private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown, response?: Response): T {
+    const parsed = parseResponseIgnoringUnknownKeys(schema, body);
     if (parsed.success) return parsed.data;
-    const issues = parsed.error.issues.map(({ path: issuePath, code }) => ({
+    const issues = parsed.issues.map(({ path: issuePath, code }) => ({
       path: issuePath.map((segment) => (typeof segment === "symbol" ? segment.toString() : segment)),
       code,
     }));
-    this.diagnosticReporter.report({
-      source: "api",
-      code: "invalid_response_schema",
-      routeTemplate: routeTemplate(path),
-      issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
-    });
+    const requestId = response?.headers.get("x-request-id") ?? undefined;
+    const traceId = response ? extractTraceId(response.headers) : undefined;
+    this.diagnosticReporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: routeTemplate(path),
+        ...(requestId ? { requestId } : {}),
+        ...(traceId ? { traceId } : {}),
+        issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
+      },
+      "error",
+    );
     throw new ResponseSchemaError(routeTemplate(path), issues);
   }
 
-  private csrfHeaders(): HeadersInit {
+  private csrfHeaders(): Record<string, string> {
     const token = this.csrfToken();
     return token ? { "X-OpenTag-CSRF": token } : {};
   }

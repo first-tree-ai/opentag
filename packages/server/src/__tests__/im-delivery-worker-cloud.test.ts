@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { computeDirectInputHash, type RunnerServerFrame } from "@opentag/shared";
+import {
+  type CloudLatencyRecord,
+  CloudLatencyRecordSchema,
+  computeDirectInputHash,
+  RUNTIME_CAPABILITY,
+  type RunnerServerFrame,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeConfigs,
   agents,
   computers,
+  feishuInboundReceipts,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -14,11 +21,13 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { dispatchClaimToken } from "../runtime/im-delivery-claim.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
-import type { CloudSessionAllocationPort } from "../runtime/im-delivery-worker.types.js";
+import type { CloudSessionAllocationPort, ImDeliveryDiagnosticReporter } from "../runtime/im-delivery-worker.types.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../runtime/runtime-domain-owner.js";
 import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
@@ -59,6 +68,7 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(async () => unit?.close());
 beforeEach(async () => unit.reset());
+afterEach(() => vi.unstubAllEnvs());
 
 async function cloudScope(options: { ready?: boolean } = {}) {
   const accountId = randomUUID();
@@ -229,7 +239,7 @@ async function addCloudSession(
  * A minimal Local Agent with two Sessions on its Local Computer. Only the claim and its Agent-wide
  * occupancy fence are exercised, so the fixture stops at the claim's inputs (no runtime config).
  */
-async function localScope() {
+async function localScope(capabilities: Record<string, number> = {}) {
   const accountId = randomUUID();
   await unit.database
     .insert(users)
@@ -289,6 +299,7 @@ async function localScope() {
       installationId: randomUUID(),
       instanceId,
       lastHeartbeatAt: Date.now(),
+      negotiatedCapabilities: capabilities,
       socket: { close: vi.fn(), terminate: vi.fn() } as never,
     },
     async () => undefined,
@@ -320,6 +331,7 @@ interface AllocationCallLog {
   ensured: { accountId: string; imBindingId: string; kind: string }[];
   allocated: { accountId: string; sandboxId: string }[];
   outcome: IngressAllocationOutcome;
+  beforeReturn?: () => Promise<void>;
   /** When set, the port rejects with this error instead of returning the outcome. */
   error?: unknown;
 }
@@ -328,12 +340,16 @@ function makeWorker(
   owner?: CloudDeliveryOwner,
   allocation?: AllocationCallLog,
   options: {
+    logger?: ServiceLogger;
+    onDiagnostic?: ImDeliveryDiagnosticReporter;
     now?: () => Date;
     beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
     readyAllocation?: CloudSessionAllocationPort["readyAllocation"];
   } = {},
 ) {
   return new ImDeliveryWorker({
+    ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
     assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
     database: unit.database,
     domain: {} as never,
@@ -356,7 +372,9 @@ function makeWorker(
             ensureEnvironmentAllocated: async (input) => {
               allocation?.allocated.push(input);
               if (allocation?.error) throw allocation.error;
-              return allocation?.outcome ?? "ready";
+              const outcome = allocation?.outcome ?? "ready";
+              await allocation?.beforeReturn?.();
+              return outcome;
             },
           },
         }
@@ -420,6 +438,35 @@ async function connectReady(fixture: Awaited<ReturnType<typeof cloudScope>>, sta
 }
 
 describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
+  it("records a Cloud pre-send batch change as expected backoff without an error diagnostic", async () => {
+    const f = await cloudScope();
+    const stack = makeStack();
+    await connectReady(f, stack);
+    const pending = await pendingDelivery(f.scope.sessionId);
+    const now = new Date();
+    const diagnostic = vi.fn();
+    vi.spyOn(stack.owner, "dispatchDelivery").mockRejectedValueOnce(new RuntimeDispatchDeferredError("batch_changed"));
+    const worker = makeWorker(stack.owner, undefined, { onDiagnostic: diagnostic, now: () => now });
+    try {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, pending.deliveryId));
+      expect(row).toMatchObject({
+        state: "pending",
+        attemptCount: 1,
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_BATCH_CHANGED",
+        nextAttemptAt: new Date(now.getTime() + 2_000),
+      });
+      expect(diagnostic).not.toHaveBeenCalled();
+    } finally {
+      await worker.stop();
+      stack.grants.close();
+    }
+  });
+
   it("dispatches attachment-only Cloud input with native Feishu identifiers", async () => {
     const fixture = await cloudScope();
     const stack = makeStack();
@@ -564,45 +611,46 @@ describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
     expect(ready.sent).toHaveLength(0);
   });
 
-  it.each(["IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", "IM_DELIVERY_CLOUD_RUNNER_NOT_READY"])(
-    "consumes a 16-second %s retry immediately, targeting the ready Session",
-    async (code) => {
-      const fixture = await cloudScope();
-      const other = await addCloudSession(fixture);
-      const unrelated = await pendingDelivery(other.scope.sessionId);
-      const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
-      const now = new Date();
-      await unit.database
-        .update(imMessageDeliveries)
-        .set({ nextAttemptAt: new Date(now.getTime() + 16_000), lastErrorCode: code, attemptCount: 4 })
+  it.each([
+    "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING",
+    "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+    "IM_DELIVERY_CLOUD_RUNNER_NOT_READY",
+  ])("consumes a 16-second %s retry immediately, targeting the ready Session", async (code) => {
+    const fixture = await cloudScope();
+    const other = await addCloudSession(fixture);
+    const unrelated = await pendingDelivery(other.scope.sessionId);
+    const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+    const now = new Date();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now.getTime() + 16_000), lastErrorCode: code, attemptCount: 4 })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const stack = makeStack();
+    const ready = await connectReady(fixture, stack);
+    const service = readinessService(stack.hub);
+    const worker = makeWorker(stack.owner, undefined, {
+      now: () => now,
+      readyAllocation: service.readyAllocation.bind(service),
+    });
+    try {
+      await Promise.all(Array.from({ length: 8 }, () => worker.notifyCloudRunnerReady(ready.allocation)));
+      const runs = ready.sent.filter((frame) => frame.type === "delivery:run");
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ delivery: { deliveryId } });
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.id, deliveryId));
-      const stack = makeStack();
-      const ready = await connectReady(fixture, stack);
-      const service = readinessService(stack.hub);
-      const worker = makeWorker(stack.owner, undefined, {
-        now: () => now,
-        readyAllocation: service.readyAllocation.bind(service),
-      });
-      try {
-        await Promise.all(Array.from({ length: 8 }, () => worker.notifyCloudRunnerReady(ready.allocation)));
-        const runs = ready.sent.filter((frame) => frame.type === "delivery:run");
-        expect(runs).toHaveLength(1);
-        expect(runs[0]).toMatchObject({ delivery: { deliveryId } });
-        const [row] = await unit.database
-          .select()
-          .from(imMessageDeliveries)
-          .where(eq(imMessageDeliveries.id, deliveryId));
-        expect(row?.attemptCount).toBe(5);
-        const [untouched] = await unit.database
-          .select()
-          .from(imMessageDeliveries)
-          .where(eq(imMessageDeliveries.id, unrelated.deliveryId));
-        expect(untouched?.attemptCount).toBe(0);
-      } finally {
-        worker.stop();
-      }
-    },
-  );
+      expect(row?.attemptCount).toBe(5);
+      const [untouched] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, unrelated.deliveryId));
+      expect(untouched?.attemptCount).toBe(0);
+    } finally {
+      worker.stop();
+    }
+  });
 
   it("rechecks after failure recording when ready arrived during a claimed, busy lane", async () => {
     const fixture = await cloudScope({ ready: false });
@@ -770,31 +818,56 @@ describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
 });
 
 describe("ImDeliveryWorker Cloud routing", () => {
-  it("routes a Cloud Session delivery through the per-Sandbox owner, never the Local registry", async () => {
-    const { scope, cloud } = await cloudScope();
-    const stack = makeStack();
-    const sent: RunnerServerFrame[] = [];
-    const socket = fakeSocket(sent);
-    stack.hub.attach(scope, socket);
-    stack.hub.markReady(scope, READINESS, socket);
-    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
-    const { deliveryId } = await pendingDelivery(scope.sessionId);
-    const worker = makeWorker(stack.owner);
-    await worker.runOnce();
-    const runs = sent.filter((frame) => frame.type === "delivery:run");
-    expect(runs).toHaveLength(1);
-    const run = runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>;
-    expect(run.delivery.deliveryId).toBe(deliveryId);
-    expect(run.delivery.runtime.model).toBe(MODEL);
-    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
-    if (!row) throw new Error("delivery row missing");
-    expect(row.state).toBe("pending");
-    expect(row.dispatchRequestId).toBe(run.requestId);
-    // The Local registry was never consulted for an instance: no computer online state changed.
-    const [computer] = await unit.database.select().from(computers).where(eq(computers.id, cloud.computerId));
-    if (!computer) throw new Error("computer row missing");
-    expect(computer.currentInstanceId).toBeNull();
-  });
+  it.each(["disabled", "enabled", "throwing"])(
+    "keeps per-Sandbox routing with %s latency diagnostics",
+    async (mode) => {
+      const { scope, cloud } = await cloudScope();
+      const stack = makeStack();
+      const sent: RunnerServerFrame[] = [];
+      const socket = fakeSocket(sent);
+      stack.hub.attach(scope, socket);
+      stack.hub.markReady(scope, READINESS, socket);
+      stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
+      const { deliveryId } = await pendingDelivery(scope.sessionId);
+      vi.stubEnv("OPENTAG_ENV", "staging");
+      vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", mode === "disabled" ? "false" : "true");
+      vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+      const info = vi.fn((bindings: Record<string, unknown>) => {
+        if (mode === "throwing" && bindings.operation === "cloud.latency") throw new Error("fixture logger failure");
+      });
+      const worker = makeWorker(stack.owner, undefined, {
+        logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
+      });
+      await worker.runOnce();
+      const runs = sent.filter((frame) => frame.type === "delivery:run");
+      expect(runs).toHaveLength(1);
+      const run = runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>;
+      expect(run.delivery.deliveryId).toBe(deliveryId);
+      expect(run.delivery.runtime.model).toBe(MODEL);
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!row) throw new Error("delivery row missing");
+      expect(row.state).toBe("pending");
+      expect(row.dispatchRequestId).toBe(run.requestId);
+      // The Local registry was never consulted for an instance: no computer online state changed.
+      const [computer] = await unit.database.select().from(computers).where(eq(computers.id, cloud.computerId));
+      if (!computer) throw new Error("computer row missing");
+      expect(computer.currentInstanceId).toBeNull();
+      const diagnostics = info.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.operation === "cloud.latency");
+      expect(diagnostics.length).toBe(mode === "disabled" ? 0 : 7);
+      if (mode !== "disabled") {
+        expect(diagnostics.filter((record) => record.phase === "dispatch")).toMatchObject([
+          { deliveryId, attempt: 1, event: "start" },
+          { deliveryId, attempt: 1, event: "end" },
+        ]);
+      }
+      expect(JSON.stringify(diagnostics)).not.toContain("fixture logger failure");
+    },
+  );
 
   it("keeps a Cloud delivery pending (transient) when the environment is not ready", async () => {
     const { scope } = await cloudScope({ ready: false });
@@ -981,6 +1054,344 @@ describe("ImDeliveryWorker Cloud routing", () => {
     const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
     expect(row?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
   });
+
+  it("stops before Runner dispatch when allocation is pending", async () => {
+    const { scope } = await cloudScope();
+    const stack = makeStack();
+    const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "pending" };
+    const dispatch = vi.spyOn(stack.owner, "dispatchDelivery");
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    vi.stubEnv("OPENTAG_ENV", "staging");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", "true");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+    const info = vi.fn();
+    const warn = vi.fn();
+    const onDiagnostic = vi.fn();
+    const worker = makeWorker(stack.owner, allocation, {
+      logger: { debug: vi.fn(), info, warn, error: vi.fn() },
+      onDiagnostic,
+    });
+    try {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(row).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING" });
+      expect(allocation.allocated).toHaveLength(1);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(onDiagnostic).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      expect(
+        info.mock.calls.some(
+          ([record]) => record.phase === "allocation_wait" && record.event === "failure" && record.outcome === "failed",
+        ),
+      ).toBe(true);
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  it.each([
+    {
+      name: "workspace_save_failed",
+      waits: 1,
+      delay: 600_000,
+      code: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+      sandbox: { idleReclaimAt: new Date(), lastErrorCode: "workspace_save_failed" },
+      error: undefined,
+    },
+    {
+      name: "allocation_failed",
+      waits: 1,
+      delay: 4_000,
+      code: "IM_DELIVERY_CLOUD_ALLOCATION_FAILED",
+      sandbox: undefined,
+      error: new Error("allocation failed"),
+    },
+    {
+      name: "allocation_marked_failed",
+      waits: 1,
+      delay: 4_000,
+      code: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+      sandbox: { lastErrorCode: "create_failed" },
+      error: undefined,
+    },
+    {
+      name: "startup_exhausted",
+      waits: 5,
+      delay: 30_000,
+      code: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+      sandbox: undefined,
+      error: undefined,
+    },
+  ])("keeps $name visible after normal Cloud startup waits", async (failure) => {
+    const fixture = await cloudScope();
+    const stack = makeStack();
+    const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "pending" };
+    const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const onDiagnostic = vi.fn();
+    let now = new Date(Date.now() + 1_000);
+    const worker = makeWorker(stack.owner, allocation, { logger, onDiagnostic, now: () => now });
+    const { waits, code: errorCode } = failure;
+    try {
+      for (let pass = 0; pass < waits; pass += 1) {
+        await worker.runOnce();
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        expect(row).toMatchObject({
+          state: "pending",
+          dispatchRequestId: null,
+          reportedAt: null,
+          lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING",
+          attemptCount: pass + 1,
+        });
+        expect((row?.nextAttemptAt.getTime() ?? 0) - now.getTime()).toBe([2_000, 4_000, 8_000, 16_000, 30_000][pass]);
+        now = row?.nextAttemptAt as Date;
+      }
+      expect(onDiagnostic).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      if (failure.sandbox)
+        await unit.database
+          .update(sandboxes)
+          .set({ ...failure.sandbox, lastErrorAt: now })
+          .where(eq(sandboxes.id, fixture.scope.sandboxId));
+      allocation.error = failure.error;
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(row).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        turnReport: null,
+        lastErrorCode: errorCode,
+        attemptCount: waits + 1,
+      });
+      expect((row?.nextAttemptAt.getTime() ?? 0) - now.getTime()).toBe(failure.delay);
+      expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith(errorCode, expect.objectContaining({ deliveryId }));
+      expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ deliveryId, errorCode }),
+        expect.any(String),
+      );
+    } finally {
+      await worker.stop();
+      stack.grants.close();
+    }
+  });
+
+  it("reports a Sandbox error recorded while the allocation ensure was pending", async () => {
+    const fixture = await cloudScope();
+    const stack = makeStack();
+    const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+    const onDiagnostic = vi.fn();
+    const worker = makeWorker(
+      stack.owner,
+      {
+        ensured: [],
+        allocated: [],
+        outcome: "pending",
+        beforeReturn: async () => {
+          await unit.database
+            .update(sandboxes)
+            .set({ lastErrorCode: "create_failed", lastErrorAt: new Date() })
+            .where(eq(sandboxes.id, fixture.scope.sandboxId));
+        },
+      },
+      { onDiagnostic },
+    );
+    try {
+      await worker.runOnce();
+      expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith(
+        "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+        expect.objectContaining({ deliveryId, attemptCount: 1 }),
+      );
+    } finally {
+      await worker.stop();
+      stack.grants.close();
+    }
+  });
+
+  it.each(["started", "reported"] as const)("quietly retries a healthy accepted Cloud %s turn", async (phase) => {
+    const fixture = await cloudScope();
+    const stack = makeStack();
+    const ready = await connectReady(fixture, stack);
+    const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const onDiagnostic = vi.fn();
+    let now = new Date(Date.now() + 1_000);
+    const worker = makeWorker(stack.owner, undefined, { logger, onDiagnostic, now: () => now });
+    try {
+      await worker.runOnce();
+      const run = ready.sent.find((frame) => frame.type === "delivery:run");
+      const connection = stack.fence.connectionForSandbox(fixture.scope.sandboxId);
+      if (run?.type !== "delivery:run" || !connection) throw new Error("missing Cloud dispatch");
+      await stack.owner.handleDeliveryReceived(connection, {
+        deliveryId,
+        requestId: run.requestId,
+        turnId: randomUUID(),
+      });
+      const send = ready.socket.send.bind(ready.socket);
+      ready.socket.send = (frame) => {
+        send(frame);
+        if (frame.type === "delivery:query")
+          stack.owner.handleQueryResult(connection, { requestId: frame.requestId, phase });
+      };
+      const [accepted] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!accepted) throw new Error("missing accepted Cloud delivery");
+      now = new Date(now.getTime() + 16_000);
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: now })
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      for (let pass = 0; pass < 3; pass += 1) {
+        await worker.runOnce();
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        expect(row).toMatchObject({
+          state: "accepted",
+          turnId: accepted.turnId,
+          reportedAt: null,
+          turnReport: null,
+          dispatchRequestId: accepted.dispatchRequestId,
+          dispatchInputHash: accepted.dispatchInputHash,
+          reportOwnerInstanceId: accepted.reportOwnerInstanceId,
+          placementGeneration: accepted.placementGeneration,
+          attemptCount: accepted.attemptCount + pass + 1,
+        });
+        expect(row?.dispatchPayload).toEqual(accepted.dispatchPayload);
+        expect((row?.nextAttemptAt.getTime() ?? 0) - now.getTime()).toBe([4_000, 8_000, 16_000][pass]);
+        now = row?.nextAttemptAt as Date;
+      }
+      expect(ready.sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+      expect(ready.sent.filter((frame) => frame.type === "delivery:query")).toHaveLength(3);
+      expect(onDiagnostic).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deliveryId,
+          errorCode: phase === "started" ? "IM_DELIVERY_CLOUD_TURN_RUNNING" : "IM_DELIVERY_CLOUD_REPORTING",
+        }),
+        "IM delivery dispatch retry scheduled",
+      );
+      ready.socket.send = (frame) => {
+        if (frame.type === "delivery:query") throw new Error("query transport lost");
+        send(frame);
+      };
+      await worker.runOnce();
+      expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith(
+        "IM_DELIVERY_CLOUD_REPORT_PENDING",
+        expect.objectContaining({ deliveryId, phase: "recover" }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryId, errorCode: "IM_DELIVERY_CLOUD_REPORT_PENDING" }),
+        expect.any(String),
+      );
+    } finally {
+      await worker.stop();
+      stack.owner.detachConnection(stack.fence.connectionForSandbox(fixture.scope.sandboxId)?.connectionId ?? "");
+      stack.hub.detach(fixture.scope.sandboxId, ready.socket);
+      stack.grants.close();
+    }
+  });
+
+  it.each(["poll", "ready", "ready_before_failure"])(
+    "retains workspace-blocked input and resumes through %s without waiting for its TTL",
+    async (mode) => {
+      const fixture = await cloudScope();
+      const stack = makeStack();
+      const service = readinessService(stack.hub);
+      const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+      let now = new Date(Date.now() + 1_000);
+      await unit.database
+        .update(sandboxes)
+        .set({
+          idleReclaimAt: now,
+          lastErrorCode: "workspace_save_failed",
+          lastErrorAt: now,
+        })
+        .where(eq(sandboxes.id, fixture.scope.sandboxId));
+      const [original] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      let ready: Awaited<ReturnType<typeof connectReady>> | undefined;
+      const recover = async () => {
+        await unit.database
+          .update(sandboxes)
+          .set({ idleReclaimAt: null, lastErrorCode: null, lastErrorAt: null })
+          .where(eq(sandboxes.id, fixture.scope.sandboxId));
+        ready = await connectReady(fixture, stack);
+      };
+      const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "pending" };
+      if (mode === "ready_before_failure") {
+        allocation.beforeReturn = async () => {
+          allocation.beforeReturn = undefined;
+          await recover();
+          allocation.outcome = "ready";
+        };
+      }
+      const dispatch = vi.spyOn(stack.owner, "dispatchDelivery");
+      const worker = makeWorker(stack.owner, allocation, {
+        now: () => now,
+        readyAllocation: service.readyAllocation.bind(service),
+      });
+      try {
+        await worker.runOnce();
+        if (mode !== "ready_before_failure") {
+          const [blocked] = await unit.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, deliveryId));
+          expect(blocked).toMatchObject({
+            state: "pending",
+            attemptCount: 1,
+            reason: null,
+            dispatchRequestId: null,
+            lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+            reportedAt: null,
+          });
+          expect(blocked?.expiresAt).toEqual(original?.expiresAt);
+          expect(blocked?.nextAttemptAt.getTime()).toBe(now.getTime() + 10 * 60_000);
+          expect(dispatch).not.toHaveBeenCalled();
+          await worker.runOnce();
+          expect(allocation.allocated).toHaveLength(1);
+          await recover();
+          allocation.outcome = "ready";
+          if (!ready) throw new Error("missing ready fixture");
+          if (mode === "ready") {
+            await worker.notifyCloudRunnerReady({ ...ready.allocation, resourceUid: "stale-uid" });
+            expect(dispatch).not.toHaveBeenCalled();
+            await worker.notifyCloudRunnerReady(ready.allocation);
+          } else {
+            now = blocked?.nextAttemptAt as Date;
+            await worker.runOnce();
+          }
+        }
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+        const [resumed] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        expect(resumed).toMatchObject({ state: "pending", attemptCount: 2, reportedAt: null });
+        expect(resumed?.dispatchRequestId).not.toBeNull();
+        expect(resumed?.expiresAt).toEqual(original?.expiresAt);
+        expect(ready?.sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+      } finally {
+        await worker.stop();
+      }
+    },
+  );
 
   it("requests allocation through the injected port and never provisions anything when the model path is off", async () => {
     const { scope, cloud, accountId } = await cloudScope();
@@ -1336,7 +1747,17 @@ describe("ImDeliveryWorker Cloud routing", () => {
       error: new CloudCapacityExceededError("account"),
     };
     const { deliveryId } = await pendingDelivery(scope.sessionId);
-    const worker = makeWorker(stack.owner, allocation, { now: () => new Date(clockMs) });
+    vi.stubEnv("OPENTAG_ENV", "staging");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", "true");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+    const diagnostics: CloudLatencyRecord[] = [];
+    const info = vi.fn((record: Record<string, unknown>) => {
+      if (record.operation === "cloud.latency") diagnostics.push(CloudLatencyRecordSchema.parse(record));
+    });
+    const worker = makeWorker(stack.owner, allocation, {
+      now: () => new Date(clockMs),
+      logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
+    });
     await unit.database
       .update(imMessageDeliveries)
       .set({ nextAttemptAt: new Date(clockMs - 1) })
@@ -1372,6 +1793,23 @@ describe("ImDeliveryWorker Cloud routing", () => {
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, deliveryId));
     expect(generic).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_CLOUD_ALLOCATION_FAILED" });
+    expect(diagnostics.filter((record) => record.event === "summary").map((record) => record.outcome)).toEqual(
+      Array(4).fill("incomplete"),
+    );
+    expect(
+      diagnostics.filter((record) => record.phase === "allocation_wait" && record.event === "failure"),
+    ).toHaveLength(4);
+    expect(diagnostics.some((record) => record.phase === "allocation_wait" && record.event === "end")).toBe(false);
+
+    if (!generic) throw new Error("delivery row missing");
+    clockMs = generic.nextAttemptAt.getTime();
+    allocation.error = undefined;
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+    expect(diagnostics.at(-1)).toMatchObject({ event: "summary", outcome: "completed", attempt: 5 });
+    expect(diagnostics.filter((record) => record.phase === "allocation_wait" && record.event === "end")).toHaveLength(
+      1,
+    );
   });
 
   it("backs off transient Cloud dispatch failures with the attempt count and caps the delay", async () => {
@@ -1400,6 +1838,74 @@ describe("ImDeliveryWorker Cloud routing", () => {
       clockMs = row.nextAttemptAt.getTime();
     }
     expect(delays).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+  });
+
+  it("backs off without freezing or sending when a receipt commits between claim and Cloud dispatch", async () => {
+    const { scope, cloud, bindingId } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    let clock = new Date();
+    let inserted = false;
+    const worker = makeWorker(stack.owner, undefined, {
+      now: () => clock,
+      beforeDeliveryAdmission: async () => {
+        if (inserted) return;
+        inserted = true;
+        await unit.database.insert(feishuInboundReceipts).values({
+          imBindingId: bindingId,
+          credentialGeneration: 1,
+          eventId: "older-pending",
+          status: "failed",
+          workPayload: {},
+          nextAttemptAt: new Date(clock.getTime() + 60000),
+          lastErrorCode: "SYNTHETIC",
+          lastErrorAt: clock,
+        });
+      },
+    });
+    try {
+      await worker.runOnce();
+      const [held] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!held) throw new Error("Missing held delivery");
+      expect(held).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        dispatchPayload: null,
+        turnReport: null,
+        lastErrorCode: "IM_DELIVERY_INBOUND_PENDING",
+      });
+      expect(held.nextAttemptAt.getTime() - clock.getTime()).toBe(2000);
+      expect(sent.filter((frame) => frame.type === "delivery:run")).toEqual([]);
+      await worker.runOnce();
+      const [again] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      if (!again) throw new Error("Missing deferred delivery");
+      expect(again.attemptCount).toBe(held.attemptCount);
+      await unit.database.update(feishuInboundReceipts).set({
+        status: "processed",
+        processedAt: clock,
+        workPayload: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
+        lastErrorCode: null,
+        lastErrorAt: null,
+      });
+      clock = held.nextAttemptAt;
+      await worker.runOnce();
+      expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+    } finally {
+      worker.stop();
+    }
   });
 
   it("pauses a pending Cloud input under reauthorization and delivers it after restoration", async () => {
@@ -1771,7 +2277,42 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     );
   });
 
-  it("keeps the Agent-wide custody fence for Local deliveries across Sessions", async () => {
+  it("keeps a Local Session to one delivery at a time", async () => {
+    const scope = await localScope({ [RUNTIME_CAPABILITY.sessionConfiguration]: 1 });
+    const occupant = await pendingDelivery(scope.firstSessionId);
+    const candidate = await pendingDelivery(scope.firstSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, occupant.deliveryId));
+
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {} as never,
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    // Same-Session input waits for the occupant, and this occupant can't be steered into.
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, candidate.deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null });
+  });
+
+  it("keeps the Agent-wide fence for a Client older than the capability", async () => {
     const scope = await localScope();
     const occupant = await pendingDelivery(scope.firstSessionId);
     const candidate = await pendingDelivery(scope.secondSessionId);
@@ -1798,12 +2339,67 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     });
     await worker.runOnce();
 
-    // A Local Turn owns the whole Agent: the other Local Session may not start.
+    // It compares configuration per Agent, so a newer Session would make it abandon an older Turn's recovery.
     const [row] = await unit.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, candidate.deliveryId));
     expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+  });
+
+  it("starts a second Local Session while the first holds custody, on a Client that negotiated it", async () => {
+    const scope = await localScope({ [RUNTIME_CAPABILITY.sessionConfiguration]: 1 });
+    const occupant = await pendingDelivery(scope.firstSessionId);
+    const candidate = await pendingDelivery(scope.secondSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, occupant.deliveryId));
+
+    const requestDelivery = vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+      onDispatched?.();
+      return {
+        type: "im:deliver:result" as const,
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "accepted" as const,
+        turnId: `turn-${request.deliveryId}`,
+      };
+    });
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+          onDispatched?.();
+          return {
+            type: "session:reconcile:result" as const,
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "ready" as const,
+          };
+        }),
+        requestDelivery,
+      } as never,
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    expect(requestDelivery).toHaveBeenCalledOnce();
+    expect(requestDelivery.mock.calls[0]?.[2]).toMatchObject({ deliveryId: candidate.deliveryId });
   });
 
   it("claims a later Local delivery while an earlier Local input backs off (Local order unchanged)", async () => {

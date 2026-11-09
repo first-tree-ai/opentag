@@ -34,7 +34,8 @@ export interface CloudConnectionRecord {
   readonly sessionCollaborationEligible: boolean;
   /** Exact negotiated Runner collaboration version; 0 means the capability was not negotiated. */
   readonly githubUserTaskVersion?: 1;
-  readonly sessionCollaborationVersion: 0 | 1 | 2;
+  contextTreeExecutionVersion?: 1;
+  readonly sessionCollaborationVersion: 0 | 1 | 2 | 3;
   /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
    * authority chain was inactive at handshake) sets false: existing custody may still be settled
@@ -42,6 +43,7 @@ export interface CloudConnectionRecord {
    */
   readonly executionEligible: boolean;
   readonly turnActivityVersion: 0 | 1;
+  readonly imInputVersion?: 1;
 }
 
 /**
@@ -63,6 +65,7 @@ export function cloudInstanceIdFor(scope: RunnerScope): string {
 export class CloudRuntimeFence {
   readonly #byConnection = new Map<string, CloudConnectionRecord>();
   readonly #bySandbox = new Map<string, string>();
+  readonly #bySession = new Map<string, string>();
 
   /** Register an authenticated, hub-attached connection. One current connection per Sandbox. */
   attach(input: {
@@ -72,9 +75,11 @@ export class CloudRuntimeFence {
     socket?: RunnerControlSocket;
     executionEligible?: boolean;
     turnActivityVersion?: 1;
+    imInputVersion?: 1;
     githubUserTaskVersion?: 1;
+    contextTreeExecutionVersion?: 1;
     sessionCollaborationEligible?: boolean;
-    sessionCollaborationVersion?: 1 | 2;
+    sessionCollaborationVersion?: 1 | 2 | 3;
   }): CloudConnectionRecord {
     this.detachSandbox(input.scope.sandboxId);
     // Legacy test/recovery callers that only supplied eligibility represent a v1 connection.
@@ -89,12 +94,15 @@ export class CloudRuntimeFence {
       ...(input.socket ? { socket: input.socket } : {}),
       executionEligible: input.executionEligible !== false,
       turnActivityVersion: input.turnActivityVersion ?? 0,
+      ...(input.imInputVersion ? { imInputVersion: input.imInputVersion } : {}),
       sessionCollaborationEligible: sessionCollaborationVersion > 0,
       sessionCollaborationVersion,
       ...(input.githubUserTaskVersion ? { githubUserTaskVersion: input.githubUserTaskVersion } : {}),
+      ...(input.contextTreeExecutionVersion ? { contextTreeExecutionVersion: input.contextTreeExecutionVersion } : {}),
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);
+    this.#bySession.set(input.scope.sessionId, record.connectionId);
     return record;
   }
 
@@ -102,6 +110,7 @@ export class CloudRuntimeFence {
     const record = this.#byConnection.get(connectionId);
     if (!record) return undefined;
     this.#byConnection.delete(connectionId);
+    if (this.#bySession.get(record.scope.sessionId) === connectionId) this.#bySession.delete(record.scope.sessionId);
     if (this.#bySandbox.get(record.scope.sandboxId) === connectionId) {
       this.#bySandbox.delete(record.scope.sandboxId);
     }
@@ -111,6 +120,11 @@ export class CloudRuntimeFence {
   detachSandbox(sandboxId: string): void {
     const connectionId = this.#bySandbox.get(sandboxId);
     if (connectionId) this.detach(connectionId);
+  }
+
+  connectionForSession(sessionId: string): CloudConnectionRecord | undefined {
+    const id = this.#bySession.get(sessionId);
+    return id ? this.#byConnection.get(id) : undefined;
   }
 
   connectionForSandbox(sandboxId: string): CloudConnectionRecord | undefined {

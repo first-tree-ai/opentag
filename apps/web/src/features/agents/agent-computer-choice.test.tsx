@@ -134,7 +134,9 @@ describe("AgentComputerChoice over a cached inventory", () => {
     await flush();
     await act(async () => release([]));
 
-    expect(await screen.findByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
+    expect(
+      await screen.findByText("Run this in a terminal on this computer, or send it to your Agent there."),
+    ).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });
 
@@ -240,9 +242,32 @@ describe("AgentComputerChoice over a cached inventory", () => {
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
     renderOverCachedInventory();
 
-    expect(await screen.findByText("Copy the task to your AI assistant on this computer.")).toBeTruthy();
+    expect(
+      await screen.findByText("Run this in a terminal on this computer, or send it to your Agent there."),
+    ).toBeTruthy();
     expect(screen.queryByText("Cloud")).toBeNull();
     expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
     expect(rebind).not.toHaveBeenCalled();
+  });
+
+  it("connects a new computer in place beside an existing choice when setup asks for it", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [cachedComputer, spareComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockReturnValue(new Promise(() => undefined));
+    const queryClient = createQueryClient();
+    const renderResult = render(
+      <QueryClientProvider client={queryClient}>
+        <AgentComputerChoice agentId={AGENT_ID} connectAnotherInline onBound={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    const { container } = renderResult;
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a new computer" }));
+    // The connection window opens in place and starts issuing its command.
+    await waitFor(() =>
+      expect(container.querySelector('[data-ui="computer-connect"]')?.getAttribute("data-state")).toBe("issuing"),
+    );
+    // The existing choice stays, and the entry is not offered twice.
+    expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
   });
 });

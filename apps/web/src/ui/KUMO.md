@@ -33,6 +33,8 @@ existing product vocabulary to Kumo primitives:
   and puts trailing choices into a Kumo radio menu. It reserves selected-label space so selection
   does not shift peers, and recalculates after container or font changes. Callers own copy and order.
 - `Field` delegates label, description, and error rendering to Kumo Field.
+- `Banner.Action` retains Kumo's contextual colors and desktop sizing, while the
+  adapter enforces the shared 44px minimum touch-target height below 768px.
 - `StatusIndicator` uses Kumo Badge dot appearance. Informational status uses
   the neutral semantic token; brand teal is not used for operational state.
 - `Switch` and `Switch.Item` use brand teal when checked and neutral colors when

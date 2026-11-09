@@ -215,7 +215,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
   notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
-  see [Cloud context](../cloud/cloud-context.md).
+  see [Cloud context](../cloud/cloud-context.md). A finished record leaves the local durable file on a later write once it is older than 7 days, unless its outcome report is still pending.
 
 - Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
   shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and

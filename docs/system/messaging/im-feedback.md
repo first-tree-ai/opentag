@@ -1,6 +1,6 @@
 ---
 title: "IM task feedback and safe recovery"
-description: "Durable working reactions, offline notices, plain-text failure messages, Account confirmations, and conservative recovery of unknown provider outcomes."
+description: "Durable working reactions, offline notices, failure cards, Account confirmations, and conservative recovery of unknown provider outcomes."
 ---
 
 # IM task feedback and safe recovery
@@ -50,18 +50,17 @@ working reaction like any successful Turn.
 ## Offline notice
 
 A direct message parked on an offline Local Computer otherwise shows nothing, because the working reaction waits for
-custody. After sixty seconds the Bot replies once with the reason, how to recover, and that the message is saved:
+custody. After sixty seconds the Bot sends one orange [card](#cards), placed like a failure card:
 
-> The computer running this Agent is offline, so this message can't be handled yet.
-> Check that the computer is on and connected, then restore the connection on the Agent page. [Restore connection]
-> If you don't manage this Agent, contact its administrator.
-> Your message is saved and will be handled after it reconnects. It expires after 7 days.
+| Title | Body |
+| --- | --- |
+| Agent 所在电脑离线 / The Agent's computer is offline | 恢复后会自动处理，**恢复连接** / Messages will be handled after it reconnects. **Restore connection** |
 
-The link opens the Agent page. For its owner the Computer row shows **Offline** with a link to the Computer recovery
-page, which offers the restore command. Signed-out people reach sign-in. Another Account gets a not-found page, or
-first-Agent setup if it has no Agents, so the third sentence tells them to contact the administrator. The notice names neither the Computer
-nor an administrator, because everyone in the conversation reads it. It follows the same language rule as failure
-messages.
+The link opens the card's feedback page with `?open=restore`. For the Agent owner, the Agent page shows the Computer
+row as **Offline** with a link to the recovery page and its restore command. Signed-out people reach sign-in. The card
+names neither the Computer nor an administrator, because everyone in the conversation reads it; checking the computer,
+who manages the Agent, and the seven-day expiry belong on the recovery page, not in the conversation. It follows the
+same language rule as failure cards.
 
 - **When.** Sixty seconds after the later of the message's receipt and the Computer's `last_seen_at`, with the Computer
   offline by the same rule the Web uses: disconnected, no current instance, or silent past the presence timeout. A
@@ -84,31 +83,63 @@ messages.
 
 ## Failure messages
 
-Every failure is plain text in the original conversation or thread; the Server sends no cards and no buttons. A
-message has three sentences: what happened, whether operations ran, and what to do next, followed by the
-authenticated details link as clickable words, never a raw URL: Feishu `text` with `[words](url)`, or Slack
-`<url|words>`. Sentences are separated by a blank line. No message shows an error code: codes and technical details
-appear only on the details page, which is also where support reads them. The reason: an IM failure is read by people
-who cannot act on a code, and a plain message keeps a failure from taking more of the conversation than the work did.
+### Cards
 
-A workspace failure is text too. Its next step says the save can be retried or the changes discarded from the
-details page, which owns both operations and their confirmations (see [Account operations](#account-operations)).
-Buttons in the conversation would add nothing: confirmation always happened on that page.
+Failures and offline notices are cards. A card has a colored title that says what happened and, when the title
+does not already say it, one short body sentence on what to do. No card shows an error code, says the task did not
+finish, or says whether operations ran: codes and technical details appear only on the details page, which is also
+where support reads them. The reason: an IM failure is read by people who cannot act on a code, and a short card keeps
+a failure from taking more of the conversation than the work did.
 
-The roughly twenty-four failure reasons map onto five next steps, so the reader is told what to do rather than why
-the runtime stopped:
+| Provider | Shape | Colors |
+| --- | --- | --- |
+| Feishu | `interactive` card with `update_multi`, title in `header`, body as `lark_md` | `red` failure, `orange` offline, `green` done, `grey` in progress |
+| Slack | One attachment `{color, fallback, blocks}`, title as a `header` block | `#E01E5A` failure, `#F2952F` offline, `#2EB67D` done, `#9E9EA6` in progress |
 
-| Next step | Reasons |
-| --- | --- |
-| Send again later | Rate limit, model service unavailable, connection failure |
-| Ask the Agent owner | Authentication, access denied, quota, credentials unavailable |
-| Split the task | Context limit, execution limit, time limit, result too large |
-| Send again, then ask the owner | Process exit, start failure, environment disconnected, client stopped, and every other reason |
-| Check the result first | Task outcome unknown |
+Slack paints the attachment bar only from a hex color: the `danger` and `good` keywords show a grey bar when the
+attachment holds blocks. The message has no top-level `text`, because Slack would show it above the card as a second
+copy; the attachment `fallback` is the notification text.
 
-Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Only authoritative
-`not_started` evidence permits the claim that no task operations ran. All other outcomes warn that operations may
-already have run; missing outbound capture proves nothing about those operations.
+A destination on the Web is a text link at the end of the body sentence, never its own line: Feishu `[words](url)`,
+Slack `<url|words>`. Every link opens the card's feedback page with an `open` parameter (`settings`, `task` or
+`restore`). An operation finished in the conversation is a button. There is no details button by default.
+
+| Failure | Title | Body | Link or buttons |
+| --- | --- | --- | --- |
+| Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later | |
+| Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 | |
+| Authentication | 模型认证失败 / Model authentication failed | 需要更新模型设置 / Model settings need an update | 去设置 / Open settings |
+| Access denied | 没有模型访问权限 / No access to the model | 需要更新模型设置 | 去设置 |
+| Quota | 模型额度已用完 / Model quota used up | 恢复时间未知 / Recovery time unknown | |
+| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 需要更新凭据 / Credentials need an update | 去设置 |
+| Context, execution limit, timeout, result too large | 任务超出上下文上限, 任务超出执行上限, 任务超时, 结果太大 | 请拆小后重试 / Split it into smaller tasks and try again | |
+| Process exit, start failure, environment disconnected, client stopped, resume failure, protocol error, model failure, empty result, cleanup failure, and every unknown reason | 执行环境出错 / Execution environment error | 请重试 / Try again | |
+| Request rejected, configuration conflict | 执行环境出错 | 需要检查 Agent 配置 / The Agent configuration needs a check | 去设置 |
+| Task outcome unknown | 无法确认任务是否完成 / Can't confirm whether the task finished | 请先查看结果 / Check the results first | |
+| Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | | 重试保存, 放弃改动 buttons |
+| Message expired | 消息已过期 / Message expired | 如需要请重发 / Send it again if you still need it | |
+| Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again | |
+| A frozen batch that cannot be retried | The reason's own title | 请打开原任务查看 / Open the original task to review it | 打开任务 / Open task |
+
+The workspace buttons open the details page with the operation selected, which owns both operations and their
+confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the
+card is edited in place: its title becomes the state (已完成, 处理中，请勿重复点击, 操作失败, 环境已变化，请刷新, 已保存,
+已放弃改动, 已重新排队), green on success, with the actor and time as its body. An environment released without
+proof of the save reads 操作失败, never 已保存.
+
+### Where a card goes
+
+| Conversation | Feishu | Slack |
+| --- | --- | --- |
+| Direct message | New message in the chat, no quote | Channel message |
+| Group | Quote reply to the failed message | Channel message |
+| Input inside a thread | Reply in that thread | Reply in that thread |
+
+The offline notice follows the same rules. A direct message is the Session's `conversation_kind = 'dm'`; a Slack
+multi-person direct message counts as a group.
+
+Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Whether operations ran
+stays on the details page, which warns that they may have unless authoritative `not_started` evidence says otherwise.
 
 Copy follows the language of the input that started the task: Chinese when the sender's text contains Chinese,
 otherwise English. It is derived from that exact stored input revision on every render, so it needs no setting, adds
@@ -209,29 +240,28 @@ never forces interruption or replays a Turn.
 
 ## Message format compatibility
 
-Failure messages were once interactive cards. `im_feedback_targets.message_format` and its check constraint remain,
-with `interactive_v1` as the column default, so removing cards needed no migration. New targets are written as
-`text_v1`, and every new send is text. There is no setting to bring cards back.
+`im_feedback_targets.message_format` keeps its two values and check constraint, so cards needed no migration. Every
+new send is a card stored as `interactive_v1`. `text_v1` marks a plain-text failure message sent while failures were
+text.
 
-Rows from the card era are handled without a second message:
+- **A text target that never sent.** Marking the send rewrites the row to `interactive_v1` before any provider request
+  exists, so the message, its readback and later edits are all cards.
+- **A text message already sent.** It stays text: Feishu cannot turn a text message into a card. A later status change
+  or save/discard result edits it as text, with the same three sentences and details link as when it was sent.
+- **A card from before the text period.** Those cards were sent with `update_multi`, so a later change edits them in
+  place with the current card. On Slack, the edit clears the old top-level text and blocks.
+- **Readback.** A card is found by an identity the provider returns: on Slack the `opentag_feedback:<id>` block ID,
+  in an attachment or (old cards) at the top level; on Feishu the feedback URL. Feishu's message read API returns a
+  card's links but not its button values, so a card whose body has no link carries a zero-width link to the details
+  page. A text message is still found by its details URL. Slack reads a thread with `conversations.replies` and a
+  channel card with `conversations.history` from a minute before the send was reserved; a text message always went
+  into the input's thread.
+- **A button on an old card.** The Slack interaction endpoint accepts the `opentag_feedback_*` action IDs and
+  acknowledges them without doing anything, so Slack shows no error. A Feishu Retry button gets a toast saying the
+  button is no longer available instead of reaching the approval handler.
 
-- **A card was sent.** It is never refreshed: Feishu cannot turn a card into text, and a fresh text reply would
-  repeat the failure in the conversation. A later status change or save/discard result settles in storage and shows on
-  the details page, which the card's details button still opens. Its save and discard buttons open the same page.
-- **Nothing was sent yet.** Marking the send rewrites the row to `text_v1` before any provider request exists, so the
-  message, its readback, and later edits are all text.
-- **The send's outcome is unknown.** Readback keeps the stored format. Feishu matches the details URL, which cards also
-  contained; Slack matches the card's `opentag_feedback:<id>` block ID. A confirmed match binds the card, which is then
-  left as above.
-- **A button is clicked.** The Slack interaction endpoint still accepts the old `opentag_feedback_*` action IDs and
-  acknowledges them without doing anything, so Slack shows no error. A Feishu Retry button gets a toast saying the button
-  is no longer available instead of reaching the approval handler.
-
-Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
-matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
-During a rollout overlap, an older Server can still turn an unsent workspace failure into a card. It stores
-`interactive_v1` with it, so a newer worker then treats it as a legacy card. Save/discard and historical admitted
-operation results remain accessible.
+During a rollout overlap, an older Server can still send a text message: it stores `text_v1`, so a newer worker keeps
+editing it as text. A send started by an older Server whose outcome is unknown is read back where that Server put it.
 
 ## Projection, unknown outcomes, and retention
 

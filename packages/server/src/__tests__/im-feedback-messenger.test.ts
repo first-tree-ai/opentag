@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   slack: {
     reactions: { add: vi.fn(), remove: vi.fn() },
     chat: { postMessage: vi.fn(), update: vi.fn() },
-    conversations: { replies: vi.fn() },
+    conversations: { replies: vi.fn(), history: vi.fn() },
   },
   feishu: {
     im: {
@@ -114,7 +114,7 @@ function harness(policy = new ExternalCallPolicy({ allowedHosts: [] })) {
   const cooldown = {
     slackCooldownRemaining: vi.fn(async () => 0 as number | undefined),
     deferSlackInstallation: vi.fn(async () => true),
-    messageLanguage: vi.fn(async () => "en" as "en" | "zh"),
+    messageContext: vi.fn(async () => ({ language: "en" as "en" | "zh", direct: false })),
   };
   return {
     messenger: new ImFeedbackMessenger(bindings, policy, "https://app.example.test", cooldown),
@@ -132,6 +132,7 @@ beforeEach(() => {
     mocks.slack.chat.postMessage,
     mocks.slack.chat.update,
     mocks.slack.conversations.replies,
+    mocks.slack.conversations.history,
     mocks.feishu.im.v1.messageReaction.list,
     mocks.feishu.im.v1.messageReaction.create,
     mocks.feishu.im.v1.messageReaction.delete,
@@ -150,56 +151,127 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("native feedback transport", () => {
-  it("sends the offline notice outside the failure message identity", async () => {
+  it("sends the offline notice as an orange card outside the failure message identity", async () => {
     const { messenger, cooldown } = harness();
-    cooldown.messageLanguage.mockResolvedValueOnce("zh");
+    cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: false });
     const t = target("feishu");
     mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "n", chat_id: t.channelId } });
     await messenger.postOfflineNotice(t);
     const data = mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data;
     expect(data).not.toHaveProperty("uuid");
-    expect(JSON.parse(data.content).text).toBe(
-      `运行这个 Agent 的电脑离线了，暂时处理不了这条消息。\n请确认电脑已开机、已联网，再到 Agent 页面恢复连接。 [恢复连接](https://app.example.test/agents/${t.agentId})\n如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，恢复后会自动处理；7 天内没恢复会过期。`,
-    );
+    expect(data.msg_type).toBe("interactive");
+    const card = JSON.parse(data.content);
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "Agent 所在电脑离线" }, template: "orange" });
+    expect(card.config).toMatchObject({ update_multi: true });
+    expect(card.elements).toEqual([
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `恢复后会自动处理，[恢复连接](https://app.example.test/im-feedback/${t.id}?open=restore)`,
+        },
+      },
+    ]);
   });
-  it("sends the Slack offline notice in the thread with a Slack link", async () => {
+  it("sends the Slack offline notice as an attachment card in the input's thread", async () => {
     const { messenger } = harness();
     const t = target("slack");
     mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "n" });
     await messenger.postOfflineNotice(t);
     const sent = mocks.slack.chat.postMessage.mock.calls[0]?.[0];
-    expect(sent).toMatchObject({ channel: t.channelId, thread_ts: t.threadKey ?? t.inputExternalId });
-    expect(sent.text).toContain(`<https://app.example.test/agents/${t.agentId}|Restore connection>`);
-    expect(sent.text).toContain("It expires after 7 days.");
+    expect(sent).toMatchObject({ channel: t.channelId, thread_ts: t.threadKey });
+    expect(sent).not.toHaveProperty("text");
+    expect(sent.attachments).toEqual([
+      {
+        color: "#F2952F",
+        fallback: "The Agent's computer is offline: Messages will be handled after it reconnects",
+        blocks: [
+          {
+            type: "header",
+            block_id: `opentag_feedback:${t.id}`,
+            text: { type: "plain_text", text: "The Agent's computer is offline", emoji: true },
+          },
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `Messages will be handled after it reconnects. <https://app.example.test/im-feedback/${t.id}?open=restore|Restore connection>`,
+            },
+          },
+        ],
+      },
+    ]);
   });
   it("does not submit a send whose language cannot be read, and keeps it retryable", async () => {
     const { messenger, cooldown } = harness();
-    cooldown.messageLanguage.mockRejectedValueOnce(new Error("storage"));
+    cooldown.messageContext.mockRejectedValueOnce(new Error("storage"));
     await expect(messenger.post(target("feishu"))).rejects.toMatchObject({
       code: "IM_FEEDBACK_LANGUAGE_UNAVAILABLE",
       knownNotApplied: true,
     });
     expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
   });
-  it("sends Feishu text in the language of the input without an error code", async () => {
+  it("sends a red Feishu card in the language of the input without an error code", async () => {
     const { messenger, cooldown } = harness();
-    cooldown.messageLanguage.mockResolvedValueOnce("zh");
-    const t: FeedbackTarget = {
-      ...target("feishu"),
-      messageFormat: "text_v1",
-      state: "failed",
-      errorCode: "provider_quota_exceeded",
-      effects: "may_have_occurred",
-    };
+    cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: false });
+    const t: FeedbackTarget = { ...target("feishu"), errorCode: "provider_authentication_failed" };
     mocks.feishu.im.v1.message.reply.mockResolvedValue({
       code: 0,
-      data: { message_id: "text-message", chat_id: t.channelId },
+      data: { message_id: "card-message", chat_id: t.channelId },
     });
-    await messenger.post(t);
-    const sent = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content).text as string;
-    expect(sent).toBe(
-      `模型额度用完了，任务没有完成。\n\n可能已经执行了部分操作，重发前请先检查结果。\n\n请 Agent 所有者处理后再发一次。 [查看详情](https://app.example.test/im-feedback/${t.id})`,
+    expect(await messenger.post(t)).toBe("card-message");
+    const data = mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data;
+    expect(data).toMatchObject({ msg_type: "interactive", uuid: t.providerRequestId });
+    const card = JSON.parse(data.content);
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "模型认证失败" }, template: "red" });
+    expect(card.elements[0].text.content).toBe(
+      `需要更新模型设置，[去设置](https://app.example.test/im-feedback/${t.id}?open=settings)`,
     );
+    expect(data.content).not.toContain("provider_authentication_failed");
+  });
+  it("gives a Feishu card without a link a zero-width identity link for readback", async () => {
+    const { messenger } = harness();
+    const t: FeedbackTarget = { ...target("feishu"), errorCode: "provider_unavailable" };
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "m", chat_id: t.channelId } });
+    await messenger.post(t);
+    const card = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content);
+    expect(card.elements[0].text.content).toBe(
+      `Try again later.[\u200b](https://app.example.test/im-feedback/${t.id})`,
+    );
+  });
+  it.each([
+    ["direct message", true, null],
+    ["group", false, null],
+    ["thread", false, "thread"],
+    ["direct-message thread", true, "thread"],
+  ] as const)("places a card in a %s where the conversation expects it", async (_, direct, threadKey) => {
+    for (const provider of ["slack", "feishu"] as const) {
+      const { messenger, cooldown } = harness();
+      cooldown.messageContext.mockResolvedValue({ language: "en", direct });
+      const t: FeedbackTarget = { ...target(provider), threadKey };
+      mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "m" });
+      mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "m", chat_id: t.channelId } });
+      mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "m", chat_id: t.channelId } });
+      await messenger.post(t);
+      if (provider === "slack") {
+        const sent = mocks.slack.chat.postMessage.mock.calls.at(-1)?.[0];
+        if (threadKey) expect(sent.thread_ts).toBe(threadKey);
+        else expect(sent).not.toHaveProperty("thread_ts");
+      } else if (direct && !threadKey) {
+        expect(mocks.feishu.im.v1.message.create).toHaveBeenLastCalledWith({
+          params: { receive_id_type: "chat_id" },
+          data: expect.objectContaining({ receive_id: t.channelId, uuid: t.providerRequestId }),
+        });
+        expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+      } else {
+        expect(mocks.feishu.im.v1.message.reply).toHaveBeenLastCalledWith(
+          expect.objectContaining({ path: { message_id: t.inputExternalId } }),
+        );
+        expect(mocks.feishu.im.v1.message.create).not.toHaveBeenCalled();
+      }
+      mocks.feishu.im.v1.message.reply.mockReset();
+      mocks.feishu.im.v1.message.create.mockReset();
+    }
   });
   it.each(["slack", "feishu"] as const)(
     "keeps %s cards retryable after capacity rejection or a queue deadline",
@@ -239,26 +311,19 @@ describe("native feedback transport", () => {
     },
   );
   it.each(["slack", "feishu"] as const)(
-    "sends, edits and finds %s text without an interactive card",
+    "edits and finds a plain-text %s message from before cards as text",
     async (provider) => {
       const t: FeedbackTarget = { ...target(provider), messageFormat: "text_v1" };
       const { messenger } = harness();
       const details = `https://app.example.test/im-feedback/${t.id}`;
-      mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "text-message" });
       mocks.slack.chat.update.mockResolvedValue({ ok: true });
-      mocks.feishu.im.v1.message.reply.mockResolvedValue({
-        code: 0,
-        data: { message_id: "text-message", chat_id: t.channelId },
-      });
       mocks.feishu.im.v1.message.update.mockResolvedValue({ code: 0 });
-      expect(await messenger.post(t)).toBe("text-message");
       await messenger.update({ ...t, cardMessageId: "text-message" });
       if (provider === "slack") {
-        expect(mocks.slack.chat.postMessage).toHaveBeenCalledWith(
+        expect(mocks.slack.chat.update).toHaveBeenCalledWith(
           expect.objectContaining({ text: expect.stringContaining(details) }),
         );
-        expect(mocks.slack.chat.postMessage.mock.calls[0]?.[0]).not.toHaveProperty("blocks");
-        expect(mocks.slack.chat.update.mock.calls[0]?.[0]).not.toHaveProperty("blocks");
+        expect(mocks.slack.chat.update.mock.calls[0]?.[0]).not.toHaveProperty("attachments");
         mocks.slack.conversations.replies.mockResolvedValue({
           ok: true,
           messages: [
@@ -267,9 +332,6 @@ describe("native feedback transport", () => {
           ],
         });
       } else {
-        expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith(
-          expect.objectContaining({ data: expect.objectContaining({ msg_type: "text" }) }),
-        );
         expect(mocks.feishu.im.v1.message.update).toHaveBeenCalledWith(
           expect.objectContaining({
             path: { message_id: "text-message" },
@@ -346,7 +408,7 @@ describe("native feedback transport", () => {
     await expect(harness().messenger.reaction(target("feishu"), "none")).rejects.toThrow("PAGINATION_INVALID");
     expect(mocks.feishu.im.v1.messageReaction.delete).not.toHaveBeenCalled();
   });
-  it.each(["slack", "feishu"] as const)("posts one %s text message in the original conversation", async (provider) => {
+  it.each(["slack", "feishu"] as const)("posts one %s card in the original conversation", async (provider) => {
     const t = target(provider);
     const { messenger } = harness();
     mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "card" });
@@ -360,7 +422,7 @@ describe("native feedback transport", () => {
       expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith(
         expect.objectContaining({
           path: { message_id: t.inputExternalId },
-          data: expect.objectContaining({ uuid: t.providerRequestId, msg_type: "text" }),
+          data: expect.objectContaining({ uuid: t.providerRequestId, msg_type: "interactive" }),
         }),
       );
   });
@@ -504,15 +566,54 @@ describe("native feedback transport", () => {
         );
     },
   );
-  it.each(["slack", "feishu"] as const)("leaves a legacy %s card as it is", async (provider) => {
-    const h = harness();
-    await h.messenger.update({ ...target(provider), messageFormat: "interactive_v1", cardMessageId: "existing" });
-    expect(h.cooldown.messageLanguage).not.toHaveBeenCalled();
-    expect(mocks.slack.chat.update).not.toHaveBeenCalled();
-    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
-    expect(mocks.feishu.im.v1.message.update).not.toHaveBeenCalled();
-    expect(mocks.feishu.im.v1.message.patch).not.toHaveBeenCalled();
-    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+  it.each(["slack", "feishu"] as const)(
+    "updates a %s card in place, including one from before plain text",
+    async (provider) => {
+      const h = await harness();
+      const t: FeedbackTarget = {
+        ...target(provider),
+        messageFormat: "interactive_v1",
+        cardMessageId: "existing",
+        state: "completed",
+      };
+      mocks.slack.chat.update.mockResolvedValue({ ok: true });
+      mocks.feishu.im.v1.message.patch.mockResolvedValue({ code: 0 });
+      await h.messenger.update(t);
+      expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+      expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+      expect(mocks.feishu.im.v1.message.update).not.toHaveBeenCalled();
+      if (provider === "slack") {
+        const sent = mocks.slack.chat.update.mock.calls[0]?.[0];
+        expect(sent).toMatchObject({ ts: "existing", text: "", blocks: [] });
+        expect(sent.attachments[0]).toMatchObject({ color: "#2EB67D", fallback: "Done" });
+      } else {
+        const patch = mocks.feishu.im.v1.message.patch.mock.calls[0]?.[0];
+        expect(patch.path).toEqual({ message_id: "existing" });
+        expect(JSON.parse(patch.data.content).header).toEqual({
+          title: { tag: "plain_text", content: "Done" },
+          template: "green",
+        });
+      }
+    },
+  );
+  it("finds a Slack card in the channel history by its attachment block identity", async () => {
+    const t: FeedbackTarget = { ...target(), messageFormat: "interactive_v1", threadKey: null };
+    const identity = { block_id: `opentag_feedback:${t.id}` };
+    mocks.slack.conversations.history.mockResolvedValue({
+      ok: true,
+      messages: [
+        { user: "human", ts: "foreign", attachments: [{ blocks: [identity] }] },
+        { user: "bot", ts: "other", attachments: [{ blocks: [{ block_id: "opentag_feedback:other" }] }] },
+        { user: "bot", ts: "match", attachments: [{ blocks: [identity] }] },
+      ],
+    });
+    expect(await harness().messenger.find(t)).toEqual({ ids: ["match"] });
+    expect(mocks.slack.conversations.history).toHaveBeenCalledWith({
+      channel: t.channelId,
+      oldest: String(Math.floor((t.sendStartedAt ?? t.createdAt).getTime() / 1000) - 60),
+      limit: 100,
+    });
+    expect(mocks.slack.conversations.replies).not.toHaveBeenCalled();
   });
 });
 

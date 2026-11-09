@@ -17,17 +17,37 @@ import {
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
+import { feedbackCard } from "../services/im/im-feedback-card.js";
 import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
 } from "../services/im/im-feedback-messenger.js";
-import { createImFeedbackTarget, ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
-import { feedbackContent, renderFeedbackText } from "../services/im/im-feedback-text.js";
+import {
+  createImFeedbackTarget,
+  type FeedbackAction,
+  type FeedbackTarget,
+  ImFeedbackStore,
+  startImFeedback,
+} from "../services/im/im-feedback-store.js";
+
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
 import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
+
+/** Everything a card shows, as one string. */
+function cardText(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction): string {
+  const card = feedbackCard(target, publicUrl, action, "en");
+  return [
+    card.title,
+    card.body?.text,
+    card.body?.link && `${card.body.link.label} ${card.body.link.url}`,
+    ...card.buttons.map((b) => `${b.label} ${b.url}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 let db: UnitDatabase;
 let clock: Date;
@@ -340,57 +360,68 @@ describe("IM offline notice", () => {
 });
 
 describe("durable IM feedback", () => {
-  it("creates plain text targets", async () => {
+  it("creates card targets", async () => {
     const h = await fixture();
-    expect((await h.target()).messageFormat).toBe("text_v1");
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
-  it("keeps a workspace failure in plain text and links to the save and discard page", async () => {
+  it("gives a workspace failure save and discard buttons and no body", async () => {
     const h = await workspaceFixture();
     const target = await h.target();
-    expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).toContain("retry the save or discard the changes from the details page");
-    expect(text).toContain(`<https://example.test/im-feedback/${target.id}|View details>`);
+    expect(target.messageFormat).toBe("interactive_v1");
+    const card = feedbackCard(target, "https://example.test", undefined, "zh");
+    expect(card).toMatchObject({ tone: "failure", title: "工作区改动没能保存" });
+    expect(card.body).toBeUndefined();
+    expect(card.buttons.map((b) => [b.label, b.url])).toEqual([
+      ["重试保存", `https://example.test/im-feedback/${target.id}?operation=save_release`],
+      ["放弃改动", `https://example.test/im-feedback/${target.id}?operation=discard`],
+    ]);
   });
 
-  it("sends a legacy card target that never sent as text", async () => {
+  it("sends a plain-text target that never sent as a card", async () => {
     const h = await fixture();
     await h.finish();
     await db.database
       .update(imFeedbackTargets)
-      .set({ messageFormat: "interactive_v1" })
+      .set({ messageFormat: "text_v1" })
       .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
     const claimed = await h.store.claim();
     if (!claimed) throw new Error("Missing claim");
     expect(await h.store.markSending(claimed)).toBe(true);
-    expect((await h.target()).messageFormat).toBe("text_v1");
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
   it("does not change the format of a message already sent", async () => {
     const sent = await fixture();
     await db.database
       .update(imFeedbackTargets)
-      .set({ cardState: "sent", cardMessageId: "text-message" })
+      .set({ cardState: "sent", cardMessageId: "text-message", messageFormat: "text_v1" })
       .where(eq(imFeedbackTargets.deliveryId, sent.frame.deliveryId));
     await sent.finish("failed", "completed", "workspace_failed");
     expect(await sent.target()).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
   });
 
-  it("keeps an ordinary failure in plain text and leaves code to the details page", async () => {
+  it("sends an ordinary failure as a red card and leaves the code to the details page", async () => {
     const h = await fixture();
     await h.finish();
     const target = await h.target();
-    expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).not.toContain("provider_failed");
-    expect(text.split("\n\n")).toHaveLength(3);
+    const card = feedbackCard(target, "https://example.test", undefined, "en");
+    expect(card).toEqual({
+      tone: "failure",
+      title: "Execution environment error",
+      body: { text: "Try again" },
+      buttons: [],
+    });
   });
 
-  it("reads the language of the input the target was created for", async () => {
+  it("reads the language and conversation kind of the input the target was created for", async () => {
     const h = await fixture();
-    expect(await h.store.messageLanguage((await h.target()).messageId)).toBe("en");
-    expect(await h.store.messageLanguage(randomUUID())).toBe("en");
+    const target = await h.target();
+    expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    expect(await h.store.messageContext({ messageId: randomUUID(), sessionId: randomUUID() })).toEqual({
+      language: "en",
+      direct: false,
+    });
   });
 
   it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
@@ -424,7 +455,7 @@ describe("durable IM feedback", () => {
       expect((await h.target()).state).toBe("completed");
       if (bound) {
         expect(h.transport.update).toHaveBeenCalledOnce();
-        expect(renderFeedbackText(await h.target(), "https://app.test")).toContain("Task completed");
+        expect(cardText(await h.target(), "https://app.test")).toBe("Done");
       } else expect(h.transport.post).not.toHaveBeenCalled();
     },
   );
@@ -658,21 +689,14 @@ describe("durable IM feedback", () => {
     await h.store.retain();
     expect(await db.database.select().from(imFeedbackTargets)).toHaveLength(0);
   });
-  it("renders external-effect uncertainty identically and never copies arbitrary runtime output", async () => {
+  it("never copies a code or arbitrary runtime output into a card", async () => {
     const h = await fixture();
     await h.finish();
     const t = await h.target();
-    for (const provider of ["slack", "feishu"] as const) {
-      const text = renderFeedbackText({ ...t, provider }, "https://example.test");
-      expect(text).toContain("may already have run");
-      expect(text).not.toContain("no operations were run");
-      expect(text).not.toContain("provider_failed");
-    }
-    expect(feedbackContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
-      "The execution environment had a problem, so the task didn't finish.",
-    );
-    expect(renderFeedbackText({ ...t, effects: "not_started" }, "https://example.test")).toContain(
-      "no operations were run",
+    for (const provider of ["slack", "feishu"] as const)
+      expect(cardText({ ...t, provider }, "https://example.test")).not.toContain("provider_failed");
+    expect(cardText({ ...t, errorCode: "<@everyone> private raw details" }, "https://example.test")).toBe(
+      "Execution environment error\nTry again",
     );
   });
 });
@@ -807,13 +831,13 @@ describe("safe feedback actions", () => {
         state: "succeeded",
         resultCode: kind === "discard" ? "discarded" : "saved_released",
       });
-      const content = renderFeedbackText(
+      const content = cardText(
         await h.target(),
         "https://app.test",
         (await db.database.select().from(imFeedbackActions))[0],
       );
-      expect(content).toContain(kind === "discard" ? "Unsaved changes discarded" : "Saved and environment released");
-      expect(content).not.toContain("Task completed");
+      expect(content).toMatch(kind === "discard" ? /^Changes discarded\n/u : /^Saved\n/u);
+      expect(content).not.toContain("Done");
       expect(h.transport.post).toHaveBeenCalledOnce();
       expect(h.transport.update).toHaveBeenCalledOnce();
       expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
@@ -1037,7 +1061,9 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(renderFeedbackText(posted, "https://example.test")).toContain("frozen batch cannot be retried");
+    expect(cardText(posted, "https://example.test")).toBe(
+      `Execution environment error\nOpen the original task to review it\nOpen task https://example.test/im-feedback/${posted.id}?open=task`,
+    );
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1069,13 +1095,9 @@ describe("feedback review regressions", () => {
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
   for (const provider of ["slack", "feishu"] as const) {
-    const rendered = renderFeedbackText(
-      { ...(await h.target()), provider, batchRetryBlocked: true },
-      "https://example.test",
-    );
-    expect(rendered).toContain("retry the save or discard the changes from the details page");
-    expect(rendered).toContain("Work in this Session is paused; new input for this Session remains queued.");
-    expect(rendered).not.toContain("frozen batch cannot be retried");
+    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true }, "https://example.test");
+    expect(rendered).toMatch(/^Workspace changes weren't saved\nRetry save .*\nDiscard changes /u);
+    expect(rendered).not.toContain("Open task");
   }
 });
 

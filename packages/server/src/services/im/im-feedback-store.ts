@@ -33,6 +33,10 @@ export interface FeedbackSettlement {
   stale?: boolean;
   dormant?: boolean;
 }
+export interface FeedbackMessageContext {
+  language: FeedbackLanguage;
+  direct: boolean;
+}
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
 /** Short disconnects, upgrades and restarts recover silently below this. */
@@ -88,8 +92,7 @@ export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId
       threadKey: row.message.threadKey,
       senderExternalId: row.message.authorExternalId,
       cardOwnerDeliveryId: row.delivery.steerTargetDeliveryId ?? deliveryId,
-      // The column default is the legacy card format, so new targets name text explicitly.
-      messageFormat: "text_v1",
+      messageFormat: "interactive_v1",
       sandboxId: row.sandbox?.id,
       environmentGeneration: row.sandbox?.environmentGeneration,
       resourceUid: row.sandbox?.currentResourceUid,
@@ -393,9 +396,9 @@ export class ImFeedbackStore {
   async markSending(target: FeedbackTarget): Promise<boolean> {
     const rows = await this.database
       .update(imFeedbackTargets)
-      // Every new send is text. A legacy card target that never sent becomes text here, before any request
+      // Every new send is a card. A text target that never sent becomes a card here, before any request
       // exists, so readback and later updates match what was actually sent.
-      .set({ cardState: "sending", sendStartedAt: this.now(), messageFormat: "text_v1" })
+      .set({ cardState: "sending", sendStartedAt: this.now(), messageFormat: "interactive_v1" })
       .where(
         and(
           eq(imFeedbackTargets.id, target.id),
@@ -478,13 +481,22 @@ export class ImFeedbackStore {
   }
 
   /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
-  async messageLanguage(messageId: string): Promise<FeedbackLanguage> {
+  /** The reader's language, and whether the conversation is a direct message, which decides where a card goes. */
+  async messageContext(target: Pick<FeedbackTarget, "messageId" | "sessionId">): Promise<FeedbackMessageContext> {
     const [message] = await this.database
       .select({ content: imMessages.content })
       .from(imMessages)
-      .where(eq(imMessages.id, messageId))
+      .where(eq(imMessages.id, target.messageId))
       .limit(1);
-    return message ? feedbackLanguage(message.content) : "en";
+    const [session] = await this.database
+      .select({ conversationKind: sessions.conversationKind })
+      .from(sessions)
+      .where(eq(sessions.id, target.sessionId))
+      .limit(1);
+    return {
+      language: message ? feedbackLanguage(message.content) : "en",
+      direct: session?.conversationKind === "dm",
+    };
   }
 
   /**

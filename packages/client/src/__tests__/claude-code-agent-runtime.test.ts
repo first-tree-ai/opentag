@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import {
   CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
+  CLAUDE_HISTORY_UNAVAILABLE_NOTICE,
   ClaudeCodeAgentRuntime,
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
@@ -229,6 +230,66 @@ describe("ClaudeCodeAgentRuntime", () => {
     });
     expect(argumentAfter(processes[0]?.args ?? [], "--resume")).toBe(SESSION_ID);
     expect(processes[0]?.args).not.toContain("--session-id");
+    await runtime.close();
+  });
+
+  it("starts a new conversation and says the history is gone when resume finds no conversation", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const events: unknown[] = [];
+    const runtime = await claudeFactory(processes, "missing").resume({
+      ...createRequest((event) => {
+        events.push(event);
+      }),
+      binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+
+    await expect(runtime.prompt({ runId: "run-1", input: input("continue the task") })).resolves.toMatchObject({
+      status: "completed",
+      output: [{ type: "text", text: "final answer" }],
+    });
+    expect(processes).toHaveLength(2);
+    expect(argumentAfter(processes[0]?.args ?? [], "--resume")).toBe(SESSION_ID);
+    expect(processes[0]?.closeCount).toBeGreaterThan(0);
+    expect(argumentAfter(processes[1]?.args ?? [], "--session-id")).toBe(SESSION_ID);
+    expect(processes[1]?.args).not.toContain("--resume");
+    expect(processes[1]?.input).toMatchObject({
+      message: {
+        content: [
+          { type: "text", text: CLAUDE_HISTORY_UNAVAILABLE_NOTICE },
+          { type: "text", text: "continue the task" },
+        ],
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "provider_warning",
+        code: "claude_session_history_unavailable",
+        message: `No conversation found with session ID: ${SESSION_ID}`,
+      }),
+    );
+    expect(runtime.binding).toEqual({
+      providerId: "claude-code",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID },
+    });
+
+    // The new conversation exists now: the next Run resumes it, with no notice.
+    await runtime.prompt({ runId: "run-2", input: input("next") });
+    expect(argumentAfter(processes[2]?.args ?? [], "--resume")).toBe(SESSION_ID);
+    await runtime.close();
+  });
+
+  it("keeps any other failure of a resumed Run a failure, with no second process", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const runtime = await claudeFactory(processes, "error").resume({
+      ...createRequest(() => undefined),
+      binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+    await expect(runtime.prompt({ runId: "run-1", input: input("continue") })).resolves.toMatchObject({
+      status: "failed",
+      error: { message: "model unavailable" },
+    });
+    expect(processes).toHaveLength(1);
     await runtime.close();
   });
 
@@ -815,7 +876,7 @@ function result(text: string, numTurns: number, cost: number, outputTokens: numb
   };
 }
 
-type Scenario = "complete" | "error" | "foreign" | "hold" | "approval";
+type Scenario = "complete" | "error" | "foreign" | "hold" | "approval" | "missing";
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
@@ -865,6 +926,27 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
         this.#reject = reject;
         signal.addEventListener("abort", () => reject(new Error("interrupted")), { once: true });
       });
+    }
+    if (this.#scenario === "missing") {
+      // What Claude Code 2.1.319 prints for `--resume` of a conversation it has no transcript for.
+      if (this.args.includes("--resume")) {
+        onMessage({
+          type: "result",
+          subtype: "error_during_execution",
+          duration_ms: 0,
+          is_error: true,
+          num_turns: 0,
+          stop_reason: null,
+          session_id: argumentAfter(this.args, "--resume"),
+          total_cost_usd: 0,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          permission_denials: [],
+          errors: [`No conversation found with session ID: ${argumentAfter(this.args, "--resume")}`],
+        });
+        return Promise.resolve({ stderr: "" });
+      }
+      for (const message of messages("complete")) onMessage(message);
+      return Promise.resolve({ stderr: "" });
     }
     for (const message of messages(this.#scenario)) onMessage(message);
     return Promise.resolve({ stderr: "" });
@@ -934,7 +1016,7 @@ function argumentAfter(args: readonly string[], flag: string): string | undefine
   return index < 0 ? undefined : args[index + 1];
 }
 
-function messages(scenario: Exclude<Scenario, "hold">): ReadonlyArray<Record<string, unknown>> {
+function messages(scenario: Exclude<Scenario, "hold" | "missing">): ReadonlyArray<Record<string, unknown>> {
   const sessionId = scenario === "foreign" ? "22222222-2222-4222-8222-222222222222" : SESSION_ID;
   if (scenario === "error") {
     return [

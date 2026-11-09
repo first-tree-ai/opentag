@@ -160,7 +160,14 @@ before the model saw the input, and the Run reported `completed` with no work do
 `user_message_uuids`, that input counts as started even if its lifecycle frame was absent. The Run can end once the
 result qualifies as terminal and all other pending steers have started. "No response requested." in a
 transcript is what Claude Code writes on the next `--resume` for a user message left unanswered, with model `<synthetic>`.
-It is not a model reply. An error `result` still ends the Run, whatever its origin. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+It is not a model reply. An error `result` still ends the Run, whatever its origin. The one exception is a
+resume that finds nothing. If Claude Code has no transcript for the bound conversation on this Computer (deleted,
+replaced home, or a Session moved from another machine), it answers `--resume` with an `error_during_execution`
+result: `num_turns: 0` and `No conversation found with session ID: <id>`. Resuming again would fail the same way
+on every later message. Instead, the Run closes that process and starts a new conversation under the same Session
+ID with `--session-id`. It emits a `claude_session_history_unavailable` provider warning and puts an
+`[openTag notice]` saying the earlier history is unavailable ahead of the Run's input. The binding does not change,
+and later Runs resume the new conversation. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service
 attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
 resume RPC response; it does not remove the model's conversation history. Local configuration

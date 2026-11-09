@@ -66,6 +66,7 @@ import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
   ClaudeCodeProcessError,
+  type ClaudeCodeProcessResult,
   type ClaudeCodeProcessSpawnOptions,
 } from "./process-wire.js";
 
@@ -246,6 +247,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#completedModelTurns.clear();
     let process: ClaudeCodeProcessClient | undefined;
     let hostedToolBridge: ClaudeCodeHostedToolBridge | undefined;
+    let resumed = false;
     try {
       try {
         /*
@@ -267,6 +269,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         );
         if (request.compactContext && this.#sessionExists)
           await this.#compactContext(request, context, hostedToolBridge);
+        resumed = this.#sessionExists;
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
         if (context.signal.aborted) throw error;
@@ -279,12 +282,17 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       this.#process = process;
       this.#processReady?.resolve(process);
-      const { abandonedBackgroundWork } = await process.execute(
+      let { abandonedBackgroundWork } = await process.execute(
         claudeCodeInput(request),
         (message, terminal) => this.#enqueue(message, terminal),
         context.signal,
       );
       await this.#eventTail;
+      const missing = missingConversation(resumed, this.#terminal);
+      if (missing !== undefined) {
+        await process.close().catch(logCloseFailure);
+        ({ abandonedBackgroundWork } = await this.#runNewConversation(request, context, hostedToolBridge, missing));
+      }
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
       return {
@@ -306,9 +314,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       );
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
-      await process?.close().catch((error: unknown) => {
-        logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
-      });
+      await process?.close().catch(logCloseFailure);
       await hostedToolBridge?.close();
       this.#processReady?.resolve(undefined);
       this.#processReady = undefined;
@@ -320,6 +326,44 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#tools.clear();
       this.#toolBlocks.clear();
       this.#permissions.clear();
+    }
+  }
+
+  /**
+   * Claude Code could not find the bound conversation on this Computer: its transcript was deleted, its
+   * home was replaced, or the Session moved here from another machine. Resuming it again would fail the
+   * same way on every later message, so the Run starts a new conversation under the same session id and
+   * tells the Agent that the earlier history is gone. Nothing of the failed attempt reached the model.
+   */
+  async #runNewConversation(
+    request: AgentPromptRequest,
+    context: AgentProviderRunContext,
+    hostedToolBridge: ClaudeCodeHostedToolBridge,
+    missing: string,
+  ): Promise<ClaudeCodeProcessResult> {
+    logger.warn(
+      { code: "claude_session_history_unavailable", runId: context.runId },
+      "Claude Code could not resume the Session's conversation; starting a new one",
+    );
+    await context.emit({ type: "provider_warning", code: "claude_session_history_unavailable", message: missing });
+    this.#sessionExists = false;
+    this.#terminal = undefined;
+    this.#assistantError = undefined;
+    this.#continuedTerminals.length = 0;
+    const process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+    this.#process = process;
+    this.#processReady = deferredProcess();
+    this.#processReady.resolve(process);
+    try {
+      const result = await process.execute(
+        claudeCodeInput(request, CLAUDE_HISTORY_UNAVAILABLE_NOTICE),
+        (message, terminal) => this.#enqueue(message, terminal),
+        context.signal,
+      );
+      await this.#eventTail;
+      return result;
+    } finally {
+      await process.close().catch(logCloseFailure);
     }
   }
 
@@ -353,9 +397,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       failure = error instanceof Error ? error.message : failure;
     } finally {
       this.#process = undefined;
-      await process?.close().catch((error: unknown) => {
-        logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
-      });
+      await process?.close().catch(logCloseFailure);
     }
     if (compacted) {
       logger.info({ runId: context.runId }, "Claude Code compacted the Session context");
@@ -1181,8 +1223,29 @@ function parseMcpGatewayConfiguration(value: unknown): ClaudeCodeMcpGatewayConfi
   return parseHttpMcpGateway(value, "Claude Code");
 }
 
-function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {
-  return { ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() };
+/** Told to the Agent when its Session's earlier conversation could not be resumed. */
+export const CLAUDE_HISTORY_UNAVAILABLE_NOTICE =
+  "[openTag notice] This Session's earlier conversation history is not available on this Computer, so this Run " +
+  "starts a new conversation. You do not know what was said or done earlier in this Session; if the message below " +
+  "depends on it, say so or check the workspace instead of guessing.";
+
+/** The error Claude Code reports, with no turn run, when `--resume` names a conversation it does not have. */
+const MISSING_CONVERSATION_ERROR = "No conversation found with session ID";
+
+/** The error of a result that only says the resumed conversation does not exist; nothing ran. */
+function missingConversation(resumed: boolean, terminal: ClaudeCodeTerminal | undefined): string | undefined {
+  if (!resumed || !terminal?.isError || terminal.numTurns !== 0) return undefined;
+  return terminal.errors.find((error) => error.startsWith(MISSING_CONVERSATION_ERROR));
+}
+
+function logCloseFailure(error: unknown): void {
+  logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
+}
+
+function claudeCodeInput(request: AgentPromptRequest, notice?: string): Readonly<Record<string, unknown>> {
+  const items =
+    notice === undefined ? request.input.items : [{ type: "text" as const, text: notice }, ...request.input.items];
+  return { ...claudeCodeUserMessage(items), uuid: randomUUID() };
 }
 
 function claudeCodeUserMessage(items: AgentPromptRequest["input"]["items"]): Readonly<Record<string, unknown>> {

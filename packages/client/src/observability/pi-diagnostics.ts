@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { ProviderFailureReasonSchema } from "@opentag/shared";
 import { z } from "zod";
 
 export { createPiDiagnosticStderrWriter } from "./pi-diagnostic-stderr.js";
@@ -92,6 +93,9 @@ const diagnosticSchema = z
     milestone: z.literal("first_turn_start").optional(),
     diagnosticIncomplete: z.boolean().optional(),
     outcome: z.enum(["completed", "failed", "aborted", "cancelled"]).optional(),
+    terminalFailureCategory: z
+      .enum([...ProviderFailureReasonSchema.options, "unfinished_tool_use", "unknown"])
+      .optional(),
     durationMs: durationSchema,
     timeoutMs: durationSchema.optional(),
     rpcCommand: z.enum(["get_state", "prompt"]).optional(),
@@ -120,7 +124,12 @@ const diagnosticSchema = z
   })
   .strict()
   .refine((record) => record.event !== "failure" || record.error !== undefined)
-  .refine((record) => (record.event === "milestone") === (record.milestone !== undefined));
+  .refine((record) => (record.event === "milestone") === (record.milestone !== undefined))
+  .refine(
+    (record) =>
+      record.terminalFailureCategory === undefined ||
+      (record.phase === "await_terminal" && record.event === "end" && record.outcome === "failed"),
+  );
 
 export type PiDiagnosticPhase = z.infer<typeof phaseSchema>;
 export type PiDiagnosticRecord = z.infer<typeof diagnosticSchema>;
@@ -130,6 +139,7 @@ export type PiStartupMetrics = Pick<
   PiDiagnosticEvent,
   "piProcessSpawnMs" | "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs"
 >;
+type PiDiagnosticEndFields = PiStartupMetrics & Pick<PiDiagnosticEvent, "outcome" | "terminalFailureCategory">;
 export interface PiProcessExit {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -259,8 +269,19 @@ export class PiRunDiagnostics {
     });
   }
 
-  end(exit?: PiProcessExit, outcome?: PiDiagnosticEvent["outcome"], metrics?: PiStartupMetrics): void {
-    this.#emit("end", exit, undefined, false, outcome, metrics);
+  end(exit?: PiProcessExit, fields?: PiDiagnosticEndFields): void {
+    this.#emit("end", exit, undefined, false, fields);
+  }
+
+  endTerminal(outcome: NonNullable<PiDiagnosticEvent["outcome"]>, stopReason: string, errorCode?: string): void {
+    if (outcome !== "failed") {
+      this.end(undefined, { outcome });
+      return;
+    }
+    const terminalFailureCategory =
+      ProviderFailureReasonSchema.safeParse(errorCode).data ??
+      (stopReason === "toolUse" ? "unfinished_tool_use" : "unknown");
+    this.end(undefined, { outcome, terminalFailureCategory });
   }
 
   failure(error: unknown, exit?: PiProcessExit, aborted = false): void {
@@ -298,18 +319,16 @@ export class PiRunDiagnostics {
     exit?: PiProcessExit,
     error?: unknown,
     aborted = false,
-    outcome?: PiDiagnosticEvent["outcome"],
-    metrics?: PiStartupMetrics,
+    fields?: PiDiagnosticEndFields,
   ): void {
     const now = this.#now();
     emitPiDiagnostic(this.#sink, {
       phase: this.#phase,
       rpcCommand: rpcCommandByPhase[this.#phase],
       event,
-      ...metrics,
+      ...fields,
       durationMs: Math.max(0, now - this.#started),
       ...(this.#timeoutMs === undefined ? {} : { timeoutMs: this.#timeoutMs }),
-      ...(outcome ? { outcome } : {}),
       ...(exit ? { exitCode: exit.code, exitSignal: exit.signal } : {}),
       ...(event === "failure" ? { error: piDiagnosticError(error) } : {}),
       ...(aborted ? { abortSource: "run_signal" as const } : {}),

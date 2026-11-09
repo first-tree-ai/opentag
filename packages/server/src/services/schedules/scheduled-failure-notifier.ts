@@ -11,9 +11,9 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import { textLink } from "../im/im-feedback-card.js";
 import { FEEDBACK_LABELS, type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
 import { FeedbackProviderError, type ImFeedbackMessenger } from "../im/im-feedback-messenger.js";
+import { plainText, textLink } from "../im/im-feedback-text.js";
 import type {
   RunOutcomeNoticeInput,
   RunOutcomeNoticeStatus,
@@ -26,7 +26,7 @@ import { scheduleDetailUrl } from "./service.js";
 
 /*
  * Scheduled messages have no sender and no native IM input, so neither the sender notice nor the
- * IM error card can report a failed occurrence. The Agent no longer posts a start message either
+ * IM failure message can report a failed occurrence. The Agent no longer posts a start message either
  * (issue #1352), so this is the one path that tells the conversation a scheduled task did not
  * finish: a plain message from the Session's own Bot, in the Session's own chat or thread.
  *
@@ -91,17 +91,6 @@ export function scheduledMissKind(input: {
   // One cause, one message: a Computer offline overnight must not post on every occurrence.
   if (input.previous?.outcome === input.outcome && input.previous.code === input.code) return undefined;
   return input.outcome === "unknown" ? "unconfirmed" : "missed";
-}
-
-/** Provider mention and link syntax need these brackets, so a schedule name can't carry a link or a mention. */
-function plainName(name: string): string {
-  return name
-    .replace(/\s+/gu, " ")
-    .trim()
-    .replace(/</gu, "‹")
-    .replace(/>/gu, "›")
-    .replace(/\[/gu, "［")
-    .replace(/\]/gu, "］");
 }
 
 /** A schedule can be turned off for its stored timezone, so that timezone may not format. */
@@ -178,7 +167,7 @@ function message(
 }
 
 const subject = (occurrence: ScheduledOccurrence, language: FeedbackLanguage): string =>
-  TEXT.subject[language](plainName(occurrence.name), scheduledTimeText(occurrence));
+  TEXT.subject[language](plainText(occurrence.name), scheduledTimeText(occurrence));
 
 const RUN_OUTCOME_REASON = { timed_out: "turn_timeout", unknown: "turn_state_unknown" } as const;
 

@@ -35,6 +35,8 @@ import {
   renderDeliveryFailureNotice,
   SESSION_MESSAGE_HELD_CODE,
   SESSION_MESSAGE_HELD_EXPIRED_CODE,
+  SESSION_MESSAGE_HELD_FULL_CODE,
+  SESSION_MESSAGE_HELD_LIMITS,
   SESSION_MESSAGE_HELD_SUPERSEDED_CODE,
   SESSION_MESSAGE_TARGET_STOPPED_CODE,
 } from "./session-held-delivery.js";
@@ -372,6 +374,7 @@ export interface SessionCollaborationServiceOptions {
     | "disableScheduleForInvalidTarget"
     | "hasAcceptedScheduledMessage"
     | "hasOlderHeldMessage"
+    | "heldHasRoom"
     | "markMessageHeld"
     | "readHeldSchedule"
     | "readPreviousScheduledOutcome"
@@ -385,6 +388,8 @@ export interface SessionCollaborationServiceOptions {
     | "withHeldDispatchAdmission"
     | "withScheduledDispatchAdmission"
   >;
+  /** Test seam for the hold limits; production uses {@link SESSION_MESSAGE_HELD_LIMITS}. */
+  heldLimits?: { perTarget: number; perComputer: number };
   /** Test seam for how long a Local send waits for its hand-off before answering. */
   sendBudgetMs?: number;
   /** The Web detail link for a redelivered scheduled occurrence. */
@@ -415,6 +420,7 @@ export class SessionCollaborationService {
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #scheduleDetailUrl: SessionCollaborationServiceOptions["scheduleDetailUrl"];
   readonly #sendBudgetMs: number;
+  readonly #heldLimits: { perTarget: number; perComputer: number };
   readonly #inFlightHandOffs = new Set<string>();
   #onHeld: HeldListener | undefined;
   #onHeldScheduledMiss: ((miss: HeldScheduledMiss) => void) | undefined;
@@ -438,6 +444,7 @@ export class SessionCollaborationService {
     this.#logger = options.logger;
     this.#scheduleDetailUrl = options.scheduleDetailUrl;
     this.#sendBudgetMs = options.sendBudgetMs ?? SEND_BUDGET_MS;
+    this.#heldLimits = options.heldLimits ?? SESSION_MESSAGE_HELD_LIMITS;
   }
 
   /** Tell the scheduler's IM notices that a held occurrence ended without reaching its Session. */
@@ -545,6 +552,10 @@ export class SessionCollaborationService {
   ): (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome> {
     return async (outcome, code) => {
       if (outcome !== "unreachable" || !code || !this.#canHold(computerId, { code })) return record(outcome, code);
+      // Full: a miss like any other, which the scheduler reports to the conversation.
+      if (!(await this.#heldHasRoom(snapshot.targetSessionId, computerId))) {
+        return record("unreachable", SESSION_MESSAGE_HELD_FULL_CODE);
+      }
       const held = await this.#recordScheduled(snapshot, "unknown", SESSION_MESSAGE_HELD_CODE);
       if (held.code === SESSION_MESSAGE_HELD_CODE) this.#onHeld?.(computerId);
       return held;
@@ -1569,6 +1580,10 @@ export class SessionCollaborationService {
     return this.#registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.sessionRecovery);
   }
 
+  #heldHasRoom(targetSessionId: string, computerId: string): Promise<boolean> {
+    return this.#sessions.heldHasRoom(targetSessionId, computerId, heldMessageCutoff(Date.now()), this.#heldLimits);
+  }
+
   /**
    * Keep the message and answer the sender as received: from here a delivery failure reaches the
    * sender only as a later notice.
@@ -1579,6 +1594,10 @@ export class SessionCollaborationService {
     attemptCount: number,
     computerId: string,
   ): Promise<SessionCliCommandResponse> {
+    // A full hold answers now: the sender has not been told `accepted` yet, so this is its notice.
+    if (!(await this.#heldHasRoom(sessionId, computerId))) {
+      return this.#record(response(messageId, "unreachable", sessionId, SESSION_MESSAGE_HELD_FULL_CODE), attemptCount);
+    }
     const held = await this.#record(response(messageId, "unknown", sessionId, SESSION_MESSAGE_HELD_CODE), attemptCount);
     if (held.code !== SESSION_MESSAGE_HELD_CODE) return held;
     this.#onHeld?.(computerId);

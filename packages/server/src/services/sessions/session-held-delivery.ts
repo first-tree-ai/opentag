@@ -16,6 +16,15 @@ export const SESSION_MESSAGE_HELD_EXPIRED_CODE = "delivery_expired";
 /** A later occurrence or an edit replaced a held scheduled message, so it is not delivered late. */
 export const SESSION_MESSAGE_HELD_SUPERSEDED_CODE = "delivery_superseded";
 
+/**
+ * How many messages the Server holds at most, per target Session and per Computer: the same as the Client's
+ * inbox, which could not take more on recovery anyway. A message past either is not held (D9, 2026-11-09).
+ */
+export const SESSION_MESSAGE_HELD_LIMITS = { perTarget: 256, perComputer: 1024 } as const;
+
+/** The hold was full, so the message was not kept. */
+export const SESSION_MESSAGE_HELD_FULL_CODE = "delivery_held_full";
+
 /** The target was stopped for good, so there is nothing left to deliver to. */
 export const SESSION_MESSAGE_TARGET_STOPPED_CODE = "target_stopped";
 

@@ -1058,6 +1058,7 @@ function serviceFixture(
         placement: { sessionId: targetSessionId },
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
+    heldHasRoom: vi.fn().mockResolvedValue(true),
     hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),

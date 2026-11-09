@@ -3,14 +3,15 @@ import { WebAPIRateLimitedError } from "@slack/web-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
-import type { FeedbackTarget } from "../services/im/im-feedback-store.js";
+import type { FeedbackAction, FeedbackTarget } from "../services/im/im-feedback-store.js";
+import { renderFeedbackText } from "../services/im/im-feedback-text.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 import { deferred } from "./support/deferred.js";
 
 const mocks = vi.hoisted(() => ({
   slack: {
     reactions: { add: vi.fn(), remove: vi.fn() },
-    chat: { postMessage: vi.fn(), update: vi.fn(), postEphemeral: vi.fn() },
+    chat: { postMessage: vi.fn(), update: vi.fn() },
     conversations: { replies: vi.fn() },
   },
   feishu: {
@@ -75,7 +76,7 @@ function target(provider: "slack" | "feishu" = "slack"): FeedbackTarget {
     revision: 3,
     appliedRevision: 2,
     cardRevision: 0,
-    messageFormat: "interactive_v1",
+    messageFormat: "text_v1",
     cardState: "pending",
     cardMessageId: null,
     providerRequestId: randomUUID(),
@@ -130,7 +131,6 @@ beforeEach(() => {
     mocks.slack.reactions.remove,
     mocks.slack.chat.postMessage,
     mocks.slack.chat.update,
-    mocks.slack.chat.postEphemeral,
     mocks.slack.conversations.replies,
     mocks.feishu.im.v1.messageReaction.list,
     mocks.feishu.im.v1.messageReaction.create,
@@ -346,7 +346,7 @@ describe("native feedback transport", () => {
     await expect(harness().messenger.reaction(target("feishu"), "none")).rejects.toThrow("PAGINATION_INVALID");
     expect(mocks.feishu.im.v1.messageReaction.delete).not.toHaveBeenCalled();
   });
-  it.each(["slack", "feishu"] as const)("posts one %s card in the original conversation", async (provider) => {
+  it.each(["slack", "feishu"] as const)("posts one %s text message in the original conversation", async (provider) => {
     const t = target(provider);
     const { messenger } = harness();
     mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "card" });
@@ -360,7 +360,7 @@ describe("native feedback transport", () => {
       expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith(
         expect.objectContaining({
           path: { message_id: t.inputExternalId },
-          data: expect.objectContaining({ uuid: t.providerRequestId, msg_type: "interactive" }),
+          data: expect.objectContaining({ uuid: t.providerRequestId, msg_type: "text" }),
         }),
       );
   });
@@ -421,24 +421,6 @@ describe("native feedback transport", () => {
       await vi.runAllTimersAsync();
     }
   });
-  it("privately answers an ineligible Slack click without replacing or posting a public card", async () => {
-    await harness().messenger.respondSlack({
-      installationId: "11111111-1111-4111-8111-111111111111",
-      generation: 2,
-      token: "unit-token",
-      channelId: "channel",
-      userId: "human",
-      threadKey: "thread",
-      result: "unavailable",
-    });
-    expect(mocks.slack.chat.postEphemeral).toHaveBeenCalledExactlyOnceWith({
-      channel: "channel",
-      user: "human",
-      thread_ts: "thread",
-      text: expect.stringContaining("unavailable"),
-    });
-    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
-  });
   it("fences revoked credentials before any provider write", async () => {
     const h = harness();
     h.slack.mockResolvedValue({
@@ -467,8 +449,8 @@ describe("native feedback transport", () => {
     });
     expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
   });
-  it("matches only the exact Slack bot and hidden feedback identity during bounded readback", async () => {
-    const t = target();
+  it("matches a legacy Slack card by the exact bot and hidden feedback identity during bounded readback", async () => {
+    const t: FeedbackTarget = { ...target(), messageFormat: "interactive_v1" };
     mocks.slack.conversations.replies.mockResolvedValue({
       ok: true,
       messages: [
@@ -506,22 +488,32 @@ describe("native feedback transport", () => {
     });
   });
   it.each(["slack", "feishu"] as const)(
-    "updates the bound %s message rather than creating another card",
+    "updates the bound %s message rather than creating another one",
     async (provider) => {
       const t = { ...target(provider), cardMessageId: "existing" };
       mocks.slack.chat.update.mockResolvedValue({ ok: true });
-      mocks.feishu.im.v1.message.patch.mockResolvedValue({ code: 0 });
+      mocks.feishu.im.v1.message.update.mockResolvedValue({ code: 0 });
       await harness().messenger.update(t);
       expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
       expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
       if (provider === "slack")
         expect(mocks.slack.chat.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "existing" }));
       else
-        expect(mocks.feishu.im.v1.message.patch).toHaveBeenCalledWith(
+        expect(mocks.feishu.im.v1.message.update).toHaveBeenCalledWith(
           expect.objectContaining({ path: { message_id: "existing" } }),
         );
     },
   );
+  it.each(["slack", "feishu"] as const)("leaves a legacy %s card as it is", async (provider) => {
+    const h = harness();
+    await h.messenger.update({ ...target(provider), messageFormat: "interactive_v1", cardMessageId: "existing" });
+    expect(h.cooldown.messageLanguage).not.toHaveBeenCalled();
+    expect(mocks.slack.chat.update).not.toHaveBeenCalled();
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+    expect(mocks.feishu.im.v1.message.update).not.toHaveBeenCalled();
+    expect(mocks.feishu.im.v1.message.patch).not.toHaveBeenCalled();
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+  });
 });
 
 it("does not count Slack 429 responses toward the shared outage circuit", async () => {
@@ -620,32 +612,6 @@ describe("shared Slack cooldown transport", () => {
   });
 });
 
-it("gates private callback acknowledgements at the verified installation generation", async () => {
-  const h = harness();
-  h.cooldown.slackCooldownRemaining.mockResolvedValue(25_000);
-  const input = {
-    installationId: "11111111-1111-4111-8111-111111111111",
-    generation: 2,
-    token: "synthetic-token",
-    channelId: "channel",
-    userId: "human",
-    threadKey: "thread",
-    result: "unavailable" as const,
-  };
-  await expect(h.messenger.respondSlack(input)).rejects.toMatchObject({
-    code: "IM_FEEDBACK_RATE_LIMITED",
-    retryAfterMs: 25_000,
-  });
-  expect(mocks.slack.chat.postEphemeral).not.toHaveBeenCalled();
-  h.cooldown.slackCooldownRemaining.mockResolvedValue(0);
-  mocks.slack.chat.postEphemeral.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
-  await expect(h.messenger.respondSlack(input)).rejects.toMatchObject({ retryAfterMs: 7_000 });
-  expect(h.cooldown.deferSlackInstallation).toHaveBeenCalledExactlyOnceWith(
-    { provider: "slack", installationId: input.installationId, bindingGeneration: 2 },
-    7_000,
-  );
-});
-
 describe("postConversationText", () => {
   const scope = {
     bindingGeneration: 2,
@@ -708,4 +674,24 @@ describe("postConversationText", () => {
       h.messenger.postConversationText({ ...scope, provider: "slack" }, "failed", "req"),
     ).rejects.toMatchObject({ code: "IM_FEEDBACK_SEND_UNKNOWN" });
   });
+});
+
+it("keeps link and mention syntax in an actor's display name inert, leaving only the details link", () => {
+  const actorDisplayName =
+    'x [click](http://evil.example) <http://evil.example|View details> <at user_id="all">y</at> <!channel>';
+  const action = {
+    kind: "save_release",
+    state: "succeeded",
+    resultCode: "saved_released",
+    actorDisplayName,
+    updatedAt: new Date("2026-11-09T00:00:00.000Z"),
+  } as FeedbackAction;
+  const feishu = renderFeedbackText({ ...target("feishu"), state: "workspace_blocked" }, "https://app.test", action);
+  const slack = renderFeedbackText({ ...target("slack"), state: "workspace_blocked" }, "https://app.test", action);
+  expect(feishu.match(/\]\(/gu)).toHaveLength(1);
+  expect(feishu).toContain("［click］(http://evil.example)");
+  expect(feishu).not.toContain("<at");
+  expect(slack.match(/</gu)).toHaveLength(1);
+  expect(slack).not.toContain("<!channel>");
+  expect(slack).toContain("Saved and environment released");
 });

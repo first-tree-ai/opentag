@@ -72,6 +72,7 @@ interface Fixture {
   service: SessionCollaborationService;
   sessions: {
     beginScheduledMessageAttempt: ReturnType<typeof vi.fn>;
+    heldHasRoom: ReturnType<typeof vi.fn>;
     resolveScheduledMessageRoute: ReturnType<typeof vi.fn>;
     disableScheduleForInvalidTarget: ReturnType<typeof vi.fn>;
     recordMessageOutcome: ReturnType<typeof vi.fn>;
@@ -118,6 +119,7 @@ function makeFixture(
   let admissionCalls = 0;
   const sessions = {
     beginScheduledMessageAttempt: vi.fn(async () => ({ id: "fenced" })),
+    heldHasRoom: vi.fn(async () => true),
     resolveScheduledMessageRoute: vi.fn(async () => ({ kind: "route" as const, route })),
     disableScheduleForInvalidTarget: vi.fn(async () => undefined),
     recordMessageOutcome: vi.fn(async () => true),
@@ -474,6 +476,19 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
         expect.objectContaining({ code: "reconcile_timeout", domainCode: "timeout", messageId: snapshot.messageId }),
         expect.any(String),
       );
+    });
+  });
+
+  it("misses an occurrence instead of holding it once the hold is full", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route);
+    fixture.registry.supportsCapability.mockReturnValue(true);
+    fixture.registry.currentInstanceId.mockReturnValue(undefined);
+    fixture.sessions.heldHasRoom.mockResolvedValue(false);
+
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unreachable",
+      code: "delivery_held_full",
     });
   });
 

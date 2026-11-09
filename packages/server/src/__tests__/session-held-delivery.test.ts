@@ -38,7 +38,14 @@ beforeEach(async () => db.reset());
 
 type Answer = "accepted" | "client_busy" | "session_recovery_required" | "target_mismatch" | "throw" | "stall";
 
-async function stack(options: { recovery?: boolean; now?: () => number; sendBudgetMs?: number } = {}) {
+async function stack(
+  options: {
+    recovery?: boolean;
+    now?: () => number;
+    sendBudgetMs?: number;
+    heldLimits?: { perTarget: number; perComputer: number };
+  } = {},
+) {
   const accountId = randomUUID();
   const computerId = randomUUID();
   const installationId = randomUUID();
@@ -149,6 +156,7 @@ async function stack(options: { recovery?: boolean; now?: () => number; sendBudg
     sessions: sessionService,
     logger: { error: vi.fn() },
     ...(options.sendBudgetMs ? { sendBudgetMs: options.sendBudgetMs } : {}),
+    ...(options.heldLimits ? { heldLimits: options.heldLimits } : {}),
   });
   const worker = new SessionHeldDeliveryWorker({
     collaboration,
@@ -747,6 +755,72 @@ describe("Server-held Session message delivery", () => {
 
       expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
       expect(await s.row(deliveryFailureNoticeMessageId(sent.messageId))).toBeDefined();
+    });
+  });
+
+  describe("when the hold is full (D9)", () => {
+    it("answers the sender directly once a target holds its limit", async () => {
+      const s = await stack({ heldLimits: { perTarget: 2, perComputer: 10 } });
+      s.state.answer = "client_busy";
+      const first = await s.send("one");
+      const second = await s.send("two");
+      const third = await s.send("three");
+
+      expect([first.status, second.status]).toEqual(["accepted", "accepted"]);
+      expect(third).toMatchObject({ status: "unreachable", code: "delivery_held_full" });
+      expect(await s.row(third.messageId)).toMatchObject({
+        lastOutcome: "unreachable",
+        lastErrorCode: "delivery_held_full",
+      });
+      await expect(s.row(deliveryFailureNoticeMessageId(third.messageId))).resolves.toBeUndefined();
+    });
+
+    it("applies the Computer limit across targets", async () => {
+      const s = await stack({ heldLimits: { perTarget: 10, perComputer: 2 } });
+      const other = await s.createChild();
+      s.state.answer = "client_busy";
+      await s.send("one");
+      await s.send("two");
+      const messageId = randomUUID();
+      const third = await s.collaboration.send({ messageId, targetSessionId: other, message: "three" }, s.source);
+
+      expect(third).toMatchObject({ status: "unreachable", code: "delivery_held_full" });
+    });
+
+    it("tells the sender when a hand-off it was told was accepted finds the hold full", async () => {
+      const s = await stack({ sendBudgetMs: 20, heldLimits: { perTarget: 1, perComputer: 10 } });
+      let release = () => {};
+      s.state.stalled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      s.state.answer = "stall";
+      s.state.afterStall = "client_busy";
+      const sent = await s.send("late");
+      expect(sent.status).toBe("accepted");
+      await db.database.insert(sessionMessages).values({
+        id: randomUUID(),
+        sourceSessionId: s.senderSessionId,
+        targetSessionId: s.targetSessionId,
+        content: "already held",
+        contentHash: "a".repeat(64),
+        lastOutcome: "unknown",
+        lastErrorCode: "delivery_held",
+        attemptCount: 1,
+        lastAttemptAt: new Date(),
+        createdAt: new Date(Date.now() - 1_000),
+      });
+
+      release();
+
+      await vi.waitFor(async () => {
+        expect(await s.row(sent.messageId)).toMatchObject({
+          lastOutcome: "unreachable",
+          lastErrorCode: "delivery_held_full",
+        });
+        expect(await s.row(deliveryFailureNoticeMessageId(sent.messageId))).toMatchObject({
+          targetSessionId: s.senderSessionId,
+        });
+      });
     });
   });
 

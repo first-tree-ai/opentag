@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
+import type { PiDiagnosticEvent } from "../observability/pi-diagnostics.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcClient, PiRpcRequestOptions } from "../providers/pi/rpc-wire.js";
 
@@ -97,7 +98,7 @@ class PhaseClient implements PiRpcClient {
   }
 }
 
-async function open(client: PhaseClient, events: AgentRuntimeEvent[]) {
+async function open(client: PhaseClient, events: AgentRuntimeEvent[], diagnostics?: PiDiagnosticEvent[]) {
   const request: CreateAgentRuntimeRequest = {
     workspace: { cwd: "/workspace" },
     systemPrompt: "fixture",
@@ -106,7 +107,11 @@ async function open(client: PhaseClient, events: AgentRuntimeEvent[]) {
       events.push(event);
     },
   };
-  return new PiAgentRuntimeFactory({ nativeResources: true, createClient: () => client }).resume({
+  return new PiAgentRuntimeFactory({
+    nativeResources: true,
+    createClient: () => client,
+    onDiagnostic: diagnostics ? (event) => diagnostics.push(event) : undefined,
+  }).resume({
     ...request,
     binding: {
       providerId: "pi",
@@ -131,7 +136,8 @@ describe("Local Pi prompt ownership", () => {
     const client = new PhaseClient();
     client.startup = () => client.emit(event);
     const events: AgentRuntimeEvent[] = [];
-    const runtime = await open(client, events);
+    const diagnostics: PiDiagnosticEvent[] = [];
+    const runtime = await open(client, events, diagnostics);
     const result = await runtime.prompt({ runId: "requested", input: input("requested input") });
     expect(result).toMatchObject({
       status: "failed",
@@ -139,6 +145,25 @@ describe("Local Pi prompt ownership", () => {
     });
     expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
     expect(events.some((entry) => entry.type === "model_turn_started" || entry.type === "run_completed")).toBe(false);
+    expect(diagnostics.some((entry) => entry.event === "milestone")).toBe(false);
+    await runtime.close();
+  });
+
+  it("observes the owned first Turn while the post-ACK fence is still pending", async () => {
+    const client = new PhaseClient();
+    const diagnostics: PiDiagnosticEvent[] = [];
+    const runtime = await open(client, [], diagnostics);
+    const run = runtime.prompt({ runId: "requested", input: input("hello") });
+    await client.promptCalled.promise;
+    client.acknowledgePrompt();
+    await client.fenceCalled.promise;
+    client.complete();
+    expect(diagnostics.filter((event) => event.event === "milestone")).toMatchObject([
+      { phase: "prompt_acceptance", milestone: "first_turn_start" },
+    ]);
+    expect(diagnostics.some((event) => event.phase === "prompt_acceptance" && event.event === "end")).toBe(false);
+    client.fence.resolve();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
     await runtime.close();
   });
 

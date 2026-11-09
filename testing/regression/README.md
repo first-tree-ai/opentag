@@ -12,7 +12,7 @@ Regression defects are assigned to `yuezengwu`.
   authorization; this catalogue does not grant it.
 - [Session interruption recovery](session-recovery.md): crash, restart, timeout and rate-limit retry of visible and
   internal Session work on a Local Computer, plus Feishu system reaction projection and its controlled HTTP
-  cancellation and pagination regressions.
+  cancellation and pagination regressions, and Cloud workspace restore and idle sealing.
 - [Scheduled task IM behavior](scheduled-tasks.md): silent start and success, and the failure message for failed and
   missed occurrences, on Slack and Feishu.
 

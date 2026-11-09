@@ -471,6 +471,11 @@ function createCloudTurnRunner(input: {
     serverUrl: server.origin,
     stateDirectory: input.privateTurnRoot,
     log: (message) => logLine(input.options.stderr, message),
+    onStartupDiagnostic: (record) => {
+      if (typeof record.sessionId === "string" && input.latency.observes(record.sessionId)) {
+        writeDiagnostic(`${JSON.stringify(record)}\n`);
+      }
+    },
     onDiagnostic: (record) => {
       input.latency.diagnostic(record);
       const probe = input.state()?.probe;
@@ -991,6 +996,8 @@ async function serveOnce(
 ): Promise<ConnectionOutcome> {
   // The previous connection drained before this one starts; its interrupt no longer applies.
   state.credentialInterrupt = undefined;
+  const authStarted = performance.now();
+  const authRequestId = randomUUID();
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
     handshakeTimeout: options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS,
@@ -1053,6 +1060,14 @@ async function serveOnce(
     const finish = (kind: ConnectionOutcome["kind"] = "closed") => {
       if (closed) return;
       closed = true;
+      if (!welcome) {
+        emitRunnerPerformance(state.onPerformanceLog, {
+          operation: "runner.connection.auth",
+          durationMs: performance.now() - authStarted,
+          outcome: kind === "renewed" ? "success" : "error",
+          metrics: { sandboxName: config.sandboxName, requestId: authRequestId, connectionOutcome: kind },
+        });
+      }
       state.persistenceFailure = undefined;
       clearTimeout(authTimer);
       clearInterval(heartbeatTimer);
@@ -1116,7 +1131,7 @@ async function serveOnce(
     socket.on("open", () =>
       send({
         type: "auth",
-        requestId: randomUUID(),
+        requestId: authRequestId,
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
         imInputVersion: 1,
@@ -1163,6 +1178,19 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.lastWelcomedScope = bridge.scope;
+      emitRunnerPerformance(state.onPerformanceLog, {
+        operation: "runner.connection.auth",
+        durationMs: performance.now() - authStarted,
+        outcome: "success",
+        metrics: {
+          sandboxName: config.sandboxName,
+          sandboxId: data.sandboxId,
+          sessionId: data.sessionId,
+          environmentGeneration: data.environmentGeneration,
+          requestId: authRequestId,
+          connectionOutcome: "welcomed",
+        },
+      });
       bridge.cloudEnabled = cloudCapable;
       bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;
@@ -1180,7 +1208,28 @@ async function serveOnce(
         ready,
         isClosed: () => closed,
         enqueue: enqueueCloudControl,
-        rebind,
+        rebind: async () => {
+          const started = performance.now();
+          const unchanged = state.assignment !== undefined && assignmentsMatch(state.assignment, data);
+          let bound = false;
+          try {
+            bound = await rebind();
+            return bound;
+          } finally {
+            emitRunnerPerformance(state.onPerformanceLog, {
+              operation: "runner.connection.rebind",
+              durationMs: performance.now() - started,
+              outcome: bound ? "success" : "error",
+              metrics: {
+                sandboxId: data.sandboxId,
+                sessionId: data.sessionId,
+                environmentGeneration: data.environmentGeneration,
+                requestId: authRequestId,
+                connectionOutcome: bound ? (unchanged ? "unchanged" : "bound") : "refused",
+              },
+            });
+          }
+        },
         ensureCredential: () =>
           ensureAssignmentCredential(state, data, options.authTimeoutMs ?? PERSISTENT_AUTH_TIMEOUT_MS, {
             required: data.reuseVersion === RUNNER_REUSE_VERSION,

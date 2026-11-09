@@ -33,6 +33,47 @@ describe("PiRpcProcess", () => {
     await process.close();
   });
 
+  it("reports bounded spawn and MCP startup timings without exposing stderr", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    expect(process.startupMetrics).toEqual({});
+    child.emit("spawn");
+    child.stderr.emit(
+      "data",
+      Buffer.from(
+        [
+          "unrelated secret text",
+          "opentag-pi-startup:mcpGatewayLoadMs=-20",
+          "opentag-pi-startup:mcpGatewayLoadMs=12.25",
+          "opentag-pi-startup:mcpGatewayLoadMs=99",
+          "opentag-pi-startup:mcpGatewaySessionStartMs=4",
+          "opentag-pi-startup:mcpGatewaySessionStartMs=100",
+        ].join("\n"),
+      ),
+    );
+    expect(process.startupMetrics).toEqual({
+      piProcessSpawnMs: expect.any(Number),
+      mcpGatewayLoadMs: 12.25,
+      mcpGatewaySessionStartMs: 4,
+    });
+    const closed = process.close();
+    child.emit("close", 0, null);
+    await closed;
+  });
+
+  it.each([
+    ["", "Pi RPC exited unexpectedly"],
+    ["real stderr\n", "Pi RPC exited: real stderr"],
+  ])("keeps startup timing markers out of exit errors with stderr %j", async (stderr, message) => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const result = expect(process.request({ type: "get_state" })).rejects.toMatchObject({ code: "exited", message });
+    child.stderr.emit("data", Buffer.from("opentag-pi-startup:mcpGate"));
+    child.stderr.emit("data", Buffer.from(`wayLoadMs=12.25\n${stderr}`));
+    child.emit("close", 1, null);
+    await result;
+  });
+
   it("marks the ACK synchronously before following events in the same JSONL chunk", async () => {
     const child = fakeChild();
     const process = fakeProcess(child);

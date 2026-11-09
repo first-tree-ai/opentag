@@ -7,8 +7,6 @@ description: "Normative Provider-neutral Agent Runtime contract: Run ownership, 
 
 Status: normative
 
-Last updated: 2026-08-20
-
 ## Purpose
 
 Agent Runtime is the lowest Client execution boundary. It lets the Client own

@@ -46,12 +46,19 @@ interface ProtocolPeerOptions {
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
+async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const instancePrefix = options.instancePrefix ?? "ots-test";
   const peerSandboxId = options.sandboxId ?? sandboxId;
   const peerSessionId = options.sessionId ?? sessionId;
   let generation = 1;
   let uploads = 0;
+  let writeId: string | undefined;
   let authAttempts = 0;
   let bytes = Buffer.alloc(0);
   let object: RunnerWorkspaceObject = {
@@ -96,6 +103,44 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       saved: true,
       sealed: request.headers["x-opentag-workspace-sealed"] === "true",
     };
+    writeId = request.headers["x-opentag-workspace-write-id"] as string | undefined;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const claim = async (request: IncomingMessage, response: ServerResponse) => {
+    const body = await jsonBody(request);
+    const inspection = body.upload as { id: string; generation: string; metageneration: string } | undefined;
+    if (inspection) {
+      const unchanged =
+        inspection.generation === object.generation && inspection.metageneration === object.metageneration;
+      const committed = inspection.id === writeId && object.metageneration === "1";
+      response
+        .writeHead(unchanged || committed ? 200 : 409, { "content-type": "application/json" })
+        .end(JSON.stringify(object));
+      return;
+    }
+    if (object.ownerGeneration < generation || (body.fence && !object.sealed)) {
+      object = {
+        ...object,
+        ownerGeneration: generation,
+        sealed: false,
+        metageneration: String(Number(object.metageneration) + 1),
+      };
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const seal = async (request: IncomingMessage, response: ServerResponse) => {
+    const pins = await jsonBody(request);
+    if (options.rejectUpload?.(true)) {
+      response.writeHead(503).end();
+      return;
+    }
+    if (pins.generation !== object.generation || pins.metageneration !== object.metageneration || object.sealed) {
+      response.writeHead(409).end();
+      return;
+    }
+    object = { ...object, sealed: true, metageneration: String(BigInt(object.metageneration) + 1n) };
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(object));
   };
@@ -107,24 +152,16 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       response.writeHead(403).end();
       return;
     }
-    if (request.url?.endsWith("/claim")) {
-      if (object.ownerGeneration < generation) {
-        object = {
-          ...object,
-          ownerGeneration: generation,
-          sealed: false,
-          metageneration: String(Number(object.metageneration) + 1),
-        };
-      }
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify(object));
-    } else if (request.method === "PUT") {
+    if (request.url?.endsWith("/claim")) await claim(request, response);
+    else if (request.url?.endsWith("/seal")) await seal(request, response);
+    else if (request.method === "PUT") {
       await upload(request, response);
     } else {
       response.setHeader("content-type", "application/octet-stream");
       response.end(bytes);
     }
   };
+
   const http = createServer((request, response) => {
     void serve(request, response).catch(() => response.destroy());
   });

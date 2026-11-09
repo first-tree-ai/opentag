@@ -3,6 +3,7 @@ import { z } from "zod";
 export const CloudLatencyPhaseSchema = z.enum([
   "runtime_assembly",
   "allocation_wait",
+  "dispatch",
   "workspace_ready",
   "worker_execution",
   "checkpoint",

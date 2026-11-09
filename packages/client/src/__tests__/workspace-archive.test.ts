@@ -10,9 +10,11 @@ import {
   readFile,
   readlink,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -24,6 +26,7 @@ import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createWorkspaceArchive,
+  fingerprintWorkspace,
   restoreWorkspaceArchive,
   WORKSPACE_ARCHIVE_MAX_BYTES,
   WORKSPACE_MAX_BYTES,
@@ -203,6 +206,44 @@ async function populateWorkspace(workspace: string): Promise<void> {
   await chmod(join(workspace, "bin", "run.sh"), 0o755);
   await writeFile(join(workspace, "bin", "notes.txt"), "not executable\n");
 }
+
+describe("saved workspace fingerprints", () => {
+  it.each(["add", "remove", "rename", "mode", "mtime", "symlink"])("detects %s changes", async (change) => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const first = join(workspace, "first");
+    await writeFile(first, "first payload");
+    await writeFile(join(workspace, "second"), "second payload");
+    await symlink("first", join(workspace, "link"));
+    const baseline = await fingerprintWorkspace(workspace);
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    if (change === "add") await mkdir(join(workspace, "new-empty-directory"));
+    if (change === "remove") await rm(join(workspace, "second"));
+    if (change === "rename") await rename(join(workspace, "second"), join(workspace, "renamed"));
+    if (change === "mode") await chmod(first, 0o600);
+    if (change === "mtime") await utimes(first, new Date(0), new Date(0));
+    if (change === "symlink") {
+      await rm(join(workspace, "link"));
+      await symlink("second", join(workspace, "link"));
+    }
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+
+  it("uses archive exclusions while retaining unpublished Context Tree state", async () => {
+    const workspace = await makeRoot();
+    const home = join(workspace, ".opentag/context-tree/home/.context-tree");
+    await mkdir(join(home, "cleanup"), { recursive: true });
+    await mkdir(join(home, "sessions"));
+    await writeFile(join(home, "cleanup/log"), "old log");
+    await writeFile(join(home, "sessions/draft"), "unpublished work");
+    const baseline = await fingerprintWorkspace(workspace);
+    await writeFile(join(home, "cleanup/log"), "new log");
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    await writeFile(join(home, "sessions/draft"), "changed unpublished work");
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+});
 
 describe("workspace archive limits", () => {
   it("exposes the documented safety ceilings", () => {

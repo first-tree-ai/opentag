@@ -358,7 +358,6 @@ export class ImDeliveryWorker {
   #runTracked(sessionId?: string): Promise<void> {
     return this.#track(this.#runOnce(sessionId));
   }
-
   async #runOnce(sessionId?: string): Promise<void> {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
@@ -373,6 +372,7 @@ export class ImDeliveryWorker {
         operation: "im.delivery.claim",
         outcome: "claimed",
         deliveryId: claimed.id,
+        attempt: claimed.attemptCount,
         agentId: claimed.agentId,
         kind: claimed.kind,
         laneKey: claimed.laneKey,

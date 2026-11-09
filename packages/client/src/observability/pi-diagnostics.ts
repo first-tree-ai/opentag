@@ -1,6 +1,8 @@
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 
+export { createPiDiagnosticStderrWriter } from "./pi-diagnostic-stderr.js";
+
 export const PI_DIAGNOSTIC_PREFIX = "opentag-pi-diagnostic:";
 export const PI_DIAGNOSTIC_LINE_BYTES = 4 * 1024;
 // Three parent records reserve space within the per-turn 32-record / 64 KiB envelope.
@@ -128,7 +130,6 @@ export type PiStartupMetrics = Pick<
   PiDiagnosticEvent,
   "piProcessSpawnMs" | "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs"
 >;
-export const PI_STARTUP_TIMING_PREFIX = "opentag-pi-startup:";
 export interface PiProcessExit {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -214,36 +215,6 @@ export function emitPiDiagnostic(sink: PiDiagnosticSink | undefined, event: PiDi
   } catch {
     // Diagnostics cannot alter execution, including when the parent pipe is already closed.
   }
-}
-
-interface PiDiagnosticStderr {
-  write(line: string, callback?: (error?: Error | null) => void): unknown;
-  on?(event: "error", listener: (error: Error) => void): unknown;
-}
-
-const stderrStates = new WeakMap<PiDiagnosticStderr, { failed: boolean }>();
-
-export function createPiDiagnosticStderrWriter(stderr: PiDiagnosticStderr): (line: string) => void {
-  let state = stderrStates.get(stderr);
-  if (!state) {
-    state = { failed: false };
-    stderrStates.set(stderr, state);
-    const shared = state;
-    try {
-      stderr.on?.("error", () => {
-        shared.failed = true;
-      });
-    } catch {
-      shared.failed = true;
-    }
-  }
-  const shared = state;
-  return (line) => {
-    if (shared.failed) throw new Error("Pi diagnostic stderr is unavailable");
-    stderr.write(line, (error) => {
-      if (error) shared.failed = true;
-    });
-  };
 }
 
 const rpcCommandByPhase: Partial<Record<PiDiagnosticPhase, "get_state" | "prompt">> = {

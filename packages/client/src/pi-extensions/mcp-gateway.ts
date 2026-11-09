@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
-import { createPiDiagnosticStderrWriter, PI_STARTUP_TIMING_PREFIX } from "../observability/pi-diagnostics.js";
+import { createPiDiagnosticStderrWriter, PI_STARTUP_TIMING_PREFIX } from "../observability/pi-diagnostic-stderr.js";
 
 const loadStarted = performance.now();
 const writeStartupTiming =

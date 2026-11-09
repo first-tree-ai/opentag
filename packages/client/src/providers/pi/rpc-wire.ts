@@ -1,10 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
-import {
-  PI_STARTUP_TIMING_PREFIX,
-  type PiProcessExit,
-  type PiStartupMetrics,
-} from "../../observability/pi-diagnostics.js";
+import { PI_STARTUP_TIMING_PREFIX } from "../../observability/pi-diagnostic-stderr.js";
+import type { PiProcessExit, PiStartupMetrics } from "../../observability/pi-diagnostics.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const PI_RPC_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -380,7 +377,12 @@ export class PiRpcProcess implements PiRpcClient {
   }
 
   #exitMessage(): string {
-    const stderr = this.#stderr.toString("utf8").trim();
+    const stderr = this.#stderr
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => !line.startsWith(PI_STARTUP_TIMING_PREFIX))
+      .join("\n")
+      .trim();
     return stderr ? `Pi RPC exited: ${stderr}` : "Pi RPC exited unexpectedly";
   }
 

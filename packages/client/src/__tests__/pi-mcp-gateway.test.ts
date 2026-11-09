@@ -136,7 +136,7 @@ it.each(["before module timing", "after module timing"])("isolates broken diagno
   vi.stubEnv("OPENTAG_PI_STARTUP_DIAGNOSTICS", "1");
 
   if (failureAt === "before module timing") {
-    const { createPiDiagnosticStderrWriter } = await import("../observability/pi-diagnostics.js");
+    const { createPiDiagnosticStderrWriter } = await import("../observability/pi-diagnostic-stderr.js");
     createPiDiagnosticStderrWriter(stderr)("prime stderr failure");
     await closed;
   }

@@ -206,6 +206,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
+  /** This Run resumed an existing conversation; a missing-conversation result is then recoverable. */
+  #resumedRun = false;
 
   constructor(options: ClaudeCodeRuntimeOptions) {
     super({
@@ -240,6 +242,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#assistantError = undefined;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
+    this.#resumedRun = false;
     this.#textBlocks.clear();
     this.#tools.clear();
     this.#toolBlocks.clear();
@@ -270,6 +273,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         if (request.compactContext && this.#sessionExists)
           await this.#compactContext(request, context, hostedToolBridge);
         resumed = this.#sessionExists;
+        this.#resumedRun = resumed;
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
         if (context.signal.aborted) throw error;
@@ -347,12 +351,15 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     );
     await context.emit({ type: "provider_warning", code: "claude_session_history_unavailable", message: missing });
     this.#sessionExists = false;
+    this.#resumedRun = false;
     this.#terminal = undefined;
     this.#assistantError = undefined;
     this.#continuedTerminals.length = 0;
+    // An abort that arrived while the first process was exiting interrupted nothing that is still running.
+    context.signal.throwIfAborted();
     const process = this.#createProcess(this.#arguments(request, hostedToolBridge));
     this.#process = process;
-    this.#processReady = deferredProcess();
+    this.#processReady ??= deferredProcess();
     this.#processReady.resolve(process);
     try {
       const result = await process.execute(
@@ -514,7 +521,13 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
     if (!this.providerContext) return;
     try {
-      parseTerminal(message, this.#sessionId);
+      const parsed = parseTerminal(message, this.#sessionId);
+      if (missingConversation(this.#resumedRun, parsed) !== undefined) {
+        // Recoverable: the Run continues in a new conversation, so it keeps its terminal unclaimed and steers
+        // wait for the replacement process instead of reaching the one that just exited.
+        this.#processReady = deferredProcess();
+        return;
+      }
       this.providerContext.claimTerminal();
       this.#terminalClaimed = true;
     } catch (error) {

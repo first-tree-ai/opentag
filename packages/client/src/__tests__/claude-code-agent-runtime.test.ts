@@ -279,6 +279,75 @@ describe("ClaudeCodeAgentRuntime", () => {
     await runtime.close();
   });
 
+  describe("after a missing conversation", () => {
+    const BINDING = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } };
+    const recovering = () => {
+      const missing: ScriptedClaudeCodeProcess[] = [];
+      const replacement = new SteerableClaudeCodeProcess();
+      const factory = new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        createProcess: (_cwd, args) => {
+          if (!args.includes("--resume")) return replacement;
+          const process = new ScriptedClaudeCodeProcess(args, "missing");
+          missing.push(process);
+          return process;
+        },
+      });
+      return { factory, missing, replacement };
+    };
+
+    it("steers into the new conversation's process", async () => {
+      const { factory, missing, replacement } = recovering();
+      const runtime = await factory.resume({ ...createRequest(() => undefined), binding: BINDING });
+      const run = runtime.prompt({ runId: "run", input: input("continue") });
+      await vi.waitFor(() => expect(replacement.executing).toBe(true));
+      await runtime.steer({ expectedRunId: "run", input: input("one more thing") });
+      expect(replacement.steered).toMatchObject([{ message: { content: [{ text: "one more thing" }] } }]);
+      replacement.emit(result("done", 1, 0.01, 5), true);
+      replacement.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed", output: [{ text: "done" }] });
+      expect(missing).toHaveLength(1);
+      await runtime.close();
+    });
+
+    it("interrupts the new conversation's process on abort and reports aborted", async () => {
+      const { factory, replacement } = recovering();
+      const runtime = await factory.resume({ ...createRequest(() => undefined), binding: BINDING });
+      const run = runtime.prompt({ runId: "run", input: input("continue") });
+      await vi.waitFor(() => expect(replacement.executing).toBe(true));
+      await runtime.abort({ expectedRunId: "run" });
+      expect(replacement.interruptCount).toBe(1);
+      replacement.finish();
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      await runtime.close();
+    });
+
+    it("does not start a new conversation once the Run was aborted", async () => {
+      const replacement = new SteerableClaudeCodeProcess();
+      let runtime: Awaited<ReturnType<ClaudeCodeAgentRuntimeFactory["resume"]>> | undefined;
+      const factory = new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        createProcess: (_cwd, args) => {
+          if (!args.includes("--resume")) return replacement;
+          const process = new ScriptedClaudeCodeProcess(args, "missing");
+          // The abort lands while the first process is exiting, before the replacement exists.
+          const close = process.close.bind(process);
+          process.close = async () => {
+            await runtime?.abort({ expectedRunId: "run" });
+            await close();
+          };
+          return process;
+        },
+      });
+      runtime = await factory.resume({ ...createRequest(() => undefined), binding: BINDING });
+      await expect(runtime.prompt({ runId: "run", input: input("continue") })).resolves.toMatchObject({
+        status: "aborted",
+      });
+      expect(replacement.executing).toBe(false);
+      await runtime.close();
+    });
+  });
+
   it("keeps any other failure of a resumed Run a failure, with no second process", async () => {
     const processes: ScriptedClaudeCodeProcess[] = [];
     const runtime = await claudeFactory(processes, "error").resume({
@@ -844,7 +913,10 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
     return { started: () => true, inConversation: new Promise<void>(() => undefined) };
   }
 
-  async interrupt(): Promise<void> {}
+  interruptCount = 0;
+  async interrupt(): Promise<void> {
+    this.interruptCount += 1;
+  }
 
   async close(): Promise<void> {
     this.#finish?.();

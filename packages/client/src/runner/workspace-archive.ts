@@ -542,6 +542,31 @@ async function writeWorkspaceEntries(pack: Pack, workspacePath: string, records:
   }
 }
 
+/** Hash the saved tree semantics without packing it. Callers must quiesce every writer. */
+export async function fingerprintWorkspace(workspace: string): Promise<string> {
+  const workspacePath = resolve(workspace);
+  await assertRealWorkspaceRoot(workspacePath);
+  const scan = await scanWorkspace(workspacePath, resolveLimits(undefined));
+  assertLinksContained(scan.namespace, "unsafe-entry");
+  const hash = createHash("sha256");
+  for (const record of scan.records) {
+    await assertEntryUnchanged(workspacePath, record);
+    hash.update(JSON.stringify([record.rel, record.kind, record.size, record.mode, record.mtime, record.target]));
+    if (record.kind === "file") {
+      const content = createHash("sha256");
+      let bytes = 0;
+      for await (const chunk of createReadStream(join(workspacePath, ...record.rel.split("/")))) {
+        bytes += chunk.length;
+        if (bytes > record.size) fail("workspace-changed", "Workspace changed while fingerprinting");
+        content.update(chunk);
+      }
+      if (bytes !== record.size) fail("workspace-changed", "Workspace changed while fingerprinting");
+      hash.update(content.digest());
+    }
+  }
+  return hash.digest("hex");
+}
+
 export async function createWorkspaceArchive(
   workspace: string,
   archivePath: string,

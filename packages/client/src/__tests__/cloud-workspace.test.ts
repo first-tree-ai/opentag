@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as fsPromises from "node:fs/promises";
 import { link, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,12 +7,17 @@ import { setTimeout as retryDelay } from "node:timers/promises";
 import type { RunnerWorkspaceObject } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudWorkspace, type CloudWorkspaceOptions } from "../runner/cloud-workspace.js";
+import * as workspaceArchive from "../runner/workspace-archive.js";
 import { WORKSPACE_MAX_BYTES } from "../runner/workspace-archive.js";
 
 const roots: string[] = [];
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
 vi.mock("node:timers/promises", () => ({ setTimeout: vi.fn(async () => undefined) }));
 afterEach(async () => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -26,6 +32,7 @@ function digest(bytes: Buffer) {
 /** A byte-stream HTTP protocol fixture; real GCS behavior has separate adapter/live acceptance. */
 function storageFixture() {
   let bytes = Buffer.alloc(0);
+  let writeId: string | null = null;
   let sequence = 9_007_199_254_740_993n;
   let object: RunnerWorkspaceObject = {
     generation: String(sequence),
@@ -58,6 +65,7 @@ function storageFixture() {
     expect(headers.get("content-md5")).toBe(digest(uploaded).md5);
     expect(headers.get("x-opentag-workspace-sha256")).toBe(digest(uploaded).sha256);
     bytes = uploaded;
+    writeId = headers.get("x-opentag-workspace-write-id");
     object = {
       ...object,
       ...digest(bytes),
@@ -74,6 +82,36 @@ function storageFixture() {
     const body = failure === "corrupt-read" ? Buffer.from("corrupted") : bytes;
     return new Response(new Uint8Array(body));
   };
+  const claim = (generation: number, body: unknown) => {
+    const options = JSON.parse(String(body));
+    if (options.upload) {
+      const unchanged =
+        options.upload.generation === object.generation && options.upload.metageneration === object.metageneration;
+      const committed = options.upload.id === writeId && object.metageneration === "1";
+      return new Response(JSON.stringify(object), {
+        status: generation === object.ownerGeneration && (unchanged || committed) ? 200 : 409,
+      });
+    }
+    if (generation > object.ownerGeneration || (options.fence && !object.sealed)) {
+      object = {
+        ...object,
+        ownerGeneration: generation,
+        metageneration: String(Number(object.metageneration) + 1),
+        sealed: false,
+      };
+    }
+    return Response.json(object);
+  };
+  const seal = (body: unknown) => {
+    const pins = JSON.parse(String(body));
+    if (failure === "before") return new Response(null, { status: 503 });
+    if (pins.generation !== object.generation || pins.metageneration !== object.metageneration || object.sealed) {
+      return new Response(null, { status: 409 });
+    }
+    object = { ...object, sealed: true, metageneration: String(BigInt(object.metageneration) + 1n) };
+    if (failure === "after") throw new Error("connection lost after seal commit");
+    return Response.json(object);
+  };
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
@@ -82,17 +120,8 @@ function storageFixture() {
     requests.push({ method: init?.method ?? "GET", url: url.toString(), token });
     if (!Number.isSafeInteger(generation) || generation < object.ownerGeneration)
       return new Response(null, { status: 403 });
-    if (url.pathname.endsWith("/claim")) {
-      if (generation > object.ownerGeneration) {
-        object = {
-          ...object,
-          ownerGeneration: generation,
-          metageneration: String(Number(object.metageneration) + 1),
-          sealed: false,
-        };
-      }
-      return Response.json(object);
-    }
+    if (url.pathname.endsWith("/claim")) return claim(generation, init?.body);
+    if (url.pathname.endsWith("/seal")) return seal(init?.body);
     if (init?.method !== "PUT") return download(url);
     return upload(headers, init);
   };
@@ -143,6 +172,324 @@ function invalidUploadResponse(kind: string, object: RunnerWorkspaceObject): Res
 }
 
 describe("Cloud workspace transfer", () => {
+  it("keeps an unprovable claim uninitialized and restores through a fresh authenticated request", async () => {
+    const store = storageFixture();
+    const first = await client(store);
+    await first.client.initialize();
+    await writeFile(join(first.workspace, "progress"), "saved work");
+    await first.client.save();
+    const saved = store.object();
+    let failClaim = true;
+    const runner = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (failClaim && String(input).endsWith("/claim")) {
+          failClaim = false;
+          return new Response(null, { status: 503 });
+        }
+        return response;
+      },
+    });
+    await expect(runner.client.initialize()).rejects.toMatchObject({ code: "restore_failed" });
+    expect(runner.client.initialized).toBe(false);
+    await expect(readdir(runner.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(store.object()).toEqual({ ...saved, metageneration: "2" });
+    await runner.client.initialize();
+    expect(await readFile(join(runner.workspace, "progress"), "utf8")).toBe("saved work");
+    expect(store.object()).toEqual({ ...saved, metageneration: "3" });
+    expect(store.uploads).toHaveLength(2);
+  });
+
+  it("restores and seals unchanged bytes without packing or uploading them again", async () => {
+    const store = storageFixture();
+    const pack = vi.spyOn(workspaceArchive, "createWorkspaceArchive");
+    const fingerprint = vi.spyOn(workspaceArchive, "fingerprintWorkspace");
+    const first = await client(store);
+    await first.client.initialize();
+    expect(pack).toHaveBeenCalledTimes(1);
+    await writeFile(join(first.workspace, "unpublished-work"), "keep unpublished bytes");
+    await first.client.save();
+    const saved = store.object();
+    expect(pack).toHaveBeenCalledTimes(2);
+    const second = await client(store);
+    await second.client.initialize();
+    expect(store.object()).toEqual({ ...saved, metageneration: "2" });
+    expect(pack).toHaveBeenCalledTimes(2);
+    expect(store.uploads).toHaveLength(2);
+    await second.client.save(true);
+    expect(store.object()).toEqual({ ...saved, metageneration: "3", sealed: true });
+    expect(pack).toHaveBeenCalledTimes(2);
+    expect(fingerprint).toHaveBeenCalledTimes(4);
+    const third = await client(store, 2);
+    await third.client.initialize();
+    expect(await readFile(join(third.workspace, "unpublished-work"), "utf8")).toBe("keep unpublished bytes");
+    expect(store.object().generation).toBe(saved.generation);
+  });
+
+  it("lightly seals a clean checkpoint while preserving its exact durable archive", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "work"), "checkpoint");
+    await runner.client.save();
+    const saved = store.object();
+    await runner.client.save(true);
+    expect(store.object()).toEqual({ ...saved, sealed: true, metageneration: "2" });
+    expect(store.uploads).toHaveLength(2);
+  });
+
+  it("saves real non-Turn changes even when file length and mtime are unchanged", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const file = join(runner.workspace, "background-write");
+    const stamp = new Date(1_700_000_000_000);
+    await writeFile(file, "before");
+    await utimes(file, stamp, stamp);
+    await runner.client.save();
+    const saved = store.object();
+    await writeFile(file, "after!");
+    await utimes(file, stamp, stamp);
+    await runner.client.save(true);
+    expect(store.object().generation).not.toBe(saved.generation);
+    expect(store.uploads).toHaveLength(3);
+    const restored = await client(store, 2);
+    await restored.client.initialize();
+    expect(await readFile(join(restored.workspace, "background-write"), "utf8")).toBe("after!");
+  });
+
+  it("reconciles a lost metadata seal response without another mutation", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const saved = store.object();
+    store.fail("after");
+    await runner.client.save(true);
+    expect(runner.client.sealed).toBe(true);
+    expect(runner.client.pendingSave).toBe(false);
+    expect(store.object()).toEqual({ ...saved, sealed: true, metageneration: "2" });
+    expect(store.requests.filter((r) => r.url.endsWith("/seal"))).toHaveLength(1);
+    expect(store.uploads).toHaveLength(1);
+  });
+
+  it("retains local state after a failed metadata seal and retries with the original pins", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const saved = store.object();
+    store.fail("before");
+    await expect(runner.client.save(true)).rejects.toMatchObject({ code: "save_failed" });
+    expect(runner.client.pendingSave).toBe(true);
+    expect(runner.client.sealed).toBe(false);
+    expect(store.object()).toEqual(saved);
+    store.fail("none");
+    await runner.client.save(true);
+    expect(store.object()).toEqual({ ...saved, sealed: true, metageneration: "2" });
+    expect(store.uploads).toHaveLength(1);
+  });
+
+  it("never seals stale clean bytes after a same-allocation claim or newer upload", async () => {
+    const store = storageFixture();
+    const old = await client(store);
+    await old.client.initialize();
+    const current = await client(store);
+    await current.client.initialize();
+    const claimed = store.object();
+    await expect(old.client.save(true)).rejects.toThrow("save_failed");
+    expect(store.object()).toEqual(claimed);
+    await writeFile(join(current.workspace, "new"), "newer process bytes");
+    await current.client.save();
+    const saved = store.object();
+    await expect(old.client.save(true)).rejects.toThrow("save_failed");
+    expect(store.object()).toEqual(saved);
+    const restored = await client(store, 2);
+    await restored.client.initialize();
+    expect(await readFile(join(restored.workspace, "new"), "utf8")).toBe("newer process bytes");
+  });
+
+  it("cannot adopt the new process's metadata fence when an earlier upload response is lost", async () => {
+    const store = storageFixture();
+    const replacement = await client(store);
+    let loseResponse = false;
+    const old = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (loseResponse && init?.method === "PUT") {
+          loseResponse = false;
+          await replacement.client.initialize();
+          throw new Error("lost committed upload response");
+        }
+        return response;
+      },
+    });
+    await old.client.initialize();
+    await writeFile(join(old.workspace, "progress"), "committed by old process");
+    loseResponse = true;
+    await expect(old.client.save()).rejects.toMatchObject({ code: "save_failed", retryable: false });
+    const claimed = store.object();
+    expect(claimed.metageneration).toBe("2");
+    expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe("committed by old process");
+    await expect(old.client.save()).rejects.toThrow("save_failed");
+    expect(store.object()).toEqual(claimed);
+    await writeFile(join(replacement.workspace, "progress"), "new process continues");
+    await replacement.client.save();
+    const next = await client(store, 2);
+    await next.client.initialize();
+    expect(await readFile(join(next.workspace, "progress"), "utf8")).toBe("new process continues");
+  });
+
+  it("rejects readback of a different upload even when its archive bytes are identical", async () => {
+    const store = storageFixture();
+    const replacement = await client(store);
+    let loseResponse = false;
+    const old = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (loseResponse && init?.method === "PUT") {
+          loseResponse = false;
+          await replacement.client.initialize();
+          await replacement.client.save();
+          throw new Error("lost upload response while a different process saved identical bytes");
+        }
+        return response;
+      },
+    });
+    await old.client.initialize();
+    const before = store.object();
+    loseResponse = true;
+    await expect(old.client.save()).rejects.toMatchObject({ code: "save_failed", retryable: false });
+    const current = store.object();
+    expect(current.sha256).toBe(before.sha256);
+    expect(current.metageneration).toBe("1");
+    expect(current.generation).not.toBe(before.generation);
+    await expect(old.client.save()).rejects.toThrow("save_failed");
+    expect(store.object()).toEqual(current);
+  });
+
+  it("restores a completed upload after its response times out without rebasing the old process", async () => {
+    const store = storageFixture();
+    let loseResponse = false;
+    const old = await client(store, 1, {
+      timeoutMs: 20,
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (loseResponse && init?.method === "PUT") {
+          loseResponse = false;
+          return new Promise<never>((_, reject) => {
+            init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+          });
+        }
+        return response;
+      },
+    });
+    await old.client.initialize();
+    await writeFile(join(old.workspace, "progress"), "durable despite timed out response");
+    loseResponse = true;
+    await expect(old.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    expect(old.client.pendingSave).toBe(true);
+    const committed = store.object();
+    const replacement = await client(store);
+    await replacement.client.initialize();
+    expect(store.object()).toEqual({ ...committed, metageneration: "2" });
+    expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe("durable despite timed out response");
+    await expect(old.client.save()).rejects.toThrow("save_failed");
+    expect(await readFile(join(old.workspace, "progress"), "utf8")).toBe("durable despite timed out response");
+  });
+
+  it("bounds a stalled metadata seal and keeps its durable baseline retryable", async () => {
+    const store = storageFixture();
+    let stalled = false;
+    let seals = 0;
+    const runner = await client(store, 1, {
+      timeoutMs: 20,
+      fetchImpl: async (input, init) => {
+        if (stalled && String(input).endsWith("/seal")) {
+          seals += 1;
+          return new Promise<never>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+          });
+        }
+        return store.fetchImpl(input, init);
+      },
+    });
+    await runner.client.initialize();
+    const saved = store.object();
+    stalled = true;
+    await expect(runner.client.save(true)).rejects.toThrow();
+    expect(seals).toBe(1);
+    expect(runner.client.pendingSave).toBe(true);
+    expect(runner.client.sealed).toBe(false);
+    expect(store.object()).toEqual(saved);
+    stalled = false;
+    await runner.client.save(true);
+    expect(runner.client.sealed).toBe(true);
+    const replacement = await client(store, 2);
+    await replacement.client.initialize();
+    expect(await readdir(replacement.workspace)).toEqual([]);
+  });
+
+  it("retains confirmed upload pins when local archive cleanup fails, then saves and restores again", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "progress"), "confirmed durable work");
+    const originalRm = fsPromises.rm;
+    let failCleanup = true;
+    vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+      if (failCleanup && String(path).startsWith(join(runner.stateDirectory, "workspace-"))) {
+        failCleanup = false;
+        throw new Error("local cleanup failed after upload");
+      }
+      return originalRm(path, options);
+    });
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    expect(runner.client.pendingSave).toBe(true);
+    const committed = store.object();
+    await runner.client.initialize();
+    expect(runner.client.pendingSave).toBe(false);
+    expect(store.object().generation).not.toBe(committed.generation);
+    const replacement = await client(store, 2);
+    await replacement.client.initialize();
+    expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe("confirmed durable work");
+  });
+
+  it.each([false, true])("keeps the uploaded fingerprint after cleanup fails, reverted=%s", async (reverted) => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const file = join(runner.workspace, "progress");
+    const timestamp = new Date("2026-01-01T00:00:00Z");
+    await writeFile(file, "versionA");
+    await utimes(file, timestamp, timestamp);
+    await runner.client.save();
+    await writeFile(file, "versionB");
+    await utimes(file, timestamp, timestamp);
+    const originalRm = fsPromises.rm;
+    let failCleanup = true;
+    vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+      if (failCleanup && String(path).startsWith(join(runner.stateDirectory, "workspace-"))) {
+        failCleanup = false;
+        throw new Error("local cleanup failed after upload");
+      }
+      return originalRm(path, options);
+    });
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    const uploaded = store.object();
+    const uploads = store.uploads.length;
+    if (reverted) {
+      await writeFile(file, "versionA");
+      await utimes(file, timestamp, timestamp);
+    }
+    await runner.client.save(true);
+    expect(runner.client.pendingSave).toBe(false);
+    expect(store.object().sealed).toBe(true);
+    const replacement = await client(store, 2);
+    await replacement.client.initialize();
+    expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe(reverted ? "versionA" : "versionB");
+    expect(store.uploads).toHaveLength(uploads + Number(reverted));
+    expect(store.object().generation === uploaded.generation).toBe(!reverted);
+  });
+
   it("retries identical archive bytes and original CAS preconditions with bounded backoff", async () => {
     const store = storageFixture();
     const runner = await client(store);
@@ -159,6 +506,9 @@ describe("Cloud workspace transfer", () => {
       expect(upload.bytes).toEqual(first?.bytes);
       expect(upload.headers.get("x-opentag-storage-generation")).toBe(baseline.generation);
       expect(upload.headers.get("x-opentag-storage-metageneration")).toBe(baseline.metageneration);
+      expect(upload.headers.get("x-opentag-workspace-write-id")).toBe(
+        first?.headers.get("x-opentag-workspace-write-id"),
+      );
     }
     expect(vi.mocked(retryDelay).mock.calls.map(([delay]) => delay)).toEqual([1000, 2000]);
     expect(runner.client.pendingSave).toBe(false);
@@ -218,6 +568,7 @@ describe("Cloud workspace transfer", () => {
     const store = storageFixture();
     const runner = await client(store);
     await runner.client.initialize();
+    await writeFile(join(runner.workspace, "progress"), "changed bytes require an upload");
     const start = store.requests.length;
     store.failUploads("after");
     await runner.client.save(true);
@@ -446,7 +797,8 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.pendingSave).toBe(false);
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
-    expect(BigInt(store.object().generation)).toBeGreaterThan(BigInt(savedBaseline.generation));
+    expect(store.object().generation).toBe(savedBaseline.generation);
+    expect(BigInt(store.object().metageneration)).toBeGreaterThan(BigInt(savedBaseline.metageneration));
 
     const replacement = await client(store, 2);
     await replacement.client.initialize();
@@ -479,7 +831,8 @@ describe("Cloud workspace transfer", () => {
       "previous turn",
     );
     expect(await readdir(second.workspace)).toEqual([".git", ".opentag"]);
-    expect(store.object().generation).not.toBe(saved.generation);
+    expect(store.object().generation).toBe(saved.generation);
+    expect(store.object().metageneration).not.toBe(saved.metageneration);
     expect(store.object().ownerGeneration).toBe(2);
     expect(store.object().sealed).toBe(false);
     expect(

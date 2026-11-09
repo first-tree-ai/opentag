@@ -256,7 +256,7 @@ Missing connections, unanswered or failed queries, paused/stopped `started` reco
 answers remain `IM_DELIVERY_CLOUD_REPORT_PENDING` failures. The overdue replay warning is unchanged.
 Distinct waiting codes ensure that a later fault is diagnosed even after repeated normal waits.
 
-Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
+Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
 the execution and its lifetime is bounded by the runtime deadline. In E4,
@@ -330,7 +330,7 @@ remain resource-policy follow-ups; the current global limit can be consumed by o
 
 Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
 report, plus the Runner's per-allocation input journal — not a generic provider write journal or
-receipt. Provider writes proxied on behalf of a Turn follow the #634 rules: one upstream attempt
+receipt. Provider writes proxied on behalf of a Turn make one upstream attempt
 per proxied request, classified in memory as succeeded, definitely rejected, or unknown; an
 unknown write surfaces as an explicit `write_outcome_unknown` and is reconciled by the task layer
 instead of being replayed automatically. E4 therefore does not promise exactly-once provider

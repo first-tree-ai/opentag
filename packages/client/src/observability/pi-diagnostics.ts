@@ -279,9 +279,8 @@ export class PiRunDiagnostics {
       return;
     }
     const terminalFailureCategory =
-      stopReason === "toolUse"
-        ? "unfinished_tool_use"
-        : (ProviderFailureReasonSchema.safeParse(errorCode).data ?? "unknown");
+      ProviderFailureReasonSchema.safeParse(errorCode).data ??
+      (stopReason === "toolUse" ? "unfinished_tool_use" : "unknown");
     this.end(undefined, { outcome, terminalFailureCategory });
   }
 

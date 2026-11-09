@@ -166,10 +166,10 @@ timer is already cleared, so its end record reports it as paused. Cancellation b
 records the aborted RPC in `prompt_acceptance` and does not enter `await_terminal`.
 
 A failed result returned after acknowledgement adds `terminalFailureCategory` to the
-`await_terminal` end record with `outcome=failed`. The category is an allowlisted runtime
-provider failure code, `unfinished_tool_use` for Pi's `toolUse` stop, or `unknown` when the
-result has no recognized category. Only the category is emitted. The Cloud delivery v1
-Turn report still uses `provider_failed` for these results.
+`await_terminal` end record with `outcome=failed`. An allowlisted runtime provider failure code
+takes precedence. Without one, the category is `unfinished_tool_use` for Pi's `toolUse` stop
+or `unknown` otherwise. Only the category is emitted. The Cloud delivery v1 Turn report still
+uses `provider_failed` for these results.
 
 The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
 when later cleanup fails. Errors preserve safe name/code, including the owned `AgentRuntimeError`

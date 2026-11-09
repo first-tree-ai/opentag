@@ -773,11 +773,16 @@ describe("CloudTurnRunner", () => {
       errorMessage: '429: {"error":{"code":"rate_limit_exceeded","message":"private-provider-detail"}}',
       category: "provider_rate_limited",
     },
+    {
+      stopReason: "toolUse",
+      errorMessage: '429: {"error":{"code":"rate_limit_exceeded","message":"private-provider-detail"}}',
+      category: "provider_rate_limited",
+    },
     { stopReason: "error", errorMessage: "private-provider-detail: API key fixture-secret", category: "unknown" },
     { stopReason: "length", category: "provider_execution_limit" },
     { stopReason: "toolUse", category: "unfinished_tool_use" },
   ])(
-    "correlates a returned Pi failure as $category with the durable Turn",
+    "correlates a returned Pi $stopReason failure as $category with the durable Turn",
     async ({ stopReason, errorMessage, category }) => {
       const mount = join(directory, "mount");
       const executionDir = join(mount, "execution");

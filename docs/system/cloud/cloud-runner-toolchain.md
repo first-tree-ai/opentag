@@ -48,6 +48,10 @@ the six packaged Context Tree skills plus four source-owned tool skills (`git`, 
 and catalog pins. Host skills are never copied. Real acceptance verifies the skills Pi actually
 loaded via a dedicated Pi RPC `get_commands` query (exactly those ten names, never contents).
 
+The Runner image applies a patch to its locked Pi package so the full syntax highlighter loads
+when highlighting is requested. Headless RPC startup skips loading the highlighter and its
+language modules. Interactive highlighting still uses the same dependency and language set.
+
 The image precompiles the pinned `pi-mcp-adapter` TypeScript modules to native ESM, preserving
 lazy imports. The entry is
 `/opt/opentag/pi/node_modules/pi-mcp-adapter/opentag-runtime.mjs`. Cloud workers load that entry

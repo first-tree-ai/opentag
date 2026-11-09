@@ -84,10 +84,13 @@ export async function assembleRunnerRuntime({ src = SRC, out = OUT } = {}) {
   cpSync(join(src, "scripts/runner/pi/package-lock.json"), join(piDir, "package-lock.json"));
   run("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: piDir });
 
-  await buildPiMcpAdapter(
-    join(piDir, "node_modules/pi-mcp-adapter"),
-    join(piDir, "node_modules/@earendil-works/pi-coding-agent"),
+  const piPackage = join(piDir, "node_modules", RUNNER_PINS.piPackage);
+  run(
+    "patch",
+    ["--batch", "--forward", "--fuzz=0", "-p1", "-i", join(src, "scripts/runner/pi/defer-syntax-highlighting.patch")],
+    { cwd: piPackage },
   );
+  await buildPiMcpAdapter(join(piDir, "node_modules/pi-mcp-adapter"), piPackage);
 
   await installCatalogProviderClis({
     dest: toolsDir,

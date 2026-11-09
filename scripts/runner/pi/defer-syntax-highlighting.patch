@@ -1,0 +1,28 @@
+--- a/dist/utils/syntax-highlight.js
++++ b/dist/utils/syntax-highlight.js
+@@ -1,5 +1,7 @@
+-import hljs from "highlight.js/lib/index.js";
++import { createRequire } from "node:module";
+ import { decodeHtmlEntityAt } from "./html.js";
++const require = createRequire(import.meta.url);
++const loadHighlighter = () => require("highlight.js/lib/index.js");
+ const SPAN_CLOSE = "</span>";
+ const HIGHLIGHT_CLASS_PREFIX = "hljs-";
+ function getScopeFromSpanTag(tag) {
+@@ -104,6 +106,7 @@
+     return output;
+ }
+ export function highlight(code, options = {}) {
++    const hljs = loadHighlighter();
+     const html = options.language
+         ? hljs.highlight(code, {
+             language: options.language,
+@@ -113,6 +116,6 @@
+     return renderHighlightedHtml(html, options.theme);
+ }
+ export function supportsLanguage(name) {
+-    return hljs.getLanguage(name) !== undefined;
++    return loadHighlighter().getLanguage(name) !== undefined;
+ }
+ //# sourceMappingURL=syntax-highlight.js.map
+\ No newline at end of file

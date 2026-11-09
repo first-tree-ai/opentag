@@ -360,7 +360,11 @@ function internalToolsFixtureResponse(input: {
   return undefined;
 }
 
-function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "feishu" }) {
+function slackFixtureBinding(options: {
+  bound?: boolean;
+  provider?: "slack" | "feishu";
+  receiveMode?: AgentSummary["receiveMode"];
+}) {
   if (!options.bound || options.provider !== "slack") return null;
   return {
     id: agentId,
@@ -368,7 +372,7 @@ function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "f
     provider: "slack",
     bindingState: "active",
     bot: { displayName: "Reviewer", avatarUrl: null },
-    receiveMode: "mention_only",
+    receiveMode: options.receiveMode ?? "mention_only",
     lastInboundAt: null,
     lastValidatedAt: null,
     lastRuntimeObservationAt: null,
@@ -390,7 +394,7 @@ function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "f
 function slackConfigurationResponse(
   path: string,
   method: string | undefined,
-  options: { bound?: boolean; provider?: "slack" | "feishu" },
+  options: { bound?: boolean; provider?: "slack" | "feishu"; receiveMode?: AgentSummary["receiveMode"] },
 ): Response | undefined {
   if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration`) {
     const binding = slackFixtureBinding(options);
@@ -417,6 +421,14 @@ function slackConfigurationResponse(
     });
   }
   return undefined;
+}
+
+function nextReceiveMode(
+  body: BodyInit | null | undefined,
+  current: AgentSummary["receiveMode"],
+): AgentSummary["receiveMode"] {
+  const parsed = JSON.parse(String(body ?? "{}")) as { receiveMode?: AgentSummary["receiveMode"] };
+  return parsed.receiveMode ?? current;
 }
 
 export function installApi(
@@ -495,13 +507,15 @@ export function installApi(
   // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
   // the Server answers differently once the reader has chosen.
   let agentUnbound = options.agentUnbound ?? false;
+  let bound = options.bound ?? false;
+  let receiveMode = agentSummary.receiveMode;
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
     name: agentSummary.name,
     displayName: agentSummary.displayName,
     runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
-    receiveMode: agentSummary.receiveMode,
+    receiveMode,
     selfConfigurationEnabled: false,
     status: lifecycleStatus,
     createdAt: agentSummary.createdAt,
@@ -540,6 +554,7 @@ export function installApi(
               avatarPath: options.avatarPath,
               createdBy: options.agentCreator ?? agentListItem.createdBy,
               activity: options.agentActivity ?? agentListItem.activity,
+              receiveMode,
               status: lifecycleStatus,
               runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
               ...(options.slackOAuthAvailable === undefined
@@ -848,7 +863,11 @@ export function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}`) {
-      if (init?.method === "PATCH") return json(adminConfig());
+      if (init?.method === "PATCH") {
+        receiveMode = nextReceiveMode(init.body, receiveMode);
+        revision += 1;
+        return json(adminConfig());
+      }
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
       const failureStatus = options.agentReadStatus?.();
@@ -862,6 +881,7 @@ export function installApi(
         ...agentSummary,
         avatarPath: options.avatarPath,
         createdBy: options.agentCreator ?? agentSummary.createdBy,
+        receiveMode,
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
@@ -887,6 +907,10 @@ export function installApi(
       revision += 1;
       return json(adminConfig());
     }
+    if (/^\/api\/v1\/im-bindings\/[^/]+\/disable$/.test(path) && init?.method === "POST") {
+      bound = false;
+      return new Response(null, { status: 204 });
+    }
     if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
       if (options.bindingEvidenceFails || options.handoffEvidenceFails) {
         return json(
@@ -900,11 +924,11 @@ export function installApi(
           503,
         );
       }
-      if (!options.bound) return new Response(null, { status: 204 });
+      if (!bound) return new Response(null, { status: 204 });
       const bindingState = handoffBindingState(options);
       return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
-    const slackResponse = slackConfigurationResponse(path, init?.method, options);
+    const slackResponse = slackConfigurationResponse(path, init?.method, { ...options, bound, receiveMode });
     if (slackResponse) return slackResponse;
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
       if (options.bindingEvidenceFails) {
@@ -919,13 +943,13 @@ export function installApi(
           503,
         );
       }
-      if (!options.bound) return new Response(null, { status: 204 });
+      if (!bound) return new Response(null, { status: 204 });
       return json({
         id: options.provider === "slack" ? agentId : crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
         bot: { displayName: "Reviewer", avatarUrl: null },
-        receiveMode: "mention_only",
+        receiveMode,
         lastInboundAt: null,
         lastValidatedAt: "2026-08-20T00:00:00.000Z",
         lastRuntimeObservationAt: null,
@@ -943,7 +967,7 @@ export function installApi(
       agentUnbound,
       bindingReauth: options.bindingReauth ?? false,
       bindingState: options.bindingState ?? (options.bindingReauth ? "provisioning" : "active"),
-      bound: options.bound ?? false,
+      bound,
       handoffReady: options.handoffReady ?? !options.bindingReauth,
       provider: options.provider ?? "feishu",
       runtimeProvider: options.runtimeProvider ?? "codex",

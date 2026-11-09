@@ -17,13 +17,13 @@ import {
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
-import { feedbackCardContent, renderFeedbackCard, renderFeedbackText } from "../services/im/im-feedback-card.js";
 import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
 } from "../services/im/im-feedback-messenger.js";
 import { createImFeedbackTarget, ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
+import { feedbackContent, renderFeedbackText } from "../services/im/im-feedback-text.js";
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
 import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
@@ -340,14 +340,31 @@ describe("IM offline notice", () => {
 });
 
 describe("durable IM feedback", () => {
-  it("creates plain text targets unless the rollback flag is set", async () => {
+  it("creates plain text targets", async () => {
     const h = await fixture();
     expect((await h.target()).messageFormat).toBe("text_v1");
   });
 
-  it("uses a card for a workspace failure because it needs buttons", async () => {
+  it("keeps a workspace failure in plain text and links to the save and discard page", async () => {
     const h = await workspaceFixture();
-    expect((await h.target()).messageFormat).toBe("interactive_v1");
+    const target = await h.target();
+    expect(target.messageFormat).toBe("text_v1");
+    const text = renderFeedbackText(target, "https://example.test");
+    expect(text).toContain("retry the save or discard the changes from the details page");
+    expect(text).toContain(`<https://example.test/im-feedback/${target.id}|View details>`);
+  });
+
+  it("sends a legacy card target that never sent as text", async () => {
+    const h = await fixture();
+    await h.finish();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ messageFormat: "interactive_v1" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    const claimed = await h.store.claim();
+    if (!claimed) throw new Error("Missing claim");
+    expect(await h.store.markSending(claimed)).toBe(true);
+    expect((await h.target()).messageFormat).toBe("text_v1");
   });
 
   it("does not change the format of a message already sent", async () => {
@@ -374,22 +391,6 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     expect(await h.store.messageLanguage((await h.target()).messageId)).toBe("en");
     expect(await h.store.messageLanguage(randomUUID())).toBe("en");
-  });
-
-  it("freezes the message format at target creation across rollout flag changes", async () => {
-    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "true");
-    const h = await fixture();
-    expect((await h.target()).messageFormat).toBe("text_v1");
-    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "false");
-    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.frame.deliveryId, clock));
-    expect((await h.target()).messageFormat).toBe("text_v1");
-    const old = await h.delivery();
-    await db.database.transaction((tx) => startImFeedback(tx, old.frame.deliveryId, clock));
-    const [legacy] = await db.database
-      .select()
-      .from(imFeedbackTargets)
-      .where(eq(imFeedbackTargets.deliveryId, old.frame.deliveryId));
-    expect(legacy?.messageFormat).toBe("interactive_v1");
   });
 
   it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
@@ -423,7 +424,7 @@ describe("durable IM feedback", () => {
       expect((await h.target()).state).toBe("completed");
       if (bound) {
         expect(h.transport.update).toHaveBeenCalledOnce();
-        expect(renderFeedbackCard(await h.target(), "https://app.test").slack.text).toContain("Task completed");
+        expect(renderFeedbackText(await h.target(), "https://app.test")).toContain("Task completed");
       } else expect(h.transport.post).not.toHaveBeenCalled();
     },
   );
@@ -661,18 +662,16 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     await h.finish();
     const t = await h.target();
-    const card = renderFeedbackCard(t, "https://example.test");
-    expect(card.slack.text).toContain("may already have run");
-    expect(card.feishu).toContain("may already have run");
-    expect(card.slack.text).not.toContain("no operations were run");
-    expect(card.feishu).not.toContain("no operations were run");
-    expect(card.slack.text).not.toContain("provider_failed");
-    expect(card.feishu).not.toContain("provider_failed");
-    expect(JSON.stringify(card.slack.blocks)).not.toContain("provider_failed");
-    expect(feedbackCardContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
+    for (const provider of ["slack", "feishu"] as const) {
+      const text = renderFeedbackText({ ...t, provider }, "https://example.test");
+      expect(text).toContain("may already have run");
+      expect(text).not.toContain("no operations were run");
+      expect(text).not.toContain("provider_failed");
+    }
+    expect(feedbackContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
       "The execution environment had a problem, so the task didn't finish.",
     );
-    expect(renderFeedbackCard({ ...t, effects: "not_started" }, "https://example.test").slack.text).toContain(
+    expect(renderFeedbackText({ ...t, effects: "not_started" }, "https://example.test")).toContain(
       "no operations were run",
     );
   });
@@ -743,18 +742,6 @@ describe("safe feedback actions", () => {
       const t = await h.target();
       const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
       expect((await service.getForAccount(h.accountId, t.id)).actions).toEqual([]);
-      expect(
-        await service.submitNativeRetry({
-          feedbackId: t.id,
-          revision: t.revision,
-          provider: "slack",
-          userId: t.senderExternalId,
-          generation: t.bindingGeneration,
-          channelId: t.channelId,
-          messageId: "card-1",
-          installationId: t.installationId ?? undefined,
-        }),
-      ).toBe("unavailable");
     },
   );
   it("rejects a forged confirmation, foreign Account, expired action and stale revision", async () => {
@@ -805,56 +792,36 @@ describe("safe feedback actions", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
-  it("rejects retired native Retry buttons even for the original sender", async () => {
-    const h = await fixture();
-    await h.finish("failed", "not_started");
-    await h.worker.runOnce();
-    const t = await h.target();
-    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
-    const input = {
-      feedbackId: t.id,
-      revision: t.revision,
-      provider: "slack" as const,
-      userId: t.senderExternalId,
-      generation: t.bindingGeneration,
-      channelId: t.channelId,
-      messageId: t.cardMessageId ?? "",
-      installationId: t.installationId ?? undefined,
-    };
-    expect(await service.submitNativeRetry({ ...input, userId: "someone-else" })).toBe("unavailable");
-    expect(await service.submitNativeRetry({ ...input, messageId: "another-card" })).toBe("unavailable");
-    expect(await service.submitNativeRetry(input)).toBe("unavailable");
-  });
-  it.each(["save_release", "discard"] as const)("updates the original card from a verified %s result", async (kind) => {
-    const h = await workspaceFixture();
-    await h.worker.runOnce();
-    await h.submit(kind);
-    await h.service.close();
-    await h.worker.runOnce();
-    const view = await h.service.getForAccount(h.accountId, h.t.id);
-    expect(view.state).toBe("resolved");
-    expect(view.action).toMatchObject({
-      kind,
-      state: "succeeded",
-      resultCode: kind === "discard" ? "discarded" : "saved_released",
-    });
-    const content = renderFeedbackCard(
-      await h.target(),
-      "https://app.test",
-      (await db.database.select().from(imFeedbackActions))[0],
-    );
-    expect(content.slack.text).toContain(
-      kind === "discard" ? "Unsaved changes discarded" : "Saved and environment released",
-    );
-    expect(content.slack.text).not.toContain("Task completed");
-    expect(content.feishu).toContain("Working");
-    expect(h.transport.post).toHaveBeenCalledOnce();
-    expect(h.transport.update).toHaveBeenCalledOnce();
-    expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
-      environmentGeneration: 3,
-      ...(kind === "discard" ? { discardUnsavedChanges: true } : {}),
-    });
-  });
+  it.each(["save_release", "discard"] as const)(
+    "updates the original message from a verified %s result",
+    async (kind) => {
+      const h = await workspaceFixture();
+      await h.worker.runOnce();
+      await h.submit(kind);
+      await h.service.close();
+      await h.worker.runOnce();
+      const view = await h.service.getForAccount(h.accountId, h.t.id);
+      expect(view.state).toBe("resolved");
+      expect(view.action).toMatchObject({
+        kind,
+        state: "succeeded",
+        resultCode: kind === "discard" ? "discarded" : "saved_released",
+      });
+      const content = renderFeedbackText(
+        await h.target(),
+        "https://app.test",
+        (await db.database.select().from(imFeedbackActions))[0],
+      );
+      expect(content).toContain(kind === "discard" ? "Unsaved changes discarded" : "Saved and environment released");
+      expect(content).not.toContain("Task completed");
+      expect(h.transport.post).toHaveBeenCalledOnce();
+      expect(h.transport.update).toHaveBeenCalledOnce();
+      expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
+        environmentGeneration: 3,
+        ...(kind === "discard" ? { discardUnsavedChanges: true } : {}),
+      });
+    },
+  );
   it("requires exact sealed proof before claiming a successful save", async () => {
     const h = await workspaceFixture();
     h.runner.verifySavedForAccount.mockResolvedValue(false);
@@ -1070,21 +1037,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    const card = renderFeedbackCard(posted, "https://example.test");
-    expect(card.slack.text).toContain("frozen batch cannot be retried");
-    expect(JSON.stringify(card.slack.blocks)).not.toContain('"opentag_feedback_retry"');
-    expect(
-      await service.submitNativeRetry({
-        feedbackId: target.id,
-        revision: target.revision,
-        provider: "slack",
-        userId: target.senderExternalId,
-        generation: target.bindingGeneration,
-        channelId: target.channelId,
-        messageId: "card-1",
-        installationId: target.installationId ?? undefined,
-      }),
-    ).toBe("unavailable");
+    expect(renderFeedbackText(posted, "https://example.test")).toContain("frozen batch cannot be retried");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1115,13 +1068,14 @@ describe("feedback review regressions", () => {
 
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
-  const card = renderFeedbackCard({ ...(await h.target()), batchRetryBlocked: true }, "https://example.test");
-  for (const rendered of [JSON.stringify(card.slack), card.feishu]) {
-    expect(rendered).toContain("Retry save");
-    expect(rendered).toContain("Discard unsaved changes");
+  for (const provider of ["slack", "feishu"] as const) {
+    const rendered = renderFeedbackText(
+      { ...(await h.target()), provider, batchRetryBlocked: true },
+      "https://example.test",
+    );
+    expect(rendered).toContain("retry the save or discard the changes from the details page");
     expect(rendered).toContain("Work in this Session is paused; new input for this Session remains queued.");
     expect(rendered).not.toContain("frozen batch cannot be retried");
-    expect(rendered).not.toContain("opentag_feedback_retry");
   }
 });
 

@@ -114,7 +114,7 @@ receive role-aware managed instructions and may create further internal Sessions
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
+For eligible human IM inputs, the Server owns the working reaction and terminal failure-message projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
 
 openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
@@ -225,7 +225,7 @@ Client is upgrading, restarting or full.
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. A Session message has the same goal as an IM message: once accepted, the
-Client owns retrying it, and a final failure or an unrecoverable error reaches whoever sent it, as an error card reaches the
+Client owns retrying it, and a final failure or an unrecoverable error reaches whoever sent it, as a failure message reaches the
 person for an IM message. So when a message's Run ends without completing, the Server tells the message's sender, whichever
 kind of Session the target is. A scheduled message has no sender: its notice goes to an internal target's creator
 (`created_by_session_id`), and a visible target produces none:

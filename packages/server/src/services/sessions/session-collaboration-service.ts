@@ -525,7 +525,7 @@ export class SessionCollaborationService {
     return async (outcome, code) => {
       if (outcome !== "unreachable" || !code || !this.#canHold(computerId, { code })) return record(outcome, code);
       // Full: a miss like any other, which the scheduler reports to the conversation.
-      if (!(await this.#heldHasRoom(snapshot.targetSessionId, computerId))) {
+      if (!(await this.#heldHasRoom(snapshot.targetSessionId, computerId, snapshot.messageId))) {
         return record("unreachable", SESSION_MESSAGE_HELD_FULL_CODE);
       }
       const held = await this.#recordScheduled(snapshot, "unknown", SESSION_MESSAGE_HELD_CODE);
@@ -1527,8 +1527,14 @@ export class SessionCollaborationService {
     return this.#registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.sessionRecovery);
   }
 
-  #heldHasRoom(targetSessionId: string, computerId: string): Promise<boolean> {
-    return this.#sessions.heldHasRoom(targetSessionId, computerId, heldMessageCutoff(Date.now()), this.#heldLimits);
+  #heldHasRoom(targetSessionId: string, computerId: string, messageId: string): Promise<boolean> {
+    return this.#sessions.heldHasRoom(
+      targetSessionId,
+      computerId,
+      heldMessageCutoff(Date.now()),
+      this.#heldLimits,
+      messageId,
+    );
   }
 
   /**
@@ -1542,7 +1548,7 @@ export class SessionCollaborationService {
     computerId: string,
   ): Promise<SessionCliCommandResponse> {
     // A full hold answers now: the sender has not been told `accepted` yet, so this is its notice.
-    if (!(await this.#heldHasRoom(sessionId, computerId))) {
+    if (!(await this.#heldHasRoom(sessionId, computerId, messageId))) {
       return this.#record(response(messageId, "unreachable", sessionId, SESSION_MESSAGE_HELD_FULL_CODE), attemptCount);
     }
     const held = await this.#record(response(messageId, "unknown", sessionId, SESSION_MESSAGE_HELD_CODE), attemptCount);

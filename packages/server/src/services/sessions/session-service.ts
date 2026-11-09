@@ -12,7 +12,7 @@ import type {
   SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -980,6 +980,7 @@ export class SessionService {
 
   /**
    * Whether one more message fits in the hold. Each count stops at its limit, and both read the held index.
+   * The message itself never counts: a hand-off past its send budget is already marked held when it asks.
    * Concurrent sends may each see room, so the limits can be passed by the sends in flight.
    */
   async heldHasRoom(
@@ -987,13 +988,19 @@ export class SessionService {
     computerId: string,
     cutoff: Date,
     limits: { perTarget: number; perComputer: number },
+    messageId: string,
   ): Promise<boolean> {
     const [target] = await this.#database.select({ count: sql<number>`count(*)::int` }).from(
       this.#database
         .select({ id: sessionMessages.id })
         .from(sessionMessages)
         .where(
-          and(eq(sessionMessages.targetSessionId, targetSessionId), gt(sessionMessages.createdAt, cutoff), HELD_ROW),
+          and(
+            eq(sessionMessages.targetSessionId, targetSessionId),
+            gt(sessionMessages.createdAt, cutoff),
+            ne(sessionMessages.id, messageId),
+            HELD_ROW,
+          ),
         )
         .limit(limits.perTarget)
         .as("held_target"),
@@ -1004,7 +1011,14 @@ export class SessionService {
         .select({ id: sessionMessages.id })
         .from(sessionMessages)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
-        .where(and(eq(sessionPlacements.computerId, computerId), gt(sessionMessages.createdAt, cutoff), HELD_ROW))
+        .where(
+          and(
+            eq(sessionPlacements.computerId, computerId),
+            gt(sessionMessages.createdAt, cutoff),
+            ne(sessionMessages.id, messageId),
+            HELD_ROW,
+          ),
+        )
         .limit(limits.perComputer)
         .as("held_computer"),
     );

@@ -4,6 +4,8 @@ import {
   type FeedbackLanguage,
   failureCopy,
   offlineNoticeCopy,
+  parkedNoticeCopy,
+  type WaitingNoticeReason,
 } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
 
@@ -66,8 +68,9 @@ export function renderOfflineNotice(
   target: Pick<FeedbackTarget, "provider" | "agentId">,
   publicUrl: string,
   language: FeedbackLanguage,
+  reason: WaitingNoticeReason = "offline",
 ): string {
-  const { before, label, after } = offlineNoticeCopy(language);
+  const { before, label, after } = reason === "parked" ? parkedNoticeCopy(language) : offlineNoticeCopy(language);
   const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
   return `${before} ${textLink(target.provider, url, label)}\n${after}`;
 }

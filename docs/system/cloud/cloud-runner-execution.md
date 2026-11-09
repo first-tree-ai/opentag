@@ -593,7 +593,10 @@ proxy host allowlist remains unchanged.
 
 Deploy this Server before the updated Runner image: workspace Runners now opt into
 `renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
-bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.
+bounded reconnect backoff. A persistent Runner gives each connection attempt one 45-second
+authentication budget spanning connection establishment, WebSocket upgrade, and the Server's
+response, including Cloud API checks. An expired budget ends the attempt and triggers reconnect
+backoff.
 
 ## E7: idle reclamation and same-account physical reuse
 

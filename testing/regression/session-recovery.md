@@ -33,6 +33,21 @@ With an IM test binding on a Local Computer and permission to stop its daemon:
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
 6. Send a request to an Agent on Cloud while its Runner is unavailable. Expected: no offline notice.
 
+## Parked-dispatch notice
+
+A parked dispatch is hard to cause on purpose: the Computer must stay connected while its dispatch acknowledgement never
+arrives (for example a daemon whose reconcile hangs) until the dispatch timeout cap is reached. With a test stack where
+that can be arranged, or with a delivery row set to `pending` and `last_error_code = 'IM_DELIVERY_PARKED'` on a test
+database:
+
+1. With the Computer online, send a Chinese request in the same Session. Expected: one reply within about seventy-five
+   seconds saying an earlier message has not been confirmed and this one waits behind it, with an 查看 Agent link. It
+   names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+2. Send another request in the same Session. Expected: no further notice.
+3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
+4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
+   since the parked message arrived.
+
 ## Failure messages
 
 With an IM test binding and a runtime that can be made to fail on request:

@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -1461,6 +1461,51 @@ describe("SessionMessageInbox", () => {
       await vi.waitFor(() => expect(order).toEqual(["A", "B"]));
       await restarted.settled();
       restarted.stop();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("starts from a corrupt inbox file by moving it aside, and runs new messages (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-corrupt-"));
+    try {
+      const quarantined: string[] = [];
+      const store = new FileRuntimeDurabilityStore(home, {
+        onQuarantine: (quarantine) => quarantined.push(quarantine.kind),
+      });
+      const directory = join(home, "data/runtime/durability");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, "session-message.json"), '[{"kind": "session-message", "key": "trunc', {
+        mode: 0o600,
+      });
+      const ran: string[] = [];
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        persistence: store,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                  ran.push(input.input.items.at(-1)?.text ?? "");
+                  return { runId: input.runId, status: "completed", output: [] };
+                }),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      await inbox.ready();
+      expect(quarantined).toEqual(["session-message"]);
+      await inbox.accept(delivery({ text: "after the corruption" }));
+      await vi.waitFor(() => expect(ran).toEqual(["after the corruption"]));
+      await inbox.settled();
+      inbox.stop();
     } finally {
       await rm(home, { recursive: true, force: true });
     }

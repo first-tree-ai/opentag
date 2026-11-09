@@ -136,6 +136,14 @@ its task text by the same rule. Brackets in the task name are replaced with look
 disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
 feedback state for this and adds no column.
 
+A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
+workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
+280 seconds of dispatch entry or at the next trigger, whichever comes first. At most 75 Cloud hand-offs per Server
+use the extended window concurrently. Additional Cloud hand-offs have up to 20 seconds so they free scheduler slots
+within the 30-second claim window. A pause, edit, or deletion still
+wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
+restart does not recover an unfinished scheduled hand-off.
+
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |

@@ -1,4 +1,4 @@
-import { rename } from "node:fs/promises";
+import { link, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   type ErrorRetryability,
@@ -210,8 +210,8 @@ export interface DurableFileQuarantine {
   readonly kind: DurableWorkKind;
   /** Where the unreadable file now is; nothing reads it again. */
   readonly quarantinedPath: string;
-  /** Records of this kind the file still named, an estimate; undefined when it could not be read at all. */
-  readonly lostRecords: number | undefined;
+  /** Records of this kind the file still named: an estimate, since the file could not be parsed. */
+  readonly lostRecords: number;
   readonly error: RuntimeStorageError;
 }
 
@@ -220,9 +220,8 @@ export class DurableFileQuarantinedError extends Error {
   readonly code = "durable_file_quarantined";
 
   constructor(quarantine: Pick<DurableFileQuarantine, "kind" | "lostRecords" | "error">) {
-    const lost = quarantine.lostRecords === undefined ? "an unknown number of" : `about ${quarantine.lostRecords}`;
     super(
-      `Unreadable ${quarantine.kind} durable file moved aside; ${lost} records lost (${quarantine.error.message})`,
+      `Unreadable ${quarantine.kind} durable file moved aside; about ${quarantine.lostRecords} records lost (${quarantine.error.message})`,
       { cause: quarantine.error },
     );
     this.name = "DurableFileQuarantinedError";
@@ -288,9 +287,8 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
     } catch (error) {
       if (!isInvalidStorage(error)) throw error;
       const path = durabilityPath(this.#directory, kind);
-      const lostRecords = await countRecords(path, kind);
-      const quarantinedPath = `${path}.corrupt-${this.#now()}`;
-      await rename(path, quarantinedPath);
+      const lostRecords = countRecords(await readSecureFile(path), kind);
+      const quarantinedPath = await archive(path, `${path}.corrupt-${this.#now()}`);
       await syncDurableDirectory(this.#directory);
       try {
         this.#onQuarantine({ kind, quarantinedPath, lostRecords, error });
@@ -327,13 +325,25 @@ function isInvalidStorage(error: unknown): error is RuntimeStorageError {
  * How many records of this kind the unreadable file still names. An estimate: each record carries its
  * kind, so a truncated or garbled file can still be counted, but an opaque payload could repeat it.
  */
-async function countRecords(path: string, kind: DurableWorkKind): Promise<number | undefined> {
-  try {
-    const content = await readSecureFile(path);
-    if (content === undefined) return undefined;
-    return content.match(new RegExp(`"kind"\\s*:\\s*"${kind}"`, "g"))?.length ?? 0;
-  } catch {
-    return undefined;
+function countRecords(content: string | undefined, kind: DurableWorkKind): number {
+  return String(content).match(new RegExp(`"kind"\\s*:\\s*"${kind}"`, "g"))?.length ?? 0;
+}
+
+/**
+ * Move `path` to the first free name starting at `base`. `link` refuses an existing destination, so an
+ * earlier archive with the same clock value is never replaced, as `rename` would on POSIX.
+ */
+async function archive(path: string, base: string): Promise<string> {
+  for (let attempt = 0; ; attempt += 1) {
+    const destination = attempt === 0 ? base : `${base}-${attempt}`;
+    try {
+      await link(path, destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    await unlink(path);
+    return destination;
   }
 }
 

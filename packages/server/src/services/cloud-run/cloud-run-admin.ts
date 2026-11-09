@@ -139,7 +139,7 @@ export class CloudRunAdmin {
   }
   async createInstance(
     spec: RunnerInstanceSpec,
-    options: { onOperation?: (name: string) => Promise<void> } = {},
+    options: { onOperation?: (name: string) => Promise<void>; onAccepted?: (apiVersion: "v1" | "v2") => void } = {},
   ): Promise<CloudRunCreateResult> {
     const id = runnerInstanceId(spec);
     const name = this.resourceNameFor(id);
@@ -153,13 +153,14 @@ export class CloudRunAdmin {
     if (response.status === 400) {
       const body = record(await readBoundedJson(response));
       const message = record(body.error).message;
-      if (message === VPC_REJECTION) return this.#createV1(spec, id, name);
+      if (message === VPC_REJECTION) return this.#createV1(spec, id, name, options.onAccepted);
     }
     if (!response.ok) throw this.#httpError(response, "create");
     const operation = record(await readBoundedJson(response));
     if (typeof operation.name !== "string")
       throw new CloudRunAdminError("unknown", "Cloud Run create returned no operation name");
     this.#assertOperationName(operation.name);
+    options.onAccepted?.("v2");
     await options.onOperation?.(operation.name);
     return { outcome: "created", operationName: operation.name, instance: await this.#adopt(name, spec, true) };
   }
@@ -386,7 +387,12 @@ export class CloudRunAdmin {
         "Cloud Run Instance does not match the required Runner image, port, identity, resource or ingress policy",
       );
   }
-  async #createV1(spec: RunnerInstanceSpec, id: string, name: string): Promise<CloudRunCreateResult> {
+  async #createV1(
+    spec: RunnerInstanceSpec,
+    id: string,
+    name: string,
+    onAccepted?: (apiVersion: "v1") => void,
+  ): Promise<CloudRunCreateResult> {
     const c = this.#container(spec);
     c.resources = { limits: { cpu: "1", memory: RUNNER_MEMORY_LIMIT } };
     const r = await this.#request(
@@ -415,6 +421,7 @@ export class CloudRunAdmin {
     if (!r.ok && r.status !== 409) throw this.#httpError(r, "create-v1");
     // The regional v1 create API returns an Instance, not a long-running Operation. Do not
     // fabricate an operation name: preserve the deterministic resource until a UID is read.
+    if (r.ok) onAccepted?.("v1");
     await r.body?.cancel();
     return { outcome: r.status === 409 ? "adopted" : "created", instance: await this.#adopt(name, spec, true) };
   }

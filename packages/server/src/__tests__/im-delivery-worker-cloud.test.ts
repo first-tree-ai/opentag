@@ -858,7 +858,13 @@ describe("ImDeliveryWorker Cloud routing", () => {
       const diagnostics = info.mock.calls
         .map(([record]) => record)
         .filter((record) => record.operation === "cloud.latency");
-      expect(diagnostics.length).toBe(mode === "disabled" ? 0 : 5);
+      expect(diagnostics.length).toBe(mode === "disabled" ? 0 : 7);
+      if (mode !== "disabled") {
+        expect(diagnostics.filter((record) => record.phase === "dispatch")).toMatchObject([
+          { deliveryId, attempt: 1, event: "start" },
+          { deliveryId, attempt: 1, event: "end" },
+        ]);
+      }
       expect(JSON.stringify(diagnostics)).not.toContain("fixture logger failure");
     },
   );

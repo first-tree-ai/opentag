@@ -1,6 +1,10 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
-import type { PiProcessExit } from "../../observability/pi-diagnostics.js";
+import {
+  PI_STARTUP_TIMING_PREFIX,
+  type PiProcessExit,
+  type PiStartupMetrics,
+} from "../../observability/pi-diagnostics.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const PI_RPC_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -56,6 +60,7 @@ export interface PiRpcRequestOptions {
 
 export interface PiRpcClient {
   readonly exitStatus?: PiProcessExit;
+  readonly startupMetrics?: PiStartupMetrics;
   request(
     command: Readonly<Record<string, unknown>>,
     signal?: AbortSignal,
@@ -92,6 +97,7 @@ export class PiRpcProcess implements PiRpcClient {
   #closing = false;
   #failure?: Error;
   #exitStatus: PiProcessExit | undefined;
+  #spawnMs: number | undefined;
 
   constructor(options: PiRpcSpawnOptions) {
     this.#maxLineBytes = options.maxLineBytes ?? PI_RPC_MAX_LINE_BYTES;
@@ -110,6 +116,7 @@ export class PiRpcProcess implements PiRpcClient {
     this.#exit = new Promise<void>((resolve) => {
       this.#resolveExit = resolve;
     });
+    const spawnStarted = performance.now();
     try {
       this.#child = (options.spawnProcess ?? defaultSpawn)(options.command ?? "pi", options.args, {
         cwd: options.cwd,
@@ -122,6 +129,9 @@ export class PiRpcProcess implements PiRpcClient {
         cause: error,
       });
     }
+    this.#child.once("spawn", () => {
+      this.#spawnMs = performance.now() - spawnStarted;
+    });
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
     this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
     this.#child.on("error", (error) => {
@@ -136,6 +146,21 @@ export class PiRpcProcess implements PiRpcClient {
 
   get exitStatus(): PiProcessExit | undefined {
     return this.#exitStatus;
+  }
+
+  get startupMetrics(): PiStartupMetrics {
+    const metrics: PiStartupMetrics = {};
+    if (this.#spawnMs !== undefined) metrics.piProcessSpawnMs = this.#spawnMs;
+    for (const line of this.#stderr.toString("utf8").split("\n").slice(0, -1)) {
+      if (!line.startsWith(PI_STARTUP_TIMING_PREFIX)) continue;
+      const match = /^(mcpGatewayLoadMs|mcpGatewaySessionStartMs)=([0-9]{1,8}(?:\.[0-9]{1,3})?)$/.exec(
+        line.slice(PI_STARTUP_TIMING_PREFIX.length),
+      );
+      if (!match) continue;
+      const key = match[1] as "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs";
+      metrics[key] ??= Number(match[2]);
+    }
+    return metrics;
   }
 
   get pid(): number | undefined {

@@ -1,9 +1,13 @@
 import {
+  isFeishuCredentialRejectedCode,
+  isFeishuRateLimitCode,
   type ProviderCliExpectedIdentity,
   type ProviderCliValidationResultReason,
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
+
+export { isFeishuCredentialRejectedCode, isFeishuRateLimitCode };
 
 type ValidationDiagnosticLogger = Pick<ClientLogger, "debug">;
 const defaultValidationLogger = createLogger("provider-cli-validation");
@@ -174,10 +178,35 @@ function slackIdentity(
   return { botId: payload.bot_id, teamId: payload.team_id, userId: payload.user_id };
 }
 
-export function classifySpawnFailure(error: unknown): ProviderCliValidationClassification {
+const LOCAL_VALIDATION_ERROR_CODES = new Set([
+  "EACCES",
+  "EBADF",
+  "EEXIST",
+  "EISDIR",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
+
+export function isLocalValidationError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return typeof error.code === "string" && LOCAL_VALIDATION_ERROR_CODES.has(error.code);
+}
+
+export function classifySpawnFailure(
+  error: unknown,
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
+): ProviderCliValidationClassification {
   if (isAbortError(error)) throw error;
   const status = httpStatus(error);
   if (status === 429) return { status: "retrying", reason: "rate_limited" };
+  if (isLocalValidationError(error)) {
+    logger.debug(
+      { code: "local_validation_error", errno: (error as { code?: string }).code },
+      "Provider CLI local setup or spawn failed",
+    );
+  }
   return { status: "retrying", reason: "provider_unreachable" };
 }
 
@@ -212,33 +241,6 @@ function isRateLimitFailure(type: string | undefined, subtype: string | undefine
     String(code) === "429" ||
     isFeishuRateLimitCode(code)
   );
-}
-
-/** Feishu's application rate limit, which it can answer with any HTTP status. */
-export function isFeishuRateLimitCode(code: unknown): boolean {
-  return String(code) === "99991400";
-}
-
-const FEISHU_CREDENTIAL_REJECTED_CODES = new Set([
-  "10003",
-  "10012",
-  "10013",
-  "10014",
-  "10015",
-  "99991661",
-  "99991663",
-  "99991664",
-  "99991665",
-  "99991668",
-  "99991671",
-  "99991672",
-  "99991677",
-]);
-
-/** Feishu error codes that permanently reject app credentials or tenant tokens. */
-export function isFeishuCredentialRejectedCode(code: unknown): boolean {
-  if (typeof code !== "number" && typeof code !== "string") return false;
-  return FEISHU_CREDENTIAL_REJECTED_CODES.has(String(code));
 }
 
 function isUnknownFeishuFailure(payload: Record<string, unknown>): boolean {

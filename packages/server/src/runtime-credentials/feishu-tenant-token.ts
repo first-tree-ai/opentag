@@ -1,4 +1,11 @@
+import {
+  FEISHU_CREDENTIAL_REJECTED_CODES,
+  FEISHU_RATE_LIMIT_CODE,
+  isFeishuCredentialRejectedCode,
+} from "@opentag/shared";
 import { z } from "zod";
+
+export { FEISHU_CREDENTIAL_REJECTED_CODES, FEISHU_RATE_LIMIT_CODE, isFeishuCredentialRejectedCode };
 
 export interface FeishuTenantToken {
   token: string;
@@ -20,18 +27,6 @@ const TenantTokenResponseSchema = z.object({
   tenant_access_token: z.string().optional(),
   expire: z.number().int().positive().optional(),
 });
-
-/** Feishu's application rate limit, which it can answer with any HTTP status. */
-export const FEISHU_RATE_LIMIT_CODE = 99991400;
-
-/** Feishu error codes that permanently reject app credentials or tenant tokens. */
-export const FEISHU_CREDENTIAL_REJECTED_CODES: ReadonlySet<number> = new Set([
-  10003, 10012, 10013, 10014, 10015, 99991661, 99991663, 99991664, 99991665, 99991668, 99991671, 99991672, 99991677,
-]);
-
-export function isFeishuCredentialRejectedCode(code: number): boolean {
-  return FEISHU_CREDENTIAL_REJECTED_CODES.has(code);
-}
 
 export class FeishuTenantTokenExchangeError extends Error {
   constructor(

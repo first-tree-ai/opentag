@@ -26,6 +26,7 @@ import {
   extractBoundedJson,
   isFeishuCredentialRejectedCode,
   isFeishuRateLimitCode,
+  isLocalValidationError,
   type ProviderCliValidationClassification,
 } from "./validation-classify.js";
 
@@ -183,10 +184,13 @@ export class ProviderCliValidationRunner {
       return validationResult(fence, classification);
     } catch (error) {
       this.#logger.debug(
-        { code: "validation_run_failed", error: runtimeProxyErrorReason(error) },
+        {
+          code: validationRunFailureCode(error),
+          error: runtimeProxyErrorReason(error),
+        },
         "Provider CLI validation run failed",
       );
-      return validationFailureResult(fence, error, signal);
+      return validationFailureResult(fence, error, signal, this.#logger);
     } finally {
       try {
         await rm(workDir, { recursive: true, force: true });
@@ -215,8 +219,7 @@ export class ProviderCliValidationRunner {
     signal?: AbortSignal,
   ): Promise<ProviderCliValidationResult> {
     const open = this.#openProxyValidation;
-    if (!open) return { ...fence, status: "needs_attention" };
-    if (!request.validationRunId) return { ...fence, status: "needs_attention" };
+    if (!open || !request.validationRunId) return { ...fence, status: "needs_attention" };
     if (Date.parse(request.expiresAt) <= this.#now()) {
       return { ...fence, status: "retrying", reason: "validation_expired" };
     }
@@ -237,11 +240,10 @@ export class ProviderCliValidationRunner {
       const combinedSignal = combineSignals(signal, session.signal);
       combinedSignal?.throwIfAborted();
       const catalog = findProviderCliCatalogEntry(fence.provider);
-      const env = scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {});
-      for (const [key, value] of Object.entries(session.environment)) {
-        if (value === undefined) delete env[key];
-        else env[key] = value;
-      }
+      const env = applySessionEnvironment(
+        scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {}),
+        session.environment,
+      );
       const classification = await this.#classifyProxyRequest(
         fence.provider,
         request,
@@ -253,10 +255,13 @@ export class ProviderCliValidationRunner {
       return validationResult(fence, classification);
     } catch (error) {
       this.#logger.debug(
-        { code: "validation_run_failed", error: runtimeProxyErrorReason(error) },
+        {
+          code: validationRunFailureCode(error),
+          error: runtimeProxyErrorReason(error),
+        },
         "Provider CLI proxy validation run failed",
       );
-      return validationFailureResult(fence, error, signal);
+      return validationFailureResult(fence, error, signal, this.#logger);
     } finally {
       try {
         await session?.cleanup().catch((error: unknown) => {
@@ -417,12 +422,34 @@ export class ProviderCliValidationRunner {
       return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
       this.#logger.debug(
-        { code: "validation_process_failed", error: runtimeProxyErrorReason(error) },
+        {
+          code: validationProcessFailureCode(error),
+          error: runtimeProxyErrorReason(error),
+        },
         "Provider CLI validation process failed",
       );
       return classifyProcessFailure(error, signal, classify, this.#logger);
     }
   }
+}
+
+function validationRunFailureCode(error: unknown): "validation_local_setup_failed" | "validation_run_failed" {
+  return isLocalValidationError(error) ? "validation_local_setup_failed" : "validation_run_failed";
+}
+
+function validationProcessFailureCode(error: unknown): "validation_process_spawn_failed" | "validation_process_failed" {
+  return isLocalValidationError(error) ? "validation_process_spawn_failed" : "validation_process_failed";
+}
+
+function applySessionEnvironment(
+  env: NodeJS.ProcessEnv,
+  sessionEnvironment: Readonly<Record<string, string | undefined>>,
+): NodeJS.ProcessEnv {
+  for (const [key, value] of Object.entries(sessionEnvironment)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  return env;
 }
 
 function combineSignals(first?: AbortSignal, second?: AbortSignal): AbortSignal | undefined {
@@ -446,9 +473,10 @@ function validationFailureResult(
   fence: ProviderCliValidationFence,
   error: unknown,
   signal?: AbortSignal,
+  logger: ClientLogger = defaultValidationLogger,
 ): ProviderCliValidationResult {
   if (isAbortError(error) || signal?.aborted) throw abortError();
-  if (!(error instanceof FeishuTokenExchangeError)) return validationResult(fence, classifySpawnFailure(error));
+  if (!(error instanceof FeishuTokenExchangeError)) return validationResult(fence, classifySpawnFailure(error, logger));
   if (error.kind === "aborted") throw abortError();
   if (error.kind === "rate_limited") return { ...fence, status: "retrying", reason: "rate_limited" };
   if (error.kind === "provider_unreachable") {
@@ -489,7 +517,7 @@ function classifyProcessFailure(
     extractBoundedJson(output?.stdout ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
     extractBoundedJson(output?.stderr ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   if (payload !== undefined) return classify(payload);
-  return classifySpawnFailure(error);
+  return classifySpawnFailure(error, logger);
 }
 
 async function verifyTargetFingerprint(request: ProviderCliValidationRequest): Promise<boolean> {

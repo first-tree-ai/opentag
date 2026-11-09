@@ -149,7 +149,7 @@ describe("provider CLI validation classification", () => {
     ],
     [
       "unknown non-zero Feishu code",
-      { code: 99991401, msg: "upstream hiccup" },
+      { code: 99992402, msg: "upstream hiccup" },
       { status: "retrying", reason: "provider_unreachable" },
     ],
     [
@@ -176,6 +176,20 @@ describe("provider CLI validation classification", () => {
     [
       "explicit Feishu credential rejection code without normalization",
       { code: 10003, msg: "invalid app_id" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "permanent Feishu app or token rejection codes (10005, 20002, 99991401, 99991543, 99991662, 99991673)",
+      { code: 99991401, msg: "ip not in whitelist" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    ["app not installed (10005)", { code: 10005 }, { status: "needs_attention", reason: "credential_rejected" }],
+    ["app disabled (20002)", { code: 20002 }, { status: "needs_attention", reason: "credential_rejected" }],
+    ["app forbidden (99991543)", { code: 99991543 }, { status: "needs_attention", reason: "credential_rejected" }],
+    ["token invalid (99991662)", { code: 99991662 }, { status: "needs_attention", reason: "credential_rejected" }],
+    [
+      "tenant token invalid (99991673)",
+      { code: 99991673 },
       { status: "needs_attention", reason: "credential_rejected" },
     ],
   ])("classifies structured Feishu %s failures", (_case, payload, expected) => {
@@ -281,25 +295,27 @@ describe("Feishu tenant token exchange", () => {
         (async () => new Response("not-json", { status: 400 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "invalid" });
+    for (const rejectedCode of [10005, 10014, 20002, 99991401, 99991543, 99991662, 99991673]) {
+      await expect(
+        exchangeFeishuTenantToken(
+          grant,
+          undefined,
+          (async () => new Response(JSON.stringify({ code: rejectedCode }), { status: 200 })) as typeof fetch,
+        ),
+      ).rejects.toMatchObject({ kind: "credential_rejected" });
+    }
     await expect(
       exchangeFeishuTenantToken(
         grant,
         undefined,
-        (async () => new Response(JSON.stringify({ code: 10014 }), { status: 200 })) as typeof fetch,
-      ),
-    ).rejects.toMatchObject({ kind: "credential_rejected" });
-    await expect(
-      exchangeFeishuTenantToken(
-        grant,
-        undefined,
-        (async () => new Response(JSON.stringify({ code: 99991401 }), { status: 200 })) as typeof fetch,
+        (async () => new Response(JSON.stringify({ code: 99992402 }), { status: 200 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "provider_unreachable" });
     await expect(
       exchangeFeishuTenantToken(
         grant,
         undefined,
-        (async () => new Response(JSON.stringify({ code: 99991401 }), { status: 400 })) as typeof fetch,
+        (async () => new Response(JSON.stringify({ code: 99992402 }), { status: 400 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "provider_unreachable" });
     await expect(
@@ -1045,5 +1061,38 @@ exit 1
       ),
     ).resolves.toEqual({ ...feishuFence, status: "ready" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs distinct local spawn and setup diagnostic codes when process spawn fails with ENOENT", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-enoent-"));
+    const entries: RecordedLog[] = [];
+    const logger = recordingLogger(entries);
+    const runner = new ProviderCliValidationRunner({
+      home,
+      logger,
+      execFile: async () => {
+        throw Object.assign(new Error("spawn /missing ENOENT"), { code: "ENOENT" });
+      },
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.10.0",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "retrying", reason: "provider_unreachable" });
+    expect(entries.map((entry) => entry.fields.code)).toContain("validation_process_spawn_failed");
+    expect(entries.map((entry) => entry.fields)).toContainEqual({
+      code: "local_validation_error",
+      errno: "ENOENT",
+    });
   });
 });

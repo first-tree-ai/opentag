@@ -702,7 +702,7 @@ describe("ImProviderProxyAdapter write outcomes", () => {
   it.each([
     ["rejected", 10014, 400, 10014],
     ["rate_limited", 99991400, 429, 99991400],
-    ["upstream", 99991401, 503, 99991401],
+    ["upstream", 99992402, 503, 99992402],
   ] as const)(
     "answers a %s Feishu token exchange in Feishu's shape without any upstream call",
     async (kind, code, status, expectedCode) => {

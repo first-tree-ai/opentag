@@ -217,9 +217,10 @@ Client is upgrading, restarting or full.
   that write leaves the occurrence unconfirmed. The retry must pass the current authority and schedule checks and can
   send only before the next trigger and within 24 hours of the original claim. A one-time schedule has only the 24-hour
   limit. A replaced or expired occurrence ends as `delivery_superseded` or `delivery_expired`. The sweep can settle both
-  while the Computer is offline. These failures post the [scheduled task message](im-feedback.md#scheduled-tasks) once
-  per cause. An edit, pause, pause followed by resume, or deletion cancels the held occurrence without a post. The latest
-  summary shows `unknown / delivery_held` while the occurrence is waiting, also without a post.
+  while the Computer is offline. Resuming a paused schedule leaves the older occurrence cancelled. Both deadline
+  failures post the [scheduled task message](im-feedback.md#scheduled-tasks) once per
+  cause. A pause, edit or delete ends it as `schedule_disabled`, `schedule_changed` or `schedule_deleted`, which post nothing.
+  The schedule's latest summary shows `unknown / delivery_held` meanwhile, and that posts nothing either.
 - **Limit.** The Server holds at most 256 messages per target Session and 1024 per Computer
   (`SESSION_MESSAGE_HELD_LIMITS`), the same as the Client's inbox FIFO, which could not take more on recovery anyway
   (decided 2026-11-09). A message past either limit is not held. A `session send` answers `unreachable /

@@ -1919,7 +1919,7 @@ export class SessionCollaborationService {
 
 function isProvablyUnsent(error: unknown): boolean {
   if (error instanceof RuntimeRegistrySendError) return !error.mayHaveSent;
-  return error instanceof RuntimeDomainRequestError && (error.code === "capacity" || error.code === "stopped");
+  return error instanceof RuntimeDomainRequestError && error.code === "capacity";
 }
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {

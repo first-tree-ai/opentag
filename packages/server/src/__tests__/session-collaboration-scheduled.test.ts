@@ -367,6 +367,11 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
       code: "delivery_uncertain",
     },
     {
+      sendError: new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped during send"),
+      outcome: "unknown",
+      code: "delivery_uncertain",
+    },
+    {
       sendError: new RuntimeRegistrySendError("instance_replaced", "The connection was already replaced"),
       outcome: "unreachable",
       code: "runtime_unavailable",

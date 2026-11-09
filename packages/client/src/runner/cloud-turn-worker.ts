@@ -423,7 +423,7 @@ function cloudPiDiagnostics(
   let started = preparationStarted;
   let failed = false;
   const emit: PiDiagnosticSink = (event) => {
-    phase = event.phase;
+    if (event.event !== "milestone") phase = event.phase;
     if (event.event === "start") started = performance.now();
     if (event.event === "failure") failed = true;
     emitPiDiagnostic(sink, { ...event, abortSource: execution.stopReason() ?? event.abortSource });

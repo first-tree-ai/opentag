@@ -111,6 +111,48 @@ describe("Cloud Pi diagnostics", () => {
     });
   });
 
+  it("records the first Pi Turn once without changing the surrounding phase", () => {
+    let time = 10;
+    const records: Readonly<Record<string, unknown>>[] = [];
+    const reader = createPiDiagnosticReader(
+      { ...context, clockId: "parent-clock", dispatchRequestId: "dispatch-1" },
+      (record) => records.push(record),
+      () => time,
+    );
+    const writer = createPiDiagnosticWriter(
+      (line) => reader.consume(Buffer.from(line)),
+      () => time,
+    );
+    const observer = new PiRunDiagnostics(writer.emit, () => time);
+    observer.start("prompt_acceptance");
+    time += 20;
+    observer.firstTurnStarted();
+    time += 30;
+    observer.firstTurnStarted();
+    observer.end();
+    writer.finish();
+    reader.finish({});
+    expect(records.filter((record) => record.event === "milestone")).toMatchObject([
+      {
+        milestone: "first_turn_start",
+        phase: "prompt_acceptance",
+        elapsedMs: 20,
+        receivedElapsedMs: 20,
+        monotonicMs: 30,
+        clockId: "parent-clock",
+        dispatchRequestId: "dispatch-1",
+      },
+    ]);
+    expect(records).toContainEqual(
+      expect.objectContaining({ phase: "prompt_acceptance", event: "end", durationMs: 50 }),
+    );
+    expect(records.at(-1)).toMatchObject({
+      phase: "prompt_acceptance",
+      phaseComplete: true,
+      diagnosticIncomplete: false,
+    });
+  });
+
   it("distinguishes compaction wall time from the current acceptance window", () => {
     let time = 0;
     const events: PiDiagnosticEvent[] = [];

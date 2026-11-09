@@ -65,13 +65,13 @@ function requireContext(request: FastifyRequest): RunnerWorkspaceContext {
   return context;
 }
 
-/** The claim body is empty or exactly `{}`; anything else is rejected before parsing proceeds. */
-function assertEmptyClaimBody(body: unknown): void {
-  if (body === undefined) return;
-  if (typeof body !== "object" || body === null || Array.isArray(body) || Object.keys(body).length > 0) {
-    throw badRequest("The workspace claim request carries no payload");
-  }
-}
+const ClaimBodySchema = z
+  .object({
+    fence: z.literal(true).optional(),
+    upload: ArchiveQuerySchema.extend({ id: z.uuidv4() }).optional(),
+  })
+  .strict()
+  .refine((body) => !(body.fence && body.upload));
 
 function requireSingleHeader(request: FastifyRequest, name: string): string {
   const value = request.headers[name];
@@ -95,6 +95,7 @@ function parseUploadHeaders(request: FastifyRequest): {
   md5: string;
   sealed: boolean;
   bytes: number;
+  writeId?: string;
 } {
   const contentType = request.headers["content-type"];
   if (contentType !== OCTET_STREAM) throw badRequest("The archive body must be application/octet-stream");
@@ -131,7 +132,19 @@ function parseUploadHeaders(request: FastifyRequest): {
   if (sealedHeader !== "true" && sealedHeader !== "false") {
     throw badRequest("The x-opentag-workspace-sealed header must be true or false");
   }
-  return { generation, metageneration, sha256, md5, sealed: sealedHeader === "true", bytes };
+  const writeId = request.headers["x-opentag-workspace-write-id"];
+  if (writeId !== undefined && !z.uuidv4().safeParse(writeId).success) {
+    throw badRequest("The workspace write identity is invalid");
+  }
+  return {
+    generation,
+    metageneration,
+    sha256,
+    md5,
+    sealed: sealedHeader === "true",
+    bytes,
+    ...(typeof writeId === "string" ? { writeId } : {}),
+  };
 }
 
 /** The streaming parser must have surfaced the raw request stream; never a buffered body. */
@@ -173,8 +186,27 @@ export function registerRunnerWorkspaceRoutes(
       async (request, reply) => {
         try {
           const context = requireContext(request);
-          assertEmptyClaimBody(request.body);
-          const object = await workspace.claim(context);
+          const options = ClaimBodySchema.safeParse(request.body === undefined ? {} : request.body);
+          if (!options.success) throw badRequest("The workspace claim payload is invalid");
+          const object = await workspace.claim(context, options.data);
+          reply.header("cache-control", "no-store");
+          return await reply.code(200).send(object);
+        } catch (error) {
+          if (error instanceof RunnerWorkspaceError) return failWith(reply, error);
+          throw error;
+        }
+      },
+    );
+
+    scope.post(
+      `${RUNNER_WORKSPACE_PATH}/seal`,
+      { bodyLimit: 1_024, onRequest: authenticate },
+      async (request, reply) => {
+        try {
+          const context = requireContext(request);
+          const pins = ArchiveQuerySchema.safeParse(request.body);
+          if (!pins.success) throw badRequest("The workspace seal pins are invalid");
+          const object = await workspace.sealArchive(context, pins.data);
           reply.header("cache-control", "no-store");
           return await reply.code(200).send(object);
         } catch (error) {

@@ -199,7 +199,7 @@ export const AgentScheduleLastDispatchSchema = z
     /** The deterministic occurrence message id; null when no message was materialized. */
     messageId: z.string().uuid().nullable(),
     outcome: AgentScheduleDispatchOutcomeSchema,
-    /** Stable machine code (existing outcome code or skip/disable reason); null when none applies. */
+    /** Stable machine code (outcome code, skip/disable reason, or why a delivered Run failed); null when none applies. */
     code: z
       .string()
       .regex(/^[a-z][a-z0-9_]{0,127}$/)

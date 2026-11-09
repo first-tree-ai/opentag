@@ -63,6 +63,15 @@ conversation-kind and thread scope enter this lock chain; foreign-scope targets 
 an unlocked read. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
 
+For `session send` to a Local target, peers that negotiate `runtime.sessionMessageReconcile` can acknowledge a
+message in the reconcile response. The Server still assembles the runtime, mints the connection-bound proof, and
+checks current authority under the dispatch locks. A Client with the matching Session and proof already prepared
+validates the reconcile and uses its usual inbox, including the durable write before acceptance. If the target needs
+preparation or there are retained Turn Reports, the Client reconciles and explicitly defers the message. The Server
+rechecks dispatch authority before the separate delivery. Older peers and requests that exceed the combined frame
+limit use the two-frame path. An unconfirmed combined response leaves the message outcome `unknown`. The Server records that outcome without
+sending the message again.
+
 A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
 work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
 code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
@@ -352,16 +361,13 @@ such a schedule as that channel or thread.
 
 ## Automatic retry before a notice
 
-On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
-restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. The Run's duration
-limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
-are not retried, and the five-attempt inbox retry is gone. The retried Run starts with the continuation notice and the
-original message. A retry after a model HTTP 429 stays in place: the Run keeps holding the Session through the backoff, so
-no other work overtakes it. The sender receives the notice only when the message finally fails, so the superior hears about
-a timeout directly. After a daemon restart, each interrupted Session's message runs once the Server has prepared the Session
-again, before the Session's queued messages. A replay of a message the inbox still holds, including one waiting for its retry,
-is answered `accepted` and changes nothing. See
-[Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+Session messages running on their own on a Local Computer follow
+[Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work)
+for retry causes, limits, duration accounting, continuation input, and in-place backoff. The sender receives a
+[Run outcome notice](#run-outcome-notices) only after final failure. A retry after a model HTTP 429 keeps holding the
+Session through its backoff, so no other work overtakes it. After a daemon restart, each interrupted Session's message runs
+once the Server has prepared the Session again, before the Session's queued messages. A replay of a message the inbox still
+holds, including one waiting for its retry, is answered `accepted` and changes nothing.
 
 ### Session messages steered into an IM Turn
 

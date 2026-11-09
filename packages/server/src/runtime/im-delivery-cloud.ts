@@ -25,7 +25,13 @@ import {
   users,
 } from "../db/schema/index.js";
 import { CloudDeliveryLatency } from "../observability/cloud-latency.js";
-import { outcomeAttrs, setActiveSpanAttributes, updateCurrentPerformanceContext } from "../observability/index.js";
+import {
+  getCurrentPerformanceContext,
+  outcomeAttrs,
+  runWithPerformanceContext,
+  setActiveSpanAttributes,
+  updateCurrentPerformanceContext,
+} from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
@@ -133,22 +139,31 @@ export class CloudDeliveryCoordinator {
 
   /** One claimed Cloud delivery: validate/refresh the dispatch and send it through the owner. */
   async deliver(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt, lease: CloudClaimLease, signal: AbortSignal) {
-    updateCurrentPerformanceContext({
-      accountId: row.agent.createdByUserId,
-      agentId: row.agent.id,
-      computerId: row.computer.id,
-      sessionId: row.session.id,
-      deliveryId: row.delivery.id,
-      ...(row.delivery.turnId ? { turnId: row.delivery.turnId } : {}),
-    });
-    const latency = this.#latency.begin(row.session.id, row.delivery.id, attempt.attemptCount);
-    try {
-      const dispatched = await this.#deliver(row, attempt, lease, signal, latency);
-      latency?.finish(dispatched ? "completed" : "incomplete");
-    } catch (error) {
-      latency?.finish("failed");
-      throw error;
-    }
+    const parent = getCurrentPerformanceContext();
+    return runWithPerformanceContext(
+      {
+        callId: parent?.callId ?? randomUUID(),
+        operation: parent?.operation ?? "im.delivery.cloud",
+        requestId: parent?.requestId,
+        accountId: row.agent.createdByUserId,
+        agentId: row.agent.id,
+        computerId: row.computer.id,
+        sessionId: row.session.id,
+        deliveryId: row.delivery.id,
+        attempt: attempt.attemptCount,
+        turnId: row.delivery.turnId ?? undefined,
+      },
+      async () => {
+        const latency = this.#latency.begin(row.session.id, row.delivery.id, attempt.attemptCount);
+        try {
+          const dispatched = await this.#deliver(row, attempt, lease, signal, latency);
+          latency?.finish(dispatched ? "completed" : "incomplete");
+        } catch (error) {
+          latency?.finish("failed");
+          throw error;
+        }
+      },
+    );
   }
 
   async #deliver(
@@ -189,7 +204,8 @@ export class CloudDeliveryCoordinator {
       if (!(await lease.assertOwned())) return false;
       const cloudDelivery = this.#options.cloudDelivery;
       if (!cloudDelivery) return false;
-      return await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal);
+      updateCurrentPerformanceContext({ dispatchRequestId: built.requestId });
+      return await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal, latency);
     } catch (error) {
       await this.#recordDispatchError(attempt, error, signal);
       return false;
@@ -324,6 +340,7 @@ export class CloudDeliveryCoordinator {
     built: DirectImMessageDeliveryRequest,
     attempt: DeliveryAttempt,
     signal: AbortSignal,
+    latency?: CloudLatencyRecorder,
   ): Promise<boolean> {
     await this.#options.beforeDeliveryAdmission?.(signal);
     const admitted = await this.#options.withActiveAgentAdmission(
@@ -335,13 +352,15 @@ export class CloudDeliveryCoordinator {
       },
       async (onDispatched) => {
         try {
-          await cloudDelivery.dispatchDelivery({
-            computerId: row.computer.id,
-            inputHash: computeDirectInputHash(built),
-            installationId: row.computer.currentInstallationId,
-            request: built,
-            signal,
-          });
+          const dispatch = () =>
+            cloudDelivery.dispatchDelivery({
+              computerId: row.computer.id,
+              inputHash: computeDirectInputHash(built),
+              installationId: row.computer.currentInstallationId,
+              request: built,
+              signal,
+            });
+          await (latency ? latency.measure("dispatch", dispatch) : dispatch());
         } finally {
           onDispatched();
         }

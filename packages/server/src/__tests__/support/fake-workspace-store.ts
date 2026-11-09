@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   type WorkspaceObject,
   type WorkspaceObjectScope,
   type WorkspaceObjectStore,
   WorkspaceObjectStoreError,
   type WorkspaceObjectWriteInput,
+  type WorkspaceWriteInspection,
 } from "../../services/sandboxes/workspace-object-store.js";
 
 /**
@@ -27,6 +28,7 @@ interface StoredWorkspace {
   content: Buffer;
   sha256: string;
   md5: string;
+  writeId?: string;
 }
 
 function snapshotOf(stored: StoredWorkspace): WorkspaceObject {
@@ -40,6 +42,16 @@ function snapshotOf(stored: StoredWorkspace): WorkspaceObject {
     sha256: stored.sha256,
     md5: stored.md5,
   };
+}
+
+function assertPins(current: StoredWorkspace | undefined, previous: WorkspaceObject): void {
+  if (
+    !current ||
+    String(current.generation) !== previous.generation ||
+    String(current.metageneration) !== previous.metageneration
+  ) {
+    throw new WorkspaceObjectStoreError("conflict", "Workspace changed while consuming the upload");
+  }
 }
 
 export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
@@ -86,7 +98,10 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     return this.#objects.get(storageUri)?.content;
   }
 
-  async claim(scope: WorkspaceObjectScope, options: { initialize?: boolean } = {}): Promise<WorkspaceObject> {
+  async claim(
+    scope: WorkspaceObjectScope,
+    options: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean } = {},
+  ): Promise<WorkspaceObject> {
     this.claims += 1;
     if (this.failNextClaimWith) {
       const error = this.failNextClaimWith;
@@ -117,7 +132,12 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     if (current.ownerGeneration > scope.environmentGeneration) {
       throw new WorkspaceObjectStoreError("stale", "Workspace is owned by a newer environment generation");
     }
-    if (current.ownerGeneration === scope.environmentGeneration) return snapshotOf(current);
+    if (options.sameOwnerOnly && current.ownerGeneration !== scope.environmentGeneration) {
+      throw new WorkspaceObjectStoreError("stale", "Workspace owner does not match the releasing allocation");
+    }
+    if (current.ownerGeneration === scope.environmentGeneration && (!options.fence || current.sealed)) {
+      return snapshotOf(current);
+    }
     current.ownerGeneration = scope.environmentGeneration;
     current.sealed = false;
     current.metageneration += 1;
@@ -128,6 +148,35 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     this.heads += 1;
     const current = this.#objects.get(scope.storageUri);
     return current ? snapshotOf(current) : undefined;
+  }
+
+  async seal(scope: WorkspaceObjectScope, previous: WorkspaceObject): Promise<WorkspaceObject> {
+    const current = this.#objects.get(scope.storageUri);
+    if (
+      !current ||
+      current.ownerGeneration !== scope.environmentGeneration ||
+      String(current.generation) !== previous.generation ||
+      String(current.metageneration) !== previous.metageneration ||
+      !current.saved ||
+      current.sealed
+    ) {
+      throw new WorkspaceObjectStoreError("conflict", "Workspace changed before sealing");
+    }
+    current.sealed = true;
+    current.metageneration += 1;
+    return snapshotOf(current);
+  }
+
+  async inspectWrite(scope: WorkspaceObjectScope, input: WorkspaceWriteInspection): Promise<WorkspaceObject> {
+    const current = this.#objects.get(scope.storageUri);
+    if (!current || current.ownerGeneration !== scope.environmentGeneration) {
+      throw new WorkspaceObjectStoreError("conflict", "Workspace owner changed");
+    }
+    const unchanged =
+      String(current.generation) === input.generation && String(current.metageneration) === input.metageneration;
+    const committed = current.writeId === input.id && current.metageneration === 1;
+    if (!unchanged && !committed) throw new WorkspaceObjectStoreError("conflict", "Workspace readback changed");
+    return snapshotOf(current);
   }
 
   async read(scope: WorkspaceObjectScope, object: WorkspaceObject): Promise<ReadableStream<Uint8Array>> {
@@ -198,6 +247,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     if (sha256 !== input.sha256 || md5 !== input.md5) {
       throw new WorkspaceObjectStoreError("invalid_input", "Workspace archive checksums do not match its content");
     }
+    assertPins(this.#objects.get(scope.storageUri), previous);
     this.writes.push({ bytes: input.bytes, sha256: input.sha256, md5: input.md5, sealed: input.sealed });
     const next: StoredWorkspace = {
       generation: current.generation + 1,
@@ -208,6 +258,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
       content,
       sha256,
       md5,
+      writeId: input.writeId ?? randomUUID(),
     };
     this.#objects.set(scope.storageUri, next);
     return snapshotOf(next);

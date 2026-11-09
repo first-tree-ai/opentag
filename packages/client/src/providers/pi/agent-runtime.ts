@@ -321,9 +321,15 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     let result: AgentProviderRunResult;
     try {
       this.#diagnostics.start("pi_spawn");
+      const environment = piExtensionEnvironment(
+        request,
+        this.#configuration,
+        this.#mcpAdapterEntry,
+        this.#nativeResources,
+      );
       client = this.#createClient(
         this.#arguments(request),
-        piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry, this.#nativeResources),
+        this.#onDiagnostic ? { ...environment, OPENTAG_PI_STARTUP_DIAGNOSTICS: "1" } : environment,
       );
       this.#diagnostics.end();
       this.#client = client;
@@ -332,7 +338,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const rawState = await client.request({ type: "get_state" }, context.signal, {
         timeoutMs: this.#getStateTimeoutMs,
       });
-      this.#diagnostics.end();
+      this.#diagnostics.end(undefined, undefined, client.startupMetrics);
       this.#diagnostics.start("session_restore");
       const state = requireRecord(rawState, "Pi get_state returned invalid data");
       await this.#restoreSessionState(state, context);
@@ -688,6 +694,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     const backgroundWork = this.#observeBackgroundWork(message);
+    if (message.type === "turn_start" && this.#promptPhase === "owned") {
+      this.#diagnostics.firstTurnStarted();
+    }
     this.#claimTerminalAtIngress(message);
     if (message.type === "agent_start") this.#agentStarted = true;
     if (message.type === "compaction_start") {

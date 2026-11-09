@@ -134,7 +134,7 @@ Agent runtimes send human-visible messages by calling the official Feishu or
 Slack CLI directly (see [Direct provider CLI messaging](direct-provider-cli.md)).
 Provider-native text, cards, Blocks, files, threads, and reactions remain
 provider concerns; openTag exposes no general hosted send, reply, or reaction API. The Server-owned
-[task feedback surface](im-feedback.md) is a bounded exception for reactions and terminal error cards.
+[task feedback surface](im-feedback.md) is a bounded exception for reactions and terminal failure messages.
 
 Provider CLI calls pass through the Server's provider proxy. When a registered
 send or reply operation succeeds there, openTag captures the platform-confirmed

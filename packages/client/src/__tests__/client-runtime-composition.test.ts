@@ -112,6 +112,43 @@ describe("createClientRuntime production composition", () => {
     },
   );
 
+  it.each([true, false])(
+    "starts with corrupt durable files moved aside, logged, and relayed when a reporter is given (%s)",
+    async (withReporter) => {
+      const home = await temporaryDirectory("opentag-durable-quarantine-");
+      const directory = resolve(home, "data/runtime/durability");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(resolve(directory, "session-message.json"), '[{"kind": "session-message", "key": "trunc', {
+        mode: 0o600,
+      });
+      await writeFile(resolve(directory, "session-message-outcome.json"), "{ corrupt", { mode: 0o600 });
+      const logs: RecordedLog[] = [];
+      const reported: string[] = [];
+      const runtime = await createClientRuntime(runtimeConnection(), {
+        clientVersion: "0.0.1",
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: readyFactory(),
+        home,
+        logger: recordingLogger(logs),
+        ...(withReporter
+          ? { durableQuarantineReporter: (quarantine: { kind: string }) => reported.push(quarantine.kind) }
+          : {}),
+      });
+      try {
+        const errors = logs.filter((log) => log.level === "error" && log.fields.module === "runtime-durability");
+        expect(errors.map((log) => log.fields.kind).sort()).toEqual(["session-message", "session-message-outcome"]);
+        expect(errors.find((log) => log.fields.kind === "session-message")?.fields).toMatchObject({
+          lostRecords: 1,
+          errorMessage: "Runtime storage contains invalid JSON",
+        });
+        expect(reported.sort()).toEqual(withReporter ? ["session-message", "session-message-outcome"] : []);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
   it("can initialize Pi without the optional packaged Context Tree skills", async () => {
     const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(undefined);
     cleanup.push(async () => {

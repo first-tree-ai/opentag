@@ -114,10 +114,10 @@ Run time is recorded durably about once a minute while a Run works, so a crash
 loses at most that much of it.
 
 A failure that is not retried, and running out of retries, are reported as
-before: an IM Turn gets its terminal report and error card, a Session message's
+before: an IM Turn gets its terminal report and failure message, a Session message's
 sender gets its [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 While a retry is pending or running nothing is reported, so the Server shows no
-error card and sends no notice for it.
+failure message and sends no notice for it.
 
 The retry continues the same Session with a continuation notice as the first
 input item — `[OpenTag] Your previous turn was interrupted at <time> because

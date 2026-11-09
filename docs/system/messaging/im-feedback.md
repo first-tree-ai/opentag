@@ -215,7 +215,8 @@ the feedback target, the answer holds the Agent and Task, and the page goes stra
 execution settings, `restore` its Computer settings, and `task` the original Task. Anyone else gets only the owner's
 display name and the Agent's name, and the page says that only the Agent owner can change its settings, restore its
 connection, or view the task, and who that owner is. Neither answer carries the error, the conversation, or any other
-target detail; a deleted Agent or unknown ID is not found. Opening a link is read-only. Without `open`, the URL is
+target detail; a deleted Agent or unknown ID is not found. An Account that has never finished setup still sees this page
+rather than being sent to first-Agent setup, because a group member following a link may have no Agent of their own. Opening a link is read-only. Without `open`, the URL is
 the owner-only details page below.
 
 The details link opens an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows

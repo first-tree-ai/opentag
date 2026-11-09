@@ -367,5 +367,5 @@ With an IM test binding, a second Account, and a failure or offline card that ca
    and 打开任务 the same way. Expected: the Computer settings and the original Task.
 2. Open the same links signed in as the second Account. Expected: a page saying only the Agent owner can change its
    settings (or restore its connection, or view the task), naming the Agent and its owner, with no error code or
-   task detail.
+   task detail. Repeat with an Account that has never created an Agent. Expected: the same page, not first-Agent setup.
 3. Open a link signed out. Expected: sign-in, then the result for the signed-in Account.

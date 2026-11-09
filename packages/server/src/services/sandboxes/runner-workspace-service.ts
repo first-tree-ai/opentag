@@ -345,9 +345,11 @@ export class RunnerWorkspaceService {
         sealed: input.sealed,
         ...(input.writeId ? { writeId: input.writeId } : {}),
       };
+      const writeStarted = performance.now();
       const written = await this.#store.write(scope, head, write);
       this.#emitWorkspaceLog("runner.workspace.upload", scope, {
         archiveBytes: written.bytes,
+        objectWriteMs: performance.now() - writeStarted,
         workspaceGeneration: written.generation,
         sealed: written.sealed,
       });

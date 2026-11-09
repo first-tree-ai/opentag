@@ -63,6 +63,28 @@ describe("read-only Staging latency aggregation", () => {
     expect(JSON.stringify(result)).not.toContain(records[0]?.turnId);
   });
 
+  it("counts the first Turn observation once using the Runner receive duration", () => {
+    const record = {
+      module: "cloud-pi",
+      operation: "pi.diagnostic",
+      sessionId,
+      sandboxId,
+      environmentGeneration: 1,
+      turnId: randomUUID(),
+      phase: "prompt_acceptance",
+      event: "milestone",
+      milestone: "first_turn_start",
+      timestamp: utc,
+      seq: 8,
+      receivedElapsedMs: 72,
+      elapsedMs: 50,
+    };
+    const result = aggregateLatency(lines([record, { ...record, seq: 9 }]), options);
+    expect(result.metrics["pi/2026-11-03/native_exec_to_first_turn_observed"]).toMatchObject({ n: 1, p50: 72 });
+    expect(result.evidence.duplicatePi).toBe(1);
+    expect(result.endToEnd.available).toBe(false);
+  });
+
   it("supports P99 only for at least 1,000 valid measurements", () => {
     const records = Array.from({ length: 1000 }, () => trace()).flat();
     const result = aggregateLatency(lines(records), { ...options, expectedTurns: 1000 });

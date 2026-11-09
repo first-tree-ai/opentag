@@ -204,15 +204,36 @@ describe("Cloud workspace transfer", () => {
     const store = storageFixture();
     const pack = vi.spyOn(workspaceArchive, "createWorkspaceArchive");
     const fingerprint = vi.spyOn(workspaceArchive, "fingerprintWorkspace");
-    const first = await client(store);
+    const startupLogs = vi.fn();
+    const first = await client(store, 1, { onPerformanceLog: startupLogs });
     await first.client.initialize();
+    expect(startupLogs.mock.calls.map(([record]) => record)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "runner.workspace.claim", reason: "initial_restore_fence" }),
+        expect.objectContaining({
+          operation: "runner.workspace.save",
+          reason: "initial_empty_workspace",
+          packMs: expect.any(Number),
+          uploadMs: expect.any(Number),
+        }),
+      ]),
+    );
     expect(pack).toHaveBeenCalledTimes(1);
     await writeFile(join(first.workspace, "unpublished-work"), "keep unpublished bytes");
     await first.client.save();
     const saved = store.object();
     expect(pack).toHaveBeenCalledTimes(2);
-    const second = await client(store);
+    startupLogs.mockClear();
+    const second = await client(store, 1, { onPerformanceLog: startupLogs });
     await second.client.initialize();
+    expect(startupLogs.mock.calls.map(([record]) => record)).toEqual([
+      expect.objectContaining({ operation: "runner.workspace.claim", saved: true }),
+      expect.objectContaining({
+        operation: "runner.workspace.restore",
+        downloadMs: expect.any(Number),
+        extractMs: expect.any(Number),
+      }),
+    ]);
     expect(store.object()).toEqual({ ...saved, metageneration: "2" });
     expect(pack).toHaveBeenCalledTimes(2);
     expect(store.uploads).toHaveLength(2);

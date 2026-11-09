@@ -6,19 +6,39 @@ export type RunnerPerformanceOperation =
   | "runner.native_sandbox.probe"
   | "runner.native_sandbox.reset"
   | "runner.boot.ready"
+  | "runner.connection.auth"
+  | "runner.connection.rebind"
+  | "runner.workspace.claim"
   | "runner.workspace.restore"
   | "runner.workspace.save"
   | "runner.workspace.seal";
 
 export interface RunnerPerformanceMetrics {
   readonly sandboxName?: string;
+  readonly requestId?: string;
+  readonly connectionOutcome?:
+    | "welcomed"
+    | "closed"
+    | "auth_failed"
+    | "auth_timeout"
+    | "renewed"
+    | "bound"
+    | "unchanged"
+    | "refused";
   readonly sandboxId?: string;
   readonly sessionId?: string;
   readonly environmentGeneration?: number;
   readonly runnerVersion?: string;
   readonly launchDurationMs?: number;
   readonly probeDurationMs?: number;
+  readonly reason?: "initial_restore_fence" | "initial_empty_workspace";
   readonly archiveBytes?: number;
+  readonly downloadMs?: number;
+  readonly extractMs?: number;
+  readonly fingerprintMs?: number;
+  readonly packMs?: number;
+  readonly uploadMs?: number;
+  readonly commitVerificationMs?: number;
   readonly workspaceBytes?: number;
   readonly entryCount?: number;
   readonly workspaceGeneration?: string;
@@ -48,6 +68,9 @@ const THRESHOLDS_MS: Readonly<Record<RunnerPerformanceOperation, number>> = {
   "runner.native_sandbox.probe": 2_000,
   "runner.native_sandbox.reset": 3_000,
   "runner.boot.ready": 5_000,
+  "runner.connection.auth": 5_000,
+  "runner.connection.rebind": 5_000,
+  "runner.workspace.claim": 5_000,
   "runner.workspace.restore": 5_000,
   "runner.workspace.save": 5_000,
   "runner.workspace.seal": 5_000,

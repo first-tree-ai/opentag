@@ -715,7 +715,34 @@ export class CloudSessionCollaborationOwner {
 
     signal?.throwIfAborted();
     const scheduled = isScheduledCloudDelivery(input);
-    const ready = await this.#ensureReady(route.targetSessionId, scheduled, signal);
+    const dispatchRequestId = randomUUID();
+    const ensureReady = () => this.#ensureReady(route.targetSessionId, scheduled, signal);
+    const ready = await (this.#perfLogger
+      ? this.#perfLogger.traceAsync(
+          {
+            module: "sandboxes",
+            category: "service",
+            operation: "sandbox.allocation.session_message",
+            sessionId: route.targetSessionId,
+            messageId: message.id,
+            dispatchRequestId,
+          },
+          ensureReady,
+          {
+            resultAttributes: (result) =>
+              result.kind === "ready"
+                ? {
+                    allocationOutcome: "ready",
+                    sandboxId: result.sandbox.id,
+                    environmentGeneration: result.sandbox.environmentGeneration,
+                  }
+                : {
+                    allocationOutcome: result.outcome.status,
+                    allocationCode: "code" in result.outcome ? result.outcome.code : undefined,
+                  },
+          },
+        )
+      : ensureReady());
     signal?.throwIfAborted();
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
@@ -725,7 +752,7 @@ export class CloudSessionCollaborationOwner {
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
       // while its journal and execution dedup stay on the logical messageId. A retry with a stale
       // journaled entry can then be told apart from this attempt instead of timing out silently.
-      requestId: randomUUID(),
+      requestId: dispatchRequestId,
       messageId: message.id,
       ...(scheduled
         ? {
@@ -754,6 +781,9 @@ export class CloudSessionCollaborationOwner {
       agentId: route.agentId,
       sessionId: route.targetSessionId,
       sandboxId: sandbox.id,
+      environmentGeneration: sandbox.environmentGeneration,
+      messageId: message.id,
+      dispatchRequestId,
     });
     let receipt: RunnerCloudSessionMessageReceivedFrame;
     try {
@@ -766,6 +796,11 @@ export class CloudSessionCollaborationOwner {
           agentId: route.agentId,
           sessionId: route.targetSessionId,
           sandboxId: sandbox.id,
+          attributes: {
+            environmentGeneration: sandbox.environmentGeneration,
+            messageId: message.id,
+            dispatchRequestId,
+          },
         },
         () =>
           this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal, () => {
@@ -839,13 +874,30 @@ export class CloudSessionCollaborationOwner {
     const receiptPromise = this.#registerPending(connection, request.requestId);
     if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
     onAttempt();
-    const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
-      type: "session:message:run",
-      requestId: request.requestId,
-      message: request,
-      sessionKind: envelope.sessionKind,
-      ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
-    });
+    const send = () =>
+      this.#hub.sendToCurrent(sandbox.id, socket, {
+        type: "session:message:run",
+        requestId: request.requestId,
+        message: request,
+        sessionKind: envelope.sessionKind,
+        ...(envelope.outboxContext ? { outboxContext: envelope.outboxContext } : {}),
+      });
+    const sent = this.#perfLogger
+      ? this.#perfLogger.traceOperation(
+          {
+            module: "sandboxes",
+            category: "service",
+            operation: "sandbox.session_message.send",
+            sandboxId: sandbox.id,
+            sessionId: request.targetSessionId,
+            environmentGeneration: sandbox.environmentGeneration,
+            messageId: request.messageId,
+            dispatchRequestId: request.requestId,
+          },
+          send,
+          { resultAttributes: (sent) => ({ sent }) },
+        )
+      : send();
     if (!sent) {
       this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
       throw new CloudSessionDispatchUnavailableError();

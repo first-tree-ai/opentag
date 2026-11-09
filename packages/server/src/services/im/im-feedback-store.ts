@@ -246,14 +246,20 @@ async function offlinePeriodStart(
   // While the Session still waits behind a parked input, a waiting notice sent since that input arrived
   // covers a later outage too: the person already knows this message waits, and a reconnect between the two
   // must not turn the same wait into a second notice.
-  const parkedSince = await parkedInputReceivedAt(database, target);
+  // The parked input's own target counts too: it is queued and visited like any other input of the Session.
+  const parkedSince = await parkedInputReceivedAt(database, target, { includeOwn: true });
   return parkedSince && parkedSince < offlineSince ? parkedSince : offlineSince;
 }
 
-/** When the earliest parked input of the target's Session was received, if one is parked. */
+/**
+ * When the earliest parked input of the target's Session was received, if one is parked. `includeOwn`
+ * counts the target's own input: right for deduplicating a notice, wrong for deciding that the target
+ * waits behind another input.
+ */
 async function parkedInputReceivedAt(
   database: DatabaseClient | DatabaseTransaction,
   target: FeedbackTarget,
+  { includeOwn = false }: { includeOwn?: boolean } = {},
 ): Promise<Date | undefined> {
   const [parked] = await database
     .select({ receivedAt: imMessages.receivedAt })
@@ -264,7 +270,7 @@ async function parkedInputReceivedAt(
         eq(imMessageDeliveries.sessionId, target.sessionId),
         eq(imMessageDeliveries.state, "pending"),
         eq(imMessageDeliveries.lastErrorCode, PARKED_DELIVERY_CODE),
-        ne(imMessageDeliveries.id, target.deliveryId),
+        includeOwn ? undefined : ne(imMessageDeliveries.id, target.deliveryId),
       ),
     )
     .orderBy(imMessages.receivedAt)

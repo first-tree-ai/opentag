@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -434,6 +434,34 @@ describe("IM parked-dispatch notice", () => {
     // Once the parked input settles, a later outage is an ordinary new offline period again.
     await h.park(null);
     expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends one waiting notice in total across worker passes that include the parked input's own target", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.earlier.frame.deliveryId, clock));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.earlier.frame.deliveryId));
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(inArray(imFeedbackTargets.deliveryId, [h.frame.deliveryId, h.earlier.frame.deliveryId]));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice.mock.calls.map((call) => call[1])).toEqual(["parked"]);
+
+    // A heartbeat after that notice, then an outage, with the dispatch still parked: neither target sends again.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
   });
 
   it("posts the parked notice through the worker", async () => {

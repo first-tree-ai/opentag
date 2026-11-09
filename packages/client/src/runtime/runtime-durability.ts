@@ -205,6 +205,25 @@ export class MemoryRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 }
 
+/** A finished record older than this leaves the file, for the kinds that `PRUNED_KINDS` names. */
+export const FINISHED_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+const FINISHED_STATUSES: ReadonlySet<DurableWorkStatus> = new Set(["succeeded", "failed", "dead-letter"]);
+
+/**
+ * `session-message` is not pruned: a finished record is the inbox's only deduplication evidence. A
+ * message whose acceptance reply was lost stays `unknown` on the Server, which may send it again under
+ * the same ID at any age; without the record, that replay would run the message a second time.
+ */
+const PRUNED_KINDS: ReadonlySet<DurableWorkKind> = new Set(["turn-report", "session-message-outcome"]);
+
+/** Kept while its outcome may still need handing over, or while it is recent enough to answer a replay. */
+function retained(record: DurableWorkRecord, nowMs: number): boolean {
+  if (!PRUNED_KINDS.has(record.kind)) return true;
+  if (!FINISHED_STATUSES.has(record.status) || record.outcomeReport === "pending") return true;
+  return nowMs - record.updatedAt < FINISHED_RECORD_RETENTION_MS;
+}
+
 /** A durable file that could not be read, moved aside so the store can start empty for its kind. */
 export interface DurableFileQuarantine {
   readonly kind: DurableWorkKind;
@@ -269,7 +288,12 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       const next = [...records];
       if (index === -1) next.push(record as DurableWorkRecord);
       else next[index] = record as DurableWorkRecord;
-      await writeDurableJson(path, next);
+      // Every write rewrites the whole file, so finished history of the pruned kinds is dropped here.
+      const nowMs = this.#now();
+      await writeDurableJson(
+        path,
+        next.filter((candidate) => candidate.key === record.key || retained(candidate, nowMs)),
+      );
     });
   }
 

@@ -1,10 +1,4 @@
-import {
-  effectsCopy,
-  FEEDBACK_LABELS,
-  type FeedbackLanguage,
-  failureCopy,
-  parkedNoticeCopy,
-} from "./im-feedback-copy.js";
+import { effectsCopy, FEEDBACK_LABELS, type FeedbackLanguage, failureCopy } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
 
 function actionResult(language: FeedbackLanguage, action?: FeedbackAction): string | undefined {
@@ -60,17 +54,6 @@ export function plainText(text: string): string {
 /** The link stays in the text so readback can match the exact details URL on both providers. */
 export function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
-}
-
-/** The parked-dispatch notice is still text; the offline notice is a card (see im-feedback-card.ts). */
-export function renderParkedNotice(
-  target: Pick<FeedbackTarget, "provider" | "agentId">,
-  publicUrl: string,
-  language: FeedbackLanguage,
-): string {
-  const { before, label, after } = parkedNoticeCopy(language);
-  const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
-  return `${before} ${textLink(target.provider, url, label)}\n${after}`;
 }
 
 export function renderFeedbackText(

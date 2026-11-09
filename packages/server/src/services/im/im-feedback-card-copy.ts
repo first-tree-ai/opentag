@@ -4,7 +4,7 @@ import type { FeedbackLanguage } from "./im-feedback-copy.js";
 type Localized = Record<FeedbackLanguage, string>;
 
 /** A web destination opened from a text link at the end of the body sentence. */
-export type CardLink = "settings" | "task" | "restore";
+export type CardLink = "settings" | "task" | "restore" | "agent";
 
 export interface CardCopy {
   title: Localized;
@@ -17,6 +17,7 @@ export const CARD_LINK_LABELS = {
   settings: { zh: "去设置", en: "Open settings" },
   task: { zh: "打开任务", en: "Open task" },
   restore: { zh: "恢复连接", en: "Restore connection" },
+  agent: { zh: "查看 Agent", en: "View Agent" },
 } satisfies Record<CardLink, Localized>;
 
 const BODY = {
@@ -118,6 +119,13 @@ export const OFFLINE_CARD: CardCopy = {
   title: { zh: "Agent 所在电脑离线", en: "The Agent's computer is offline" },
   body: { zh: "恢复后会自动处理", en: "Messages will be handled after it reconnects" },
   link: "restore",
+};
+
+/** A message waiting behind an earlier one whose dispatch the Computer never confirmed. */
+export const PARKED_CARD: CardCopy = {
+  title: { zh: "排队中", en: "Queued" },
+  body: { zh: "前一条完成后处理", en: "Handled after the earlier message finishes" },
+  link: "agent",
 };
 
 /** What a card turns into once its button was used or the task later finished. */

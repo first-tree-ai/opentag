@@ -40,9 +40,9 @@ arrives (for example a daemon whose reconcile hangs) until the dispatch timeout 
 that can be arranged, or with a delivery row set to `pending` and `last_error_code = 'IM_DELIVERY_PARKED'` on a test
 database:
 
-1. With the Computer online, send a Chinese request in the same Session. Expected: one reply within about seventy-five
-   seconds saying an earlier message has not been confirmed and this one waits behind it, with an 查看 Agent link. It
-   names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
+   one orange card titled “排队中” with the body “前一条完成后处理，查看 Agent”, where 查看 Agent is a link, placed like
+   the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one

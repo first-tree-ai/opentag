@@ -85,13 +85,14 @@ same language rule as failure cards.
 
 A dispatch whose operation never settles is [parked](im-delivery-claim.md#parking-a-correlated-dispatch). It keeps
 custody until its ingress deadline, so later input of the same Session waits up to seven days with nothing to show
-for it. A queued input in that position gets one plain-text reply in the input's thread. It has no approved card copy
-yet, so unlike the offline notice it is not a card:
+for it. A queued input in that position gets one orange [card](#cards), placed like the offline notice:
 
-> This Agent's computer hasn't confirmed an earlier message, so this message is waiting behind it and can't be handled yet.
-> If this lasts, check that computer on the Agent page. [Open the Agent]
-> If you don't manage this Agent, contact its administrator.
-> Your message is saved and will be handled once the earlier one finishes or expires. It expires after 7 days.
+| Title | Body |
+| --- | --- |
+| 排队中 / Queued | 前一条完成后处理，**查看 Agent** / Handled after the earlier message finishes. **View Agent** |
+
+The link opens the card's feedback page with `?open=agent`, which takes the Agent owner to the Agent page. The card
+names no earlier message, person or Computer.
 
 - **When.** Sixty seconds after the input's receipt. The input's Computer must be online: an offline Computer gets the
   offline notice instead. Another pending delivery of the same Session must carry `IM_DELIVERY_PARKED`. Other Sessions
@@ -126,8 +127,8 @@ attachment holds blocks. The message has no top-level `text`, because Slack woul
 copy; the attachment `fallback` is the notification text.
 
 A destination on the Web is a text link at the end of the body sentence, never its own line: Feishu `[words](url)`,
-Slack `<url|words>`. Every link opens the card's feedback page with an `open` parameter (`settings`, `task` or
-`restore`). An operation finished in the conversation is a button. There is no details button by default.
+Slack `<url|words>`. Every link opens the card's feedback page with an `open` parameter (`settings`, `task`,
+`restore` or `agent`). An operation finished in the conversation is a button. There is no details button by default.
 
 | Failure | Title | Body | Link or buttons |
 | --- | --- | --- | --- |
@@ -160,7 +161,7 @@ proof of the save reads 操作失败, never 已保存.
 | Group | Quote reply to the failed message | Channel message |
 | Input inside a thread | Reply in that thread | Reply in that thread |
 
-The offline notice follows the same rules. A direct message is the Session's `conversation_kind = 'dm'`; a Slack
+The offline and queued notices follow the same rules. A direct message is the Session's `conversation_kind = 'dm'`; a Slack
 multi-person direct message counts as a group.
 
 Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Whether operations ran

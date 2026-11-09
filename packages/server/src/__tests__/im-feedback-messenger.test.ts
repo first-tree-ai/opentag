@@ -202,21 +202,31 @@ describe("native feedback transport", () => {
       },
     ]);
   });
-  it("keeps the parked-dispatch notice as text in both languages", async () => {
+  it("sends the parked-dispatch notice as an orange card placed like the offline notice", async () => {
     const { messenger, cooldown } = harness();
-    cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: false });
-    const t = target("feishu");
-    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "n", chat_id: t.channelId } });
+    cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: true });
+    const t: FeedbackTarget = { ...target("feishu"), threadKey: null };
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "n", chat_id: t.channelId } });
     await messenger.postOfflineNotice(t, "parked");
-    expect(JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content).text).toBe(
-      `这个 Agent 的电脑还没有确认之前的一条消息，所以这条消息要排在它后面，暂时处理不了。\n如果一直这样，请到 Agent 页面检查这台电脑。 [查看 Agent](https://app.example.test/agents/${t.agentId})\n如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，前面那条处理完或过期后会自动处理；7 天内没处理会过期。`,
+    const data = mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].data;
+    expect(data).not.toHaveProperty("uuid");
+    const card = JSON.parse(data.content);
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "排队中" }, template: "orange" });
+    expect(card.elements[0].text.content).toBe(
+      `前一条完成后处理，[查看 Agent](https://app.example.test/im-feedback/${t.id}?open=agent)`,
     );
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
     const slack = target("slack");
     mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: slack.channelId, ts: "n" });
     await messenger.postOfflineNotice(slack, "parked");
     const sent = mocks.slack.chat.postMessage.mock.calls[0]?.[0];
-    expect(sent.text).toContain("hasn't confirmed an earlier message");
-    expect(sent.text).toContain(`<https://app.example.test/agents/${slack.agentId}|Open the Agent>`);
+    expect(sent.attachments[0]).toMatchObject({
+      color: "#F2952F",
+      fallback: "Queued: Handled after the earlier message finishes",
+    });
+    expect(sent.attachments[0].blocks[1].text.text).toBe(
+      `Handled after the earlier message finishes. <https://app.example.test/im-feedback/${slack.id}?open=agent|View Agent>`,
+    );
   });
   it("does not submit a send whose language cannot be read, and keeps it retryable", async () => {
     const { messenger, cooldown } = harness();

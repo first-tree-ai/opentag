@@ -7,6 +7,7 @@ import {
   type CardLink,
   failureCardCopy,
   OFFLINE_CARD,
+  PARKED_CARD,
 } from "./im-feedback-card-copy.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
@@ -127,12 +128,16 @@ export function feedbackCard(
   return card;
 }
 
-export function offlineCard(
+/** Both waiting notices are orange: the offline Computer, or a message parked behind an unconfirmed one. */
+export function waitingCard(
   target: Pick<FeedbackTarget, "id">,
   publicUrl: string,
   language: FeedbackLanguage,
+  reason: "offline" | "parked" = "offline",
 ): FeedbackCard {
-  return fromCopy(OFFLINE_CARD, "offline", language, (link) => feedbackLinkUrl(target, publicUrl, link));
+  return fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language, (link) =>
+    feedbackLinkUrl(target, publicUrl, link),
+  );
 }
 
 /** Plain words for notifications and Slack's attachment fallback. */

@@ -9,8 +9,8 @@ import {
   feedbackCard,
   feedbackDetailsUrl,
   feishuCardContent,
-  offlineCard,
   slackCardMessage,
+  waitingCard,
 } from "./im-feedback-card.js";
 import type { FeedbackLanguage, WaitingNoticeReason } from "./im-feedback-copy.js";
 import type {
@@ -20,7 +20,7 @@ import type {
   ImFeedbackStore,
   SlackFeedbackScope,
 } from "./im-feedback-store.js";
-import { renderFeedbackText, renderParkedNotice } from "./im-feedback-text.js";
+import { renderFeedbackText } from "./im-feedback-text.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -285,46 +285,15 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async postOfflineNotice(target: FeedbackTarget, reason: WaitingNoticeReason = "offline"): Promise<void> {
     try {
       const context = await this.#context(target);
-      if (reason === "parked") return await this.#postParkedNotice(target, context.language);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#sendCard(target, offlineCard(target, this.publicUrl, context.language), context, signal),
+        (signal) =>
+          this.#sendCard(target, waitingCard(target, this.publicUrl, context.language, reason), context, signal),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
       throw postFailure(error);
     }
-  }
-
-  /** The parked-dispatch notice has no approved card copy yet, so it stays text in the input's thread. */
-  async #postParkedNotice(target: FeedbackTarget, language: FeedbackLanguage): Promise<void> {
-    const text = renderParkedNotice(target, this.publicUrl, language);
-    await this.#run(
-      `${target.provider}.feedback.offline_notice`,
-      async (signal) => {
-        if (target.provider === "slack") {
-          const { api } = await this.#slack(target, signal);
-          const r = await this.#slackCall(target, () =>
-            api.chat.postMessage({
-              channel: target.channelId,
-              thread_ts: target.threadKey ?? target.inputExternalId,
-              text,
-              unfurl_links: false,
-              unfurl_media: false,
-            }),
-          );
-          if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
-          return;
-        }
-        const { api } = await this.#feishu(target, signal);
-        const r = await api.im.v1.message.reply({
-          path: { message_id: target.inputExternalId },
-          data: { msg_type: "text", content: JSON.stringify({ text }) },
-        });
-        if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
-      },
-      { maxAttempts: 1, timeoutMs: 8_000 },
-    );
   }
 
   /**

@@ -646,36 +646,54 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
-  it("keeps not_started at the head of the FIFO across reconnect and keeps interruption terminal", async () => {
-    const h = steeringHarness(["accepted", "accepted", "refused"]);
-    const [first, second, third] = h.messages;
-    await h.start();
-    for (const message of h.messages) {
-      await h.deliver(message);
-      await h.verify(message);
-    }
-    await waitFor(() => h.steered.length === 3, "two joined inputs and one refused");
-    h.runner.onChannelClosed();
-    await h.runner.reconcile();
-    await h.verify(third);
-    h.finish({
-      outcome: "failed",
-      executionEffects: "may_have_occurred",
-      errorReason: "turn_timeout",
-      sessionSteers: { [first.messageId]: "not_started", [second.messageId]: "interrupted" },
-    });
-    await h.runner.waitForActive();
-    expect(h.prompts).toEqual([h.message.messageId]);
-    expect(settledOf(h.sent)).toEqual([
-      expect.objectContaining({ messageId: h.message.messageId, outcome: "failed", reason: "turn_timeout" }),
-      expect.objectContaining({ messageId: second.messageId, outcome: "failed", reason: "turn_timeout" }),
-    ]);
-    expect(sessionReceiptsOf(h.sent).at(-1)).toMatchObject({ messageId: first.messageId, phase: "received" });
-    await h.verify(first);
-    await waitFor(() => settledOf(h.sent).length === 4, "FIFO fallback settlements");
-    expect(h.prompts).toEqual([h.message.messageId, first.messageId, third.messageId]);
-    await h.runner.close();
-  });
+  it.each(["grant", "missing grant"] as const)(
+    "keeps not_started at the FIFO head across reconnect (%s) and keeps interruption terminal",
+    async (grant) => {
+      const h = steeringHarness(["accepted", "accepted", "refused"]);
+      const [first, second, third] = h.messages;
+      await h.start();
+      for (const message of h.messages) {
+        await h.deliver(message);
+        await h.verify(message);
+      }
+      await waitFor(() => h.steered.length === 3, "two joined inputs and one refused");
+      h.runner.onChannelClosed();
+      await h.runner.reconcile();
+      await h.verify(third);
+      h.finish({
+        outcome: "failed",
+        executionEffects: "may_have_occurred",
+        errorReason: "turn_timeout",
+        sessionSteers: { [first.messageId]: "not_started", [second.messageId]: "interrupted" },
+      });
+      await h.runner.waitForActive();
+      expect(h.prompts).toEqual([h.message.messageId]);
+      expect(settledOf(h.sent)).toEqual([
+        expect.objectContaining({ messageId: h.message.messageId, outcome: "failed", reason: "turn_timeout" }),
+        expect.objectContaining({ messageId: second.messageId, outcome: "failed", reason: "turn_timeout" }),
+      ]);
+      expect(sessionReceiptsOf(h.sent).at(-1)).toMatchObject({ messageId: first.messageId, phase: "received" });
+      if (grant === "grant") await h.verify(first);
+      else {
+        await h.runner.handleSessionMessageVerified({
+          type: "session:message:verified",
+          requestId: first.requestId,
+          status: "verified",
+        });
+      }
+      await waitFor(() => settledOf(h.sent).length === 4, "FIFO fallback settlements");
+      expect(h.prompts).toEqual(
+        grant === "grant"
+          ? [h.message.messageId, first.messageId, third.messageId]
+          : [h.message.messageId, third.messageId],
+      );
+      expect(settledOf(h.sent)[2]).toMatchObject({
+        messageId: first.messageId,
+        outcome: grant === "grant" ? "completed" : "failed",
+      });
+      await h.runner.close();
+    },
+  );
 
   it("keeps an uncertain injection terminal without trying later steers in that Turn", async () => {
     const h = steeringHarness(["uncertain"]);

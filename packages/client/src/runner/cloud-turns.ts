@@ -919,13 +919,12 @@ export class CloudTurnRunner {
         return;
       }
       if (entry.phase !== "received") return;
-      if (this.#closed || this.#cancelRequested.delete(entry.messageId)) {
-        await this.#settleSessionTerminal(entry, "cancelled");
-        return;
-      }
-      const denial = this.#admitSession(frame);
+      const denial =
+        this.#closed || this.#cancelRequested.delete(entry.messageId) ? "cancelled" : this.#admitSession(frame);
       if (denial) {
+        this.#queue.delete(entry.requestId);
         await this.#settleSessionTerminal(entry, denial);
+        this.#scheduleDrain();
         return;
       }
       this.#startup(entry, "verified");

@@ -127,8 +127,10 @@ test("paused messaging is readable across layouts and never starts a write", asy
         await more.focus();
         await page.keyboard.press("Enter");
         await expect(page.getByRole("dialog")).toBeVisible();
-        await page.getByRole("button", { name: "帮助", exact: true }).click();
-        await expect(page.getByRole("button", { name: "更新凭证", exact: true })).toBeDisabled();
+        await page.getByRole("button", { name: "遇到问题？", exact: true }).click();
+        await expect(page.getByRole("button", { name: "更新凭证", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "重新授权", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "重试自动设置", exact: true })).toHaveCount(0);
         await expectAccessible(page);
         await page.keyboard.press("Escape");
       }

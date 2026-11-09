@@ -143,6 +143,29 @@ describe("custom Slack App flow", () => {
     expect(screen.queryByText("Bot message policy")).toBeNull();
   });
 
+  it("requires both trimmed credentials before creating a Slack App binding", async () => {
+    const test = fixture();
+    await openCreate();
+    const submit = screen.getByRole("button", { name: "Save" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "   " } });
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "   " } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "  private-token  " } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "  private-secret  " } });
+    expect(submit).toHaveProperty("disabled", false);
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(test.save).toHaveBeenCalledWith(agentId, {
+        intent: "create",
+        expectedMessaging: unbound().expectedMessaging,
+        botAccessToken: "private-token",
+        signingSecret: "private-secret",
+      }),
+    );
+  });
+
   it("keeps creation recovery in collapsed help and links to existing Apps before retrying", async () => {
     fixture();
     await openCreate();

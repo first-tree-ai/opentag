@@ -1218,22 +1218,25 @@ function credentialRequest(
   secret: string,
 ): SaveSlackConfigurationRequest | undefined {
   const expected = view.expectedMessaging;
+  const botAccessToken = token.trim();
+  const signingSecret = secret.trim();
   if (view.allowedIntent === "create" && expected?.kind === "unbound") {
+    if (!botAccessToken || !signingSecret) return undefined;
     return {
       intent: "create",
       expectedMessaging: expected,
-      botAccessToken: token.trim(),
-      signingSecret: secret.trim(),
+      botAccessToken,
+      signingSecret,
     };
   }
   if (view.allowedIntent !== "reauthorize" || expected?.kind !== "bound" || expected.provider !== "slack")
     return undefined;
-  if (!token.trim() && !secret.trim()) return undefined;
+  if (!botAccessToken && !signingSecret) return undefined;
   return {
     intent: "reauthorize",
     expectedMessaging: { ...expected, provider: "slack" },
-    ...(token.trim() ? { botAccessToken: token.trim() } : {}),
-    ...(secret.trim() ? { signingSecret: secret.trim() } : {}),
+    ...(botAccessToken ? { botAccessToken } : {}),
+    ...(signingSecret ? { signingSecret } : {}),
   };
 }
 

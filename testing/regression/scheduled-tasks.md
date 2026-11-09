@@ -30,6 +30,7 @@ error code and a clickable link that opens the schedule in Web.
 | ST-08 | Late occurrence | Stop the Server past an occurrence and its 30-second window, then start it | One "didn't run" message |
 | ST-09 | Schedule turned off | End the target Session or otherwise make the target permanently invalid | One message saying the schedule stays off until resumed. Web shows no next time for it |
 | ST-10 | Cancelled Run | On a Cloud Agent, stop a running scheduled Run (a Local Computer has no way to stop a running Task) | No failure message |
+| ST-11 | Cloud Sandbox release at trigger | Let a scheduled occurrence fire while idle reclaim is releasing the Sandbox. Allow release and workspace restoration to finish within the dispatch window | The original occurrence starts once after restoration. The schedule keeps its next trigger and IM posts no failure message |
 | ST-11 | Pause, edit, delete | Pause, edit, or delete a schedule as an occurrence is due | No failure message |
 | ST-12 | Agent paused | Suspend the Agent across an occurrence | No failure message |
 | ST-13 | Untrusted name | Name a schedule with provider mention or link syntax, then make it fail | The name appears as text. Nobody is mentioned, and the only disguised link is the details link |

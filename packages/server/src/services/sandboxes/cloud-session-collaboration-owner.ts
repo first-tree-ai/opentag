@@ -103,6 +103,9 @@ function dispatchRequestId(messageId: string): string {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** The allocation ensure may outlive one HTTP read on a cold start; the wait is bounded and the durable reservation continues. */
 const DEFAULT_ENSURE_TIMEOUT_MS = 20_000;
+// Provisioning and workspace restore can each take up to two minutes.
+const SCHEDULED_ENSURE_TIMEOUT_MS = 250_000;
+const SCHEDULED_READINESS_POLL_MS = 500;
 /** Grant transport allowance on top of the Turn budget (mirrors the IM delivery owner). */
 const CLOUD_SESSION_GRANT_TRANSPORT_MS = 30_000;
 /**
@@ -571,6 +574,7 @@ export class CloudSessionCollaborationOwner {
   readonly #now: () => number;
   readonly #requestTimeoutMs: number;
   readonly #ensureTimeoutMs: number;
+  readonly #scheduledEnsureTimeoutMs: number;
   /** In-flight dispatches awaiting the Runner's journaled receipt, keyed by dispatch request id. */
   readonly #pending = new Map<
     string,
@@ -609,6 +613,7 @@ export class CloudSessionCollaborationOwner {
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+    this.#scheduledEnsureTimeoutMs = options.ensureTimeoutMs ?? SCHEDULED_ENSURE_TIMEOUT_MS;
     this.#runOutcomeRetryMs = options.runOutcomeRetryMs ?? RUN_OUTCOME_NOTICE_RETRY_MS;
   }
 
@@ -709,12 +714,12 @@ export class CloudSessionCollaborationOwner {
     await this.#reconcileSessionWork(route.targetSessionId, signal);
 
     signal?.throwIfAborted();
-    const ready = await this.#ensureReady(route.targetSessionId, signal);
+    const scheduled = isScheduledCloudDelivery(input);
+    const ready = await this.#ensureReady(route.targetSessionId, scheduled, signal);
     signal?.throwIfAborted();
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
-    const scheduled = isScheduledCloudDelivery(input);
     const request: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
@@ -1148,6 +1153,7 @@ export class CloudSessionCollaborationOwner {
    */
   async #ensureReady(
     targetSessionId: string,
+    scheduled: boolean,
     signal?: AbortSignal,
   ): Promise<
     | { kind: "ready"; sandbox: typeof sandboxes.$inferSelect }
@@ -1175,7 +1181,7 @@ export class CloudSessionCollaborationOwner {
     const accountId = await this.#accountForSession(targetSessionId);
     signal?.throwIfAborted();
     if (!accountId) return notReady;
-    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId, signal);
+    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId, scheduled, signal);
     signal?.throwIfAborted();
     if (outcome === "restore_required") {
       // Previously used storage with no persistence: allocating would be a blank replacement.
@@ -1230,14 +1236,18 @@ export class CloudSessionCollaborationOwner {
     accountId: string,
     sandboxId: string,
     targetSessionId: string,
+    scheduled: boolean,
     signal?: AbortSignal,
   ): Promise<IngressAllocationOutcome | "timeout" | "failed" | "capacity"> {
     const controller = new AbortController();
     const preparationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const convergence = allocation
-      .ensureEnvironmentAllocated({ accountId, sandboxId })
+    const ensure = () => allocation.ensureEnvironmentAllocated({ accountId, sandboxId });
+    const convergence = ensure()
       .then((outcome) => {
         preparationSignal.throwIfAborted();
+        if (scheduled && outcome !== "restore_required") {
+          return this.#waitForScheduledRunner(targetSessionId, sandboxId, ensure, preparationSignal);
+        }
         return outcome === "pending" || outcome === "ready"
           ? this.#waitForRunnerReady(targetSessionId, preparationSignal)
           : outcome;
@@ -1254,17 +1264,46 @@ export class CloudSessionCollaborationOwner {
       });
     this.#track(convergence);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     try {
       return await Promise.race([
         convergence,
-        new Promise<"timeout">((resolve) => {
-          timer = setTimeout(() => resolve("timeout"), this.#ensureTimeoutMs);
+        new Promise<"timeout" | "stopped">((resolve) => {
+          onAbort = () => resolve("stopped");
+          signal?.addEventListener("abort", onAbort, { once: true });
+          if (signal?.aborted) onAbort();
+          timer = setTimeout(
+            () => resolve("timeout"),
+            scheduled ? this.#scheduledEnsureTimeoutMs : this.#ensureTimeoutMs,
+          );
           timer.unref?.();
         }),
       ]);
     } finally {
       clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
       controller.abort();
+    }
+  }
+
+  /** Resume allocation after release while the original, unsent occurrence still owns its dispatch slot. */
+  async #waitForScheduledRunner(
+    targetSessionId: string,
+    sandboxId: string,
+    ensure: () => Promise<IngressAllocationOutcome>,
+    signal: AbortSignal,
+  ): Promise<IngressAllocationOutcome> {
+    while (true) {
+      await delay(SCHEDULED_READINESS_POLL_MS, undefined, { signal, ref: false });
+      const owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      signal.throwIfAborted();
+      if (!owned || owned.sandbox.id !== sandboxId) return "stopped";
+      const row = owned.sandbox;
+      if (this.#isRunnerReady(row)) return "ready";
+      if (row.lifecycle !== "unallocated" || row.idleReclaimAt !== null) continue;
+      const outcome = await ensure();
+      signal.throwIfAborted();
+      if (outcome === "restore_required") return outcome;
     }
   }
 

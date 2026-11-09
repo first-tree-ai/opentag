@@ -119,6 +119,8 @@ export interface ScheduledMessageSnapshot {
   origin: SessionMessageScheduledOrigin;
   /** The claim's database time; recorded as the summary's attemptedAt and never re-read. */
   attemptedAt: Date;
+  /** The next scheduled occurrence, if any, computed by the same claim. */
+  nextTriggerAt: Date | null;
   /** The Web detail link, derived from the trusted public origin at claim time. */
   detailUrl: string;
 }
@@ -164,19 +166,12 @@ export interface ScheduleDispatch {
   ): Promise<ScheduledMessageDispatchOutcome>;
 }
 
-/*
- * The scheduled entry's total hand-off budget reuses the existing stage timeouts: Local is the
- * reconcile request timeout plus the delivery request timeout (30s + 30s), Cloud is the
- * allocation ensure timeout plus the receipt timeout (20s + 30s). The budget starts at dispatch
- * entry and covers preparation, the per-Session hand-off queue, and the receipt wait — never the
- * business execution. The ordinary entry points keep their per-stage timeouts and are not bounded
- * by this total.
- */
 /** A stop older than this is not sent again: a Run outlasting the Computer's absence is its Run budget's job. */
 const STOP_REDELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const STOP_REDELIVERY_LIMIT = 64;
+// Local reconcile + delivery. Cloud preparation + receipt, including time queued before the send.
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
-const SCHEDULED_CLOUD_BUDGET_MS = 50_000;
+const SCHEDULED_CLOUD_BUDGET_MS = 280_000;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
 
 type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; recipientSessionId: string };
@@ -358,10 +353,11 @@ export class SessionCollaborationService {
         return record("unreachable", resolution.code);
       }
       const route = resolution.route;
-      const budgetMs =
-        route.targetComputerKind === "cloud" ? this.#scheduledCloudBudgetMs : this.#scheduledLocalBudgetMs;
+      const deadline = this.#scheduledDeadline(snapshot, route.targetComputerKind, startedAt);
       clearTimeout(timer);
-      timer = startBudgetTimer(controller, Math.max(0, budgetMs - (Date.now() - startedAt)));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return record("unreachable", "delivery_timeout");
+      timer = startBudgetTimer(controller, remaining);
       const assembly = await this.#assembleScheduledRuntime(snapshot, signal);
       if (assembly.kind === "aborted") return record("unreachable", "delivery_timeout");
       if (assembly.kind === "failed") return record("unreachable", "runtime_not_ready");
@@ -373,6 +369,12 @@ export class SessionCollaborationService {
       clearTimeout(timer);
       parentSignal?.removeEventListener("abort", onParentAbort);
     }
+  }
+
+  #scheduledDeadline(snapshot: ScheduledMessageSnapshot, target: "local" | "cloud", startedAt: number): number {
+    if (target === "local") return startedAt + this.#scheduledLocalBudgetMs;
+    const deadline = startedAt + this.#scheduledCloudBudgetMs;
+    return Math.min(deadline, snapshot.nextTriggerAt?.getTime() ?? deadline);
   }
 
   /** Local target scheduled dispatch over the existing reconcile + delivery boundaries. */
@@ -533,7 +535,9 @@ export class SessionCollaborationService {
       },
       async (operation) => {
         const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
-          if (signal.aborted) throw new ScheduledDispatchAbortError();
+          if (signal.aborted || (snapshot.nextTriggerAt && snapshot.nextTriggerAt.getTime() <= Date.now())) {
+            throw new ScheduledDispatchAbortError();
+          }
           return operation(() => {
             sent = true;
             markDispatched();

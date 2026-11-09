@@ -770,6 +770,206 @@ describe("Feishu adapter", () => {
     }
   });
 
+  it("coalesces concurrent same-chat sender-name lookups and resolves early page hits before later pages finish", async () => {
+    let releaseSecondPage: (() => void) | undefined;
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [
+            { member_id: "ou_page_1_a", name: "Alice" },
+            { member_id: "ou_page_1_b", name: "Bob" },
+          ],
+          has_more: true,
+          page_token: "page_2",
+        },
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSecondPage = () =>
+              resolve({
+                code: 0,
+                data: {
+                  items: [{ member_id: "ou_page_2", name: "Charlie" }],
+                  has_more: false,
+                },
+              });
+          }),
+      );
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    const firstA = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_1_a" });
+    const firstB = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_1_b" });
+    const secondPage = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_2" });
+
+    await expect(Promise.all([firstA, firstB])).resolves.toEqual(["Alice", "Bob"]);
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+    expect(getChatMembers).toHaveBeenNthCalledWith(1, {
+      path: { chat_id: "oc_shared" },
+      params: { member_id_type: "open_id", page_size: 100 },
+    });
+    expect(getChatMembers).toHaveBeenNthCalledWith(2, {
+      path: { chat_id: "oc_shared" },
+      params: { member_id_type: "open_id", page_size: 100, page_token: "page_2" },
+    });
+
+    releaseSecondPage?.();
+    await expect(secondPage).resolves.toBe("Charlie");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes pagination from the next page token on sequential lookups in the same chat", async () => {
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_1", name: "User One" }],
+          has_more: true,
+          page_token: "token_page_2",
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_2", name: "User Two" }],
+          has_more: false,
+        },
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_resume", senderOpenId: "ou_1" })).resolves.toBe("User One");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_resume", senderOpenId: "ou_2" })).resolves.toBe("User Two");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+    expect(getChatMembers).toHaveBeenNthCalledWith(2, {
+      path: { chat_id: "oc_resume" },
+      params: { member_id_type: "open_id", page_size: 100, page_token: "token_page_2" },
+    });
+  });
+
+  it("reuses resolved sender names across chats while preserving per-chat display name priority", async () => {
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_shared", name: "Global Name" }],
+          has_more: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [
+            { member_id: "ou_shared", name: "Chat 2 Nickname" },
+            { member_id: "ou_chat2_only", name: "Chat 2 Member" },
+          ],
+          has_more: false,
+        },
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    // Cross-chat lookup hits the open_id cache without another chatMembers.get request
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    // Fetching oc_2 members for another user populates oc_2's per-chat nickname for ou_shared
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_chat2_only" })).resolves.toBe(
+      "Chat 2 Member",
+    );
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_shared" })).resolves.toBe(
+      "Chat 2 Nickname",
+    );
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts expired sender-name cache entries and recovers after a failed chatMembers lookup", async () => {
+    vi.useFakeTimers();
+    try {
+      const getChatMembers = vi
+        .fn()
+        .mockResolvedValueOnce({
+          code: 99991663,
+          msg: "rate limited",
+        })
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            items: [{ member_id: "ou_1", name: "First Name" }],
+            has_more: false,
+          },
+        })
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            items: [{ member_id: "ou_1", name: "Refreshed Name" }],
+            has_more: false,
+          },
+        });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).rejects.toThrow(
+        "FEISHU_SENDER_NAME_LOOKUP_FAILED",
+      );
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).resolves.toBe("First Name");
+      expect(getChatMembers).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1);
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).resolves.toBe(
+        "Refreshed Name",
+      );
+      expect(getChatMembers).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("awaits each raw provider event and propagates admission failure without safety batching or stale-drop", async () => {
     let release: (() => void) | undefined;
     const admitted: string[] = [];

@@ -844,32 +844,55 @@ export function feishuSenderOpenId(message: NormalizedMessage): string | null {
   return raw?.opentagSenderOpenId ?? null;
 }
 
-async function fetchFeishuSenderName(
+interface FeishuSenderNameCacheEntry {
+  expiresAt: number;
+  name: string | undefined;
+}
+
+interface FeishuOpenIdNameCacheEntry {
+  expiresAt: number;
+  name: string;
+}
+
+interface FeishuChatScanCursor {
+  nextPageToken: string;
+  expiresAt: number;
+}
+
+interface FeishuSenderNameWaiter {
+  senderOpenId: string;
+  resolve: (name: string | undefined) => void;
+  reject: (error: unknown) => void;
+}
+
+interface PendingFeishuChatScan {
+  retired: boolean;
+  waiters: Set<FeishuSenderNameWaiter>;
+}
+
+async function fetchFeishuChatMembersPage(
   client: FeishuHttpClient,
-  input: { chatId: string; senderOpenId: string },
-  observeMember: (member: { member_id?: string; name?: string }) => void,
-): Promise<string | undefined> {
-  let pageToken: string | undefined;
-  do {
-    const response = await client.im.v1.chatMembers.get({
-      path: { chat_id: input.chatId },
-      params: {
-        member_id_type: "open_id",
-        page_size: 100,
-        ...(pageToken ? { page_token: pageToken } : {}),
-      },
-    });
-    if (response.code !== undefined && response.code !== 0) {
-      throw new Error("FEISHU_SENDER_NAME_LOOKUP_FAILED");
-    }
-    const members = response.data?.items ?? [];
-    for (const member of members) observeMember(member);
-    const sender = members.find((member) => member.member_id === input.senderOpenId);
-    const name = sender?.name?.trim();
-    if (name) return name;
-    pageToken = response.data?.has_more ? response.data.page_token : undefined;
-  } while (pageToken);
-  return undefined;
+  chatId: string,
+  pageToken: string | undefined,
+): Promise<{
+  items: Array<{ member_id?: string; name?: string }>;
+  nextPageToken: string | undefined;
+}> {
+  const response = await client.im.v1.chatMembers.get({
+    path: { chat_id: chatId },
+    params: {
+      member_id_type: "open_id",
+      page_size: 100,
+      ...(pageToken ? { page_token: pageToken } : {}),
+    },
+  });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error("FEISHU_SENDER_NAME_LOOKUP_FAILED");
+  }
+  return {
+    items: response.data?.items ?? [],
+    nextPageToken: response.data?.has_more ? response.data.page_token : undefined,
+  };
 }
 
 function withFeishuSenderNameTimeout<T>(operation: Promise<T>): Promise<T> {
@@ -886,13 +909,46 @@ function withFeishuSenderNameTimeout<T>(operation: Promise<T>): Promise<T> {
   });
 }
 
+function evictOldestEntries<K, V>(map: Map<K, V>, maxEntries: number, onEvict?: (key: K) => void): void {
+  while (map.size > maxEntries) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+    onEvict?.(oldest);
+  }
+}
+
+function readValidLruEntry<K, V extends { expiresAt: number }>(map: Map<K, V>, key: K, now: number): V | undefined {
+  const cached = map.get(key);
+  if (!cached) return undefined;
+  if (cached.expiresAt <= now) {
+    map.delete(key);
+    return undefined;
+  }
+  map.delete(key);
+  map.set(key, cached);
+  return cached;
+}
+
 function createCachedFeishuSenderNameResolver(
   client: FeishuHttpClient,
 ): (input: { chatId: string; senderOpenId: string }) => Promise<string | undefined> {
-  const senderNames = new Map<string, { expiresAt: number; name: string | undefined }>();
-  const pendingSenderNames = new Map<string, Promise<string | undefined>>();
+  const senderNames = new Map<string, FeishuSenderNameCacheEntry>();
+  const senderNamesByOpenId = new Map<string, FeishuOpenIdNameCacheEntry>();
+  const chatScanCursors = new Map<string, FeishuChatScanCursor>();
+  const pendingChatScans = new Map<string, PendingFeishuChatScan>();
 
   const cacheKey = (chatId: string, senderOpenId: string): string => `${chatId}:${senderOpenId}`;
+
+  const rememberOpenId = (senderOpenId: string, name: string, now: number): void => {
+    senderNamesByOpenId.delete(senderOpenId);
+    senderNamesByOpenId.set(senderOpenId, {
+      expiresAt: now + FEISHU_SENDER_NAME_TTL_MS,
+      name,
+    });
+    evictOldestEntries(senderNamesByOpenId, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES);
+  };
+
   const remember = (chatId: string, senderOpenId: string, name: string | undefined, now: number): void => {
     const key = cacheKey(chatId, senderOpenId);
     senderNames.delete(key);
@@ -900,40 +956,164 @@ function createCachedFeishuSenderNameResolver(
       expiresAt: now + (name ? FEISHU_SENDER_NAME_TTL_MS : FEISHU_MISSING_SENDER_NAME_TTL_MS),
       name,
     });
-    while (senderNames.size > FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES) {
-      const oldest = senderNames.keys().next().value;
-      if (oldest === undefined) break;
-      senderNames.delete(oldest);
+    evictOldestEntries(senderNames, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES, (oldest) => {
+      const separator = oldest.lastIndexOf(":");
+      if (separator > 0) {
+        chatScanCursors.delete(oldest.slice(0, separator));
+      }
+    });
+    if (name) {
+      rememberOpenId(senderOpenId, name, now);
+    }
+  };
+
+  const rememberCursor = (chatId: string, nextPageToken: string, expiresAt: number): void => {
+    chatScanCursors.delete(chatId);
+    chatScanCursors.set(chatId, { nextPageToken, expiresAt });
+    evictOldestEntries(chatScanCursors, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES);
+  };
+
+  const readOpenIdCached = (senderOpenId: string, now: number): string | undefined =>
+    readValidLruEntry(senderNamesByOpenId, senderOpenId, now)?.name;
+
+  const readChatCached = (
+    chatId: string,
+    senderOpenId: string,
+    now: number,
+  ): { hit: true; name: string | undefined } | { hit: false } => {
+    const cached = readValidLruEntry(senderNames, cacheKey(chatId, senderOpenId), now);
+    return cached ? { hit: true, name: cached.name } : { hit: false };
+  };
+
+  const readCached = (
+    chatId: string,
+    senderOpenId: string,
+    now: number,
+  ): { hit: true; name: string | undefined } | { hit: false } => {
+    const chatCached = readChatCached(chatId, senderOpenId, now);
+    if (chatCached.hit) {
+      return { hit: true, name: chatCached.name ?? readOpenIdCached(senderOpenId, now) };
+    }
+    const openIdName = readOpenIdCached(senderOpenId, now);
+    return openIdName !== undefined ? { hit: true, name: openIdName } : { hit: false };
+  };
+
+  const takeInitialScanCursor = (
+    chatId: string,
+    now: number,
+  ): { pageToken: string | undefined; cursorExpiresAt: number } => {
+    const existing = readValidLruEntry(chatScanCursors, chatId, now);
+    chatScanCursors.delete(chatId);
+    return {
+      pageToken: existing?.nextPageToken,
+      cursorExpiresAt: existing?.expiresAt ?? now + FEISHU_MISSING_SENDER_NAME_TTL_MS,
+    };
+  };
+
+  const cachePageMembers = (chatId: string, items: Array<{ member_id?: string; name?: string }>, now: number): void => {
+    for (const member of items) {
+      const name = member.name?.trim();
+      if (member.member_id && name) {
+        remember(chatId, member.member_id, name, now);
+      }
+    }
+  };
+
+  const resolveMatchedWaiters = (chatId: string, scan: PendingFeishuChatScan, now: number): void => {
+    for (const waiter of scan.waiters) {
+      const chatHit = readChatCached(chatId, waiter.senderOpenId, now);
+      if (chatHit.hit && chatHit.name !== undefined) {
+        scan.waiters.delete(waiter);
+        waiter.resolve(chatHit.name);
+      }
+    }
+  };
+
+  const resolveRemainingWaitersAtScanEnd = (chatId: string, scan: PendingFeishuChatScan, now: number): void => {
+    for (const waiter of scan.waiters) {
+      scan.waiters.delete(waiter);
+      const resolved = readCached(chatId, waiter.senderOpenId, now);
+      if (!resolved.hit) {
+        remember(chatId, waiter.senderOpenId, undefined, now);
+      }
+      waiter.resolve(resolved.hit ? resolved.name : undefined);
+    }
+  };
+
+  const failChatScan = (chatId: string, scan: PendingFeishuChatScan, error: unknown): void => {
+    if (scan.retired) return;
+    chatScanCursors.delete(chatId);
+    if (pendingChatScans.get(chatId) === scan) {
+      pendingChatScans.delete(chatId);
+    }
+    for (const waiter of scan.waiters) {
+      scan.waiters.delete(waiter);
+      waiter.reject(error);
+    }
+  };
+
+  const runChatScan = async (chatId: string, scan: PendingFeishuChatScan): Promise<void> => {
+    const initial = takeInitialScanCursor(chatId, Date.now());
+    let pageToken = initial.pageToken;
+    try {
+      do {
+        const page = await fetchFeishuChatMembersPage(client, chatId, pageToken);
+        if (scan.retired) return;
+        const now = Date.now();
+        cachePageMembers(chatId, page.items, now);
+        resolveMatchedWaiters(chatId, scan, now);
+        pageToken = page.nextPageToken;
+        if (pageToken) {
+          rememberCursor(chatId, pageToken, initial.cursorExpiresAt);
+        } else {
+          chatScanCursors.delete(chatId);
+          resolveRemainingWaitersAtScanEnd(chatId, scan, now);
+        }
+      } while (pageToken && scan.waiters.size > 0);
+      if (pendingChatScans.get(chatId) === scan) {
+        pendingChatScans.delete(chatId);
+      }
+    } catch (error) {
+      failChatScan(chatId, scan, error);
     }
   };
 
   return async (input) => {
-    const key = cacheKey(input.chatId, input.senderOpenId);
     const now = Date.now();
-    const cached = senderNames.get(key);
-    if (cached && cached.expiresAt > now) {
-      senderNames.delete(key);
-      senderNames.set(key, cached);
-      return cached.name;
-    }
-    if (cached) senderNames.delete(key);
-    const pending = pendingSenderNames.get(key);
-    if (pending) return pending;
+    const cached = readCached(input.chatId, input.senderOpenId, now);
+    if (cached.hit) return cached.name;
 
-    const lookup = withFeishuSenderNameTimeout(
-      fetchFeishuSenderName(client, input, (member) => {
-        const name = member.name?.trim();
-        if (member.member_id && name) remember(input.chatId, member.member_id, name, now);
-      }),
-    ).then((name) => {
-      if (!senderNames.has(key)) remember(input.chatId, input.senderOpenId, name, now);
-      return name;
+    let scan = pendingChatScans.get(input.chatId);
+    const shouldStartScan = !scan;
+    if (!scan) {
+      scan = {
+        retired: false,
+        waiters: new Set(),
+      };
+      pendingChatScans.set(input.chatId, scan);
+    }
+    const activeScan = scan;
+    let waiter!: FeishuSenderNameWaiter;
+    const waiterPromise = new Promise<string | undefined>((resolve, reject) => {
+      waiter = {
+        senderOpenId: input.senderOpenId,
+        resolve,
+        reject,
+      };
+      activeScan.waiters.add(waiter);
     });
-    pendingSenderNames.set(key, lookup);
+    if (shouldStartScan) {
+      void runChatScan(input.chatId, activeScan);
+    }
     try {
-      return await lookup;
-    } finally {
-      if (pendingSenderNames.get(key) === lookup) pendingSenderNames.delete(key);
+      return await withFeishuSenderNameTimeout(waiterPromise);
+    } catch (error) {
+      activeScan.waiters.delete(waiter);
+      if (activeScan.waiters.size === 0 && pendingChatScans.get(input.chatId) === activeScan) {
+        activeScan.retired = true;
+        pendingChatScans.delete(input.chatId);
+      }
+      throw error;
     }
   };
 }

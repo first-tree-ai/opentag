@@ -989,6 +989,12 @@ function createCachedFeishuSenderNameResolver(
     evictOldestEntries(chatScanCursors, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES);
   };
 
+  const clearCursor = (chatId: string, scan: PendingFeishuChatScan): void => {
+    if (!scan.cursorInvalidated) {
+      chatScanCursors.delete(chatId);
+    }
+  };
+
   const readOpenIdCached = (senderOpenId: string, now: number): string | undefined =>
     readValidLruEntry(senderNamesByOpenId, senderOpenId, now)?.name;
 
@@ -1058,13 +1064,23 @@ function createCachedFeishuSenderNameResolver(
 
   const failChatScan = (chatId: string, scan: PendingFeishuChatScan, error: unknown): void => {
     if (scan.retired) return;
-    chatScanCursors.delete(chatId);
+    clearCursor(chatId, scan);
     if (pendingChatScans.get(chatId) === scan) {
       pendingChatScans.delete(chatId);
     }
     for (const waiter of scan.waiters) {
       scan.waiters.delete(waiter);
       waiter.reject(error);
+    }
+  };
+
+  const retireWaiter = (chatId: string, scan: PendingFeishuChatScan, waiter: FeishuSenderNameWaiter): void => {
+    scan.waiters.delete(waiter);
+    if (scan.waiters.size === 0) {
+      scan.retired = true;
+      if (pendingChatScans.get(chatId) === scan) {
+        pendingChatScans.delete(chatId);
+      }
     }
   };
 
@@ -1082,7 +1098,7 @@ function createCachedFeishuSenderNameResolver(
         if (pageToken) {
           rememberCursor(chatId, scan, pageToken, initial.cursorExpiresAt);
         } else {
-          chatScanCursors.delete(chatId);
+          clearCursor(chatId, scan);
           resolveRemainingWaitersAtScanEnd(chatId, scan, now);
         }
       } while (pageToken && scan.waiters.size > 0);
@@ -1125,11 +1141,7 @@ function createCachedFeishuSenderNameResolver(
     try {
       return await withFeishuSenderNameTimeout(waiterPromise);
     } catch (error) {
-      activeScan.waiters.delete(waiter);
-      if (activeScan.waiters.size === 0 && pendingChatScans.get(input.chatId) === activeScan) {
-        activeScan.retired = true;
-        pendingChatScans.delete(input.chatId);
-      }
+      retireWaiter(input.chatId, activeScan, waiter);
       throw error;
     }
   };

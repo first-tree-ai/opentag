@@ -954,6 +954,96 @@ describe("Feishu adapter", () => {
     expect(targetCalls).toEqual([undefined, "a2", undefined]);
   });
 
+  it("retires a detached scan when its last waiter times out so late pages do not overwrite fresher names", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseStalePage2: (() => void) | undefined;
+      let targetPage1Count = 0;
+      const respondTargetPage = (pageToken: string | undefined) => {
+        if (pageToken === "a2") {
+          return new Promise((resolve) => {
+            releaseStalePage2 = () =>
+              resolve({
+                code: 0,
+                data: {
+                  items: [{ member_id: "ou_bob", name: "Stale Bob" }],
+                  has_more: false,
+                },
+              });
+          });
+        }
+        targetPage1Count += 1;
+        return Promise.resolve({
+          code: 0,
+          data:
+            targetPage1Count === 1
+              ? { items: [{ member_id: "ou_alice", name: "Alice" }], has_more: true, page_token: "a2" }
+              : { items: [{ member_id: "ou_bob", name: "Fresh Bob" }], has_more: false },
+        });
+      };
+      const getChatMembers = vi
+        .fn()
+        .mockImplementation((request: { path?: { chat_id?: string }; params?: { page_token?: string } }) => {
+          const chatId = request.path?.chat_id ?? "";
+          if (chatId === "oc_target") {
+            return respondTargetPage(request.params?.page_token);
+          }
+          const items = Array.from({ length: 100 }, (_, index) => ({
+            member_id: `ou_${chatId}_${index}`,
+            name: `Member ${chatId} ${index}`,
+          }));
+          return Promise.resolve({
+            code: 0,
+            data: {
+              items,
+              has_more: false,
+            },
+          });
+        });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+
+      const bobTimedOut = expect(
+        http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" }),
+      ).rejects.toThrow("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT");
+
+      for (let chatIndex = 0; chatIndex < 100; chatIndex += 1) {
+        const chatId = `oc_fill_${chatIndex}`;
+        await expect(http.resolveSenderName?.({ chatId, senderOpenId: `ou_${chatId}_0` })).resolves.toBe(
+          `Member ${chatId} 0`,
+        );
+      }
+
+      await vi.advanceTimersByTimeAsync(4_001);
+      await bobTimedOut;
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" })).resolves.toBe(
+        "Fresh Bob",
+      );
+
+      releaseStalePage2?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" })).resolves.toBe(
+        "Fresh Bob",
+      );
+      await expect(http.resolveSenderName?.({ chatId: "oc_other", senderOpenId: "ou_bob" })).resolves.toBe("Fresh Bob");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reuses resolved sender names across chats while preserving per-chat display name priority", async () => {
     const getChatMembers = vi
       .fn()

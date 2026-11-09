@@ -2,8 +2,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AgentScheduleLastDispatch } from "@opentag/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { imBindings, imMessages, sessionMessages, sessionPlacements, sessions } from "../../db/schema/index.js";
+import {
+  agentSchedules,
+  imBindings,
+  imMessages,
+  sessionMessages,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { textLink } from "../im/im-feedback-card.js";
+import { FEEDBACK_LABELS, type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
 import { FeedbackProviderError, type ImFeedbackMessenger } from "../im/im-feedback-messenger.js";
 import type {
   RunOutcomeNoticeInput,
@@ -33,6 +42,8 @@ import { scheduleDetailUrl } from "./service.js";
 export interface ScheduledOccurrence {
   agentId: string;
   name: string;
+  /** Only decides the message's language, by the same rule as other IM failure messages. */
+  prompt: string;
   scheduleId: string;
   scheduledFor: string;
   targetSessionId: string;
@@ -47,7 +58,7 @@ export type ScheduledMissKind = "disabled" | "missed" | "unconfirmed";
 
 export interface ScheduledMissNotices {
   notifyMissed(
-    input: { occurrence: ScheduledOccurrence; kind: ScheduledMissKind; code: string; requestId: string },
+    input: { occurrence: ScheduledOccurrence; kind: ScheduledMissKind; requestId: string },
     signal: AbortSignal,
   ): Promise<void>;
 }
@@ -81,9 +92,15 @@ export function scheduledMissKind(input: {
   return input.outcome === "unknown" ? "unconfirmed" : "missed";
 }
 
-/** Provider mention and link syntax both need angle brackets; a schedule name never does. */
+/** Provider mention and link syntax need these brackets, so a schedule name can't carry a link or a mention. */
 function plainName(name: string): string {
-  return name.replace(/\s+/gu, " ").trim().replace(/</gu, "‹").replace(/>/gu, "›");
+  return name
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/</gu, "‹")
+    .replace(/>/gu, "›")
+    .replace(/\[/gu, "［")
+    .replace(/\]/gu, "］");
 }
 
 /** A schedule can be turned off for its stored timezone, so that timezone may not format. */
@@ -95,56 +112,106 @@ function scheduledTimeText(occurrence: ScheduledOccurrence): string {
   }
 }
 
-function occurrenceLines(occurrence: ScheduledOccurrence, publicUrl: string, code: string, body: string): string {
-  return [
-    body,
-    `Scheduled time: ${scheduledTimeText(occurrence)}`,
-    `Code: ${code}`,
-    `Details: ${scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId)}`,
-  ].join("\n");
+type Provider = "slack" | "feishu";
+
+const TEXT = {
+  subject: {
+    zh: (name: string, time: string) => `定时任务“${name}”（计划时间 ${time}）`,
+    en: (name: string, time: string) => `Scheduled task "${name}" (scheduled for ${time})`,
+  },
+  miss: {
+    missed: {
+      zh: ["没有运行。", "Agent 没有收到这次任务，所以没有执行任何操作，也不会补跑。", "请查看这个定时任务的状态。"],
+      en: [
+        "didn't run.",
+        "The Agent never received it, so no operations were run, and it won't be rerun.",
+        "Check the schedule's status.",
+      ],
+    },
+    unconfirmed: {
+      zh: [
+        "可能没有运行。",
+        "无法确认 Agent 是否收到了这次任务，所以可能已经执行了部分操作。",
+        "先看看结果，再决定下一步。",
+      ],
+      en: [
+        "may not have run.",
+        "We can't confirm that the Agent received it, so some operations may have run.",
+        "Check the results before deciding what to do next.",
+      ],
+    },
+    disabled: {
+      zh: [
+        "没有运行，这个定时任务已被停用。",
+        "Agent 没有收到这次任务，所以没有执行任何操作。",
+        "恢复之前它不会再运行。",
+      ],
+      en: [
+        "didn't run, and the schedule has been turned off.",
+        "The Agent never received it, so no operations were run.",
+        "It won't run again until someone resumes it.",
+      ],
+    },
+  },
+  runEffects: {
+    zh: "可能已经执行了部分操作，也不会自动重跑。",
+    en: "Some operations may already have run, and it won't be rerun automatically.",
+  },
+  runNext: { zh: "先看看结果，再决定下一步。", en: "Check the results before deciding what to do next." },
+} satisfies Record<string, unknown>;
+
+/** Same shape as other IM failure messages: what happened, whether operations ran, what to do next, and a link. */
+function message(
+  occurrence: ScheduledOccurrence,
+  language: FeedbackLanguage,
+  provider: Provider,
+  publicUrl: string,
+  [what, effects, next]: readonly [string, string, string],
+): string {
+  const link = textLink(
+    provider,
+    scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId),
+    FEEDBACK_LABELS.details[language],
+  );
+  return [what, effects, `${next} ${link}`].join("\n\n");
 }
 
-const RUN_OUTCOME_TEXT: Record<Exclude<RunOutcomeNoticeInput["outcome"], "cancelled">, string> = {
-  failed: "failed before finishing",
-  timed_out: "reached its maximum Run duration and was stopped",
-  unknown: "was interrupted and its result is unknown",
-};
+const subject = (occurrence: ScheduledOccurrence, language: FeedbackLanguage): string =>
+  TEXT.subject[language](plainName(occurrence.name), scheduledTimeText(occurrence));
+
+const RUN_OUTCOME_REASON = { timed_out: "turn_timeout", unknown: "turn_state_unknown" } as const;
 
 export function renderRunFailure(
   occurrence: ScheduledOccurrence,
   outcome: Exclude<RunOutcomeNoticeInput["outcome"], "cancelled">,
   code: string,
   publicUrl: string,
+  provider: Provider,
 ): string {
-  return occurrenceLines(
-    occurrence,
-    publicUrl,
-    code,
-    [
-      `Scheduled task "${plainName(occurrence.name)}" ${RUN_OUTCOME_TEXT[outcome]}.`,
-      "Some of its work may already have happened. openTag will not rerun it.",
-    ].join("\n"),
-  );
+  const language = textLanguage(occurrence.prompt);
+  const reason = outcome === "failed" ? code : RUN_OUTCOME_REASON[outcome];
+  const separator = language === "zh" ? "：" : ": ";
+  return message(occurrence, language, provider, publicUrl, [
+    `${subject(occurrence, language)}${separator}${failureCopy(reason, language).cause}`,
+    TEXT.runEffects[language],
+    TEXT.runNext[language],
+  ]);
 }
-
-const MISS_TEXT: Record<ScheduledMissKind, string> = {
-  disabled: "did not run, and the schedule has been turned off. It stays off until someone resumes it.",
-  missed: "did not run. The Agent never received it and openTag will not rerun it.",
-  unconfirmed: "may not have run: openTag could not confirm that the Agent received it.",
-};
 
 export function renderMiss(
   occurrence: ScheduledOccurrence,
   kind: ScheduledMissKind,
-  code: string,
   publicUrl: string,
+  provider: Provider,
 ): string {
-  return occurrenceLines(
-    occurrence,
-    publicUrl,
-    code,
-    `Scheduled task "${plainName(occurrence.name)}" ${MISS_TEXT[kind]}`,
-  );
+  const language = textLanguage(occurrence.prompt);
+  const [what, effects, next] = TEXT.miss[kind][language] as unknown as [string, string, string];
+  const space = language === "zh" ? "" : " ";
+  return message(occurrence, language, provider, publicUrl, [
+    `${subject(occurrence, language)}${space}${what}`,
+    effects,
+    next,
+  ]);
 }
 
 const MISS_SEND_ATTEMPTS = 3;
@@ -158,7 +225,7 @@ const MAX_REMEMBERED_RESULTS = 1024;
 interface ScheduledRunNotice {
   requestId: string;
   sessionId: string;
-  text: string;
+  render(provider: Provider): string;
 }
 
 type SendResult = { status: "sent" | "dropped" } | { status: "retry"; retryAfterMs?: number };
@@ -188,7 +255,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     const scheduled = await this.#scheduledNotice(input);
     if (scheduled === undefined) return this.#options.runOutcomes.notifyRunOutcome(input);
     if (typeof scheduled === "string") return scheduled;
-    return this.#runFailureStatus(await this.#send(scheduled.sessionId, scheduled.text, scheduled.requestId));
+    return this.#runFailureStatus(await this.#send(scheduled.sessionId, scheduled.render, scheduled.requestId));
   }
 
   /** The Local entry. See the file comment; the reporter keeps its durable report throughout. */
@@ -216,7 +283,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   }
 
   async #sendInBackground(notice: ScheduledRunNotice): Promise<void> {
-    const status = this.#runFailureStatus(await this.#send(notice.sessionId, notice.text, notice.requestId));
+    const status = this.#runFailureStatus(await this.#send(notice.sessionId, notice.render, notice.requestId));
     if (status === "retry") return;
     if (this.#results.size >= MAX_REMEMBERED_RESULTS) {
       const oldest = this.#results.keys().next().value;
@@ -237,28 +304,34 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     let scheduled: { occurrence: ScheduledOccurrence; authorized: boolean } | undefined;
     try {
       scheduled = await this.#readScheduledRun(input);
+      if (scheduled?.authorized && input.outcome !== "cancelled")
+        await this.#recordRunFailure(scheduled.occurrence, input.reason);
     } catch {
       return "retry";
     }
     if (!scheduled) return undefined;
     // A stopped Run was stopped by someone; only the reporting placement may speak for the Session.
     if (input.outcome === "cancelled" || !scheduled.authorized) return "ignored";
+    const { occurrence } = scheduled;
+    const { outcome } = input;
     return {
       // Not the message id: that identifies this occurrence's earlier "may not have run" notice, and
       // Feishu would drop this failure as a repeat of it.
       requestId: runOutcomeNoticeMessageId(input.childSessionId, input.messageId),
       sessionId: scheduled.occurrence.targetSessionId,
-      text: renderRunFailure(scheduled.occurrence, input.outcome, input.reason, this.#options.publicUrl),
+      render: (provider) => renderRunFailure(occurrence, outcome, input.reason, this.#options.publicUrl, provider),
     };
   }
 
   async notifyMissed(
-    input: { occurrence: ScheduledOccurrence; kind: ScheduledMissKind; code: string; requestId: string },
+    input: { occurrence: ScheduledOccurrence; kind: ScheduledMissKind; requestId: string },
     signal: AbortSignal,
   ): Promise<void> {
-    const text = renderMiss(input.occurrence, input.kind, input.code, this.#options.publicUrl);
+    // It has no conversation. The miss stays in the schedule's summary, and nobody is messaged for it.
+    if (await this.#targetIsInternal(input.occurrence.targetSessionId)) return;
+    const render = (provider: Provider) => renderMiss(input.occurrence, input.kind, this.#options.publicUrl, provider);
     for (let attempt = 1; attempt <= MISS_SEND_ATTEMPTS; attempt += 1) {
-      const sent = await this.#send(input.occurrence.targetSessionId, text, input.requestId);
+      const sent = await this.#send(input.occurrence.targetSessionId, render, input.requestId);
       if (sent.status !== "retry") return;
       if (attempt === MISS_SEND_ATTEMPTS) break;
       const wait = Math.min(
@@ -277,6 +350,36 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     );
   }
 
+  async #targetIsInternal(sessionId: string): Promise<boolean> {
+    const [row] = await this.#options.database
+      .select({ kind: sessions.kind })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    return row?.kind === "internal";
+  }
+
+  /**
+   * Keep the reason the message leaves out reachable from its details link: the schedule summary, while it
+   * still describes this occurrence. A Run proves the hand-off landed, so this also settles an `unknown`
+   * one. The hand-off's own result can arrive later, and `recordMessageOutcome` leaves this in place.
+   */
+  async #recordRunFailure(occurrence: ScheduledOccurrence, reason: string): Promise<void> {
+    await this.#options.database
+      .update(agentSchedules)
+      .set({
+        lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('outcome', 'accepted', 'code', ${reason}::text)`,
+      })
+      .where(
+        and(
+          eq(agentSchedules.id, occurrence.scheduleId),
+          sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${occurrence.scheduledFor}`,
+          sql`${agentSchedules.lastDispatch} ->> 'outcome' in ('accepted', 'unknown')`,
+          sql`${agentSchedules.lastDispatch} ->> 'code' is distinct from ${reason}`,
+        ),
+      );
+  }
+
   /** The scheduled facts of a reported message whose target is a visible Session, else undefined. */
   async #readScheduledRun(
     input: RunOutcomeNoticeInput,
@@ -286,6 +389,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
         agentId: imBindings.agentId,
         computerId: sessionPlacements.computerId,
         kind: sessions.kind,
+        content: sessionMessages.content,
         origin: sessionMessages.scheduledOrigin,
         placementGeneration: sessionPlacements.generation,
       })
@@ -302,6 +406,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
       occurrence: {
         agentId: row.agentId,
         name: row.origin.name,
+        prompt: row.content,
         scheduleId: row.origin.scheduleId,
         scheduledFor: row.origin.scheduledFor,
         targetSessionId: input.childSessionId,
@@ -311,7 +416,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   }
 
   /** Never throws. `requestId` makes Feishu drop a repeat of the same occurrence's send. */
-  async #send(sessionId: string, text: string, requestId: string): Promise<SendResult> {
+  async #send(sessionId: string, render: (provider: Provider) => string, requestId: string): Promise<SendResult> {
     let provider: "slack" | "feishu" | undefined;
     try {
       const target = await this.#conversation(sessionId);
@@ -323,7 +428,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
         return { status: "dropped" };
       }
       provider = target.provider;
-      await this.#options.messenger.postConversationText(target, text, requestId);
+      await this.#options.messenger.postConversationText(target, render(target.provider), requestId);
       return { status: "sent" };
     } catch (error) {
       if (!(error instanceof FeedbackProviderError)) return { status: "retry" };

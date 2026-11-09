@@ -69,7 +69,7 @@ outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
 stop, `unknown / turn_state_unknown` (`may_have_occurred`) when found starting
 or running after a restart, `failed / provider_start_failed` (`not_started`)
 when it never reached the Provider, and `failed / turn_timeout` for a timeout;
-the Server shows the person an [error card](messaging/im-feedback.md). A Session
+the Server shows the person a [failure message](messaging/im-feedback.md). A Session
 message ends `failed` and its sender gets a
 [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
@@ -134,7 +134,14 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   the Turn unresolved for the restarted daemon to count. A crash leaves no
   record of its own: an unresolved Turn found on restart is a crash.
 - On startup the daemon counts the retry durably before anything runs, unless a
-  429 already counted it and only the wait was interrupted. When the
+  429 or an earlier start already counted it and that retry has not begun. So a
+  restart while a counted retry waits does not count it again, and the retry keeps
+  the reason it continues from. The daemon records that the retry began before it
+  starts the Turn, so a Turn that crashes the daemon right away still counts. If
+  that record can't be written, or the Turn has no record to update, the retry
+  doesn't start and stays pending, as it does when it can't start yet. Shutdown
+  stops this before the runner and waits for a write in flight, so a retry that a
+  stopping daemon never ran goes back to waiting and isn't counted. When the
   retries have run out, the Turn gets its recovery report and the Session
   messages steered into it fail with it. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written

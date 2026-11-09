@@ -371,7 +371,10 @@ export class ProviderCliReconciler {
     if (this.#closed || this.#signal?.aborted) return;
     if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
     const readiness: ImCliReadinessStatus = inspection?.readiness ?? "unavailable";
-    if (published && this.#imCliPublished.has(provider)) this.#publishImCli(provider, readiness);
+    // A restarted daemon has published nothing, and prewarm is only for Agents with no binding yet: an active
+    // requirement is reason enough, or the Server reads the missing state as unavailable.
+    if ((published && this.#imCliPublished.has(provider)) || targets.length > 0)
+      this.#publishImCli(provider, readiness);
     await this.#publishPassiveInspection(provider, inspection, targets, repairAtStart, selectionAtStart);
   }
 

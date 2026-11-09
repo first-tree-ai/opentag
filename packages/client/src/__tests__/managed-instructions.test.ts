@@ -368,6 +368,8 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       );
       expect(prompt).toContain("questions, and the final result.");
       expect(prompt).toContain("You may create further internal Sessions");
+      expect(prompt).toContain("agent self schedule create` fires back into this Session");
+      expect(prompt).toContain("It has no IM outlet");
       expect(prompt).not.toContain("Handle quick work directly");
       expect(prompt).not.toContain("post a short new IM message at each meaningful milestone");
       expect(prompt).toContain("Creator Session: session-parent-1");
@@ -432,7 +434,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("- opentag-dev session list");
     expect(local).toContain("Do not pass or look for agentId or sourceSessionId arguments");
     expect(local).toContain("An accepted result means the target accepted the message for processing");
-    expect(local).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(local).toContain("To retry, use the same arguments and set `--message-id` to the original message ID.");
     expect(local).not.toContain("its final text is not automatically returned to its parent");
     expect(local).toContain("pass `--max-duration-ms` with headroom");
 
@@ -444,7 +446,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("Do not copy or persist its temporary proof");
     expect(cloud).toContain("another Session cannot read this workspace");
     expect(cloud).toContain("An accepted result means the target accepted the message for processing");
-    expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(cloud).toContain("To retry, use the same arguments and set `--message-id` to the original message ID.");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
     expect(cloud).toContain("pass `--max-duration-ms` with headroom");
 

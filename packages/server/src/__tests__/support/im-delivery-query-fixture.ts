@@ -78,3 +78,13 @@ export async function seedDeliveryQuery(database: DatabaseClient, history = 0, b
     computerId: deliveryTestId("computer", 1),
   };
 }
+
+/** Blocked input waits behind the occupant of its own Session: custody only fences a Session. */
+export async function seedBlockedDeliveryQuery(database: DatabaseClient, history: number, blocked: number) {
+  const fixture = await seedDeliveryQuery(database, history, blocked);
+  await database.execute(
+    sql`update im_message_deliveries set session_id=${deliveryTestId("session", 1)} where id=${fixture.occupantId}`,
+  );
+  await database.execute(sql`analyze im_message_deliveries`);
+  return fixture;
+}

@@ -599,6 +599,34 @@ describe("runtime domain contract", () => {
     );
   });
 
+  it("binds the attached message to the reconcile request identity", () => {
+    const agentId = randomUUID();
+    const request = {
+      type: "session:reconcile" as const,
+      requestId: randomUUID(),
+      installationId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId,
+      placementGeneration: 1,
+      desired: "ready" as const,
+      runtime: { ...snapshot(), agentId },
+    };
+    const sessionMessage = {
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      content: { kind: "text" as const, text: "work" },
+    };
+    const combined = { ...request, sessionMessage };
+    expect(ServerRuntimeBusinessFrameSchema.parse(combined)).toEqual(combined);
+    expect(computeReconcilePayloadHash(combined)).not.toBe(computeReconcilePayloadHash(request));
+    expect(computeReconcilePayloadHash(combined)).not.toBe(
+      computeReconcilePayloadHash({ ...combined, sessionMessage: { ...sessionMessage, messageId: randomUUID() } }),
+    );
+    expect(
+      ServerRuntimeBusinessFrameSchema.safeParse({ ...combined, desired: "stopped", runtime: undefined }).success,
+    ).toBe(false);
+  });
+
   it("B-06 rejects unsafe IDs and sequence boundaries without coercion", () => {
     const valid = directDelivery(snapshot());
     for (const sessionId of ["", "../session", "a/b", "a\\b", "a".repeat(129)]) {

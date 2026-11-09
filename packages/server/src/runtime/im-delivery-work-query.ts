@@ -179,8 +179,8 @@ export async function readDeliveryCustody(database: DeliveryWorkQuery) {
 
 type CustodyGroups = Map<string, Map<string, DeliveryCustodyRow>>;
 export class DeliveryCustodySnapshot {
-  readonly #agents: CustodyGroups = new Map();
   readonly #localAgents: CustodyGroups = new Map();
+  readonly #cloudAgents: CustodyGroups = new Map();
   readonly #sessions: CustodyGroups = new Map();
   readonly #accepted: CustodyGroups = new Map();
 
@@ -188,9 +188,8 @@ export class DeliveryCustodySnapshot {
     for (const row of rows) {
       const context = contexts.get(row.sessionId);
       if (!activeDeliveryContext(context)) continue;
-      this.#put(this.#agents, context.agentId, row);
       this.#put(this.#sessions, row.sessionId, row);
-      if (context.computerKind === "local") this.#put(this.#localAgents, context.agentId, row);
+      this.#put(context.computerKind === "local" ? this.#localAgents : this.#cloudAgents, context.agentId, row);
       if (row.state === "accepted" && row.reportedAt === null) this.#put(this.#accepted, row.sessionId, row);
     }
   }
@@ -207,14 +206,21 @@ export class DeliveryCustodySnapshot {
     for (const row of group.values()) if (row.id !== id) return row;
     return undefined;
   }
-  other(subject: { deliveryId: string; sessionId: string; agentId: string; computerKind: "local" | "cloud" }) {
-    return (
-      this.#other(this.#sessions.get(subject.sessionId), subject.deliveryId) ??
-      this.#other(
-        (subject.computerKind === "local" ? this.#agents : this.#localAgents).get(subject.agentId),
-        subject.deliveryId,
-      )
-    );
+  other(subject: {
+    deliveryId: string;
+    sessionId: string;
+    agentId: string;
+    computerKind: "local" | "cloud";
+    localSessionScoped?: boolean;
+  }) {
+    const same = this.#other(this.#sessions.get(subject.sessionId), subject.deliveryId);
+    if (same) return same;
+    // An Agent mid-move between its Local and Cloud Computers must not run on both.
+    const across = (subject.computerKind === "local" ? this.#cloudAgents : this.#localAgents).get(subject.agentId);
+    const acrossOther = this.#other(across, subject.deliveryId);
+    if (acrossOther || subject.computerKind === "cloud" || subject.localSessionScoped) return acrossOther;
+    // A Client that can't keep a recovering Turn's older configuration: one Turn per Agent, as before.
+    return this.#other(this.#localAgents.get(subject.agentId), subject.deliveryId);
   }
   acceptedInSession(sessionId: string, id: string) {
     return this.#other(this.#accepted.get(sessionId), id);
@@ -252,7 +258,7 @@ export async function advanceParkedRetries(database: DeliveryWorkQuery, computer
     from session_placements as placement
     where placement.session_id = delivery.session_id
       and placement.computer_id = ${computerId}::uuid
-      and delivery.state in ('pending', 'accepted')
+      and (delivery.state in ('pending', 'accepted') or (delivery.state = 'expired' and delivery.dispatch_request_id is not null))
       and delivery.next_attempt_at > ${new Date(nowMs + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
   `);
 }

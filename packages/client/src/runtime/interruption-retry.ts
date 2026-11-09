@@ -37,6 +37,8 @@ export const MAX_AUTOMATIC_RETRIES = 2;
 export const RETRY_RESET_AFTER_MS = 5 * 60_000;
 /** How often a running attempt records its run time; a crash loses at most this much. */
 export const RUN_TIME_RECORD_INTERVAL_MS = 60_000;
+/** The most one observation of the running clock can add; a busy event loop can delay a tick this far. */
+const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 
@@ -64,22 +66,34 @@ export function nextRetry(previous: RetryCount): { count: number; exhausted: boo
   return { count: count + 1, exhausted: false };
 }
 
-/** Actual run time of one attempt, recorded periodically so that a crash loses little of it. */
+/**
+ * Actual run time of one attempt, recorded periodically so that a crash loses little of it. A timer
+ * tick that comes far too late means the Computer slept or the clock moved: that gap is not run time,
+ * so it counts as two intervals at most, and never as negative.
+ */
 export function trackRunTime(
   now: () => number,
   record: (ranMs: number) => Promise<unknown>,
 ): { finish(): Promise<number> } {
-  // Everything before `since` is recorded. One write at a time, and it moves only once a write commits,
-  // so a failed or slow write can neither lose time nor count it twice.
-  let since = now();
+  // `pending` is the run time not yet recorded. One write at a time, and it drops only once a write
+  // commits, so a failed or slow write can neither lose time nor count it twice.
+  let pending = 0;
+  let observedAt = now();
   let writing: Promise<void> | undefined;
-  const timer = setInterval(() => {
-    if (writing) return;
+  const observe = (): number => {
     const at = now();
-    writing = record(at - since)
+    pending += Math.min(Math.max(0, at - observedAt), MAX_RUN_TIME_TICK_MS);
+    observedAt = at;
+    return at;
+  };
+  const timer = setInterval(() => {
+    observe();
+    if (writing) return;
+    const ranMs = pending;
+    writing = record(ranMs)
       .then(
         () => {
-          since = at;
+          pending -= ranMs;
         },
         () => undefined,
       )
@@ -93,7 +107,8 @@ export function trackRunTime(
     finish: async () => {
       clearInterval(timer);
       await writing;
-      return Math.max(0, now() - since);
+      observe();
+      return pending;
     },
   };
 }
@@ -143,6 +158,8 @@ export interface TurnRetryRecord {
   request: DirectImMessageDeliveryRequest;
   /** Messages steered into this Turn, re-included on retry. */
   steers: RuntimeImSteerRequest[];
+  /** Which provider conversation durably holds each steer, by delivery; a retry there does not repeat it. */
+  steerConversations?: Readonly<Record<string, string>>;
   /** Automatic retries in a row, for process interruptions and model 429 alike. */
   retries: number;
   /** Actual run time of every attempt so far, against the Run's duration limit. */
@@ -151,6 +168,8 @@ export interface TurnRetryRecord {
   retryRanMs?: number;
   /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
+  /** The latest retry is counted but has not begun, so a restart before it begins must not count it again. */
+  retryNotStarted?: boolean;
 }
 
 /** Bound on steered messages kept per Turn; further messages are not steered but queued by the Server. */
@@ -272,6 +291,13 @@ export class TurnRetryStore {
   }
 }
 
+/** Anything unreadable is dropped: without it the steers are replayed, which repeats but never loses them. */
+function parseSteerConversations(value: unknown): Pick<TurnRetryRecord, "steerConversations"> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const entries = Object.entries(value).filter(([, conversation]) => typeof conversation === "string");
+  return entries.length > 0 ? { steerConversations: Object.fromEntries(entries) as Record<string, string> } : {};
+}
+
 export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
@@ -308,7 +334,9 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     turnId: candidate.turnId,
     request,
     steers,
+    ...parseSteerConversations(candidate.steerConversations),
     retries: candidate.retries as number,
+    ...(candidate.retryNotStarted === true ? { retryNotStarted: true } : {}),
     ...(ranMs !== undefined ? { ranMs } : {}),
     ...(retryRanMs !== undefined ? { retryRanMs } : {}),
     ...(interruption

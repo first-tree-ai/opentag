@@ -20,7 +20,7 @@ import {
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { AgentProviderError } from "../agent-runtime/errors.js";
+import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -33,6 +33,12 @@ import type {
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import {
+  beginChannelTurn,
+  type ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
@@ -68,6 +74,7 @@ import type {
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
+import { conversationIdentity } from "./session-message-run.js";
 import {
   ClientRuntimeProviderStartError,
   type SessionRuntimeManager,
@@ -95,6 +102,8 @@ export interface AgentTurnRunnerOptions {
     capabilityVersion?(capability: string): number | undefined;
   };
   readonly custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
+  /** Without one, Channel Sessions never compact on idle. */
+  readonly channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   readonly logger?: ClientLogger;
   readonly now?: () => number;
   readonly onRuntimeEvent?: (event: AgentRuntimeEvent) => Promise<void> | void;
@@ -128,6 +137,8 @@ export interface AgentTurnRunnerOptions {
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
+    /** Whether this runtime's conversation durably holds the message, so a retry need not repeat it. */
+    inConversation?(message: SessionMessageDeliveryRequestV3, runId: string, runtime: AgentRuntime): boolean;
   };
 }
 
@@ -135,6 +146,7 @@ export interface TurnStartOptions {
   /** Set when this start is the automatic retry of an interrupted Turn. */
   readonly continuation?: Interruption;
   readonly steers?: readonly RuntimeImSteerRequest[];
+  readonly steerConversations?: Readonly<Record<string, string>>;
 }
 
 interface TurnAttempt {
@@ -191,8 +203,10 @@ interface RunningTurn {
   finalized: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
-  /** Messages an earlier attempt held, replayed in the current attempt's input. */
+  /** Messages an earlier attempt held, replayed in the current attempt's input unless its conversation has them. */
   steers: readonly SteeredInput[];
+  /** Which provider conversation durably holds each IM steer, by delivery. */
+  steerConversations: Readonly<Record<string, string>>;
 }
 
 export interface TurnCompletion {
@@ -224,6 +238,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #channelActivity: AgentTurnRunnerOptions["channelActivity"];
   readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
@@ -251,6 +266,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#channelActivity = options.channelActivity;
     this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
@@ -284,6 +300,7 @@ export class AgentTurnRunner {
       finalized: false,
       unrecordedRunMs: 0,
       steers: options.steers ?? [],
+      steerConversations: options.steerConversations ?? {},
     };
     turn.promise = this.#run(turn, abort.signal)
       .catch(
@@ -347,17 +364,49 @@ export class AgentTurnRunner {
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
-      await runtime.steer({
+      const receipt = await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
         input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
       await this.#bindingStore.recordSteer(request, semanticHash);
-    } catch {
+      void receipt.inConversation?.then(() => this.#recordSteerInConversation(turn, runtime, request));
+    } catch (error) {
       await this.#retries.removeSteer(request).catch(() => undefined);
+      // The Turn already ended and nothing reached the provider, so the Server delivers it after this Turn.
+      // Only a failure that may have reached the provider is unknown; that one fails with the Turn.
+      if (steerNeverStarted(error)) return steerResult(request, "deferred", "turn_not_running");
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
+  }
+
+  /** Best effort: without it a retry repeats the steer, which it has always been allowed to. */
+  async #recordSteerInConversation(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: RuntimeImSteerRequest,
+  ): Promise<void> {
+    const conversation = conversationIdentity(runtime.binding);
+    if (!conversation) return;
+    const steerConversations = { [request.deliveryId]: conversation };
+    turn.steerConversations = { ...turn.steerConversations, ...steerConversations };
+    await this.#retries
+      .update(request.sessionId, request.expectedTurnId, (record) => ({
+        ...record,
+        steerConversations: { ...record.steerConversations, ...steerConversations },
+      }))
+      .catch(() => undefined);
+  }
+
+  /** What a retry must still repeat: a conversation that durably holds a message has it already. */
+  #steersToRepeat(turn: RunningTurn, runtime: AgentRuntime): readonly SteeredInput[] {
+    const conversation = conversationIdentity(runtime.binding);
+    return turn.steers.filter((steer) =>
+      steer.type === "im:steer"
+        ? conversation === undefined || turn.steerConversations[steer.deliveryId] !== conversation
+        : !this.#sessionMessages.inConversation?.(steer, turn.owner.turnId, runtime),
+    );
   }
 
   /**
@@ -647,12 +696,14 @@ export class AgentTurnRunner {
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
     let credentialPrepared = false;
+    const channelTurn = { sessionId: owner.request.sessionId, channel: false };
     const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
       const started = await this.#startTurn(owner, signal, interruption !== undefined);
       credentialPrepared = true;
       preparedExecutionId = started.preparedExecutionId;
+      channelTurn.channel = isChannelOutbox(started.credentials.outboxContext);
       phaseTimings.credentialPrepareMs = started.credentialPrepareMs;
       const turnPlanStartedAt = this.#now();
       turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, started.credentials, signal);
@@ -669,6 +720,11 @@ export class AgentTurnRunner {
       const promptStartedAt = this.#now();
       const result = await runtime.prompt({
         runId: owner.turnId,
+        ...(await beginChannelTurn(
+          this.#channelActivity,
+          { ...channelTurn, retry: interruption !== undefined },
+          this.#now(),
+        )),
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential
@@ -678,7 +734,7 @@ export class AgentTurnRunner {
         input: interruption
           ? buildRetryAgentInput(
               owner.request,
-              turn.steers,
+              this.#steersToRepeat(turn, runtime),
               interruption,
               new Date(this.#now()),
               this.#sessionMessages.input,
@@ -717,6 +773,7 @@ export class AgentTurnRunner {
     } finally {
       this.#activity.end(owner.turnId);
       releaseObserver();
+      await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
@@ -1171,6 +1228,11 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   removeSteer: async () => undefined,
   update: async () => undefined,
 };
+
+/** Only an explicit refusal proves the input had no effect: others can come after the provider took it. */
+function steerNeverStarted(error: unknown): boolean {
+  return error instanceof AgentRuntimeError && error.code === "steer_not_sent";
+}
 
 function withRunTime(record: TurnRetryRecord, ranMs: number): TurnRetryRecord & { retryRanMs: number } {
   return { ...record, ranMs: (record.ranMs ?? 0) + ranMs, retryRanMs: (record.retryRanMs ?? 0) + ranMs };

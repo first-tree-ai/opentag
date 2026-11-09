@@ -66,6 +66,7 @@ import {
   AgentTurnRunner,
 } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
+import { ChannelActivityStore } from "./channel-idle-compaction.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { InterruptedWorkRecovery } from "./interrupted-work-recovery.js";
@@ -357,6 +358,7 @@ export class ComposedClientRuntime {
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
+  readonly interruptedWork: InterruptedWorkRecovery;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly sessionMessageOutcomes?: SessionMessageOutcomeReporter;
@@ -396,6 +398,7 @@ export class ComposedClientRuntime {
       reportOwner: TurnReportOwner;
       durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
+      interruptedWork: InterruptedWorkRecovery;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
       refreshCapability: (fresh?: boolean) => Promise<void>;
@@ -420,6 +423,7 @@ export class ComposedClientRuntime {
     this.reportOwner = components.reportOwner;
     this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
+    this.interruptedWork = components.interruptedWork;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
     this.#refreshCapability = components.refreshCapability;
@@ -519,10 +523,13 @@ export class ComposedClientRuntime {
     this.#unsubscribeSelfCheck?.();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
+    // Before the runner: a retry dispatched to a stopped runner would be recorded as begun and never run.
+    this.interruptedWork.stop();
     this.runner.stop();
     await Promise.all([
       this.#capabilityRefreshInFlight,
       Promise.allSettled([...this.#selfCheckReports]),
+      this.interruptedWork.settled(),
       this.runner.settled(),
       this.sessionMessageInbox.settled(),
     ]);
@@ -877,9 +884,11 @@ export async function createClientRuntime(
   });
   // Durable input of accepted IM Turns, for their one automatic retry (Local only).
   const turnRetries = new TurnRetryStore(options.home);
+  const channelActivity = ChannelActivityStore.forHome(options.home);
   let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    channelActivity,
     cliCommand: options.cliCommand ?? "opentag",
     /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
     joinableRuns: {
@@ -938,6 +947,7 @@ export async function createClientRuntime(
   });
   runner = new AgentTurnRunner({
     bindingStore,
+    channelActivity,
     connection,
     custody,
     logger: moduleLogger("turn"),
@@ -952,6 +962,7 @@ export async function createClientRuntime(
     sessionMessages: {
       input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
       settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
+      inConversation: sessionMessageInbox.inConversation.bind(sessionMessageInbox),
     },
   });
   interruptedWork = new InterruptedWorkRecovery({
@@ -964,6 +975,7 @@ export async function createClientRuntime(
     retries: turnRetries,
   });
   reconciler.setResumer(interruptedWork);
+  reconciler.setInternalWorkStopper(sessionMessageInbox);
   await interruptedWork.start();
   const recovery = interruptedWork;
   const availabilityTester = new AgentRuntimeAvailabilityTester({
@@ -1018,6 +1030,7 @@ export async function createClientRuntime(
     reportOwner,
     durabilityMetrics,
     runner,
+    interruptedWork: recovery,
     runtimeManager,
     workspace,
     refreshCapability,

@@ -180,6 +180,7 @@ describe("Cloud Pi diagnostics", () => {
       provider_unavailable: true,
       resume_failed: true,
       run_mismatch: true,
+      steer_not_sent: true,
       unsupported_capability: true,
     };
     const errors = [

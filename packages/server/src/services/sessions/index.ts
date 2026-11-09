@@ -20,6 +20,7 @@ export { SessionCollaborationService } from "./session-collaboration-service.js"
 export {
   type AuthorizedScheduledMessageRoute,
   type EnsureChatSessionInTransactionInput,
+  type InternalSessionStopTarget,
   type ScheduledDispatchAdmissionFailure,
   type ScheduledMessageRouteResolution,
   SessionService,

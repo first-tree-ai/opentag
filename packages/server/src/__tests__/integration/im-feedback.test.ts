@@ -1,14 +1,17 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  computers,
   imFeedbackActions,
   imFeedbackTargets,
   imMessageDeliveries,
+  imMessages,
   sandboxes,
+  sessions,
   slackInstallations,
 } from "../../db/schema/index.js";
 import { createPerformanceLogger } from "../../observability/performance-logger.js";
@@ -24,6 +27,7 @@ import {
 import {
   createImFeedbackTarget,
   type FeedbackTarget,
+  finishImFeedback,
   ImFeedbackStore,
   startImFeedback,
 } from "../../services/im/im-feedback-store.js";
@@ -187,7 +191,13 @@ describe("PostgreSQL feedback operations", () => {
     });
     const worker = new ImFeedbackWorker({
       store: new ImFeedbackStore(client.database, () => clock),
-      transport: { reaction, post: async () => "card", update: async () => {}, find: async () => ({ ids: [] }) },
+      transport: {
+        reaction,
+        post: async () => "card",
+        postOfflineNotice: async () => {},
+        update: async () => {},
+        find: async () => ({ ids: [] }),
+      },
       logger: { warn: vi.fn() },
     });
     const pass = worker.runOnce();
@@ -235,6 +245,7 @@ describe("PostgreSQL feedback operations", () => {
     const worker = new ImFeedbackWorker({
       store,
       transport: {
+        postOfflineNotice: async () => {},
         reaction: async (target) => {
           admitted.push(target);
           if (admitted[0]?.id !== target.id) return siblings.promise;
@@ -473,6 +484,7 @@ describe("PostgreSQL feedback operations", () => {
         await gate;
         return "native-card";
       }),
+      postOfflineNotice: vi.fn(async () => {}),
       find: vi.fn(async () => ({ ids: [] })),
       update: vi.fn(async () => {}),
     };
@@ -529,6 +541,101 @@ async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
     await new PostgresRuntimeCustodyStore(client.database, { now: () => clock }).recordTurn(report, h.context),
   ).toBe("recorded");
 }
+
+describe("IM offline notice", () => {
+  it("makes a second target of the Session wait for the first reservation, then decline", async () => {
+    const h = await failed();
+    const second = await h.delivery();
+    const third = await h.delivery();
+    const ids = [second.frame.deliveryId, third.frame.deliveryId];
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(inArray(imMessageDeliveries.id, ids));
+    await client.database.update(imMessages).set({ receivedAt: new Date(clock.getTime() - 300_000) });
+    await client.database.transaction(async (tx) => {
+      for (const id of ids) await createImFeedbackTarget(tx, id, clock);
+    });
+    await client.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock.getTime() - 300_000) });
+    const targets = await client.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(inArray(imFeedbackTargets.deliveryId, ids));
+    expect(targets.map((target) => target.state)).toEqual(["queued", "queued"]);
+    const [first, other] = targets;
+    if (!first || !other) throw new Error("Missing targets");
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const release = deferred<void>();
+    const locked = deferred<void>();
+    const holder = client.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, first.sessionId)).for("update");
+      locked.resolve();
+      await release.promise;
+      await tx.update(imFeedbackTargets).set({ sendStartedAt: clock }).where(eq(imFeedbackTargets.id, first.id));
+    });
+    await locked.promise;
+    let settled = false;
+    const racing = store.reserveOfflineNotice(other).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    release.resolve();
+    await holder;
+    expect(await racing).toBeUndefined();
+
+    // A reconnect committed during the lock wait wins over the earlier offline read.
+    await client.database.update(imFeedbackTargets).set({ sendStartedAt: null });
+    const releaseAgain = deferred<void>();
+    const lockedAgain = deferred<void>();
+    const holderAgain = client.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, first.sessionId)).for("update");
+      lockedAgain.resolve();
+      await releaseAgain.promise;
+    });
+    await lockedAgain.promise;
+    const waiting = store.reserveOfflineNotice(other);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await client.database.update(computers).set({ currentInstanceId: randomUUID(), lastSeenAt: clock });
+    releaseAgain.resolve();
+    await holderAgain;
+    expect(await waiting).toBeUndefined();
+  });
+});
+
+describe("workspace failure format", () => {
+  it("keeps the format of a send that started between the report's read and its update", async () => {
+    const h = await failed();
+    await client.database
+      .update(imFeedbackTargets)
+      .set({ messageFormat: "text_v1", cardState: "pending", cardMessageId: null })
+      .where(eq(imFeedbackTargets.id, h.target.id));
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const worker = client.database.transaction(async (tx) => {
+      await tx.update(imFeedbackTargets).set({ cardState: "sending" }).where(eq(imFeedbackTargets.id, h.target.id));
+      started.resolve();
+      await release.promise;
+    });
+    await started.promise;
+    const report: TurnReportRequest = { ...h.report, errorReason: "workspace_failed" };
+    const finishing = client.database.transaction((tx) => finishImFeedback(tx, report, clock));
+    for (let i = 0; i < 100; i += 1) {
+      const blocked = await client.database.execute<{ count: string }>(
+        sql`select count(*)::text as count from pg_stat_activity where wait_event_type = 'Lock' and query ilike 'update "im_feedback_targets"%'`,
+      );
+      if (blocked[0]?.count !== "0") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release.resolve();
+    await worker;
+    await finishing;
+    const [row] = await client.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, h.target.id));
+    expect(row).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
+  });
+});
 
 describe("existing installation cooldown", () => {
   it("keeps a definitely unsent card pending when the call pool is full and sends it after capacity returns", async () => {

@@ -16,7 +16,13 @@ import {
 import { FeedbackProviderError } from "../services/im/im-feedback-messenger.js";
 import type { ScheduleClock } from "../services/schedules/index.js";
 import { ScheduledFailureNotifier, ScheduleScheduler } from "../services/schedules/index.js";
-import { scheduledMissKind } from "../services/schedules/scheduled-failure-notifier.js";
+import {
+  renderMiss,
+  renderRunFailure,
+  type ScheduledOccurrence,
+  scheduledMissKind,
+} from "../services/schedules/scheduled-failure-notifier.js";
+import { SessionService } from "../services/sessions/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -176,11 +182,11 @@ describe("a scheduled Run that failed", () => {
     const [target, text, requestId] = h.post.mock.calls[0] as unknown as [Record<string, unknown>, string, string];
     expect(target).toMatchObject({ bindingId: value.bindingId, channelId: "oc_channel", threadKey: null });
     expect(requestId).not.toBe(messageId);
-    expect(text).toContain("failed before finishing");
-    expect(text).toContain("Some of its work may already have happened");
+    expect(text).toContain("The model service is temporarily unavailable, so the task didn't finish.");
+    expect(text).toContain("Some operations may already have run");
     expect(text).toContain("2026-09-28 09:00:00 +08:00 (Asia/Shanghai)");
-    expect(text).toContain("Code: provider_unavailable");
-    expect(text).toContain(`Details: ${PUBLIC_URL}/`);
+    expect(text).not.toContain("provider_unavailable");
+    expect(text).toMatch(/\[View details\]\(https:\/\/opentag\.example\.com\/agents\/[^)]+\?schedule=[^)]+\)$/u);
     // Schedule names are untrusted: no provider mention syntax survives.
     expect(text).not.toMatch(/<at|<\/at>/u);
   });
@@ -192,8 +198,8 @@ describe("a scheduled Run that failed", () => {
     await h.notifier.notifyRunOutcome(report(value, messageId, { outcome: "timed_out", reason: "turn_timeout" }));
     await h.notifier.notifyRunOutcome(report(value, messageId, { outcome: "unknown", reason: "turn_state_unknown" }));
     const texts = h.post.mock.calls.map((call) => (call as unknown as [unknown, string])[1]);
-    expect(texts[0]).toContain("reached its maximum Run duration");
-    expect(texts[1]).toContain("its result is unknown");
+    expect(texts[0]).toContain("This task hit its time limit");
+    expect(texts[1]).toContain("We can't confirm whether the task finished.");
 
     h.post.mockClear();
     await expect(
@@ -324,6 +330,200 @@ describe("a scheduled Run that failed", () => {
     } as never);
     await expect(h.notifier.notifyRunOutcome(report(value, messageId))).resolves.toBe("notified");
     expect(h.post.mock.calls[0]?.[0 as never]).toMatchObject({ replyToExternalId: "om_latest" });
+  });
+});
+
+describe("the failure reason behind the details link", () => {
+  async function delivered(value: Seed, last: { outcome: string; code: string | null; scheduledFor?: string }) {
+    const scheduleId = await insertEverySchedule(value);
+    const messageId = randomUUID();
+    const scheduledFor = T0.toISOString();
+    await db.database
+      .update(agentSchedules)
+      .set({
+        lastDispatch: {
+          scheduledFor: last.scheduledFor ?? scheduledFor,
+          attemptedAt: scheduledFor,
+          messageId,
+          outcome: last.outcome,
+          code: last.code,
+        } as never,
+      })
+      .where(eq(agentSchedules.id, scheduleId));
+    await db.database.insert(sessionMessages).values({
+      id: messageId,
+      scheduledOrigin: { scheduleId, scheduledFor, timezone: "UTC", name: "Hourly check" },
+      targetSessionId: value.sessionId,
+      content: "Check the build.",
+      contentHash: "a".repeat(64),
+      lastOutcome: "accepted",
+    });
+    return { messageId, scheduleId };
+  }
+  const summary = async (scheduleId: string) =>
+    (await db.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId)))[0]?.lastDispatch;
+
+  it.each(["notifyRunOutcome", "notifyRunOutcomeInBackground"] as const)(
+    "tells two different failures apart on the schedule through %s, and stays out of the message",
+    async (entry) => {
+      for (const reason of ["provider_start_failed", "provider_process_exited"]) {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "accepted", code: null });
+        const h = harness();
+        await h.notifier[entry](report(value, messageId, { reason }));
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: reason });
+        await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+        expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).not.toContain(reason);
+      }
+    },
+  );
+
+  it("settles an unconfirmed hand-off, because a Run proves it landed", async () => {
+    const value = await seed();
+    const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: "delivery_uncertain" });
+    const h = harness();
+    await h.notifier.notifyRunOutcome(report(value, messageId));
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+  });
+
+  describe.each(["notifyRunOutcome", "notifyRunOutcomeInBackground"] as const)(
+    "when the hand-off's result arrives after the final answer from %s",
+    (entry) => {
+      /** Reports until the reporter would delete its durable copy, so no later report can repair anything. */
+      async function failed(value: Seed, messageId: string): Promise<void> {
+        const h = harness();
+        await vi.waitFor(async () => expect(await h.notifier[entry](report(value, messageId))).toBe("notified"));
+      }
+
+      it("keeps the reason through the scheduled receipt", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await failed(value, messageId);
+        const scheduledFor = T0.toISOString();
+        await expect(
+          new SessionService(db.database).recordMessageOutcome({
+            messageId,
+            attemptCount: 0,
+            outcome: "accepted",
+            scheduleSummary: { scheduleId, scheduledFor, attemptedAt: scheduledFor },
+          }),
+        ).resolves.toBe(true);
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+
+      it("keeps the reason through Cloud's accepted custody write", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await failed(value, messageId);
+        await new SessionService(db.database).recordMessageOutcome({ messageId, attemptCount: 0, outcome: "accepted" });
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+
+      it("isn't replaced by a late timeout", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await db.database
+          .update(sessionMessages)
+          .set({ lastOutcome: "unknown" })
+          .where(eq(sessionMessages.id, messageId));
+        await failed(value, messageId);
+        const scheduledFor = T0.toISOString();
+        await new SessionService(db.database).recordMessageOutcome({
+          messageId,
+          attemptCount: 0,
+          outcome: "unreachable",
+          errorCode: "delivery_timeout",
+          scheduleSummary: { scheduleId, scheduledFor, attemptedAt: scheduledFor },
+        });
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+    },
+  );
+
+  it("still lets a receipt write an occurrence that has no Run failure", async () => {
+    const value = await seed();
+    const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: "delivery_uncertain" });
+    await new SessionService(db.database).recordMessageOutcome({ messageId, attemptCount: 0, outcome: "accepted" });
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: null });
+    // A later receipt on a healthy summary, and the failure arriving after it, both still apply.
+    const h = harness();
+    await h.notifier.notifyRunOutcome(report(value, messageId));
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+  });
+
+  it("leaves a later occurrence's summary, a cancelled Run, and a foreign report alone", async () => {
+    const value = await seed();
+    const h = harness();
+    const later = await delivered(value, { outcome: "accepted", code: null, scheduledFor: "2026-09-28T02:00:00.000Z" });
+    await h.notifier.notifyRunOutcome(report(value, later.messageId));
+    expect(await summary(later.scheduleId)).toMatchObject({ code: null });
+
+    const current = await delivered(await seed(), { outcome: "accepted", code: null });
+    const owner = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, current.messageId));
+    const session = owner[0]?.targetSessionId as string;
+    const [placement] = await db.database
+      .select()
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, session));
+    const base = { childSessionId: session, messageId: current.messageId };
+    const source = {
+      computerId: placement?.computerId as string,
+      connectionInstanceId: randomUUID(),
+      placementGeneration: 1,
+    };
+    await h.notifier.notifyRunOutcome({ ...base, outcome: "cancelled", reason: "turn_cancelled", source });
+    await h.notifier.notifyRunOutcome({
+      ...base,
+      outcome: "failed",
+      reason: "provider_failed",
+      source: { ...source, computerId: randomUUID() },
+    });
+    expect(await summary(current.scheduleId)).toMatchObject({ code: null });
+  });
+});
+
+describe("the failure message's wording", () => {
+  const occurrence = (overrides: Partial<ScheduledOccurrence> = {}): ScheduledOccurrence => ({
+    agentId: "agent",
+    name: "Hourly check",
+    prompt: "Check the build.",
+    scheduleId: "schedule",
+    scheduledFor: T0.toISOString(),
+    targetSessionId: "session",
+    timezone: "UTC",
+    ...overrides,
+  });
+
+  it("links the schedule in each provider's syntax and shows no raw URL or code", () => {
+    const url = `${PUBLIC_URL}/agents/agent?schedule=schedule`;
+    const slack = renderMiss(occurrence(), "missed", PUBLIC_URL, "slack");
+    const feishu = renderRunFailure(occurrence(), "failed", "provider_quota_exceeded", PUBLIC_URL, "feishu");
+    expect(slack.endsWith(`<${url}|View details>`)).toBe(true);
+    expect(feishu.endsWith(`[View details](${url})`)).toBe(true);
+    expect(feishu).not.toContain("provider_quota_exceeded");
+    expect(feishu.split("\n\n")).toHaveLength(3);
+  });
+
+  it("follows the language of the schedule's task", () => {
+    const zh = occurrence({ prompt: "检查构建" });
+    expect(renderRunFailure(zh, "failed", "provider_unavailable", PUBLIC_URL, "feishu")).toContain(
+      "模型服务暂时不可用，任务没有完成。",
+    );
+    expect(renderRunFailure(zh, "timed_out", "x", PUBLIC_URL, "feishu")).toContain("超过了时间上限");
+    expect(renderMiss(zh, "missed", PUBLIC_URL, "slack")).toContain("定时任务“Hourly check”");
+    expect(renderMiss(zh, "unconfirmed", PUBLIC_URL, "slack")).toContain("可能没有运行。");
+    expect(renderMiss(zh, "disabled", PUBLIC_URL, "feishu")).toContain("[查看详情](");
+  });
+
+  it("keeps link and mention syntax in a schedule name inert, leaving only the details link", () => {
+    const name = 'x [click](http://evil.example) <http://evil.example|click> <at user_id="all">y</at> <!channel>';
+    const feishu = renderMiss(occurrence({ name }), "missed", PUBLIC_URL, "feishu");
+    const slack = renderMiss(occurrence({ name }), "missed", PUBLIC_URL, "slack");
+    expect(feishu.match(/\]\(/gu)).toHaveLength(1);
+    expect(feishu).toContain("［click］(http://evil.example)");
+    expect(slack.match(/</gu)).toHaveLength(1);
+    expect(feishu).not.toContain("<at");
+    expect(slack).not.toContain("<!channel>");
   });
 });
 
@@ -514,8 +714,10 @@ describe("a scheduled occurrence that never ran", () => {
     await occurrence(scheduler, 0);
     expect(h.post).toHaveBeenCalledOnce();
     const text = (h.post.mock.calls[0] as unknown as [unknown, string])[1];
-    expect(text).toContain('Scheduled task "Hourly check" did not run. The Agent never received it');
-    expect(text).toContain("Code: configuration_unsupported");
+    expect(text).toContain('Scheduled task "Hourly check" (scheduled for ');
+    expect(text).toContain("didn't run.");
+    expect(text).toContain("The Agent never received it, so no operations were run");
+    expect(text).not.toContain("configuration_unsupported");
     await scheduler.stop();
   });
 
@@ -571,7 +773,7 @@ describe("a scheduled occurrence that never ran", () => {
 
     dispatch.mockRejectedValueOnce(new Error("boom"));
     await occurrence(scheduler, 1);
-    expect((h.post.mock.calls[1] as unknown as [unknown, string])[1]).toContain("Code: dispatch_failed");
+    expect((h.post.mock.calls[1] as unknown as [unknown, string])[1]).toContain("may not have run");
     await scheduler.stop();
   });
 
@@ -586,7 +788,7 @@ describe("a scheduled occurrence that never ran", () => {
     await new Promise((resolve) => setImmediate(resolve));
     await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
     expect(dispatch).not.toHaveBeenCalled();
-    expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).toContain("Code: late");
+    expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).toContain("didn't run.");
     await scheduler.stop();
   });
 
@@ -614,7 +816,6 @@ describe("a scheduled occurrence that never ran", () => {
     await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
     const text = (h.post.mock.calls[0] as unknown as [unknown, string])[1];
     expect(text).toContain("the schedule has been turned off");
-    expect(text).toContain("Code: invalid_schedule");
     expect(text).toContain(`${T0.toISOString()} (UTC)`);
     expect(dispatch).not.toHaveBeenCalled();
     await scheduler.stop();
@@ -717,12 +918,13 @@ describe("a scheduled occurrence that never ran", () => {
     const occurrenceFacts = {
       agentId: value.agentId,
       name: "Hourly check",
+      prompt: "Check the build.",
       scheduleId: randomUUID(),
       scheduledFor: T0.toISOString(),
       targetSessionId: value.sessionId,
       timezone: "UTC",
     };
-    const input = { occurrence: occurrenceFacts, kind: "missed" as const, code: "late", requestId: randomUUID() };
+    const input = { occurrence: occurrenceFacts, kind: "missed" as const, requestId: randomUUID() };
     await h.notifier.notifyMissed(input, new AbortController().signal);
     expect(h.post).toHaveBeenCalledTimes(3);
     expect(h.logger.warn).toHaveBeenCalledWith(
@@ -735,6 +937,37 @@ describe("a scheduled occurrence that never ran", () => {
     aborted.abort();
     await h.notifier.notifyMissed(input, aborted.signal);
     expect(h.post).toHaveBeenCalledOnce();
+  });
+  it("sends and logs nothing for a miss on an internal Session, which has no conversation", async () => {
+    const value = await seed();
+    const internalId = randomUUID();
+    const [visible] = await db.database.select().from(sessions).where(eq(sessions.id, value.sessionId));
+    await db.database.insert(sessions).values({
+      id: internalId,
+      imBindingId: visible?.imBindingId as string,
+      channelId: visible?.channelId as string,
+      conversationKind: visible?.conversationKind as "dm",
+      kind: "internal",
+      createdBySessionId: value.sessionId,
+    });
+    const h = harness(vi.fn());
+    const occurrenceFacts = {
+      agentId: value.agentId,
+      name: "Hourly check",
+      prompt: "Check the build.",
+      scheduleId: randomUUID(),
+      scheduledFor: T0.toISOString(),
+      targetSessionId: internalId,
+      timezone: "UTC",
+    };
+    for (const kind of ["missed", "disabled"] as const) {
+      await h.notifier.notifyMissed(
+        { occurrence: occurrenceFacts, kind, requestId: randomUUID() },
+        new AbortController().signal,
+      );
+    }
+    expect(h.post).not.toHaveBeenCalled();
+    expect(h.logger.warn).not.toHaveBeenCalled();
   });
 });
 

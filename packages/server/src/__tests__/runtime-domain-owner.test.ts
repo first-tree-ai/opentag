@@ -5,6 +5,7 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_PROTOCOL_V2,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
@@ -1641,6 +1642,99 @@ describe("RuntimeDomainOwner", () => {
     await expect(owner.handle(unmatched, context)).resolves.toBeUndefined();
   });
 
+  it("only completes a combined receipt for the expected message on the exact control connection", async () => {
+    const connectionId = randomUUID();
+    const fixture = await ownerFixture(1000, {}, "0.1.1", connectionId);
+    const message = sessionMessageDelivery();
+    const request = {
+      ...reconcileRequest(fixture.computerId),
+      agentId: message.agentId,
+      sessionId: message.targetSessionId,
+      placementGeneration: message.placementGeneration,
+      runtime: message.runtime,
+      sessionMessage: {
+        messageId: message.messageId,
+        sourceSessionId: message.sourceSessionId,
+        content: message.content,
+      },
+    };
+    const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual({ ...request, connectionId }));
+    const result: SessionReconcileResult = {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "ready",
+    };
+    const sessionMessage = {
+      type: "session:message:deliver:result" as const,
+      requestId: request.requestId,
+      messageId: message.messageId,
+      targetSessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "accepted" as const,
+    };
+    try {
+      // Neither a reply on a new socket for the same daemon instance nor a legacy or mismatched
+      // acknowledgement can prove that the inbox took custody.
+      await fixture.owner.handle({ ...result, sessionMessage }, { ...fixture.context, connectionId: randomUUID() });
+      await fixture.owner.handle(result, fixture.context);
+      await fixture.owner.handle(
+        { ...result, sessionMessage: { ...sessionMessage, messageId: randomUUID() } },
+        fixture.context,
+      );
+      await fixture.owner.handle({ ...result, sessionMessage }, fixture.context);
+      await expect(pending).resolves.toMatchObject({ sessionMessage });
+    } finally {
+      await fixture.owner.close();
+    }
+  });
+
+  it("refuses a combined frame if the socket was replaced while preparing the proof", async () => {
+    const connectionId = randomUUID();
+    const prepared = deferred();
+    const prepareReconcile = vi.fn(async (_computerId, _instanceId, request: SessionReconcileRequest) => {
+      await prepared.promise;
+      return { request };
+    });
+    const fixture = await ownerFixture(1000, { prepareReconcile }, "0.1.1", connectionId);
+    const message = sessionMessageDelivery();
+    const request = {
+      ...reconcileRequest(fixture.computerId),
+      agentId: message.agentId,
+      sessionId: message.targetSessionId,
+      runtime: message.runtime,
+      sessionMessage: {
+        messageId: message.messageId,
+        sourceSessionId: message.sourceSessionId,
+        content: message.content,
+      },
+    };
+    const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+    const rejection = expect(pending).rejects.toMatchObject({ code: "instance_replaced", mayHaveSent: false });
+    const replacementFrames: unknown[] = [];
+    await fixture.registry.register(
+      {
+        clientVersion: "0.1.1",
+        computerId: fixture.computerId,
+        installationId: fixture.computerId,
+        instanceId: fixture.instanceId,
+        connectionId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 2,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionReconcile]: 1 },
+        socket: socketFixture(replacementFrames),
+      },
+      async () => undefined,
+    );
+    prepared.resolve();
+    await rejection;
+    expect(fixture.frames).toEqual([]);
+    expect(replacementFrames).toEqual([]);
+    await fixture.owner.close();
+  });
+
   it("dispatches SessionMessage frames only through an admitted onDispatched boundary", async () => {
     const fixture = await ownerFixture();
     const rejected = sessionMessageDelivery();
@@ -1702,6 +1796,7 @@ async function ownerFixture(
   requestTimeoutMs = 1_000,
   options: Partial<RuntimeDomainOwnerOptions> = {},
   clientVersion = "0.1.1",
+  inlineMessageConnectionId?: string,
 ) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
@@ -1710,6 +1805,9 @@ async function ownerFixture(
   await registry.register(
     {
       clientVersion,
+      ...(inlineMessageConnectionId
+        ? { connectionId: inlineMessageConnectionId, protocolVersion: RUNTIME_PROTOCOL_V2 }
+        : {}),
       computerId,
       installationId: computerId,
       instanceId,
@@ -1720,6 +1818,7 @@ async function ownerFixture(
         "runtime.imSteer": 2,
         "runtime.sessionCollaboration": 3,
         [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+        ...(inlineMessageConnectionId ? { [RUNTIME_CAPABILITY.sessionMessageReconcile]: 1 } : {}),
       },
       socket: socketFixture(frames),
     },
@@ -1729,6 +1828,7 @@ async function ownerFixture(
   const owner = new RuntimeDomainOwner(registry, custody, { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
+    connectionId: inlineMessageConnectionId,
     installationId: computerId,
     instanceId,
     signal: new AbortController().signal,

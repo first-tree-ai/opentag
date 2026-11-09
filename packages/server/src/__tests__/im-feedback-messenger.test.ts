@@ -188,7 +188,7 @@ describe("native feedback transport", () => {
         blocks: [
           {
             type: "header",
-            block_id: `opentag_feedback:${t.id}`,
+            block_id: `opentag_notice:${t.id}`,
             text: { type: "plain_text", text: "The Agent's computer is offline", emoji: true },
           },
           {
@@ -622,25 +622,98 @@ describe("native feedback transport", () => {
       }
     },
   );
-  it("finds a Slack card in the channel history by its attachment block identity", async () => {
+  it("finds a Slack card in the input's replies (pre-text location), then in the channel history", async () => {
     const t: FeedbackTarget = { ...target(), messageFormat: "interactive_v1", threadKey: null };
     const identity = { block_id: `opentag_feedback:${t.id}` };
-    mocks.slack.conversations.history.mockResolvedValue({
+    const notice = { block_id: `opentag_notice:${t.id}` };
+    mocks.slack.conversations.replies.mockResolvedValueOnce({
+      ok: true,
+      messages: [{ user: "bot", ts: "legacy", blocks: [identity] }],
+      response_metadata: { next_cursor: "r2" },
+    });
+    const { messenger } = harness();
+    expect(await messenger.find(t)).toEqual({ ids: ["legacy"], cursor: "replies:r2" });
+    expect(mocks.slack.conversations.replies).toHaveBeenLastCalledWith({
+      channel: t.channelId,
+      ts: t.inputExternalId,
+      limit: 100,
+    });
+    mocks.slack.conversations.replies.mockResolvedValueOnce({ ok: true, messages: [] });
+    expect(await messenger.find(t, "replies:r2")).toEqual({ ids: [], cursor: "history:" });
+    expect(mocks.slack.conversations.replies).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "r2" }));
+    mocks.slack.conversations.history.mockResolvedValueOnce({
       ok: true,
       messages: [
         { user: "human", ts: "foreign", attachments: [{ blocks: [identity] }] },
         { user: "bot", ts: "other", attachments: [{ blocks: [{ block_id: "opentag_feedback:other" }] }] },
+        { user: "bot", ts: "notice", attachments: [{ blocks: [notice] }] },
         { user: "bot", ts: "match", attachments: [{ blocks: [identity] }] },
       ],
+      response_metadata: { next_cursor: "h2" },
     });
-    expect(await harness().messenger.find(t)).toEqual({ ids: ["match"] });
-    expect(mocks.slack.conversations.history).toHaveBeenCalledWith({
+    expect(await messenger.find(t, "history:")).toEqual({ ids: ["match"], cursor: "history:h2" });
+    expect(mocks.slack.conversations.history).toHaveBeenLastCalledWith({
       channel: t.channelId,
       oldest: String(Math.floor((t.sendStartedAt ?? t.createdAt).getTime() / 1000) - 60),
       limit: 100,
     });
-    expect(mocks.slack.conversations.replies).not.toHaveBeenCalled();
+    mocks.slack.conversations.history.mockResolvedValueOnce({ ok: true, messages: [] });
+    expect(await messenger.find(t, "history:h2")).toEqual({ ids: [] });
+    expect(mocks.slack.conversations.history).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "h2" }));
   });
+  it.each(["offline", "parked"] as const)(
+    "never reads back an earlier %s notice as the failure message",
+    async (reason) => {
+      for (const provider of ["slack", "feishu"] as const) {
+        const { messenger } = harness();
+        const t: FeedbackTarget = { ...target(provider), messageFormat: "interactive_v1" };
+        mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "notice" });
+        mocks.feishu.im.v1.message.reply.mockResolvedValue({
+          code: 0,
+          data: { message_id: "notice", chat_id: t.channelId },
+        });
+        await messenger.postOfflineNotice(t, reason);
+        const sentNotice =
+          provider === "slack"
+            ? mocks.slack.chat.postMessage.mock.calls.at(-1)?.[0]
+            : JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls.at(-1)?.[0].data.content);
+        // What the provider returns on read: Slack keeps the blocks, Feishu degrades the card to its links.
+        const noticeHref = JSON.stringify(sentNotice).match(/https:[^)"]+open=[a-z]+/u)?.[0];
+        if (provider === "slack")
+          mocks.slack.conversations.replies.mockResolvedValueOnce({
+            ok: true,
+            messages: [
+              { user: "bot", ts: "notice", attachments: sentNotice.attachments },
+              { user: "bot", ts: "failure", attachments: [{ blocks: [{ block_id: `opentag_feedback:${t.id}` }] }] },
+            ],
+          });
+        else
+          mocks.feishu.im.v1.message.list.mockResolvedValueOnce({
+            code: 0,
+            data: {
+              items: [
+                {
+                  message_id: "notice",
+                  sender: { sender_type: "app", id: "app" },
+                  body: { content: JSON.stringify({ elements: [[{ tag: "a", href: noticeHref }]] }) },
+                },
+                {
+                  message_id: "failure",
+                  sender: { sender_type: "app", id: "app" },
+                  body: {
+                    content: JSON.stringify({
+                      elements: [[{ tag: "a", href: `https://app.example.test/im-feedback/${t.id}` }]],
+                    }),
+                  },
+                },
+              ],
+            },
+          });
+        expect(noticeHref).toBeTruthy();
+        expect((await messenger.find(t)).ids).toEqual(["failure"]);
+      }
+    },
+  );
 });
 
 it("does not count Slack 429 responses toward the shared outage circuit", async () => {

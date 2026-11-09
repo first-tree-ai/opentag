@@ -29,6 +29,11 @@ interface CardButton {
   url: string;
 }
 export interface FeedbackCard {
+  /**
+   * A waiting notice shares its target with the failure card that may follow, so it carries a different
+   * identity: failure readback must never bind the notice.
+   */
+  kind: "failure" | "notice";
   tone: CardTone;
   title: string;
   body?: { text: string; link?: { label: string; url: string } };
@@ -79,6 +84,7 @@ function fromCopy(
   linkUrl: (link: CardLink) => string,
 ): FeedbackCard {
   return {
+    kind: "failure",
     tone,
     title: copy.title[language],
     ...(copy.body
@@ -101,7 +107,7 @@ export function feedbackCard(
 ): FeedbackCard {
   const status = cardStatus(target, action);
   // A status card is only its state: who acted and when stay on the details page.
-  if (status) return { tone: status.tone, title: CARD_STATUS[status.key][language], buttons: [] };
+  if (status) return { kind: "failure", tone: status.tone, title: CARD_STATUS[status.key][language], buttons: [] };
   const workspaceBlocked = target.state === "workspace_blocked";
   const card = fromCopy(
     failureCardCopy(target.errorCode, { workspaceBlocked, batchRetryBlocked: target.batchRetryBlocked }),
@@ -135,9 +141,30 @@ export function waitingCard(
   language: FeedbackLanguage,
   reason: "offline" | "parked" = "offline",
 ): FeedbackCard {
-  return fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language, (link) =>
-    feedbackLinkUrl(target, publicUrl, link),
-  );
+  return {
+    ...fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language, (link) =>
+      feedbackLinkUrl(target, publicUrl, link),
+    ),
+    kind: "notice",
+  };
+}
+
+/** Links a failure message can carry. A waiting notice links only to `restore` or `agent`. */
+const FAILURE_LINKS = new Set<string>(["settings", "task"]);
+
+/**
+ * Whether provider content holds this target's failure identity: its details URL, or one of the links only
+ * a failure card carries. A waiting notice for the same target never matches.
+ */
+export function holdsFailureIdentity(content: string, feedbackId: string): boolean {
+  const pattern = new RegExp(`/im-feedback/${feedbackId.replace(/[^0-9a-f-]/giu, "")}(\\?open=([a-z]+))?`, "gu");
+  for (const match of content.matchAll(pattern)) if (!match[2] || FAILURE_LINKS.has(match[2])) return true;
+  return false;
+}
+
+/** The hidden Slack block ID a card is read back by. */
+export function slackCardIdentity(kind: FeedbackCard["kind"], feedbackId: string): string {
+  return `${kind === "notice" ? "opentag_notice" : "opentag_feedback"}:${feedbackId}`;
 }
 
 /** Plain words for notifications and Slack's attachment fallback. */
@@ -170,7 +197,7 @@ export function slackCardMessage(card: FeedbackCard, feedbackId: string, languag
         blocks: [
           {
             type: "header" as const,
-            block_id: `opentag_feedback:${feedbackId}`,
+            block_id: slackCardIdentity(card.kind, feedbackId),
             text: { type: "plain_text" as const, text: card.title, emoji: true },
           },
           ...(body ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: body } }] : []),

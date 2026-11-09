@@ -9,6 +9,8 @@ import {
   feedbackCard,
   feedbackDetailsUrl,
   feishuCardContent,
+  holdsFailureIdentity,
+  slackCardIdentity,
   slackCardMessage,
   waitingCard,
 } from "./im-feedback-card.js";
@@ -416,23 +418,22 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
   async #findSlack(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     const { api, material } = await this.#slack(target, signal);
-    const identity = `opentag_feedback:${target.id}`;
+    const identity = slackCardIdentity("failure", target.id);
+    const plan = slackReadbackPlan(target, cursor);
     const r = await this.#slackCall(target, () =>
-      // A plain-text message always went into the input's thread; a card goes to the channel unless the
-      // input was in a thread.
-      target.threadKey || target.messageFormat === "text_v1"
+      plan.replies
         ? api.conversations.replies({
             channel: target.channelId,
             ts: target.threadKey ?? target.inputExternalId,
             limit: 100,
-            ...(cursor ? { cursor } : {}),
+            ...(plan.page ? { cursor: plan.page } : {}),
           })
         : api.conversations.history({
             channel: target.channelId,
             // A minute of slack for clock skew between this Server and Slack.
             oldest: String(Math.floor((target.sendStartedAt ?? target.createdAt).getTime() / 1000) - 60),
             limit: 100,
-            ...(cursor ? { cursor } : {}),
+            ...(plan.page ? { cursor: plan.page } : {}),
           }),
     );
     if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_READBACK_FAILED", false);
@@ -441,14 +442,15 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (m) =>
           m.user === material.botUserId &&
           (target.messageFormat === "text_v1"
-            ? m.text?.includes(feedbackDetailsUrl(target, this.publicUrl))
+            ? holdsFailureIdentity(m.text ?? "", target.id)
             : // A card carries its identity in a hidden block ID, in an attachment or (before attachments) at the top.
               [...(m.blocks ?? []), ...(m.attachments ?? []).flatMap((a) => a.blocks ?? [])].some(
                 (b) => b.block_id === identity,
               )),
       )
       .flatMap((m) => (m.ts ? [m.ts] : []));
-    return { ids, ...(r.response_metadata?.next_cursor ? { cursor: r.response_metadata.next_cursor } : {}) };
+    const next = plan.next(r.response_metadata?.next_cursor || undefined);
+    return { ids, ...(next ? { cursor: next } : {}) };
   }
   async #findFeishu(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     const { api, material } = await this.#feishu(target, signal);
@@ -471,11 +473,25 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (m) =>
           m.sender?.sender_type === "app" &&
           [material.appId, material.botOpenId].includes(m.sender.id) &&
-          m.body?.content?.includes(`/im-feedback/${target.id}`),
+          holdsFailureIdentity(m.body?.content ?? "", target.id),
       )
       .flatMap((m) => (m.message_id ? [m.message_id] : []));
     return { ids, ...(r.data.has_more && r.data.page_token ? { cursor: r.data.page_token } : {}) };
   }
+}
+
+/**
+ * Where Slack readback looks next. A card goes to the channel unless the input was in a thread, but a card
+ * from before the text period went into the input's replies, and both share `interactive_v1`. Such a target
+ * reads the input's replies first and then the channel; its cursor says which (`replies:` or `history:`).
+ */
+function slackReadbackPlan(target: FeedbackTarget, cursor?: string) {
+  if (target.threadKey || target.messageFormat === "text_v1")
+    return { replies: true, page: cursor, next: (page?: string) => page };
+  const [phase, page] = cursor ? [cursor.slice(0, cursor.indexOf(":")), cursor.slice(cursor.indexOf(":") + 1)] : [];
+  if (phase === "history")
+    return { replies: false, page: page || undefined, next: (more?: string) => more && `history:${more}` };
+  return { replies: true, page: page || undefined, next: (more?: string) => (more ? `replies:${more}` : "history:") };
 }
 
 function feedbackRateLimit(error: unknown): FeedbackProviderError | undefined {

@@ -547,6 +547,7 @@ describe("durable IM feedback", () => {
     const target = await h.target();
     const card = feedbackCard(target, "https://example.test", undefined, "en");
     expect(card).toEqual({
+      kind: "failure",
       tone: "failure",
       title: "Execution environment error",
       body: { text: "Try again" },

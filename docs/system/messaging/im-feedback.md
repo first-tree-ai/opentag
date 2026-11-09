@@ -278,12 +278,19 @@ text.
   or save/discard result edits it as text, with the same three sentences and details link as when it was sent.
 - **A card from before the text period.** Those cards were sent with `update_multi`, so a later change edits them in
   place with the current card. On Slack, the edit clears the old top-level text and blocks.
-- **Readback.** A card is found by an identity the provider returns: on Slack the `opentag_feedback:<id>` block ID,
-  in an attachment or (old cards) at the top level; on Feishu the feedback URL. Feishu's message read API returns a
-  card's links but not its button values, so a card whose body has no link carries a zero-width link to the details
-  page. A text message is still found by its details URL. Slack reads a thread with `conversations.replies` and a
-  channel card with `conversations.history` from a minute before the send was reserved; a text message always went
-  into the input's thread.
+- **Readback.** A failure card is found by an identity the provider returns: on Slack the `opentag_feedback:<id>`
+  block ID, in an attachment or (old cards) at the top level; on Feishu the details URL, or a feedback link that only a
+  failure card carries (`open=settings` or `open=task`). Feishu's message read API returns a card's links but not its
+  button values, so a failure card whose body has no link carries a zero-width link to the details page. A text message
+  is still found by its details URL.
+- **Waiting notices.** An offline or queued notice can precede the failure card of the same target, so it carries a
+  different identity: the Slack block ID `opentag_notice:<id>`, and on Feishu only `open=restore` or `open=agent`
+  links. Failure readback never binds a notice, so a notice followed by a failure whose send is unknown still binds the
+  failure, or stays unknown, without a second send.
+- **Where Slack looks.** A thread is read with `conversations.replies`. A card for a top-level input is looked for
+  first in the input's replies, where cards from before the text period went, and then in the channel with
+  `conversations.history` from a minute before the send was reserved; the stored cursor says which. A text message
+  always went into the input's thread.
 - **A button on an old card.** The Slack interaction endpoint accepts the `opentag_feedback_*` action IDs and
   acknowledges them without doing anything, so Slack shows no error. A Feishu Retry button gets a toast saying the
   button is no longer available instead of reaching the approval handler.

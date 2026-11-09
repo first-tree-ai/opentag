@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { TurnReportRequest } from "@opentag/shared";
-import { and, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
+  computers,
   imBindings,
   imFeedbackActions,
   imFeedbackTargets,
   imMessageDeliveries,
   imMessages,
   sandboxes,
+  sessionPlacements,
   sessions,
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
+import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
+import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
 import { feedbackMessageFormat } from "./im-feedback-format.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
@@ -32,6 +36,8 @@ export interface FeedbackSettlement {
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
+/** Short disconnects, upgrades and restarts recover silently below this. */
+export const OFFLINE_NOTICE_DELAY_MS = 60_000;
 
 export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId: string, now: Date): Promise<void> {
   const [row] = await tx
@@ -176,6 +182,54 @@ export async function finishImFeedback(tx: DatabaseTransaction, report: TurnRepo
       .set(terminalFeedbackUpdate(target, report, now))
       .where(eq(imFeedbackTargets.id, target.id));
   }
+}
+
+/**
+ * When the current offline period began, if this target's input is parked on a Local Computer that
+ * has been offline, by the Web's rule, long enough for a notice.
+ */
+async function offlinePeriodStart(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+  now: Date,
+): Promise<Date | undefined> {
+  const [row] = await database
+    .select({
+      kind: computers.kind,
+      instanceId: computers.currentInstanceId,
+      lastSeenAt: computers.lastSeenAt,
+      computerCreatedAt: computers.createdAt,
+      disconnectedAt: computers.disconnectedAt,
+      deletedAt: computers.deletedAt,
+      agentStatus: agents.status,
+      receivedAt: imMessages.receivedAt,
+      deliveryState: imMessageDeliveries.state,
+      deliveryGeneration: imMessageDeliveries.placementGeneration,
+      placementGeneration: sessionPlacements.generation,
+    })
+    .from(imMessageDeliveries)
+    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+    .innerJoin(agents, eq(agents.id, target.agentId))
+    .where(eq(imMessageDeliveries.id, target.deliveryId))
+    .limit(1);
+  if (
+    !row ||
+    row.kind !== "local" ||
+    row.deletedAt ||
+    row.agentStatus !== "active" ||
+    row.deliveryState !== "pending" ||
+    row.deliveryGeneration !== row.placementGeneration
+  )
+    return;
+  const lastSeenMs = row.lastSeenAt?.getTime() ?? 0;
+  const offline =
+    row.disconnectedAt !== null || row.instanceId === null || lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
+  if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
+  // A Computer that never connected has been offline since it was created. This baseline must not depend on
+  // the input: a later message's receipt would exclude the earlier notice and repeat it within one outage.
+  return row.lastSeenAt ?? row.computerCreatedAt;
 }
 
 export class ImFeedbackStore {
@@ -421,6 +475,69 @@ export class ImFeedbackStore {
     });
   }
 
+  /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
+  async messageLanguage(messageId: string): Promise<FeedbackLanguage> {
+    const [message] = await this.database
+      .select({ content: imMessages.content })
+      .from(imMessages)
+      .where(eq(imMessages.id, messageId))
+      .limit(1);
+    return message ? feedbackLanguage(message.content) : "en";
+  }
+
+  /**
+   * Reserves the one offline notice of this Session and offline period. `computers.last_seen_at` is
+   * frozen while a Computer is offline and rewritten on reconnect, so a send started at or after it
+   * belongs to the current period. The reservation commits before provider I/O, so a crash loses a
+   * notice rather than repeating it. The Session row lock serializes the targets of a Session, and
+   * eligibility is read again under it because the Computer can reconnect during the lock wait.
+   */
+  async reserveOfflineNotice(target: FeedbackTarget): Promise<Date | undefined> {
+    if (target.state !== "queued" || target.cardState !== "none") return;
+    const now = this.now();
+    if ((await offlinePeriodStart(this.database, target, now)) === undefined) return;
+    return this.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, target.sessionId)).for("update");
+      const periodStart = await offlinePeriodStart(tx, target, now);
+      if (periodStart === undefined) return;
+      const [sent] = await tx
+        .select({ id: imFeedbackTargets.id })
+        .from(imMessageDeliveries)
+        .innerJoin(imFeedbackTargets, eq(imFeedbackTargets.deliveryId, imMessageDeliveries.id))
+        .where(
+          and(eq(imMessageDeliveries.sessionId, target.sessionId), gte(imFeedbackTargets.sendStartedAt, periodStart)),
+        )
+        .limit(1);
+      if (sent) return;
+      const [reserved] = await tx
+        .update(imFeedbackTargets)
+        .set({ sendStartedAt: now })
+        .where(
+          and(
+            eq(imFeedbackTargets.id, target.id),
+            eq(imFeedbackTargets.state, "queued"),
+            eq(imFeedbackTargets.cardState, "none"),
+          ),
+        )
+        .returning({ id: imFeedbackTargets.id });
+      return reserved ? now : undefined;
+    });
+  }
+
+  /** A send the provider definitely did not apply may be attempted again on a later pass. */
+  async releaseOfflineNotice(target: FeedbackTarget, reservedAt: Date): Promise<void> {
+    await this.database
+      .update(imFeedbackTargets)
+      .set({ sendStartedAt: null })
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          eq(imFeedbackTargets.sendStartedAt, reservedAt),
+          eq(imFeedbackTargets.cardState, "none"),
+        ),
+      );
+  }
+
   async latestAction(feedbackId: string): Promise<FeedbackAction | undefined> {
     const [action] = await this.database
       .select()
@@ -499,6 +616,16 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     state,
     desiredReaction: failed ? ("warning" as const) : ("none" as const),
     errorCode: failed ? report.errorReason : null,
+    // Only the recovery buttons need a card, and the kind of failure is unknown when the target is created.
+    // This is the one format change. The caller's snapshot is unlocked, so the decision reads the live row:
+    // a worker that has already started sending keeps the format it sent.
+    ...(state === "workspace_blocked"
+      ? {
+          messageFormat: sql<
+            FeedbackTarget["messageFormat"]
+          >`case when ${imFeedbackTargets.cardMessageId} is null and ${imFeedbackTargets.cardState} in ('none','pending') then 'interactive_v1' else ${imFeedbackTargets.messageFormat} end`,
+        }
+      : {}),
     effects: report.executionEffects,
     reportHash: report.resultHash,
     actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),

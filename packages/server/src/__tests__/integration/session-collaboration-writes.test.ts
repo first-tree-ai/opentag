@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
@@ -16,6 +16,7 @@ import { AgentService } from "../../services/agents/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { disableImBindingInTransaction, ImBindingService } from "../../services/im-bindings/index.js";
+import { ScheduleScheduler } from "../../services/schedules/scheduler.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -545,6 +546,147 @@ describe("Session write authority lock order", () => {
     }
   });
 
+  describe("session stop against a scheduled occurrence", () => {
+    const BOUND_MS = 15_000;
+    async function scheduled(value: Awaited<ReturnType<typeof fixture>>) {
+      const child = await value.create(value.root.session.id);
+      const [clock] = await value.sql<{ at: Date }[]>`select clock_timestamp() as at`;
+      assert(clock);
+      const { at } = clock;
+      const [schedule] = await value.database
+        .insert(agentSchedules)
+        .values({
+          agentId: value.agent.id,
+          targetSessionId: child.session.id,
+          name: "Child check",
+          prompt: "Run the task",
+          schedule: { kind: "every", intervalSeconds: 3600, anchorAt: new Date(at).toISOString() },
+          timezone: "UTC",
+          enabled: true,
+          nextTriggerAt: new Date(at),
+        })
+        .returning();
+      assert(schedule);
+      const resolved = await value.service.resolveScheduledMessageRoute(child.session.id, value.agent.id);
+      assert(resolved.kind === "route");
+      return { child, schedule, route: resolved.route };
+    }
+    const stopInput = (value: Awaited<ReturnType<typeof fixture>>, targetSessionId: string) => {
+      const {
+        content: _content,
+        messageId: _messageId,
+        ...input
+      } = value.sendInput(value.root.session.id, targetSessionId);
+      return input;
+    };
+    async function endState(value: Awaited<ReturnType<typeof fixture>>, sessionId: string, scheduleId: string) {
+      const [session] = await value.database.select().from(sessions).where(eq(sessions.id, sessionId));
+      const [schedule] = await value.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId));
+      return { endedAt: session?.endedAt, schedule };
+    }
+
+    it("a claim holding its locks makes the stop wait, and the stale occurrence then sends no frame", async () => {
+      const value = await fixture();
+      const claimer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+      const stopper = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+      const inserted = deferred();
+      const release = deferred();
+      try {
+        await stopper.sql`set statement_timeout = '10s'`;
+        const [backend] = await stopper.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+        assert(backend);
+        const { child, schedule, route } = await scheduled(value);
+        const scheduler = new ScheduleScheduler({
+          database: claimer.database,
+          dispatch: {} as never,
+          sessions: new SessionService(claimer.database),
+          publicUrl: "http://example.test",
+          afterMessageInsert: async () => {
+            inserted.resolve();
+            await release.promise;
+          },
+        });
+        // The message insert has taken its foreign-key lock on the Session, and the schedule row is locked.
+        const claiming = scheduler.claimOccurrence(schedule.id, { allowDispatch: true });
+        await inserted.promise;
+        const stopping = new SessionService(stopper.database).stopInternalSession(stopInput(value, child.session.id));
+        await waitForLock(value, backend.pid);
+        release.resolve();
+        const [claim, stopped] = await withinBound(Promise.all([claiming, stopping]), BOUND_MS);
+        assert(claim.kind === "claimed");
+        expect(stopped.alreadyStopped).toBe(false);
+
+        const frames = vi.fn(async (onDispatched: () => void) => {
+          onDispatched();
+          return "sent";
+        });
+        const admission = await withinBound(
+          value.service.withScheduledDispatchAdmission(
+            route,
+            { scheduleId: schedule.id, revision: claim.snapshot.revision },
+            frames,
+          ),
+          BOUND_MS,
+        );
+        expect(admission).toMatchObject({ admitted: false });
+        expect(frames).not.toHaveBeenCalled();
+        const state = await endState(value, child.session.id, schedule.id);
+        expect(state.endedAt).toBeInstanceOf(Date);
+        expect(state.schedule).toMatchObject({
+          enabled: false,
+          nextTriggerAt: null,
+          revision: schedule.revision + 1,
+        });
+      } finally {
+        release.resolve();
+        await Promise.all([value.sql.end(), claimer.sql.end(), stopper.sql.end()]);
+      }
+    });
+
+    it("a stop waits for an admission that has recorded its send, which sends exactly one frame", async () => {
+      const value = await fixture();
+      const stopper = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+      const sending = deferred();
+      const release = deferred();
+      try {
+        await stopper.sql`set statement_timeout = '10s'`;
+        const [backend] = await stopper.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+        assert(backend);
+        const { child, schedule, route } = await scheduled(value);
+        const frames = vi.fn(async (onDispatched: () => void) => {
+          sending.resolve();
+          await release.promise;
+          onDispatched();
+          return "sent";
+        });
+        const admitting = value.service.withScheduledDispatchAdmission(
+          route,
+          { scheduleId: schedule.id, revision: schedule.revision },
+          frames,
+        );
+        await sending.promise;
+        const stopping = new SessionService(stopper.database).stopInternalSession(stopInput(value, child.session.id));
+        await waitForLock(value, backend.pid);
+        expect((await endState(value, child.session.id, schedule.id)).endedAt).toBeNull();
+        release.resolve();
+        const [admission, stopped] = await withinBound(Promise.all([admitting, stopping]), BOUND_MS);
+        expect(admission).toMatchObject({ admitted: true });
+        expect(frames).toHaveBeenCalledOnce();
+        expect(stopped.alreadyStopped).toBe(false);
+        const state = await endState(value, child.session.id, schedule.id);
+        expect(state.endedAt).toBeInstanceOf(Date);
+        expect(state.schedule).toMatchObject({
+          enabled: false,
+          nextTriggerAt: null,
+          revision: schedule.revision + 1,
+        });
+      } finally {
+        release.resolve();
+        await Promise.all([value.sql.end(), stopper.sql.end()]);
+      }
+    });
+  });
+
   it.each(["binding", "channel", "conversation kind", "thread"] as const)(
     "rejects a foreign %s scope while the target Session and placement are locked elsewhere",
     async (difference) => {
@@ -649,6 +791,15 @@ describe("Session write authority lock order", () => {
     }
   });
 });
+
+/** A deadlock or a lost wakeup fails here, not at the test timeout. */
+function withinBound<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`Did not complete within ${ms} ms`)), ms);
+  });
+  return Promise.race([work, bound]).finally(() => clearTimeout(timer));
+}
 
 async function raceAtRow(
   value: Awaited<ReturnType<typeof fixture>>,

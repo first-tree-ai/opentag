@@ -44,6 +44,42 @@ describe("ClaudeCodeProcess", () => {
     await process.close();
   });
 
+  it("confirms a steered input in the conversation only at a top-level assistant message after it started", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user", text: "first" }, () => undefined, new AbortController().signal);
+    const handle = await process.steer({ type: "user", uuid: "steer-1" });
+    const later = await process.steer({ type: "user", uuid: "steer-2" });
+    const confirmed: string[] = [];
+    void handle.inConversation.then(() => confirmed.push("steer-1"));
+    void later.inConversation.then(() => confirmed.push("steer-2"));
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+    // Before it started, an assistant message belongs to an earlier model request.
+    child.stdout.write('{"type":"assistant","parent_tool_use_id":null}\n');
+    await flush();
+    expect(confirmed).toEqual([]);
+    // Started is not enough: Claude Code has not flushed the transcript yet.
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"steer-1","state":"started"}\n');
+    await flush();
+    expect(confirmed).toEqual([]);
+    // A subagent's message says nothing about the main conversation.
+    child.stdout.write('{"type":"assistant","parent_tool_use_id":"tool-1"}\n');
+    await flush();
+    expect(confirmed).toEqual([]);
+    child.stdout.write('{"type":"assistant","parent_tool_use_id":null}\n');
+    await flush();
+    expect(confirmed).toEqual(["steer-1"]);
+    child.stdout.write('{"type":"result"}\n');
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"steer-2","state":"started"}\n');
+    child.stdout.write('{"type":"assistant"}\n');
+    await flush();
+    expect(confirmed).toEqual(["steer-1", "steer-2"]);
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
   it("keeps the query open across results until every steered input has started", async () => {
     const child = fakeChild();
     const writes: string[] = [];
@@ -80,6 +116,33 @@ describe("ClaudeCodeProcess", () => {
       ["result", true],
     ]);
     await expect(process.steer({ type: "user", uuid: "late" })).rejects.toMatchObject({ code: "exited" });
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
+  it("settles steers named by results even when their lifecycle frames are absent", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const terminals: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => {
+        if (message.type === "result") terminals.push(terminal);
+      },
+      new AbortController().signal,
+    );
+    const first = await process.steer({ type: "user", uuid: "steer-1" });
+    const later = await process.steer({ type: "user", uuid: "steer-2" });
+
+    child.stdout.write('{"type":"result","user_message_uuids":["prompt","steer-1",null]}\n');
+    expect(terminals).toEqual([false]);
+    expect(first.started()).toBe(true);
+    expect(later.started()).toBe(false);
+
+    child.stdout.write('{"type":"result","user_message_uuids":["steer-2"]}\n');
+    expect(terminals).toEqual([false, true]);
+    expect(later.started()).toBe(true);
     child.emit("exit", 0, null);
     await run;
     await process.close();

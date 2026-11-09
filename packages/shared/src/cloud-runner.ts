@@ -822,6 +822,8 @@ export const RunnerCloudTurnWorkerRequestSchema = z
      * disposable Sandbox. The trusted Runner only ever supplies an in-sandbox path.
      */
     piSessionDirectory: z.string().min(1).max(512).optional(),
+    /** Nonsecret outbox context of the execution's IM grant; its `sessionKind` is the Session's own. */
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
     /**
      * E8 Session collaboration material for the Session's own CLI: the current Session-CLI proof
      * plus the Server URL the in-sandbox CLI must call. Present exactly when the Server minted a

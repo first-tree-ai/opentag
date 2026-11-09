@@ -378,6 +378,7 @@ async function scheduledDeliveryInput(fixture: CloudFixture, messageId: string):
       imBindingId: fixture.bindingId,
       targetSessionId: fixture.sessionId,
       targetSessionKind: "channel",
+      targetCreatorSessionId: null,
       targetInstallationId: randomUUID(),
       targetComputerId: fixture.computerId,
       targetComputerKind: "cloud",
@@ -2664,6 +2665,86 @@ describe("CloudSessionCollaborationOwner", () => {
       stack.grants.close();
     },
   );
+
+  it.each(["releasing", "idle reclaim"] as const)(
+    "prepares a scheduled occurrence after %s completes",
+    async (transition) => {
+      const fixture = await seedCloudSession();
+      const messageId = randomUUID();
+      const input = await scheduledDeliveryInput(fixture, messageId);
+      await insertMessage(messageId, fixture);
+      if (!("scheduledOrigin" in input.message)) throw new Error("scheduled fixture missing origin");
+      await db.database
+        .update(sessionMessages)
+        .set({ sourceSessionId: null, scheduledOrigin: input.message.scheduledOrigin, content: input.message.content })
+        .where(eq(sessionMessages.id, messageId));
+
+      const updateSandbox = (state: Partial<typeof sandboxes.$inferInsert>) =>
+        db.database.update(sandboxes).set(state).where(eq(sandboxes.id, fixture.sandboxId));
+      await updateSandbox(transition === "releasing" ? { lifecycle: "releasing" } : { idleReclaimAt: new Date() });
+      const ensureEnvironmentAllocated = vi
+        .fn()
+        .mockResolvedValueOnce(transition === "releasing" ? "stopped" : "pending")
+        .mockImplementationOnce(async () => {
+          await updateSandbox({ lifecycle: "preparing" });
+          return "pending";
+        });
+      const stack = makeStack(fixture, {
+        allocation: {
+          ensureEnvironmentAllocated,
+          ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+        },
+        ensureTimeoutMs: 2_000,
+      });
+      try {
+        const delivering = stack.owner.deliver(input, allowAdmission);
+        await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+        await updateSandbox({ lifecycle: "unallocated", idleReclaimAt: null });
+        await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledTimes(2), { timeout: 1_500 });
+        await updateSandbox({ lifecycle: "ready" });
+        const { sent } = await attachRunner(stack, fixture, {
+          onFrame: answeringOnFrame(stack, fixture),
+          sessionCollaborationVersion: 2,
+        });
+        await expect(delivering).resolves.toEqual({ status: "accepted" });
+        expect(sent.filter((frame) => frame.type === "session:message:run")).toHaveLength(1);
+        expect(ensureEnvironmentAllocated).toHaveBeenCalledTimes(2);
+      } finally {
+        await stack.owner.close();
+        stack.grants.close();
+      }
+    },
+  );
+
+  it("releases a cancelled scheduled dispatch while its allocation call is still pending", async () => {
+    const fixture = await seedCloudSession();
+    const input = await scheduledDeliveryInput(fixture, randomUUID());
+    const allocation = deferred<"pending">();
+    const ensureEnvironmentAllocated = vi.fn(() => allocation.promise);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+    });
+    const controller = new AbortController();
+    const admit = vi.fn(allowAdmission);
+    const delivering = stack.owner.deliver(input, admit, controller.signal);
+    try {
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      controller.abort();
+      await expect(delivering).resolves.toEqual({ status: "unreachable", code: "delivery_timeout" });
+      expect(stack.owner.activeDispatchTargets).toBe(0);
+      allocation.resolve("pending");
+      await stack.owner.close();
+      expect(admit).not.toHaveBeenCalled();
+      expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce();
+    } finally {
+      allocation.resolve("pending");
+      await stack.owner.close();
+      stack.grants.close();
+    }
+  });
 
   it("waits for the current Runner connection even after allocation reports ready", async () => {
     const fixture = await seedCloudSession();

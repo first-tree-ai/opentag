@@ -4,18 +4,23 @@ import {
   RUNTIME_CAPABILITY,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RunnerCloudSessionMessageReceivedFrame,
+  SESSION_STOP_ANSWER_BUDGET_MS,
   type SessionCliCommandResponse,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
+  type SessionCliStopExecution,
+  type SessionCliStopRequest,
+  type SessionCliStopResponse,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
   type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
+  type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
 import {
   type RuntimeDispatchAdmission,
   type RuntimeDomainOwner,
@@ -23,14 +28,21 @@ import {
 } from "../../runtime/runtime-domain-owner.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
 import type { SessionCliSourceContext } from "./session-cli-proof-service.js";
-import { renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "./session-run-outcome-notice.js";
+import {
+  renderRunOutcomeNotice,
+  renderSessionStoppedNotice,
+  runOutcomeNoticeMessageId,
+  sessionStoppedNoticeMessageId,
+} from "./session-run-outcome-notice.js";
 import type {
   AuthorizedScheduledMessageRoute,
   AuthorizedSessionMessageRoute,
+  InternalSessionStopTarget,
   ScheduledDispatchAdmissionFailure,
   SessionMessageAttempt,
   SessionMessageOutcome,
   SessionService,
+  StoppedInternalSession,
 } from "./session-service.js";
 
 /**
@@ -107,6 +119,8 @@ export interface ScheduledMessageSnapshot {
   origin: SessionMessageScheduledOrigin;
   /** The claim's database time; recorded as the summary's attemptedAt and never re-read. */
   attemptedAt: Date;
+  /** The next scheduled occurrence, if any, computed by the same claim. */
+  nextTriggerAt: Date | null;
   /** The Web detail link, derived from the trusted public origin at claim time. */
   detailUrl: string;
 }
@@ -152,16 +166,15 @@ export interface ScheduleDispatch {
   ): Promise<ScheduledMessageDispatchOutcome>;
 }
 
-/*
- * The scheduled entry's total hand-off budget reuses the existing stage timeouts: Local is the
- * reconcile request timeout plus the delivery request timeout (30s + 30s), Cloud is the
- * allocation ensure timeout plus the receipt timeout (20s + 30s). The budget starts at dispatch
- * entry and covers preparation, the per-Session hand-off queue, and the receipt wait — never the
- * business execution. The ordinary entry points keep their per-stage timeouts and are not bounded
- * by this total.
- */
+/** A stop older than this is not sent again: a Run outlasting the Computer's absence is its Run budget's job. */
+const STOP_REDELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STOP_REDELIVERY_LIMIT = 64;
+// Local reconcile + delivery. Cloud preparation + receipt, including time queued before the send.
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
-const SCHEDULED_CLOUD_BUDGET_MS = 50_000;
+const SCHEDULED_CLOUD_BUDGET_MS = 280_000;
+const SCHEDULED_CLOUD_SHORT_BUDGET_MS = 20_000;
+// Keep a quarter of the scheduler's 100 slots available for short hand-offs.
+const SCHEDULED_CLOUD_EXTENDED_SLOTS = 75;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
 
 type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; recipientSessionId: string };
@@ -234,14 +247,20 @@ export interface SessionCollaborationServiceOptions {
     | "hasAcceptedScheduledMessage"
     | "recordMessageOutcome"
     | "resolveRunOutcomeNotice"
+    | "recentlyEndedInternalSessions"
     | "resolveScheduledMessageRoute"
+    | "stopInternalSession"
     | "withCollaborationDispatchAdmission"
     | "withScheduledDispatchAdmission"
   >;
   /** E8 Cloud target dispatch; absent means Cloud-placed Sessions cannot be reached here. */
   cloud?: CloudSessionMessageDispatch;
+  /** Tells the execution side of ended internal Sessions to stop; absent means a stop stays `pending`. */
+  stopEnded?: (targets: InternalSessionStopTarget[]) => Promise<Map<string, SessionCliStopExecution>>;
+  /** Test seam for how long a stop waits for its execution side before answering `pending`. */
+  stopAnswerBudgetMs?: number;
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
-  scheduledBudgets?: { localMs?: number; cloudMs?: number };
+  scheduledBudgets?: { localMs?: number; cloudMs?: number; cloudExtendedSlots?: number };
   onDiagnostic?: (code: string) => void;
   logger?: Pick<ServiceLogger, "error">;
 }
@@ -252,11 +271,16 @@ export class SessionCollaborationService {
   readonly #registry: SessionCollaborationServiceOptions["registry"];
   readonly #sessions: SessionCollaborationServiceOptions["sessions"];
   readonly #cloud: SessionCollaborationServiceOptions["cloud"];
+  readonly #stopEnded: SessionCollaborationServiceOptions["stopEnded"];
   readonly #scheduledLocalBudgetMs: number;
   readonly #scheduledCloudBudgetMs: number;
+  readonly #scheduledCloudExtendedSlots: number;
+  #cloudExtendedInFlight = 0;
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  readonly #stopWork = new Set<Promise<void>>();
+  readonly #stopAnswerBudgetMs: number;
   #closing = false;
 
   constructor(options: SessionCollaborationServiceOptions) {
@@ -265,8 +289,11 @@ export class SessionCollaborationService {
     this.#registry = options.registry;
     this.#sessions = options.sessions;
     this.#cloud = options.cloud;
+    this.#stopEnded = options.stopEnded;
+    this.#stopAnswerBudgetMs = options.stopAnswerBudgetMs ?? SESSION_STOP_ANSWER_BUDGET_MS;
     this.#scheduledLocalBudgetMs = options.scheduledBudgets?.localMs ?? SCHEDULED_LOCAL_BUDGET_MS;
     this.#scheduledCloudBudgetMs = options.scheduledBudgets?.cloudMs ?? SCHEDULED_CLOUD_BUDGET_MS;
+    this.#scheduledCloudExtendedSlots = options.scheduledBudgets?.cloudExtendedSlots ?? SCHEDULED_CLOUD_EXTENDED_SLOTS;
     this.#onDiagnostic = options.onDiagnostic;
     this.#logger = options.logger;
   }
@@ -302,7 +329,9 @@ export class SessionCollaborationService {
      * known; the corrected timer then anchors the exact remaining budget to the entry time.
      */
     const startedAt = Date.now();
-    let timer = startBudgetTimer(controller, Math.max(this.#scheduledLocalBudgetMs, this.#scheduledCloudBudgetMs));
+    const shortCloudBudget = Math.min(this.#scheduledCloudBudgetMs, SCHEDULED_CLOUD_SHORT_BUDGET_MS);
+    let timer = startBudgetTimer(controller, Math.max(this.#scheduledLocalBudgetMs, shortCloudBudget));
+    let releaseExtendedCloud: (() => void) | undefined;
     try {
       const signal = controller.signal;
       const fenced = await raceWithAbort(this.#sessions.beginScheduledMessageAttempt(snapshot.messageId), signal);
@@ -332,10 +361,13 @@ export class SessionCollaborationService {
         return record("unreachable", resolution.code);
       }
       const route = resolution.route;
-      const budgetMs =
-        route.targetComputerKind === "cloud" ? this.#scheduledCloudBudgetMs : this.#scheduledLocalBudgetMs;
+      releaseExtendedCloud = this.#reserveExtendedCloudSlot(route.targetComputerKind);
+      const cloudBudget = releaseExtendedCloud ? this.#scheduledCloudBudgetMs : shortCloudBudget;
+      const deadline = this.#scheduledDeadline(snapshot, route.targetComputerKind, startedAt, cloudBudget);
       clearTimeout(timer);
-      timer = startBudgetTimer(controller, Math.max(0, budgetMs - (Date.now() - startedAt)));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return record("unreachable", "delivery_timeout");
+      timer = startBudgetTimer(controller, remaining);
       const assembly = await this.#assembleScheduledRuntime(snapshot, signal);
       if (assembly.kind === "aborted") return record("unreachable", "delivery_timeout");
       if (assembly.kind === "failed") return record("unreachable", "runtime_not_ready");
@@ -346,7 +378,27 @@ export class SessionCollaborationService {
     } finally {
       clearTimeout(timer);
       parentSignal?.removeEventListener("abort", onParentAbort);
+      releaseExtendedCloud?.();
     }
+  }
+
+  #reserveExtendedCloudSlot(target: "local" | "cloud"): (() => void) | undefined {
+    if (target !== "cloud" || this.#cloudExtendedInFlight >= this.#scheduledCloudExtendedSlots) return;
+    this.#cloudExtendedInFlight += 1;
+    return () => {
+      this.#cloudExtendedInFlight -= 1;
+    };
+  }
+
+  #scheduledDeadline(
+    snapshot: ScheduledMessageSnapshot,
+    target: "local" | "cloud",
+    startedAt: number,
+    cloudBudget: number,
+  ): number {
+    if (target === "local") return startedAt + this.#scheduledLocalBudgetMs;
+    const deadline = startedAt + cloudBudget;
+    return Math.min(deadline, snapshot.nextTriggerAt?.getTime() ?? deadline);
   }
 
   /** Local target scheduled dispatch over the existing reconcile + delivery boundaries. */
@@ -371,7 +423,9 @@ export class SessionCollaborationService {
           sessionId: route.targetSessionId,
           agentId: route.agentId,
           placementGeneration: route.targetPlacementGeneration,
-          ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
+          ...(route.targetSessionKind === "internal" && route.targetCreatorSessionId
+            ? { sessionKind: "internal" as const, creatorSessionId: route.targetCreatorSessionId }
+            : {}),
           desired: "ready",
           runtime,
         },
@@ -505,7 +559,9 @@ export class SessionCollaborationService {
       },
       async (operation) => {
         const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
-          if (signal.aborted) throw new ScheduledDispatchAbortError();
+          if (signal.aborted || (snapshot.nextTriggerAt && snapshot.nextTriggerAt.getTime() <= Date.now())) {
+            throw new ScheduledDispatchAbortError();
+          }
           return operation(() => {
             sent = true;
             markDispatched();
@@ -728,10 +784,121 @@ export class SessionCollaborationService {
         targetSessionId: input.targetSessionId,
         content: input.message,
       });
-      return await this.#deliver(attempt, input.targetSessionId);
+      return await this.#deliver(attempt, input.targetSessionId, { inlineLocalMessage: true });
     } catch (error) {
       return this.#failure(input.messageId, error);
     }
+  }
+
+  /**
+   * Stop an internal Session and all its descendants for good on behalf of an ancestor. They end first, so a
+   * stop that cannot reach their execution side still takes away their authority. Only the target's creator can
+   * hear of it: every other creator in the tree has ended too. A creator that asked for the stop has its answer
+   * here and is not woken for it; a creator someone else overruled gets one notice for the whole tree.
+   */
+  async stop(input: SessionCliStopRequest, source: SessionCliSourceContext): Promise<SessionCliStopResponse> {
+    const sessionId = input.targetSessionId;
+    let stopped: StoppedInternalSession;
+    try {
+      stopped = await this.#sessions.stopInternalSession({
+        sourceSessionId: source.sessionId,
+        sourceInstallationId: source.installationId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
+        sourceComputerId: source.computerId,
+        sourcePlacementGeneration: source.placementGeneration,
+        targetSessionId: sessionId,
+      });
+    } catch (error) {
+      const mapped = mapExpectedFailure(error);
+      if (mapped) return { status: mapped.status, sessionId, code: mapped.code };
+      this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
+      return { status: "unreachable", sessionId, code: "runtime_unavailable" };
+    }
+    // The stop already took effect, so a Client that does not answer delays only the news: the work goes on
+    // in the background, and the caller gets `pending` before its own request times out.
+    let execution: SessionCliStopExecution = "pending";
+    // Recorded before the answer: after a successful stop the caller has no reason to ask again.
+    const notice =
+      stopped.target.creatorSessionId === source.sessionId ? undefined : await this.#recordStopNotice(stopped, source);
+    const finished = this.#trackStopWork(async () => {
+      const executions = await this.#stopEnded?.(stopped.targets);
+      execution = leastReachedExecution(stopped.targets, executions);
+      if (notice && !this.#closing) await this.#deliverStopNotice(notice, stopped.target);
+    });
+    await this.#withinStopAnswerBudget(finished);
+    return {
+      status: "stopped",
+      sessionId,
+      execution,
+      alreadyStopped: stopped.alreadyStopped,
+      stoppedDescendantCount: stopped.stoppedDescendantCount,
+    };
+  }
+
+  #trackStopWork(work: () => Promise<void>): Promise<void> {
+    const done: Promise<void> = work()
+      .catch(() => this.#onDiagnostic?.("SESSION_STOP_BACKGROUND_FAILED"))
+      .finally(() => this.#stopWork.delete(done));
+    this.#stopWork.add(done);
+    return done;
+  }
+
+  async #withinStopAnswerBudget(work: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.#stopAnswerBudgetMs);
+      timer.unref?.();
+    });
+    await Promise.race([work, budget]);
+    clearTimeout(timer);
+  }
+
+  /** A reconnected Computer may have missed a stop. Repeating one is harmless, so nothing tracks which did. */
+  async redeliverStops(computerId: string): Promise<void> {
+    if (!this.#stopEnded) return;
+    const targets = await this.#sessions.recentlyEndedInternalSessions(
+      computerId,
+      new Date(Date.now() - STOP_REDELIVERY_WINDOW_MS),
+      STOP_REDELIVERY_LIMIT,
+    );
+    if (targets.length > 0) await this.#stopEnded(targets);
+  }
+
+  async #recordStopNotice(
+    { target, descendantCount }: StoppedInternalSession,
+    source: SessionCliSourceContext,
+  ): Promise<SessionMessageAttempt | undefined> {
+    const noticeId = sessionStoppedNoticeMessageId(target.sessionId);
+    try {
+      return await this.#sessions.authorizeAndRecordMessage({
+        messageId: noticeId,
+        sourceSessionId: source.sessionId,
+        sourceInstallationId: source.installationId,
+        sourceComputerId: source.computerId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
+        sourcePlacementGeneration: source.placementGeneration,
+        targetSessionId: target.creatorSessionId,
+        content: renderSessionStoppedNotice(target.sessionId, descendantCount),
+        serverDerivedId: true,
+      });
+    } catch (error) {
+      this.#logStopNoticeFailure(target, noticeId, this.#failure(noticeId, error).code);
+      return undefined;
+    }
+  }
+
+  async #deliverStopNotice(attempt: SessionMessageAttempt, target: InternalSessionStopTarget): Promise<void> {
+    let result: SessionCliCommandResponse;
+    try {
+      result = await this.#deliver(attempt, target.creatorSessionId);
+    } catch (error) {
+      result = this.#failure(attempt.message.id, error);
+    }
+    if (result.status !== "accepted") this.#logStopNoticeFailure(target, attempt.message.id, result.code);
+  }
+
+  #logStopNoticeFailure(target: InternalSessionStopTarget, noticeId: string, code: string | undefined): void {
+    this.#logInternalFailure("SESSION_STOP_NOTICE_NOT_DELIVERED", { childSessionId: target.sessionId, code, noticeId });
   }
 
   /**
@@ -782,6 +949,7 @@ export class SessionCollaborationService {
     this.#closing = true;
     for (const { controller } of this.#outcomeNotices.values()) controller.abort();
     await Promise.all([...this.#outcomeNotices.values()].map(({ done }) => done));
+    await Promise.all(this.#stopWork);
   }
 
   async #prepareRunOutcomeNotice(
@@ -829,7 +997,7 @@ export class SessionCollaborationService {
   ): Promise<RunOutcomeNoticeStatus> {
     try {
       return this.#runOutcomeNoticeStatus(
-        await this.#deliver(prepared.attempt, prepared.recipientSessionId, signal),
+        await this.#deliver(prepared.attempt, prepared.recipientSessionId, { signal }),
         input,
       );
     } catch (error) {
@@ -857,7 +1025,7 @@ export class SessionCollaborationService {
   async #deliver(
     attempt: SessionMessageAttempt,
     sessionId: string,
-    signal?: AbortSignal,
+    { signal, inlineLocalMessage = false }: { signal?: AbortSignal; inlineLocalMessage?: boolean } = {},
   ): Promise<SessionCliCommandResponse> {
     if (attempt.attemptCount === null) {
       return response(
@@ -882,15 +1050,15 @@ export class SessionCollaborationService {
     if (attempt.route.targetComputerKind === "cloud") {
       return this.#deliverCloud(attempt, sessionId, runtime, signal);
     }
-    return this.#deliverLocal(attempt, sessionId, runtime, attempt.attemptCount, signal);
+    return this.#deliverLocal(attempt, sessionId, runtime, attempt.attemptCount, inlineLocalMessage, signal);
   }
 
-  /** Local target dispatch over the existing reconcile + runtime-domain delivery boundaries. */
   async #deliverLocal(
     attempt: SessionMessageAttempt,
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
+    inlineLocalMessage: boolean,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const targetInstanceId = this.#registry.currentInstanceId(attempt.route.targetComputerId);
@@ -914,71 +1082,134 @@ export class SessionCollaborationService {
     ) {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "outbox_unavailable"), attemptCount);
     }
-    let reconciled: SessionReconcileResult;
-    try {
-      reconciled = await this.#domain.requestReconcile(
+    const message = {
+      messageId: attempt.message.id,
+      sourceSessionId: attempt.route.sourceSessionId,
+      content: { kind: "text" as const, text: attempt.message.content },
+    };
+    const inline =
+      inlineLocalMessage &&
+      this.#registry.capabilityVersion(
         attempt.route.targetComputerId,
         targetInstanceId,
-        {
-          type: "session:reconcile",
-          requestId: randomUUID(),
-          installationId: attempt.route.targetInstallationId,
-          sessionId: attempt.route.targetSessionId,
-          agentId: attempt.route.agentId,
-          placementGeneration: attempt.route.targetPlacementGeneration,
-          ...(attempt.route.targetSessionKind === "internal"
-            ? {
-                sessionKind: "internal" as const,
-                creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
-              }
-            : {}),
-          desired: "ready",
-          runtime,
-        },
-        undefined,
-        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
-        signal,
-        { joinSettlement: Boolean(signal) },
-      );
-    } catch {
+        RUNTIME_CAPABILITY.sessionMessageReconcile,
+      ) === 1;
+    const prepared = await this.#reconcileLocal(
+      attempt.route,
+      targetInstanceId,
+      {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        installationId: attempt.route.targetInstallationId,
+        sessionId: attempt.route.targetSessionId,
+        agentId: attempt.route.agentId,
+        placementGeneration: attempt.route.targetPlacementGeneration,
+        ...(attempt.route.targetSessionKind === "internal"
+          ? {
+              sessionKind: "internal" as const,
+              creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
+            }
+          : {}),
+        desired: "ready",
+        runtime,
+        ...(inline ? { sessionMessage: message } : {}),
+      },
+      signal,
+    );
+    if ("unconfirmed" in prepared) {
+      return this.#record(response(attempt.message.id, "unknown", sessionId, "delivery_timeout"), attemptCount);
+    }
+    const reconciled = prepared.result;
+    if (!reconciled || !["ready", "running", "reporting"].includes(reconciled.status)) {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
     }
-    if (!new Set(["ready", "running", "reporting"]).has(reconciled.status)) {
-      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
+    if (reconciled.sessionMessage && reconciled.sessionMessage !== "deferred") {
+      return this.#record(mapDelivery(reconciled.sessionMessage, sessionId), attemptCount);
     }
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     const delivery: SessionMessageDeliveryRequest = {
       type: "session:message:deliver",
       requestId: randomUUID(),
-      messageId: attempt.message.id,
-      sourceSessionId: attempt.route.sourceSessionId,
       targetSessionId: attempt.route.targetSessionId,
       agentId: attempt.route.agentId,
       placementGeneration: attempt.route.targetPlacementGeneration,
-      content: { kind: "text", text: attempt.message.content },
       runtime,
+      ...message,
     };
+    return this.#dispatchLocalMessage(attempt.route, targetInstanceId, delivery, attemptCount, signal);
+  }
+
+  async #dispatchLocalMessage(
+    route: AuthorizedSessionMessageRoute,
+    instanceId: string,
+    delivery: SessionMessageDeliveryRequest,
+    attemptCount: number,
+    signal?: AbortSignal,
+  ): Promise<SessionCliCommandResponse> {
     try {
       const delivered = await this.#domain.requestSessionMessageDelivery(
-        attempt.route.targetComputerId,
-        targetInstanceId,
+        route.targetComputerId,
+        instanceId,
         delivery,
         undefined,
-        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(route, operation),
         ...(signal ? ([signal] as const) : []),
       );
-      return this.#record(mapDelivery(delivered, sessionId), attemptCount);
+      return this.#record(mapDelivery(delivered, delivery.targetSessionId), attemptCount);
     } catch (error) {
       const unknown = deliveryOutcomeUnknown(error, signal);
       return this.#record(
         response(
-          attempt.message.id,
+          delivery.messageId,
           unknown ? "unknown" : "unreachable",
-          sessionId,
+          delivery.targetSessionId,
           unknown ? "delivery_timeout" : "runtime_unavailable",
         ),
         attemptCount,
       );
+    }
+  }
+
+  async #reconcileLocal(
+    route: AuthorizedSessionMessageRoute,
+    instanceId: string,
+    request: SessionReconcileRequest,
+    signal?: AbortSignal,
+  ): Promise<{ result?: SessionReconcileResult } | { unconfirmed: true }> {
+    const send = (frame: SessionReconcileRequest, onDispatched?: () => void) =>
+      this.#domain.requestReconcile(
+        route.targetComputerId,
+        instanceId,
+        frame,
+        onDispatched,
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(route, operation),
+        signal,
+        { joinSettlement: Boolean(signal) },
+      );
+    let inline = request.sessionMessage !== undefined;
+    let dispatched = false;
+    try {
+      const result = await send(
+        request,
+        inline
+          ? () => {
+              dispatched = true;
+            }
+          : undefined,
+      ).catch((error: unknown) => {
+        if (!(inline && error instanceof RuntimeRegistrySendError && error.code === "frame_too_large")) throw error;
+        // The registry refused this frame before sending. Each of the original frames can still fit.
+        inline = false;
+        return send({ ...request, requestId: randomUUID(), sessionMessage: undefined });
+      });
+      return inline && result.sessionMessage === undefined ? { unconfirmed: true } : { result };
+    } catch (error) {
+      const unconfirmed =
+        dispatched ||
+        deliveryOutcomeUnknown(error, signal) ||
+        (error instanceof RuntimeRegistrySendError && error.mayHaveSent) ||
+        (error instanceof RuntimeDomainRequestError && error.code === "delivery_unconfirmed");
+      return inline && unconfirmed ? { unconfirmed: true } : {};
     }
   }
 
@@ -1086,6 +1317,15 @@ function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted) || (error instanceof RuntimeDomainRequestError && error.code === "timeout");
 }
 
+/** The answer speaks for the whole tree, so it reports the Session the stop reached least. */
+function leastReachedExecution(
+  targets: readonly InternalSessionStopTarget[],
+  executions: ReadonlyMap<string, SessionCliStopExecution> | undefined,
+): SessionCliStopExecution {
+  const reached = targets.map(({ sessionId }) => executions?.get(sessionId) ?? "pending");
+  return (["not_interrupted", "pending", "requested"] as const).find((value) => reached.includes(value)) ?? "stopped";
+}
+
 function mapDelivery(delivery: SessionMessageDeliveryResult, sessionId: string): SessionCliCommandResponse {
   if (delivery.status === "accepted") return response(delivery.messageId, "accepted", sessionId);
   if (delivery.reason === "session_busy" || delivery.reason === "agent_busy" || delivery.reason === "client_busy") {
@@ -1127,6 +1367,7 @@ function mapExpectedFailure(error: unknown): { status: "unreachable" | "rejected
   if (code === "SESSION_PLACEMENT_STALE" || code === "SESSION_SOURCE_UNAVAILABLE") {
     return { status: "rejected", code: "source_unavailable" };
   }
+  if (code === "SESSION_STOP_NOT_ANCESTOR") return { status: "rejected", code: "not_ancestor" };
   if (code === "SESSION_TARGET_UNAVAILABLE") return { status: "rejected", code: "target_unavailable" };
   if (code === "SESSION_SCOPE_MISMATCH") return { status: "rejected", code: "scope_mismatch" };
   if (code === "SESSION_MESSAGE_CONFLICT") return { status: "rejected", code: "message_conflict" };

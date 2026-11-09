@@ -35,6 +35,7 @@ import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-deli
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
 import { recordDeliveryFailure } from "../runtime/im-delivery-failure.js";
 import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
+import { ACCEPTED_REPORT_WINDOW_MS } from "../runtime/im-delivery-retry.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -1004,6 +1005,48 @@ describe("ImDeliveryWorker database workflow", () => {
   );
 
   it.each([
+    ["another instance past the report window", "other", true, "ready", true],
+    ["another instance answering stopped", "other", true, "stopped", true],
+    ["the same instance past the report window", "same", true, "ready", false],
+    ["another instance inside the report window", "other", false, "ready", false],
+    ["another instance still running the Turn", "other", true, "running", false],
+  ] as const)(
+    "settles accepted custody that lost its report only for %s",
+    async (_label, owner, closed, status, settled) => {
+      const fixture = await workerFixture(unit);
+      const clock = Date.now();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: "frozen-hash",
+          turnId: "original-turn",
+          reportOwnerInstanceId: owner === "same" ? fixture.instanceId : randomUUID(),
+          acceptedAt: new Date(closed ? clock - ACCEPTED_REPORT_WINDOW_MS - 1_000 : clock),
+          nextAttemptAt: new Date(clock - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: status });
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: fixture.registry,
+        now: () => new Date(clock),
+      });
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(row?.reportedAt !== null).toBe(settled);
+      if (settled) expect(row?.turnReport).toMatchObject({ outcome: "unknown" });
+      worker.stop();
+    },
+  );
+
+  it.each([
     ["busy", "IM_DELIVERY_RECOVERY_BUSY", false],
     ["running", "IM_DELIVERY_RECOVERY_RUNNING", false],
     ["reporting", "IM_DELIVERY_RECOVERY_REPORTING", false],
@@ -1570,18 +1613,23 @@ describe("ImDeliveryWorker database workflow", () => {
   });
 
   it("starts and stops its interval without scheduling duplicate runs", async () => {
+    const fixture = await workerFixture(unit);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      intervalMs: 5,
+    });
+    // Fake timers cover only this synchronous block: the count is global, so an awaited fixture under them
+    // would also count a timer set by any other async work still running in this process.
     vi.useFakeTimers();
     try {
-      const fixture = await workerFixture(unit);
-      const worker = new ImDeliveryWorker({
-        database: unit.database,
-        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
-        registry: fixture.registry,
-        intervalMs: 5,
-      });
       worker.start();
+      const started = vi.getTimerCount();
+      expect(started).toBeGreaterThan(0);
       worker.start();
+      expect(vi.getTimerCount()).toBe(started);
       worker.stop();
       worker.stop();
       expect(vi.getTimerCount()).toBe(0);
@@ -2473,6 +2521,32 @@ describe("ImDeliveryWorker database workflow", () => {
       .where(eq(imMessageDeliveries.id, released.deliveryId));
     expect(releasedRow).toMatchObject({ dispatchRequestId: null, lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED" });
 
+    // A Client at its Agent or Client limit: the message is kept and tried again.
+    for (const deliveryReason of ["agent_busy", "client_busy"] as const) {
+      await unit.reset();
+      const full = await workerFixture(unit);
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), full, {
+          deliveryStatus: "rejected",
+          deliveryReason,
+        }) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(full.runtime) },
+        registry: full.registry,
+      }).runOnce();
+      const [fullRow] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, full.deliveryId));
+      expect(fullRow).toMatchObject({
+        state: "pending",
+        reason: null,
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED",
+      });
+      expect(fullRow?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+    }
+
     await unit.reset();
     const failed = await workerFixture(unit);
     const failedEvents: string[] = [];
@@ -3221,6 +3295,60 @@ describe("ImDeliveryWorker database workflow", () => {
     await park(new Date(clock + 30_000));
     await worker.notifyComputerReady(fixture.computerId);
     expect(await readDue()).toBe(clock + 30_000);
+  });
+
+  it("makes an expired dispatch that still fences its Agent due again when the Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "expired",
+        reason: "ttl",
+        expiresAt: new Date(clock - 1_000),
+        dispatchRequestId: randomUUID(),
+        dispatchInputHash: "frozen-hash",
+        dispatchPayload: { frozen: true } as never,
+        nextAttemptAt: new Date(clock + 30 * 60_000),
+        lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE",
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+    await worker.notifyComputerReady(fixture.computerId);
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(clock + 1_000);
+  });
+
+  it("leaves an expired delivery with no dispatch alone when the Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    const parked = new Date(clock + 30 * 60_000);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "ttl", expiresAt: new Date(clock - 1_000), nextAttemptAt: parked })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+    await worker.notifyComputerReady(fixture.computerId);
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt).toEqual(parked);
   });
 
   it("populates delivery row performance context for subsequent DB and runtime operations across deliver, steer, and recover", async () => {

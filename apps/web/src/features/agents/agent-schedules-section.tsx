@@ -229,6 +229,9 @@ function ScheduleRow({
         {/* Running on schedule is the default; only a state that differs from it gets a label. It
             leads the summary line so the title row always keeps its single action. */}
         {status ? <StatusIndicator label={status} tone="neutral" /> : null}
+        {item.target.internal ? (
+          <span>{m.agents_schedules_target_internal({ sessionId: item.target.sessionId.slice(0, 8) })}</span>
+        ) : null}
         <span>{scheduleRuleText(item.schedule, item.timezone)}</span>
         {item.nextTriggerAt ? (
           <span>
@@ -262,6 +265,13 @@ type LastDispatch = NonNullable<AgentScheduleListItem["lastDispatch"]>;
 /** The last occurrence in the reader's terms: just its time when it ran, otherwise what went wrong. */
 function LastRun({ last, timezone }: { last: LastDispatch; timezone: string }) {
   const time = <time dateTime={last.scheduledFor}>{shortScheduleTime(last.scheduledFor, timezone)}</time>;
+  if (last.outcome === "accepted" && last.code !== null) {
+    return (
+      <span className="text-kumo-danger">
+        {m.agents_schedules_last_short()} {time} {m.agents_schedules_last_failed()}
+      </span>
+    );
+  }
   if (last.outcome === "accepted") {
     return (
       <span>
@@ -354,8 +364,9 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   const last = schedule.lastDispatch;
   const target = schedule.target;
   const provider = messagingProviderLabel(target.provider);
-  const destination =
-    target.sessionKind === "thread"
+  const destination = target.internal
+    ? m.agents_schedules_target_internal({ sessionId: target.sessionId })
+    : target.sessionKind === "thread"
       ? m.agents_schedules_target_thread({ provider })
       : m.agents_schedules_target_channel({ provider });
   // The zone is worth naming only when the reader's clock reads differently at the next (or last) run.
@@ -369,7 +380,7 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
           <DetailRow label={m.agents_schedules_timezone()} value={schedule.timezone} />
         ) : null}
       </dl>
-      {note ? <p className="text-kumo-subtle">{note}</p> : null}
+      {note ? <p className="min-w-0 wrap-anywhere text-kumo-subtle">{note}</p> : null}
       <div className="grid gap-1">
         <strong className="text-kumo-strong">{m.agents_schedules_prompt()}</strong>
         <pre className="overflow-x-auto whitespace-pre-wrap wrap-anywhere font-sans text-kumo-default">
@@ -381,9 +392,13 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
 }
 
 function lastRunNote(last: LastDispatch, hasNext: boolean): string | undefined {
-  if (last.outcome === "accepted") return undefined;
+  const noRerun = hasNext ? m.agents_schedules_no_rerun_next() : m.agents_schedules_no_rerun();
+  // Once delivered, a code can only be why the Run failed. The IM message links here for it.
+  if (last.outcome === "accepted") {
+    return last.code === null ? undefined : m.agents_schedules_run_failed_note({ code: last.code, next: noRerun });
+  }
   if (last.outcome === "unknown") return m.agents_schedules_unconfirmed_note();
-  return hasNext ? m.agents_schedules_no_rerun_next() : m.agents_schedules_no_rerun();
+  return noRerun;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

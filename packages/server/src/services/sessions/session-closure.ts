@@ -17,19 +17,27 @@
  * already committed and the ending statement saw the Session too. A scope-wide derived update cannot mark
  * a live descendant inactive, and it repairs rows an earlier binary left behind.
  */
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 
-export type EndedSessionScope = { agentId: string } | { imBindingId: string };
+export type EndedSessionScope = { agentId: string } | { imBindingId: string } | { sessionIds: readonly string[] };
 
 export async function markEndedDescendantsInactive(
   executor: DatabaseClient | DatabaseTransaction,
   scope: EndedSessionScope,
 ): Promise<void> {
-  const scopePredicate =
-    "imBindingId" in scope
-      ? sql`s."im_binding_id" = ${scope.imBindingId}::uuid`
-      : sql`s."im_binding_id" in (select b."id" from "im_bindings" as b where b."agent_id" = ${scope.agentId}::uuid)`;
+  let scopePredicate: SQL;
+  if ("sessionIds" in scope) {
+    if (scope.sessionIds.length === 0) return;
+    scopePredicate = sql`s."id" in (${sql.join(
+      scope.sessionIds.map((sessionId) => sql`${sessionId}::uuid`),
+      sql`, `,
+    )})`;
+  } else if ("imBindingId" in scope) {
+    scopePredicate = sql`s."im_binding_id" = ${scope.imBindingId}::uuid`;
+  } else {
+    scopePredicate = sql`s."im_binding_id" in (select b."id" from "im_bindings" as b where b."agent_id" = ${scope.agentId}::uuid)`;
+  }
   await executor.execute(sql`
     update "session_descendants" as d
     set "descendant_active" = false

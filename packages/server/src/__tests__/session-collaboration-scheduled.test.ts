@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryResult, SessionReconcileResult } from "@opentag/shared";
+import {
+  type SessionMessageDeliveryResult,
+  SessionReconcileRequestSchema,
+  type SessionReconcileResult,
+} from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import {
@@ -24,6 +28,7 @@ function snapshotFixture(): { snapshot: ScheduledMessageSnapshot; route: Authori
     imBindingId: randomUUID(),
     targetSessionId: randomUUID(),
     targetSessionKind: "channel",
+    targetCreatorSessionId: null,
     targetInstallationId: randomUUID(),
     targetComputerId: randomUUID(),
     targetComputerKind: "local",
@@ -45,6 +50,7 @@ function snapshotFixture(): { snapshot: ScheduledMessageSnapshot; route: Authori
         name: "Daily check",
       },
       attemptedAt: T0,
+      nextTriggerAt: null,
       detailUrl: `https://opentag.example.com/agents/${route.agentId}?schedule=${scheduleId}`,
     },
   };
@@ -103,7 +109,7 @@ async function dispatchWithAdmission<T>(
 function makeFixture(
   route: AuthorizedScheduledMessageRoute,
   options: {
-    budgets?: { localMs?: number; cloudMs?: number };
+    budgets?: { localMs?: number; cloudMs?: number; cloudExtendedSlots?: number };
     /** Refuse the admission with `dispatch_not_marked` from this stage number onwards. */
     refuseFrom?: number;
   } = {},
@@ -240,6 +246,17 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
         },
       }),
     );
+  });
+
+  it("names the creator when it reconciles an internal target, which the frame requires", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const creator = randomUUID();
+    const fixture = makeFixture({ ...route, targetSessionKind: "internal", targetCreatorSessionId: creator });
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toMatchObject({ outcome: "accepted" });
+    const frame = fixture.domain.requestReconcile.mock.calls[0]?.[2];
+    expect(frame).toMatchObject({ sessionKind: "internal", creatorSessionId: creator });
+    expect(SessionReconcileRequestSchema.safeParse(frame).success).toBe(true);
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
   });
 
   it("never sends when the one-shot fence is already taken or the message is gone", async () => {
@@ -482,6 +499,54 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
     await vi.advanceTimersByTimeAsync(500);
     await expect(dispatch).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+  });
+
+  it("gives excess Cloud dispatches a short window and releases the extended slot", async () => {
+    const { snapshot, route } = snapshotFixture();
+    route.targetComputerKind = "cloud";
+    const fixture = makeFixture(route, { budgets: { cloudMs: 30_000, cloudExtendedSlots: 1 } });
+    fixture.cloud.deliver.mockImplementation(() => new Promise(() => undefined));
+
+    const extended = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    const short = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(short).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(extended).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+
+    const recovered = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(recovered).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+  });
+
+  it("expires an unsent Cloud occurrence at the next trigger and refuses late admission", async () => {
+    const { snapshot, route } = snapshotFixture();
+    route.targetComputerKind = "cloud";
+    snapshot.nextTriggerAt = new Date(Date.now() + 100);
+    const fixture = makeFixture(route, { budgets: { cloudMs: 500 } });
+    let resume = () => {};
+    const ready = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const send = vi.fn();
+    fixture.cloud.deliver.mockImplementation(async (_input: unknown, admission: (op: never) => unknown) => {
+      await ready;
+      await admission(send as never);
+    });
+
+    const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(dispatch).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+    resume();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.cloud.deliver).toHaveBeenCalledOnce();
+    expect(fixture.sessions.beginScheduledMessageAttempt).toHaveBeenCalledOnce();
+    expect(fixture.sessions.withScheduledDispatchAdmission).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("restores the schedule gate truth when the Cloud owner denies through the admission", async () => {

@@ -12,6 +12,7 @@ import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-con
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import { lockSteeredRecoverySessions, type SessionEnsurer } from "./im-delivery-recovery.js";
 import {
+  acceptedReportClosed,
   acceptedReportDeadlineMs,
   canonicalFailureCode,
   cappedRetryDelayMs,
@@ -20,6 +21,7 @@ import {
   operationTimeoutCode,
   operationTimeoutExhausted,
   operationTimeoutStreak,
+  recoveryRetryCode,
 } from "./im-delivery-retry.js";
 import type {
   DeliveryAttempt,
@@ -28,7 +30,7 @@ import type {
   RuntimeDeliveryWorkerMetric,
 } from "./im-delivery-worker.types.js";
 import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime-custody-store.js";
-import { RuntimeDispatchDeferredError } from "./runtime-domain-owner.js";
+import { RuntimeDispatchDeferredError, type RuntimeReconcileResult } from "./runtime-domain-owner.js";
 
 /**
  * Every transition that gives up on a claimed delivery attempt, in one place: backoff, dispatch
@@ -102,7 +104,7 @@ export interface DeliveryFailureDeps {
 
 function logDispatchRetryScheduled(
   logger: ServiceLogger | undefined,
-  deliveryId: string,
+  attempt: DeliveryAttempt,
   code: string,
   retryDelayMs: number,
 ): void {
@@ -114,7 +116,8 @@ function logDispatchRetryScheduled(
       outcome: "retry",
       code,
       errorCode: code,
-      deliveryId,
+      deliveryId: attempt.deliveryId,
+      attempt: attempt.attemptCount,
       retryDelayMs,
     },
     "IM delivery dispatch retry scheduled",
@@ -187,7 +190,7 @@ export async function recordDeliveryFailure(
     )
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
-  logDispatchRetryScheduled(deps.logger, attempt.deliveryId, bounded, delayMs);
+  logDispatchRetryScheduled(deps.logger, attempt, bounded, delayMs);
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
   if (!options.expectedDeferral && shouldEmitFailureDiagnostic(bounded, attempt.previousErrorCode))
     deps.onDiagnostic(bounded, diagnosticContext(attempt));
@@ -505,6 +508,8 @@ export interface UnreportableTurnSettlement {
    * transaction, so a reactivated authority cannot lose to the synthetic report.
    */
   requireAbsentAuthority?: boolean;
+  /** Recovery only: the instance that answered without the report must still be current at the write. */
+  requireCurrentInstance?: string;
 }
 
 /**
@@ -517,6 +522,37 @@ export interface UnreportableTurnSettlement {
  * placement generation is refused by that fence and settles through `settleSupersededPlacement`
  * instead, and a rollover that already carries a retained `result_hash` is refused by both.
  */
+/**
+ * The answer to a recovery reconcile. It is where a reconnecting Client claims a retained report, so a
+ * different instance that answers with no claim, past the report window, has lost the report (a reset home,
+ * for example). Nothing else ends this custody while the Computer stays online, and it fences the Agent.
+ * Every other answer keeps custody until the actual report settles it.
+ */
+export async function settleLostReportOrDefer(
+  deps: DeliveryFailureDeps,
+  row: Parameters<typeof settleUnreportableTurn>[1],
+  attempt: DeliveryAttempt,
+  attemptCount: number,
+  result: RuntimeReconcileResult,
+  instanceId: string,
+  nowMs: number,
+): Promise<void> {
+  const code = recoveryRetryCode(result, row.delivery);
+  const lost =
+    code === "IM_DELIVERY_RECOVERY_AWAITING_REPORT" &&
+    row.delivery.reportOwnerInstanceId !== instanceId &&
+    acceptedReportClosed(row.delivery.acceptedAt, nowMs);
+  // Decided from the answer; the write itself rechecks that instance, since the owner may re-register meanwhile.
+  if (lost && (await settleUnreportableTurn(deps, row, { requireCurrentInstance: instanceId }))) return;
+  await deferRecoveryRetry(deps, attempt, attemptCount, code);
+}
+
+/** PostgreSQL `lock_not_available`, from a `NOWAIT` lock, at the error or wrapped as its cause. */
+function isLockBusy(error: unknown): boolean {
+  const code = (candidate: unknown) => (candidate as { code?: unknown } | undefined)?.code;
+  return code(error) === "55P03" || code((error as { cause?: unknown } | undefined)?.cause) === "55P03";
+}
+
 export async function settleUnreportableTurn(
   deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,
   row: {
@@ -537,16 +573,25 @@ export async function settleUnreportableTurn(
     placementGeneration: row.placement.generation,
   });
   if (!report) return false;
-  const status = await deps.custody.recordTurn(
-    report,
-    {
-      computerId: row.computer.id,
-      installationId: row.computer.currentInstallationId,
-      instanceId: ownerInstanceId,
-      signal: new AbortController().signal,
-    },
-    { ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}) },
-  );
+  const status = await deps.custody
+    .recordTurn(
+      report,
+      {
+        computerId: row.computer.id,
+        installationId: row.computer.currentInstallationId,
+        instanceId: ownerInstanceId,
+        signal: new AbortController().signal,
+      },
+      {
+        ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
+        ...(options.requireCurrentInstance ? { requireCurrentInstance: options.requireCurrentInstance } : {}),
+      },
+    )
+    .catch((error: unknown) => {
+      // Another transaction holds the Computer, such as a registration or a rebind: the next retry decides.
+      if (options.requireCurrentInstance && isLockBusy(error)) return undefined;
+      throw error;
+    });
   if (status !== "recorded" && status !== "already_recorded") return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
     phase: options.phase ?? "recover",

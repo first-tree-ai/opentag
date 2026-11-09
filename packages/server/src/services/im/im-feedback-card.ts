@@ -1,114 +1,119 @@
-import type { TurnFailureReason } from "@opentag/shared";
+import {
+  effectsCopy,
+  FEEDBACK_LABELS,
+  type FeedbackLanguage,
+  failureCopy,
+  offlineNoticeCopy,
+} from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
 
-const CAUSES = {
-  provider_authentication_failed: "Model authentication failed",
-  provider_access_denied: "Model access was denied",
-  provider_quota_exceeded: "Model quota was exhausted",
-  provider_rate_limited: "The model service rate limit was reached",
-  provider_unavailable: "The model service is unavailable",
-  provider_connection_failed: "The model connection failed",
-  provider_context_limit: "The model context limit was reached",
-  provider_execution_limit: "The model execution limit was reached",
-  provider_request_rejected: "The model request was rejected",
-  provider_process_exited: "The model process stopped",
-  workspace_failed: "Workspace changes could not be saved",
-  configuration_conflict: "The execution configuration changed",
-  credential_unavailable: "Execution credentials are unavailable",
-  sandbox_unavailable: "The execution environment disconnected",
-  provider_start_failed: "The model could not start",
-  session_resume_failed: "The Session could not resume",
-  provider_protocol_error: "The model returned an invalid response",
-  provider_failed: "The model execution failed",
-  provider_empty_result: "The model returned no result",
-  output_too_large: "The execution result exceeded its size limit",
-  provider_teardown_failed: "The execution environment could not finish cleanup",
-  turn_state_unknown: "The task outcome could not be confirmed",
-  turn_timeout: "The task exceeded its time limit",
-  client_shutdown: "The execution client stopped",
-} satisfies Record<TurnFailureReason, string>;
-
-export function feedbackCause(code: string | null): string {
-  if (code === "input_expired") return "The queued input expired before completion";
-  if (code === "input_rejected") return "The input could not be delivered";
-  return code && Object.hasOwn(CAUSES, code) ? CAUSES[code as TurnFailureReason] : "The task could not complete";
-}
-
-function actionResult(action?: FeedbackAction): string | undefined {
+function actionResult(language: FeedbackLanguage, action?: FeedbackAction): string | undefined {
   if (!action) return;
-  if (["confirmed", "submitting", "checking"].includes(action.state))
-    return "Checking the operation result; do not submit it again";
-  if (action.state === "failed") return "The operation failed; review the current state before trying again";
-  if (action.state === "stale") return "The environment changed; review its current state";
+  if (["confirmed", "submitting", "checking"].includes(action.state)) return FEEDBACK_LABELS.checking[language];
+  if (action.state === "failed") return FEEDBACK_LABELS.actionFailed[language];
+  if (action.state === "stale") return FEEDBACK_LABELS.actionStale[language];
   if (action.state !== "succeeded") return;
-  if (action.resultCode === "released_unverified")
-    return "Environment released; verify saved changes before continuing";
-  if (action.kind === "save_release") return "Saved and environment released; the next allocation restores it";
-  if (action.kind === "discard") return "Unsaved changes discarded; previous complete archive retained";
-  return "Retry queued";
+  if (action.resultCode === "released_unverified") return FEEDBACK_LABELS.releasedUnverified[language];
+  if (action.kind === "save_release") return FEEDBACK_LABELS.saved[language];
+  if (action.kind === "discard") return FEEDBACK_LABELS.discarded[language];
+  return FEEDBACK_LABELS.retryQueued[language];
 }
 
-export function feedbackCardContent(target: FeedbackTarget, action?: FeedbackAction) {
+export function feedbackCardContent(
+  target: FeedbackTarget,
+  action?: FeedbackAction,
+  language: FeedbackLanguage = "en",
+) {
   const resolved = action?.state === "succeeded" || target.state === "completed";
   const checking = action && ["confirmed", "submitting", "checking"].includes(action.state);
-  const result = actionResult(action) ?? (target.state === "completed" ? "Task completed" : undefined);
+  const result =
+    actionResult(language, action) ??
+    (target.state === "completed" ? FEEDBACK_LABELS.taskCompleted[language] : undefined);
   const attribution = action ? ` · ${action.actorDisplayName.slice(0, 255)} · ${action.updatedAt.toISOString()}` : "";
-  const title = result
-    ? `${resolved ? "✅" : checking ? "⏳" : "⚠️"} ${result}${attribution}`
-    : `Task failed: ${feedbackCause(target.errorCode)}`;
-  const impact =
-    target.effects === "not_started"
-      ? "The task did not start. No task operations were executed."
-      : "External operations may already have occurred. Check the existing results before repeating this task.";
-  const availability =
-    target.state === "workspace_blocked"
-      ? "Work in this Session is paused; new input for this Session remains queued. Saving or discarding files will not undo external operations."
-      : target.batchRetryBlocked
-        ? "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work."
-        : "Check the Agent's current availability before starting another attempt.";
-  return { title, impact, availability, result: !!result, checking: !!checking };
+  const failure = failureCopy(target.errorCode, language, {
+    workspaceBlocked: target.state === "workspace_blocked",
+    batchRetryBlocked: target.batchRetryBlocked,
+  });
+  const title = result ? `${resolved ? "✅" : checking ? "⏳" : "⚠️"} ${result}${attribution}` : failure.cause;
+  return {
+    title,
+    impact: effectsCopy(target.effects, language),
+    availability: failure.next,
+    result: !!result,
+    checking: !!checking,
+  };
 }
 
-function cardActions(target: FeedbackTarget, result: boolean, operationUrl: (kind: string) => string) {
+function cardActions(
+  target: FeedbackTarget,
+  result: boolean,
+  operationUrl: (kind: string) => string,
+  language: FeedbackLanguage,
+) {
   if (result) return [];
   if (target.state === "workspace_blocked")
     return [
-      { kind: "save_release", label: "Retry save", url: operationUrl("save_release"), style: "primary" as const },
-      { kind: "discard", label: "Discard unsaved changes", url: operationUrl("discard"), style: "danger" as const },
+      {
+        kind: "save_release",
+        label: FEEDBACK_LABELS.retrySave[language],
+        url: operationUrl("save_release"),
+        style: "primary" as const,
+      },
+      {
+        kind: "discard",
+        label: FEEDBACK_LABELS.discard[language],
+        url: operationUrl("discard"),
+        style: "danger" as const,
+      },
     ];
   return [];
 }
 
-export function renderFeedbackText(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction): string {
-  const content = feedbackCardContent(target, action);
-  const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
-  const code = /^[a-zA-Z0-9_]{1,128}$/.test(target.errorCode ?? "") ? target.errorCode : "task_failed";
-  const lines = content.result
-    ? [content.title]
-    : [
-        content.title,
-        content.impact,
-        target.state === "workspace_blocked"
-          ? content.availability
-          : "Review the Task and the Agent's availability. To try again, send a new message.",
-        code,
-      ];
-  return [...lines, `View details: ${detailsUrl}`].join("\n\n");
+/** The link stays in the text so readback can match the exact details URL on both providers. */
+export function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
+  return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
 }
 
-export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction) {
-  const content = feedbackCardContent(target, action);
+export function renderOfflineNotice(
+  target: Pick<FeedbackTarget, "provider" | "agentId">,
+  publicUrl: string,
+  language: FeedbackLanguage,
+): string {
+  const { before, label, after } = offlineNoticeCopy(language);
+  const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
+  return `${before} ${textLink(target.provider, url, label)}\n${after}`;
+}
+
+export function renderFeedbackText(
+  target: FeedbackTarget,
+  publicUrl: string,
+  action?: FeedbackAction,
+  language: FeedbackLanguage = "en",
+): string {
+  const content = feedbackCardContent(target, action, language);
+  const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
+  const link = textLink(target.provider, detailsUrl, FEEDBACK_LABELS.details[language]);
+  return content.result
+    ? `${content.title} ${link}`
+    : [content.title, content.impact, `${content.availability} ${link}`].join("\n\n");
+}
+
+export function renderFeedbackCard(
+  target: FeedbackTarget,
+  publicUrl: string,
+  action?: FeedbackAction,
+  language: FeedbackLanguage = "en",
+) {
+  const content = feedbackCardContent(target, action, language);
   const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
   const operationUrl = (kind: string) => {
     const u = new URL(detailsUrl);
     u.searchParams.set("operation", kind);
     return u.href;
   };
-  const actions = cardActions(target, content.result, operationUrl);
-  const code = /^[a-zA-Z0-9_]{1,128}$/.test(target.errorCode ?? "") ? target.errorCode : "task_failed";
-  const text = content.result
-    ? content.title
-    : `${content.title}\n\n${content.impact}\n\n${content.availability}\n\n${code}`;
+  const actions = cardActions(target, content.result, operationUrl, language);
+  const details = FEEDBACK_LABELS.details[language];
+  const text = content.result ? content.title : `${content.title}\n\n${content.impact}\n\n${content.availability}`;
   return {
     slack: {
       text,
@@ -138,21 +143,21 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
             })),
             {
               type: "button" as const,
-              text: { type: "plain_text" as const, text: "View details" },
+              text: { type: "plain_text" as const, text: details },
               action_id: "opentag_feedback_details",
               url: detailsUrl,
             },
           ],
         },
-        ...(!content.result
-          ? [{ type: "context" as const, elements: [{ type: "plain_text" as const, text: code ?? "task_failed" }] }]
-          : []),
       ],
     },
     feishu: JSON.stringify({
       config: { wide_screen_mode: true, update_multi: true },
       header: {
-        title: { tag: "plain_text", content: content.result ? "Task status" : "Task failed" },
+        title: {
+          tag: "plain_text",
+          content: (content.result ? FEEDBACK_LABELS.taskStatus : FEEDBACK_LABELS.taskFailed)[language],
+        },
         template: action?.state === "succeeded" || target.state === "completed" ? "green" : "red",
       },
       elements: [
@@ -172,10 +177,9 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
               type: a.style === "danger" ? "danger" : "primary",
               url: a.url,
             })),
-            { tag: "button", text: { tag: "plain_text", content: "View details" }, type: "default", url: detailsUrl },
+            { tag: "button", text: { tag: "plain_text", content: details }, type: "default", url: detailsUrl },
           ],
         },
-        ...(!content.result ? [{ tag: "note", elements: [{ tag: "plain_text", content: code }] }] : []),
       ],
     }),
   };

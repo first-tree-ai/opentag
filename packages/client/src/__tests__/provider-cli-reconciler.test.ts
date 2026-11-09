@@ -1362,6 +1362,35 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
+  it("publishes readiness for an active requirement after a restart, with no prewarm", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    // A restarted daemon has published nothing, and a bound Agent gets no prewarm.
+    await runtime.emit(requirement);
+    runtime.setImCliReadiness.mockClear();
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
+    await reconciler.close();
+  });
+
+  it("publishes nothing for a provider with no requirement and no earlier readiness", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
+    await reconciler.close();
+  });
+
   it("stops a passive refresh that becomes unavailable mid-flight", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();

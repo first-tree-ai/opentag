@@ -1,18 +1,25 @@
 import { randomUUID } from "node:crypto";
 import {
   HTTP_PATHS,
+  RUNTIME_CAPABILITY,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
+  type SessionReconcileRequest,
 } from "@opentag/shared";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerRuntimeSessionRoutes } from "../api/runtime-sessions.js";
 import { createServerDiagnosticReporter } from "../observability/diagnostics.js";
+import { RuntimeRegistrySendError } from "../runtime/connection-registry.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
-import { runOutcomeNoticeMessageId } from "../services/sessions/session-run-outcome-notice.js";
+import {
+  renderSessionStoppedNotice,
+  runOutcomeNoticeMessageId,
+  sessionStoppedNoticeMessageId,
+} from "../services/sessions/session-run-outcome-notice.js";
 import { SessionServiceError } from "../services/sessions/session-service.js";
 
 describe("SessionCollaborationService", () => {
@@ -377,6 +384,390 @@ describe("SessionCollaborationService", () => {
     },
   );
 
+  describe("session stop", () => {
+    function stopped(
+      fixture: ReturnType<typeof serviceFixture>,
+      creatorSessionId: string,
+      childSessionId = randomUUID(),
+    ) {
+      const target = { sessionId: childSessionId, creatorSessionId, computerKind: "local" };
+      fixture.sessions.stopInternalSession.mockResolvedValue({
+        target,
+        targets: [target],
+        alreadyStopped: false,
+        descendantCount: 2,
+        stoppedDescendantCount: 2,
+      });
+      return childSessionId;
+    }
+
+    it("tells the execution side and does not wake the creator that asked", async () => {
+      const fixture = serviceFixture();
+      const sessionId = stopped(fixture, fixture.source.sessionId);
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toEqual({
+        status: "stopped",
+        sessionId,
+        execution: "stopped",
+        alreadyStopped: false,
+        stoppedDescendantCount: 2,
+      });
+      expect(fixture.sessions.stopInternalSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceSessionId: fixture.source.sessionId, targetSessionId: sessionId }),
+      );
+      expect(fixture.stopEnded).toHaveBeenCalledWith([expect.objectContaining({ sessionId })]);
+      expect(fixture.sessions.authorizeAndRecordMessage).not.toHaveBeenCalled();
+    });
+
+    it("sends a creator another ancestor overruled one deterministic notice", async () => {
+      const fixture = serviceFixture();
+      const creator = randomUUID();
+      const sessionId = stopped(fixture, creator);
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+        status: "stopped",
+      });
+      const notice = fixture.sessions.authorizeAndRecordMessage.mock.calls[0]?.[0];
+      expect(notice).toMatchObject({
+        messageId: sessionStoppedNoticeMessageId(sessionId),
+        serverDerivedId: true,
+        sourceSessionId: fixture.source.sessionId,
+        targetSessionId: creator,
+      });
+      expect(notice.content).toBe(renderSessionStoppedNotice(sessionId, 2));
+      expect(notice.content).toContain("The 2 descendant Session(s) below it were stopped with it.");
+      expect(notice.content).toContain("cannot receive messages");
+      expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+      expect(fixture.logger.error).not.toHaveBeenCalled();
+    });
+
+    it("still answers stopped when the notice cannot be delivered, and logs it", async () => {
+      const fixture = serviceFixture();
+      const sessionId = stopped(fixture, randomUUID());
+      fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
+        new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "the creator ended"),
+      );
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+        status: "stopped",
+      });
+      expect(fixture.logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "SESSION_STOP_NOTICE_NOT_DELIVERED", childSessionId: sessionId }),
+        expect.any(String),
+      );
+    });
+
+    it("reports a stop nothing could carry out as pending", async () => {
+      const fixture = serviceFixture();
+      const sessionId = stopped(fixture, fixture.source.sessionId);
+      fixture.stopEnded.mockResolvedValue(new Map());
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+        status: "stopped",
+        execution: "pending",
+      });
+    });
+
+    describe("a Client that does not answer", () => {
+      function frozen(fixture: ReturnType<typeof serviceFixture>) {
+        const answer = deferred<Map<string, "stopped">>();
+        fixture.stopEnded.mockReturnValue(answer.promise as never);
+        const service = new SessionCollaborationService({
+          assembler: fixture.assembler,
+          domain: fixture.domain as never,
+          logger: fixture.logger,
+          onDiagnostic: fixture.onDiagnostic,
+          registry: fixture.registry,
+          sessions: fixture.sessions as never,
+          stopEnded: fixture.stopEnded as never,
+          stopAnswerBudgetMs: 5,
+        });
+        return { answer, service };
+      }
+
+      it("answers pending within the budget, which is below the CLI's timeout", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, fixture.source.sessionId);
+        const { answer, service } = frozen(fixture);
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          status: "stopped",
+          sessionId,
+          execution: "pending",
+        });
+
+        answer.resolve(new Map([[sessionId, "stopped"]]));
+        await service.close();
+      });
+
+      it("records another ancestor's notice under its server-derived ID before answering pending", async () => {
+        const fixture = serviceFixture();
+        const creator = randomUUID();
+        const sessionId = stopped(fixture, creator);
+        const { answer, service } = frozen(fixture);
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          execution: "pending",
+        });
+
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            messageId: sessionStoppedNoticeMessageId(sessionId),
+            targetSessionId: creator,
+            serverDerivedId: true,
+          }),
+        );
+        // Delivery stays behind the frozen Client, and is not lost once it answers.
+        expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+        answer.resolve(new Map([[sessionId, "stopped"]]));
+        await vi.waitFor(() => expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce());
+        await service.close();
+      });
+
+      it("does not let a slow notice delivery hide the confirmed execution, and logs a failed one", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, randomUUID());
+        const delivery = deferred<never>();
+        fixture.domain.requestSessionMessageDelivery.mockReturnValue(delivery.promise);
+        const service = new SessionCollaborationService({
+          assembler: fixture.assembler,
+          domain: fixture.domain as never,
+          logger: fixture.logger,
+          registry: fixture.registry,
+          sessions: fixture.sessions as never,
+          stopEnded: fixture.stopEnded as never,
+          stopAnswerBudgetMs: 5,
+        });
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          execution: "stopped",
+        });
+        delivery.reject(new RuntimeDomainRequestError("timeout", "confirmation was lost"));
+        await service.close();
+        expect(fixture.logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_STOP_NOTICE_NOT_DELIVERED", childSessionId: sessionId }),
+          expect.any(String),
+        );
+      });
+
+      it("makes shutdown wait for the late answer, skips delivery, and reports a failure", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, randomUUID());
+        const { answer, service } = frozen(fixture);
+        await service.stop({ targetSessionId: sessionId }, fixture.source);
+
+        let closed = false;
+        const closing = service.close().then(() => {
+          closed = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(closed).toBe(false);
+        answer.reject(new Error("the domain closed"));
+        await closing;
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledOnce();
+        expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+        expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_STOP_BACKGROUND_FAILED");
+      });
+    });
+
+    it.each([
+      [["stopped", "stopped"], "stopped"],
+      [["stopped", "requested"], "requested"],
+      [["requested", "pending"], "pending"],
+      [["pending", "not_interrupted"], "not_interrupted"],
+      [["stopped", undefined], "pending"],
+    ] as const)("answers %j for the tree as %s, the Session reached least", async (reached, answer) => {
+      const fixture = serviceFixture();
+      const sessionId = stopped(fixture, fixture.source.sessionId);
+      const descendant = randomUUID();
+      const stop = await fixture.sessions.stopInternalSession();
+      fixture.sessions.stopInternalSession.mockResolvedValue({
+        ...stop,
+        targets: [stop.target, { ...stop.target, sessionId: descendant }],
+      });
+      fixture.stopEnded.mockResolvedValue(
+        new Map([[sessionId, reached[0]], ...(reached[1] ? ([[descendant, reached[1]]] as const) : [])]) as never,
+      );
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+        execution: answer,
+      });
+      expect(fixture.stopEnded).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ sessionId: descendant })]),
+      );
+    });
+
+    it("maps refusals and hides unexpected failures", async () => {
+      const fixture = serviceFixture();
+      const targetSessionId = randomUUID();
+      fixture.sessions.stopInternalSession.mockRejectedValueOnce(
+        new SessionServiceError("SESSION_STOP_NOT_ANCESTOR", "private detail"),
+      );
+      await expect(fixture.service.stop({ targetSessionId }, fixture.source)).resolves.toEqual({
+        status: "rejected",
+        sessionId: targetSessionId,
+        code: "not_ancestor",
+      });
+      expect(fixture.onDiagnostic).not.toHaveBeenCalled();
+      fixture.sessions.stopInternalSession.mockRejectedValueOnce(new Error("database down"));
+      await expect(fixture.service.stop({ targetSessionId }, fixture.source)).resolves.toEqual({
+        status: "unreachable",
+        sessionId: targetSessionId,
+        code: "runtime_unavailable",
+      });
+      expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
+      expect(fixture.stopEnded).not.toHaveBeenCalled();
+    });
+
+    it("repeats recent stops for a registering Computer, and nothing when there are none", async () => {
+      const fixture = serviceFixture();
+      const computerId = randomUUID();
+      await fixture.service.redeliverStops(computerId);
+      expect(fixture.stopEnded).not.toHaveBeenCalled();
+      const target = { sessionId: randomUUID() };
+      fixture.sessions.recentlyEndedInternalSessions.mockResolvedValue([target]);
+      await fixture.service.redeliverStops(computerId);
+      expect(fixture.sessions.recentlyEndedInternalSessions).toHaveBeenCalledWith(computerId, expect.any(Date), 64);
+      expect(fixture.stopEnded).toHaveBeenCalledWith([target]);
+    });
+
+    it("has nothing to repeat without an execution side", async () => {
+      const fixture = serviceFixture();
+      const service = new SessionCollaborationService({
+        assembler: fixture.assembler,
+        domain: fixture.domain as never,
+        registry: fixture.registry,
+        sessions: fixture.sessions as never,
+      });
+      await service.redeliverStops(randomUUID());
+      expect(fixture.sessions.recentlyEndedInternalSessions).not.toHaveBeenCalled();
+    });
+  });
+
+  it("waits for two serial round trips on the existing Local send path", async () => {
+    const fixture = serviceFixture();
+    const reconcile = await fixture.domain.requestReconcile();
+    const delivery = await fixture.domain.requestSessionMessageDelivery();
+    fixture.domain.requestReconcile.mockClear().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return reconcile;
+    });
+    fixture.domain.requestSessionMessageDelivery.mockClear().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return delivery;
+    });
+
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const response = fixture.service.send(sendRequest(fixture), fixture.source);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+      expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(response).resolves.toMatchObject({ status: "accepted" });
+      expect(Date.now() - start).toBe(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a warm compatible Local send after one 500 ms round trip", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockImplementation(
+      async (_computerId, _instanceId, request: SessionReconcileRequest) => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return {
+          ...reconcileReceipt(request),
+          sessionMessage: {
+            type: "session:message:deliver:result",
+            requestId: request.requestId,
+            messageId: request.sessionMessage?.messageId,
+            targetSessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "accepted",
+          },
+        };
+      },
+    );
+
+    vi.useFakeTimers();
+    try {
+      const response = fixture.service.send(sendRequest(fixture), fixture.source);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(response).resolves.toMatchObject({ status: "accepted" });
+      expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ messageId: fixture.messageId, outcome: "accepted", attemptCount: 1 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delivers separately only after the Client explicitly defers a prepared target", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockImplementation(
+      async (_computerId, _instanceId, request: SessionReconcileRequest) => ({
+        ...reconcileReceipt(request),
+        sessionMessage: "deferred",
+      }),
+    );
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "accepted",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+    const reconcile = fixture.domain.requestReconcile.mock.calls[0]?.[2];
+    const delivery = fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2];
+    expect(reconcile.sessionMessage.messageId).toBe(delivery.messageId);
+    expect(reconcile.runtime).toBe(delivery.runtime);
+    expect(reconcile.requestId).not.toBe(delivery.requestId);
+  });
+
+  it("uses two ordinary frames if the combined frame exceeds the wire limit", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValueOnce(new RuntimeRegistrySendError("frame_too_large", "too large"));
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "accepted",
+    });
+    expect(fixture.domain.requestReconcile.mock.calls[0]?.[2].sessionMessage).toBeDefined();
+    expect(fixture.domain.requestReconcile.mock.calls[1]?.[2].sessionMessage).toBeUndefined();
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    new RuntimeDomainRequestError("timeout", "lost acknowledgement"),
+    new RuntimeDomainRequestError("delivery_unconfirmed", "owner stopped"),
+    new RuntimeRegistrySendError("instance_replaced", "connection replaced during send", true),
+  ])("leaves a potentially delivered combined request unknown after %s", async (error) => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValue(error);
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unknown",
+      code: "delivery_timeout",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
+    );
+  });
+
+  it("records a refused combined admission as unreachable without sending another frame", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValue(new RuntimeDomainRequestError("authority_unavailable", "denied"));
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+  });
+
   it("records reconcile failure as unreachable without attempting delivery", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestReconcile.mockResolvedValue({
@@ -538,12 +929,23 @@ describe("SessionCollaborationService", () => {
   });
 });
 
+function reconcileReceipt(request: SessionReconcileRequest) {
+  return {
+    type: "session:reconcile:result",
+    requestId: request.requestId,
+    sessionId: request.sessionId,
+    placementGeneration: request.placementGeneration,
+    status: "ready",
+  };
+}
+
 function serviceFixture(
   options: {
     attemptCount?: number | null;
     lastOutcome?: "accepted" | "unknown";
     targetSessionKind?: "channel" | "thread" | "internal";
     targetComputerKind?: "local" | "cloud";
+    inlineMessages?: boolean;
   } = {},
 ) {
   const sourceSessionId = randomUUID();
@@ -606,7 +1008,9 @@ function serviceFixture(
         placement: { sessionId: targetSessionId },
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
+    recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
+    stopInternalSession: vi.fn(),
     resolveRunOutcomeNotice: vi
       .fn()
       .mockResolvedValue({ recipientSessionId: targetSessionId, installationId: targetInstallationId }),
@@ -633,11 +1037,17 @@ function serviceFixture(
   const onDiagnostic = vi.fn(createServerDiagnosticReporter(() => diagnosticLogger as never));
   const logger = { error: vi.fn() };
   const registry = {
-    capabilityVersion: vi.fn().mockReturnValue(2),
+    capabilityVersion: vi.fn((_computer: string, _instance: string, capability: string) =>
+      capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
+    ),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
     supportsCapability: vi.fn().mockReturnValue(true),
   };
   const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
+  const stopEnded = vi.fn(
+    async (targets: { sessionId: string }[]) =>
+      new Map(targets.map(({ sessionId }) => [sessionId, "stopped" as const])),
+  );
   const cloud = {
     deliver: vi
       .fn<
@@ -659,8 +1069,10 @@ function serviceFixture(
     registry,
     sessions,
     source,
+    stopEnded,
     targetSessionId,
     service: new SessionCollaborationService({
+      stopEnded: stopEnded as never,
       assembler,
       domain: domain as never,
       onDiagnostic,

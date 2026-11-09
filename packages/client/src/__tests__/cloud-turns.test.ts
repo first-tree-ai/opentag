@@ -27,7 +27,12 @@ import {
   cloudJournalEntryKey,
 } from "../runner/cloud-journal.js";
 import { cloudSteerResult } from "../runner/cloud-steer-control.js";
-import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import {
+  CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS,
+  CloudTurnRunner,
+  type CloudTurnScope,
+  executionOutboxContext,
+} from "../runner/cloud-turns.js";
 import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
 import { NativeSandboxError } from "../runner/native-sandbox.js";
 import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
@@ -759,10 +764,12 @@ describe("CloudTurnRunner", () => {
 
   it("wires native exec stderr to diagnostics without changing the failed completion", async () => {
     const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const startup: Readonly<Record<string, unknown>>[] = [];
     const h = harness({
       runnerOptions: {
         runWorker: undefined,
         onDiagnostic: (record) => diagnostics.push(record),
+        onStartupDiagnostic: (record) => startup.push(record),
         sandbox: {
           name: "native-diagnostic-fixture",
           openDuplex: () => {
@@ -786,6 +793,16 @@ describe("CloudTurnRunner", () => {
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
     await h.runner.waitForActive();
+    expect(startup.map((record) => record.event)).toEqual(["received", "verified", "credential_open", "native_exec"]);
+    expect(
+      startup.every(
+        (record) =>
+          record.dispatchRequestId === h.delivery.requestId &&
+          record.clockId === diagnostics[0]?.clockId &&
+          record.turnId === diagnostics[0]?.turnId &&
+          record.environmentGeneration === diagnostics[0]?.environmentGeneration,
+      ),
+    ).toBe(true);
     expect(diagnostics).toContainEqual(
       expect.objectContaining({ phase: "get_state", event: "failure", primaryFailure: true, errorCode: "timeout" }),
     );
@@ -889,6 +906,35 @@ describe("CloudTurnRunner", () => {
     const terminal = frames.at(-1);
     if (terminal) h.runner.handleActivityResult({ ...terminal, type: "turn:activity:result", status: "recorded" });
     await h.runner.close();
+  });
+
+  it("passes the execution's outbox context to the worker so it can read the Session's kind", async () => {
+    const outboxContext = { provider: "feishu", sessionKind: "channel", chatId: "chat" } as const;
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => ({
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-x",
+          outboxContext,
+        }),
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => h.workerInputs.length === 1, "worker start");
+    await h.runner.waitForActive();
+    expect(JSON.parse(h.workerInputs[0]?.stdin ?? "{}").outboxContext).toEqual(outboxContext);
+    await h.runner.close();
+  });
+
+  it("reads the outbox context from the execution's IM grant only", () => {
+    const outboxContext = { provider: "slack", sessionKind: "thread", channelId: "C1", threadTs: "1.1" };
+    const cliMetadataFor = vi.fn(() => ({ provider: "slack", teamId: "T", botUserId: "U", outboxContext }));
+    const relay = (provider: string) =>
+      ({ providers: [{ provider }], cliMetadataFor }) as unknown as Parameters<typeof executionOutboxContext>[0];
+    expect(executionOutboxContext(relay("slack"))).toEqual({ outboxContext });
+    expect(executionOutboxContext(relay("github"))).toEqual({});
+    expect(cliMetadataFor).toHaveBeenCalledOnce();
   });
 
   it("passes the actual execution proof to an IM worker without journaling it", async () => {

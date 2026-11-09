@@ -10,7 +10,7 @@ import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzl
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, sandboxes } from "../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
-import type { PerformanceLogger } from "../../observability/performance-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import {
@@ -351,6 +351,17 @@ export class SandboxRunnerService {
    * ---------------------------------------------------------------------------------------- */
 
   async startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+    const start = () => this.#startForAccount(accountId, sandboxId);
+    return this.#perfLogger
+      ? this.#perfLogger.traceAsync(
+          { module: "sandboxes", category: "service", operation: "sandbox.allocation.start", sandboxId },
+          start,
+          { resultAttributes: (result) => ({ lifecycle: result.lifecycle }) },
+        )
+      : start();
+  }
+
+  async #startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
     await this.#releaseMissingReadyAllocation(accountId, sandboxId);
     await this.#prepareWorkspaceAllocation(accountId, sandboxId);
     // E7 on-demand borrow: a fresh unallocated Session may take a same-account idle sibling's
@@ -358,6 +369,7 @@ export class SandboxRunnerService {
     // reservation transaction, so no database transaction spans the E5 seal or a cloud read.
     const preflight = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
     if (!preflight) throw sandboxNotFound();
+    updateCurrentPerformanceContext({ sessionId: preflight.sandbox.sessionId });
     const borrowed =
       preflight.sandbox.lifecycle === "unallocated"
         ? await this.#idleReclaim.prepareIdleSiblingForReuse(accountId, preflight.sandbox.id)
@@ -397,6 +409,7 @@ export class SandboxRunnerService {
         if (borrowed) await this.#idleReclaim.releaseUnusedBorrow(borrowed);
         throw error;
       });
+    updateCurrentPerformanceContext({ environmentGeneration: reservation.row.environmentGeneration });
     if (borrowed && reservation.action !== "reuse") await this.#idleReclaim.releaseUnusedBorrow(borrowed);
 
     if (reservation.action === "allocate" || reservation.action === "retry") {
@@ -580,9 +593,21 @@ export class SandboxRunnerService {
    * idempotent start/reconcile logic, so repeated claim attempts are safe.
    */
   async ensureIngressAllocation(accountId: string, sandboxId: string): Promise<IngressAllocationOutcome> {
+    const ensure = () => this.#ensureIngressAllocation(accountId, sandboxId);
+    return this.#perfLogger
+      ? this.#perfLogger.traceAsync(
+          { module: "sandboxes", category: "service", operation: "sandbox.allocation.ensure", sandboxId },
+          ensure,
+          { resultAttributes: (allocationOutcome) => ({ allocationOutcome }) },
+        )
+      : ensure();
+  }
+
+  async #ensureIngressAllocation(accountId: string, sandboxId: string): Promise<IngressAllocationOutcome> {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
+    updateCurrentPerformanceContext({ sessionId: row.sessionId, environmentGeneration: row.environmentGeneration });
     // An automatic idle claim blocks execution but never terminates the input: the Session either
     // gets the physical Instance back through a fresh allocation later or a sibling was borrowed,
     // so ingress keeps retrying instead of rejecting the message as a stopped environment.
@@ -592,6 +617,7 @@ export class SandboxRunnerService {
     if (row.lifecycle === "unallocated" && row.environmentGeneration > 0 && !this.#workspace) return "restore_required";
     try {
       const status = await this.startForAccount(accountId, sandboxId);
+      updateCurrentPerformanceContext({ environmentGeneration: status.environmentGeneration });
       return status.lifecycle === "ready" ? "ready" : "pending";
     } catch (error) {
       if (error instanceof WorkspaceRestoreRequiredError) return "restore_required";
@@ -1077,6 +1103,13 @@ export class SandboxRunnerService {
       await this.#recordError(row, "cloud_create_failed", error);
       throw error;
     }
+    const createStarted = performance.now();
+    const allocation = {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName,
+    };
     let result: Awaited<ReturnType<CloudRunAdmin["createInstance"]>>;
     try {
       result = await this.#cloud.createInstance(
@@ -1089,7 +1122,15 @@ export class SandboxRunnerService {
           // E5: only a workspace-enabled allocation arms the Runner-side restore/save path.
           ...(this.#workspace ? { workspacePersistence: true } : {}),
         },
-        { onOperation: (operationName) => this.#trackOperation(row, resourceName, operationName) },
+        {
+          onAccepted: (apiVersion) =>
+            this.#emitLifecycleLog("sandbox.lifecycle.create_accepted", {
+              ...allocation,
+              apiVersion,
+              durationMs: performance.now() - createStarted,
+            }),
+          onOperation: (operationName) => this.#trackOperation(row, resourceName, operationName),
+        },
       );
     } catch (error) {
       return this.#handleCreateFailure(row, error);
@@ -1100,6 +1141,12 @@ export class SandboxRunnerService {
       await this.#recordError(row, "cloud_instance_unverified", error);
       throw mapCloudError(error, "adopt the Sandbox environment allocation");
     }
+    this.#emitLifecycleLog("sandbox.lifecycle.instance_verified", {
+      ...allocation,
+      resourceUid: result.instance.uid,
+      createOutcome: result.outcome,
+      durationMs: performance.now() - createStarted,
+    });
     const tracked = await this.#trackResource(row, resourceName, result.instance.uid, result.operationName ?? null);
     if (tracked === "tracked") {
       // A stop may have moved the row to `releasing` while the create was in flight; finish that
@@ -1291,6 +1338,14 @@ export class SandboxRunnerService {
       await this.#marker(row, "cloud_instance_unverified");
       throw mapCloudError(error, "adopt the Sandbox environment allocation");
     }
+    this.#emitLifecycleLog("sandbox.lifecycle.instance_verified", {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName,
+      resourceUid: view.uid,
+      createOutcome: "reconciled",
+    });
     await this.#trackResource(row, resourceName, view.uid, row.currentOperationName);
     return view;
   }

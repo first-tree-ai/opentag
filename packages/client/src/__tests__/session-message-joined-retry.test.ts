@@ -100,6 +100,118 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.stop();
   });
 
+  it("does not repeat a steer its conversation holds in a 429 retry, and still repeats an unconfirmed one", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    await expect(s.runner.steer(s.imSteer("im unconfirmed"))).resolves.toMatchObject({ status: "steered" });
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    const held = s.message("session confirmed");
+    await s.steer(held);
+    await vi.waitFor(() => expect(s.inbox.getState(held.messageId)?.steerInConversation).toBeDefined());
+    await vi.waitFor(async () =>
+      expect(Object.keys((await s.retries.read(s.request.sessionId))?.steerConversations ?? {})).toHaveLength(1),
+    );
+    s.endAttempt();
+    await s.runner.settled();
+    const text = s.promptText(1);
+    expect(text).toContain("im unconfirmed");
+    expect(text).not.toContain("im confirmed");
+    expect(text).not.toContain("session confirmed");
+    // It still ends with the Turn.
+    expect(s.inbox.getState(held.messageId)?.status).toBe("succeeded");
+    await s.stop();
+  });
+
+  it("repeats a confirmed IM steer when the retry has a different conversation", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(async () =>
+      expect(Object.keys((await s.retries.read(s.request.sessionId))?.steerConversations ?? {})).toHaveLength(1),
+    );
+    s.runtime.binding = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "conversation-b" } };
+    s.endAttempt();
+    await s.runner.settled();
+    expect(s.promptText(1)).toContain("im confirmed");
+    await s.stop();
+  });
+
+  it("does not repeat a confirmed IM steer when the Turn resumes after a crash, and repeats an unconfirmed one", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    await expect(first.runner.steer(first.imSteer("im unconfirmed"))).resolves.toMatchObject({ status: "steered" });
+    first.fixture.confirmSteers = true;
+    await expect(first.runner.steer(first.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(async () =>
+      expect(Object.keys((await first.retries.read(first.request.sessionId))?.steerConversations ?? {})).toHaveLength(
+        1,
+      ),
+    );
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.receipts.push(...first.receipts);
+    second.prompt.mockImplementationOnce(second.finishes);
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    await expect(second.recovery.resume(second.request.sessionId, second.identity)).resolves.toBe(true);
+    await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
+    const text = second.promptText(0);
+    expect(text).toContain("im unconfirmed");
+    expect(text).not.toContain("im confirmed");
+    await second.stop();
+    await first.stop();
+  });
+
+  it("repeats a confirmed IM steer after a crash when writing its confirmation failed", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    // The first write records the steer itself; the second is its confirmation.
+    const update = first.retries.update.bind(first.retries);
+    const write = vi
+      .spyOn(first.retries, "update")
+      .mockImplementationOnce(update)
+      .mockRejectedValueOnce(new Error("disk full"));
+    first.fixture.confirmSteers = true;
+    await expect(first.runner.steer(first.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    await new Promise(setImmediate);
+    expect((await first.retries.read(first.request.sessionId))?.steerConversations).toBeUndefined();
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.receipts.push(...first.receipts);
+    second.prompt.mockImplementationOnce(second.finishes);
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    await expect(second.recovery.resume(second.request.sessionId, second.identity)).resolves.toBe(true);
+    await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
+    expect(second.promptText(0)).toContain("im confirmed");
+    await second.stop();
+    await first.stop();
+  });
+
+  it("records no conversation for a confirmed IM steer on a runtime with no binding, so a retry repeats it", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    const binding = s.runtime.binding;
+    s.runtime.binding = undefined;
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await new Promise(setImmediate);
+    expect((await s.retries.read(s.request.sessionId))?.steerConversations).toBeUndefined();
+    s.runtime.binding = binding;
+    s.endAttempt();
+    await s.runner.settled();
+    expect(s.promptText(1)).toContain("im confirmed");
+    await s.stop();
+  });
+
   it("keeps IM and Session messages in their original order", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
@@ -419,7 +531,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.recovery.start();
     second.prepare();
     expect(second.recovery.isPendingRetry(second.request.sessionId, TURN_ID)).toBe(false);
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
     expect(second.prompt).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
     await second.stop();
@@ -460,7 +572,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledTimes(2));
     expect(second.steerText(0)).toContain("carried into the retry");
     expect(second.steerText(0)).toContain("Your previous turn was interrupted");
@@ -489,7 +601,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     second.endAttempt();
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledTimes(2));
@@ -524,7 +636,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     expect(second.promptText(0)).toContain("restarted or upgraded");
     expect(second.steerText(0)).toContain("the OpenTag daemon stopped (crash, power loss, restart, or upgrade)");
@@ -554,7 +666,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     expect(second.promptText(0)).toContain("HTTP 429");
     // The 429 was counted when it failed; the restart starts that retry without counting it again.
@@ -573,6 +685,14 @@ describe("the retry count shared by process interruptions and model 429", () => 
     return { next, pending };
   }
 
+  /** What `resume` records when the retry begins. */
+  function retryBegan(first: System, ranMs = 0) {
+    return first.retries.update(first.request.sessionId, TURN_ID, ({ retryNotStarted: _waiting, ...record }) => ({
+      ...record,
+      retryRanMs: ranMs,
+    }));
+  }
+
   it("stops resuming a Turn after two retries in a row, and fails the messages steered into it", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(hangs(first));
@@ -589,6 +709,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
       expect(pending).toBe(true);
+      await retryBegan(first);
     }
     const { next: last, pending } = await restartTurn(first, 120 * MINUTE);
     daemons.push(last);
@@ -613,10 +734,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
       expect(pending).toBe(true);
-      await first.retries.update(first.request.sessionId, TURN_ID, (record) => ({
-        ...record,
-        retryRanMs: RETRY_RESET_AFTER_MS,
-      }));
+      await retryBegan(first, RETRY_RESET_AFTER_MS);
     }
     for (const daemon of daemons) await daemon.stop();
   });
@@ -633,7 +751,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     second.prepare();
     const timer = vi.mocked(globalThis.setTimeout);
     timer.mockClear();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
     expect(timer.mock.calls.map((call) => call[1])).toContain(BUDGET_MS - spent);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -790,7 +908,7 @@ describe("Session messages after a crash or restart", () => {
     expect(second.runtime.steer).not.toHaveBeenCalled();
 
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledTimes(3));
     expect(second.promptText(0)).toContain("Your previous turn was interrupted");
     expect(second.promptText(0)).not.toContain("steered before the crash");
@@ -825,7 +943,7 @@ describe("Session messages after a crash or restart", () => {
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     second.endAttempt();
     await second.runner.settled();
@@ -851,7 +969,7 @@ describe("Session messages after a crash or restart", () => {
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
     second.endAttempt();
     await second.runner.settled();
@@ -1064,7 +1182,7 @@ async function system(
   const runEnd = new Promise<AgentSteerOutcome>((resolve) => {
     runEnded = resolve;
   });
-  const fixture = { steerOutcome: undefined as AgentSteerOutcome | undefined };
+  const fixture = { steerOutcome: undefined as AgentSteerOutcome | undefined, confirmSteers: false };
   const prompt = vi.fn(
     async (_input: { signal?: AbortSignal; input?: unknown }): Promise<AgentRunResult> => ({
       runId: TURN_ID,
@@ -1077,9 +1195,13 @@ async function system(
     state: { phase: "running", activeRunId: TURN_ID as string | undefined },
     prompt,
     waitForIdle: async () => undefined,
+    binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "conversation-a" } } as
+      | { providerId: string; schemaVersion: number; payload: { sessionId: string } }
+      | undefined,
     steer: vi.fn(
       async (_input: unknown): Promise<AgentSteerReceipt> => ({
         outcome: runEnd.then((outcome) => fixture.steerOutcome ?? outcome),
+        ...(fixture.confirmSteers ? { inConversation: Promise.resolve() } : {}),
       }),
     ),
   };
@@ -1166,6 +1288,8 @@ async function system(
           sessionMessages: {
             input: (message: SessionMessageDeliveryRequestV3, processedAt: Date) =>
               inbox.joinedRunInput(message, processedAt),
+            inConversation: (message: SessionMessageDeliveryRequestV3, runId: string, active: unknown) =>
+              inbox.inConversation(message, runId, active as never),
             settle: async (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) => {
               await inbox.settleJoined(message, outcome);
               order.push("settled");
@@ -1216,6 +1340,7 @@ async function system(
     logger,
     create,
     receipts,
+    fixture,
     onRunOutcome,
     outbox,
     writeFailures: () => writeFailures,

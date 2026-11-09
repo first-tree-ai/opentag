@@ -1,6 +1,6 @@
 ---
 title: "IM task feedback and safe recovery"
-description: "Durable working reactions, terminal feedback messages, Account confirmations, and conservative recovery of unknown provider outcomes."
+description: "Durable working reactions, offline notices, plain-text failure messages, Account confirmations, and conservative recovery of unknown provider outcomes."
 ---
 
 # IM task feedback and safe recovery
@@ -47,24 +47,79 @@ appears. Failure feedback appears only once the Turn is terminal — when the on
 was not recoverable — and then follows the rules above for that final report. A retry that completes removes the
 working reaction like any successful Turn.
 
-## Error cards
+## Offline notice
 
-A card stays in the original conversation or thread. It contains a sanitized cause and error code, task-effects
-warning, current recovery guidance, and details link. Raw model output, exception messages, credentials, file paths,
-and stack traces are excluded. Only authoritative `not_started` evidence permits the claim that no task operations
-ran. All other outcomes warn that external operations may already have occurred; missing outbound capture proves
-nothing about those operations.
+A direct message parked on an offline Local Computer otherwise shows nothing, because the working reaction waits for
+custody. After sixty seconds the Bot replies once with the reason, how to recover, and that the message is saved:
+
+> The computer running this Agent is offline, so this message can't be handled yet.
+> Check that the computer is on and connected, then restore the connection on the Agent page. [Restore connection]
+> If you don't manage this Agent, contact its administrator.
+> Your message is saved and will be handled after it reconnects. It expires after 7 days.
+
+The link opens the Agent page. For its owner the Computer row shows **Offline** with a link to the Computer recovery
+page, which offers the restore command. Signed-out people reach sign-in. Another Account gets a not-found page, or
+first-Agent setup if it has no Agents, so the third sentence tells them to contact the administrator. The notice names neither the Computer
+nor an administrator, because everyone in the conversation reads it. It follows the same language rule as failure
+messages.
+
+- **When.** Sixty seconds after the later of the message's receipt and the Computer's `last_seen_at`, with the Computer
+  offline by the same rule the Web uses: disconnected, no current instance, or silent past the presence timeout. A
+  message that waited behind a running Turn gets no notice the moment its Computer disconnects, and upgrades and short
+  disconnects stay silent. The feedback worker revisits queued targets every fifteen seconds, which is the extra delay.
+- **How often.** Once per Session and offline period. `last_seen_at` is frozen while offline and rewritten on
+  reconnect, so a feedback send at or after it belongs to the current period. A Computer that never connected has been offline
+  since it was created, so that time is its period start. The baseline must not be the message's receipt, which would
+  repeat the notice for every later message in one outage. Any send counts, including a failure
+  message. `im_feedback_targets.send_started_at` records the reservation, so this adds no table or column. The Session
+  row lock makes concurrent targets of a Session take turns, eligibility is read again under it because the Computer
+  can reconnect during the wait, and the check walks the Session's deliveries rather than the input's lifetime. An
+  outage longer than the ninety-day feedback retention can send another notice.
+- **Crash and provider outcomes.** The reservation commits before provider I/O, so a crash or lost acknowledgement can
+  lose a notice but never repeats one. A send the provider definitely did not apply, such as a rate limit, is released
+  for a later pass. A cooldown-storage failure stops the worker pass, as it does for other feedback calls. The notice does not use the failure message's request identity, which Feishu would deduplicate.
+- **Scope.** Local Computers only: Cloud placements never match. A paused or suspended Agent, an expired credential,
+  and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
+  reply are the signal, and an expired message keeps the existing failure message.
+
+## Failure messages
+
+Ordinary failures are plain text in the original conversation or thread. Workspace failures are the only cards,
+because they need Retry save and Discard buttons. A message has three sentences: what happened, whether operations
+ran, and what to do next, followed by the authenticated details link as clickable words, never a raw URL: Feishu
+`text` with `[words](url)`, or Slack `<url|words>`. Sentences are separated by a blank line, as on cards. Neither text
+nor cards show an error code: codes and technical details appear only on the details page, which is also where support
+reads them. The reason: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
+taking more of the conversation than the work did.
+
+The roughly twenty-four failure reasons map onto five next steps, so the reader is told what to do rather than why
+the runtime stopped:
+
+| Next step | Reasons |
+| --- | --- |
+| Send again later | Rate limit, model service unavailable, connection failure |
+| Ask the Agent owner | Authentication, access denied, quota, credentials unavailable |
+| Split the task | Context limit, execution limit, time limit, result too large |
+| Send again, then ask the owner | Process exit, start failure, environment disconnected, client stopped, and every other reason |
+| Check the result first | Task outcome unknown |
+
+Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Only authoritative
+`not_started` evidence permits the claim that no task operations ran. All other outcomes warn that operations may
+already have run; missing outbound capture proves nothing about those operations.
+
+Copy follows the language of the input that started the task: Chinese when the sender's text contains Chinese,
+otherwise English. It is derived from that exact stored input revision on every render, so it needs no setting, adds
+no storage, and behaves the same on Slack and Feishu. Mentions are ignored, so a Chinese Bot name does not switch an
+English request. A mixed-language message can pick the less expected language; the only consequence is the wording.
 
 A workspace failure pauses that Session rather than the entire Agent. New input remains queued for the Session.
 Saving or discarding files does not undo messages, pull requests, or other external operations. The existing Runner
 owns automatic save retries; this feedback layer adds no automatic save or task retry loop.
 
-### Plain failure messages
+### Task Retry
 
-New failure targets can use plain messages with a cause, effects warning and authenticated details
-link. The rollout flag defaults to off and each target retains its original format; see Message
-format compatibility below. New Task Retry admissions are disabled, including old card callbacks.
-A new message follows ordinary admission and is steered into the running Turn; every Local
+New Task Retry admissions are disabled, including old card callbacks. To try again, a person sends
+a new message, which follows ordinary admission and is steered into the running Turn; every Local
 runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
 and confirmation semantics.
 
@@ -72,9 +127,22 @@ and confirmation semantics.
 
 A scheduled message goes to the Agent only and posts nothing in IM when it starts or succeeds
 ([#1352](https://github.com/first-tree-ai/opentag/issues/1352)). It has no sender and no native input, so neither the
-sender notice nor a feedback target can carry its failure. The Server instead posts one plain message from the Session's
-Bot in the Session's own chat or thread, with the task name, scheduled time, stable code, and schedule details link. It
-stores no IM feedback state and adds no column.
+sender notice nor a feedback target can carry its failure. This section covers a visible target; for an internal Session, see
+[Schedules on an internal Session](internal-session-collaboration.md#schedules-on-an-internal-session). The Server instead posts one plain message from the Session's
+Bot in the Session's own chat or thread. It has the same shape as other [failure messages](#failure-messages): what
+happened with the task name and scheduled time, whether operations ran, what to do next, and a clickable link to the schedule.
+Stable codes stay out of the message; the schedule page shows the reason. A schedule has no sender, so the language follows
+its task text by the same rule. Brackets in the task name are replaced with lookalikes, so a name can't carry a mention or a
+disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
+feedback state for this and adds no column.
+
+A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
+workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
+280 seconds of dispatch entry or at the next trigger, whichever comes first. At most 75 Cloud hand-offs per Server
+use the extended window concurrently. Additional Cloud hand-offs have up to 20 seconds so they free scheduler slots
+within the 30-second claim window. A pause, edit, or deletion still
+wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
+restart does not recover an unfinished scheduled hand-off.
 
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |
@@ -103,7 +171,11 @@ Delivery is best effort:
   loses the message. The Agent schedule page still shows the miss from `last_dispatch`.
 - A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.
 
-The schedule page is unchanged: its last run shows delivery, so a Run that failed after delivery still reads as run.
+The message links to the schedule, whose last run shows the reason. A Run that failed after delivery writes its code to
+the summary's existing `last_dispatch.code` with the outcome still `accepted`, and the page reads as failed. A slower
+hand-off result for the same occurrence does not replace it, since the Run's report may be gone by then. The summary only
+describes the latest occurrence: once the next one is claimed, the link shows that one, and an older report writes
+nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations
 
@@ -133,14 +205,18 @@ never forces interruption or replays a Turn.
 
 ## Message format compatibility
 
-Each `im_feedback_targets.message_format` is frozen at creation. The default `interactive_v1`
-keeps existing targets and old writers on their card format. With
-`OPENTAG_IM_FEEDBACK_TEXT_ENABLED=true`, new writers explicitly choose `text_v1`: sanitized cause,
-error code, effects warning, recovery guidance and the stable authenticated details link in plain
-text. The flag defaults to false and is enabled only after all workers understand both formats.
-No existing target is converted or resent. Known-message updates and unknown-send reconciliation
-use the stored format and the same native identity; text lookup matches the installed Bot and
-exact details URL. Save/discard and historical admitted operation results remain accessible.
+Each `im_feedback_targets.message_format` is fixed at creation and existing targets are never converted or
+resent. New targets choose `text_v1`; `OPENTAG_IM_FEEDBACK_TEXT_ENABLED=false` rolls new targets back to
+`interactive_v1`. Targets are created at ingress, before the kind of failure is known, so one transition changes the
+stored value: a target that reaches `workspace_blocked` with nothing sent yet becomes `interactive_v1`, because its
+buttons cannot be expressed as text. Once a message exists its format never changes.
+
+Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
+matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
+During a rollout overlap, an older worker that knows `text_v1` renders it with its older wording, and one from before
+the column existed ignores it and sends a card. Neither loses the message or sends it twice; a later edit or readback of
+such a message by a newer worker can fail and stays diagnosable. Save/discard and
+historical admitted operation results remain accessible.
 
 ## Projection, unknown outcomes, and retention
 
@@ -165,7 +241,7 @@ Shutdown stops new claims, releases a claim that finishes admission after shutdo
 
 Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
-identity, up to one hundred messages per page and five pages per pass, retaining a cursor. A confirmed match binds
+identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
 another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that

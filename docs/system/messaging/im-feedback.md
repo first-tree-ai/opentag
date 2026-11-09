@@ -124,7 +124,7 @@ Slack `<url|words>`. Every link opens the card's feedback page with an `open` pa
 The workspace buttons open the details page with the operation selected, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the
 card is edited in place: its title becomes the state (已完成, 处理中，请勿重复点击, 操作失败, 环境已变化，请刷新, 已保存,
-已放弃改动, 已重新排队), green on success, with the actor and time as its body. An environment released without
+已放弃改动, 已重新排队), green on success, with no body: the actor and time stay on the details page. An environment released without
 proof of the save reads 操作失败, never 已保存.
 
 ### Where a card goes
@@ -227,8 +227,10 @@ using the existing generation-bound sandbox service; the action is persisted bef
 A verified save says that the environment was saved and released and will restore on the next allocation, never that
 execution resumed in place. Save success requires the exact generation's sealed archive proof. An unallocated
 environment alone yields an unverified release message. Unknown or restarted operations are queried, never
-resubmitted automatically. The original failure message is edited to show the operation result, actor, and timestamp. The actor's display name has its
-`<`, `>`, `[` and `]` replaced with lookalikes, as schedule names are, so a profile name can't add a link or a mention.
+resubmitted automatically. The original failure card is edited to show only the operation result; the actor and timestamp
+appear on the details page. A plain-text message from before cards still shows the actor and timestamp, with the
+display name's `<`, `>`, `[` and `]` replaced with lookalikes, as schedule names are, so a profile name can't add a link
+or a mention.
 
 New Task Retry admissions are disabled. Existing admitted
 retry deliveries, immutable terminal reports, attempt identity and message order remain intact.

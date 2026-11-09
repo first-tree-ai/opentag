@@ -49,7 +49,7 @@ With an IM test binding and a runtime that can be made to fail on request:
    to the feedback page.
 5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with 重试保存 and 放弃改动 buttons and no
    body. A button opens the details page with that operation selected. Confirm a save as the Agent owner. Expected:
-   the card turns green in place and reads 已保存 with the actor and time. Repeat with Discard, which asks for the
+   the card turns green in place and reads only 已保存. Repeat with Discard, which asks for the
    permanent-loss confirmation first and ends as 已放弃改动.
 6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
    (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:

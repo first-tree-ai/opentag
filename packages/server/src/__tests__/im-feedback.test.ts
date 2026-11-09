@@ -836,7 +836,7 @@ describe("safe feedback actions", () => {
         "https://app.test",
         (await db.database.select().from(imFeedbackActions))[0],
       );
-      expect(content).toMatch(kind === "discard" ? /^Changes discarded\n/u : /^Saved\n/u);
+      expect(content).toBe(kind === "discard" ? "Changes discarded" : "Saved");
       expect(content).not.toContain("Done");
       expect(h.transport.post).toHaveBeenCalledOnce();
       expect(h.transport.update).toHaveBeenCalledOnce();

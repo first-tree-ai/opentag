@@ -10,7 +10,6 @@ import {
 } from "./im-feedback-card-copy.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
-import { plainText } from "./im-feedback-text.js";
 
 export type CardTone = "failure" | "success" | "offline" | "pending";
 
@@ -100,16 +99,8 @@ export function feedbackCard(
   language: FeedbackLanguage,
 ): FeedbackCard {
   const status = cardStatus(target, action);
-  if (status) {
-    // A display name is free text, and these cards are parsed for provider link and mention syntax.
-    const actor = action ? `${plainText(action.actorDisplayName.slice(0, 255))} · ${utcMinute(action.updatedAt)}` : "";
-    return {
-      tone: status.tone,
-      title: CARD_STATUS[status.key][language],
-      ...(actor ? { body: { text: actor } } : {}),
-      buttons: [],
-    };
-  }
+  // A status card is only its state: who acted and when stay on the details page.
+  if (status) return { tone: status.tone, title: CARD_STATUS[status.key][language], buttons: [] };
   const workspaceBlocked = target.state === "workspace_blocked";
   const card = fromCopy(
     failureCardCopy(target.errorCode, { workspaceBlocked, batchRetryBlocked: target.batchRetryBlocked }),
@@ -142,10 +133,6 @@ export function offlineCard(
   language: FeedbackLanguage,
 ): FeedbackCard {
   return fromCopy(OFFLINE_CARD, "offline", language, (link) => feedbackLinkUrl(target, publicUrl, link));
-}
-
-function utcMinute(date: Date): string {
-  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 /** Plain words for notifications and Slack's attachment fallback. */

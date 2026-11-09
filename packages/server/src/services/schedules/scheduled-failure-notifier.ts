@@ -11,9 +11,9 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import { textLink } from "../im/im-feedback-card.js";
 import { FEEDBACK_LABELS, type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
 import { FeedbackProviderError, type ImFeedbackMessenger } from "../im/im-feedback-messenger.js";
+import { textLink } from "../im/im-feedback-text.js";
 import type {
   RunOutcomeNoticeInput,
   RunOutcomeNoticeStatus,

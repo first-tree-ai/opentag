@@ -157,7 +157,7 @@ Agent for it.
 Rollback: a downgraded Client can inherit Turns accepted concurrently on different revisions. The Server then recovers them
 oldest revision first, answering `session:recover` with `retry` (`older_configuration_recovering`) until the older Turns
 have reported. The Client's recover attempts bound that wait at about 5 minutes. After that, it reports the waiting Turn
-through its ordinary failure path, so that Turn gets an error card and isn't resumed.
+through its ordinary failure path, so that Turn gets a failure message and isn't resumed.
 
 ## Session recovery
 

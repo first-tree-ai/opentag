@@ -14,14 +14,14 @@ Eligible inputs are direct human messages delivered to visible, non-observer Ses
 internal messages, duplicate-pending copies, deleted inputs, and a Channel copy owned by a Thread do not gain
 feedback merely from receipt. Dispatch-time observer roles and later Thread ownership are rechecked before
 projection. Retained custody only reopens feedback for unreported work. A confirmed later completion updates an
-existing expiry card, or suppresses it if it has not been sent. Ingress records a queued projection; custody acceptance requests a working reaction
+existing expiry message, or suppresses it if it has not been sent. Ingress records a queued projection; custody acceptance requests a working reaction
 on that exact native input: Slack `eyes`, Feishu `OnIt`. Heartbeats and approval waits do not change it.
 
-A terminal success removes the working reaction without adding a normal-operation card or completion emoji.
+A terminal success removes the working reaction without adding a normal-operation message or completion emoji.
 The final reply and reaction removal are separate provider operations. A reaction repair never replays execution.
 Failure removes working and adds Slack `warning` or Feishu's supported `CrossMark` failure marker; Feishu has no
 native `Warning` identifier in its reaction catalogue. Only this application's designated reactions are removed.
-Frozen batches retain per-input reactions but publish one failure card at the execution root. Unexecuted steered
+Frozen batches retain per-input reactions but publish one failure message at the execution root. Unexecuted steered
 children requeued by custody retain their existing execution authority.
 
 Feishu feedback reads the message's complete paginated reaction list once for both designated emojis
@@ -42,7 +42,7 @@ complete read consistently exceeds the budget. Incomplete pagination never autho
 
 A Local Client's [automatic retry](../server-client-boundary.md#automatic-retry-of-accepted-work) of an interrupted
 Turn (crash, restart or upgrade, Run timeout, model 429) is part of the same accepted Turn: no report is written
-while the retry is pending or running, so the working reaction stays on the input and no failure marker or error card
+while the retry is pending or running, so the working reaction stays on the input and no failure marker or failure message
 appears. Failure feedback appears only once the Turn is terminal — when the one retry also fails, or when the failure
 was not recoverable — and then follows the rules above for that final report. A retry that completes removes the
 working reaction like any successful Turn.
@@ -84,13 +84,16 @@ messages.
 
 ## Failure messages
 
-Ordinary failures are plain text in the original conversation or thread. Workspace failures are the only cards,
-because they need Retry save and Discard buttons. A message has three sentences: what happened, whether operations
-ran, and what to do next, followed by the authenticated details link as clickable words, never a raw URL: Feishu
-`text` with `[words](url)`, or Slack `<url|words>`. Sentences are separated by a blank line, as on cards. Neither text
-nor cards show an error code: codes and technical details appear only on the details page, which is also where support
-reads them. The reason: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
-taking more of the conversation than the work did.
+Every failure is plain text in the original conversation or thread; the Server sends no cards and no buttons. A
+message has three sentences: what happened, whether operations ran, and what to do next, followed by the
+authenticated details link as clickable words, never a raw URL: Feishu `text` with `[words](url)`, or Slack
+`<url|words>`. Sentences are separated by a blank line. No message shows an error code: codes and technical details
+appear only on the details page, which is also where support reads them. The reason: an IM failure is read by people
+who cannot act on a code, and a plain message keeps a failure from taking more of the conversation than the work did.
+
+A workspace failure is text too. Its next step says the save can be retried or the changes discarded from the
+details page, which owns both operations and their confirmations (see [Account operations](#account-operations)).
+Buttons in the conversation would add nothing: confirmation always happened on that page.
 
 The roughly twenty-four failure reasons map onto five next steps, so the reader is told what to do rather than why
 the runtime stopped:
@@ -118,7 +121,7 @@ owns automatic save retries; this feedback layer adds no automatic save or task 
 
 ### Task Retry
 
-New Task Retry admissions are disabled, including old card callbacks. To try again, a person sends
+New Task Retry admissions are disabled; a Retry button on an old card does nothing. To try again, a person sends
 a new message, which follows ordinary admission and is steered into the running Turn; every Local
 runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
 and confirmation semantics.
@@ -179,9 +182,9 @@ nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations
 
-Card links open an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows
+The details link opens an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows
 the original Task link, exact Session, workspace generation, effects warning, selected operation, and the last-save boundary; when its
-time cannot be verified, the page says so. The Agent detail page also exposes recovery notices when a card cannot
+time cannot be verified, the page says so. The Agent detail page also exposes recovery notices when a failure message cannot
 be delivered. Lists are owner-scoped and paginated in batches of twenty.
 
 The final CSRF-protected POST rechecks the current Account owner, active binding and installation generation,
@@ -193,9 +196,9 @@ using the existing generation-bound sandbox service; the action is persisted bef
 A verified save says that the environment was saved and released and will restore on the next allocation, never that
 execution resumed in place. Save success requires the exact generation's sealed archive proof. An unallocated
 environment alone yields an unverified release message. Unknown or restarted operations are queried, never
-resubmitted automatically. The original card shows the operation result, actor, and timestamp.
+resubmitted automatically. The original failure message is edited to show the operation result, actor, and timestamp.
 
-New Task Retry admissions are disabled, including callbacks from old cards. Existing admitted
+New Task Retry admissions are disabled. Existing admitted
 retry deliveries, immutable terminal reports, attempt identity and message order remain intact.
 Workspace save/discard stays available through the authenticated details page and its existing
 confirmation flow. Unsupported steer remains queued until the current Turn settles. The team
@@ -205,18 +208,29 @@ never forces interruption or replays a Turn.
 
 ## Message format compatibility
 
-Each `im_feedback_targets.message_format` is fixed at creation and existing targets are never converted or
-resent. New targets choose `text_v1`; `OPENTAG_IM_FEEDBACK_TEXT_ENABLED=false` rolls new targets back to
-`interactive_v1`. Targets are created at ingress, before the kind of failure is known, so one transition changes the
-stored value: a target that reaches `workspace_blocked` with nothing sent yet becomes `interactive_v1`, because its
-buttons cannot be expressed as text. Once a message exists its format never changes.
+Failure messages were once interactive cards. `im_feedback_targets.message_format` and its check constraint remain,
+with `interactive_v1` as the column default, so removing cards needed no migration. New targets are written as
+`text_v1`, and every new send is text. There is no setting to bring cards back.
+
+Rows from the card era are handled without a second message:
+
+- **A card was sent.** It is never refreshed: Feishu cannot turn a card into text, and a fresh text reply would
+  repeat the failure in the conversation. A later status change or save/discard result settles in storage and shows on
+  the details page, which the card's details button still opens. Its save and discard buttons open the same page.
+- **Nothing was sent yet.** Marking the send rewrites the row to `text_v1` before any provider request exists, so the
+  message, its readback, and later edits are all text.
+- **The send's outcome is unknown.** Readback keeps the stored format. Feishu matches the details URL, which cards also
+  contained; Slack matches the card's `opentag_feedback:<id>` block ID. A confirmed match binds the card, which is then
+  left as above.
+- **A button is clicked.** The Slack interaction endpoint still accepts the old `opentag_feedback_*` action IDs and
+  acknowledges them without doing anything, so Slack shows no error. A Feishu Retry button gets a toast saying the button
+  is no longer available instead of reaching the approval handler.
 
 Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
 matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
-During a rollout overlap, an older worker that knows `text_v1` renders it with its older wording, and one from before
-the column existed ignores it and sends a card. Neither loses the message or sends it twice; a later edit or readback of
-such a message by a newer worker can fail and stays diagnosable. Save/discard and
-historical admitted operation results remain accessible.
+During a rollout overlap, an older Server can still turn an unsent workspace failure into a card. It stores
+`interactive_v1` with it, so a newer worker then treats it as a legacy card. Save/discard and historical admitted
+operation results remain accessible.
 
 ## Projection, unknown outcomes, and retention
 
@@ -239,28 +253,28 @@ Cooldown-storage failure stops admission as soon as it is observed, before waiti
 settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
-Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
+Before a new message request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
 identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
 another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
-same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new card, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
+same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new message, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
 
 New workspace actions expire after twenty-four hours. Previously admitted task retries retain the original input deadline. Confirmed,
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
-until their feedback is safely removed. No historical error-card backfill runs.
+until their feedback is safely removed. No historical failure-message backfill runs.
 
 The shared call policy distinguishes rejection before capacity admission from a request already started. Queue overflow,
-queue deadline, queued cancellation, and an open circuit are definitely not submitted and keep an unsent card pending
+queue deadline, queued cancellation, and an open circuit are definitely not submitted and keep an unsent message pending
 for a later bounded retry. A deadline after the provider action begins remains unknown and requires readback.
 
 ## Slack rate-limit coordination
 
 The feedback transport reuses `slack_installations.working_status_not_before_at`, which also gates legacy native
 status cleanup. It adds no cooldown table, column, index, migration or cleanup job. Immediately before each
-reaction add/remove, card creation/update, private callback response or history read, it checks the active installation at the target's
+reaction add/remove, message creation/update or history read, it checks the active installation at the target's
 credential generation and reads the remaining deadline using the database clock. A future deadline defers the
 operation as definitely not submitted. A confirmed 429 extends the same timestamp with `greatest(current,
 database-now + Retry-After)` in a short generation-checked installation-row transaction. No database lock spans
@@ -274,7 +288,7 @@ method deadlines. A request already admitted before the deadline was persisted m
 Success, completion, target retention and legacy cleanup cannot shorten the deadline. Reauthorizing the same
 installation preserves an already committed cooldown, while old-generation responses cannot extend it afterward.
 Expired timestamps remain on the installation and need no cleanup. A cooldown read failure prevents submission.
-If recording a confirmed 429 fails, the current worker pass stops claiming new work, drains its admitted calls, and retains a definitely-unsent pending card;
+If recording a confirmed 429 fails, the current worker pass stops claiming new work, drains its admitted calls, and retains a definitely-unsent pending message;
 coordination is not claimed successful while storage is unavailable. Other replicas and in-flight calls cannot be
 revoked by that local failure. Unknown provider sends retain their separate reconciliation rules.
 

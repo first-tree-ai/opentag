@@ -31,7 +31,7 @@ to proceed and required approval requests remain available. Long-running delegat
 exception: it posts short new milestone messages rather than edits, as described in
 [Internal Session collaboration](internal-session-collaboration.md). The final result uses the normal
 provider CLI reply path. The Server owns working/error reactions and their cleanup; the Agent must not
-change these reactions itself. [System task feedback](im-feedback.md) supplies terminal error cards and
+change these reactions itself. [System task feedback](im-feedback.md) supplies terminal failure messages and
 Account-owned recovery operations.
 
 Each IM or visible collaboration input retains a short adjacent reminder that ordinary output is the

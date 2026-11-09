@@ -2119,6 +2119,7 @@ describe("SessionCollaborationService response mapping", () => {
     const sessions = {
       createInternalSessionWithMessage: vi.fn().mockResolvedValue({ ...attempt, session: { id: "target" } }),
       authorizeAndRecordMessage: vi.fn().mockResolvedValue(attempt),
+      heldHasRoom: vi.fn().mockResolvedValue(true),
       hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
       recordMessageOutcome: vi.fn().mockResolvedValue(true),
       withCollaborationDispatchAdmission: vi.fn(),

@@ -151,7 +151,7 @@ restart does not recover an unfinished scheduled hand-off.
 | --- | --- | --- |
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
 | The Client rejected the message | `configuration_unsupported` | The first time per cause |
-| It never started | `runtime_unavailable`, `client_busy`, `late`, `delivery_superseded`, `delivery_expired` | The first time per cause |
+| It never started | `runtime_unavailable`, `client_busy`, `late`, `delivery_superseded`, `delivery_expired`, `delivery_held_full` | The first time per cause |
 | The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain`, `dispatch_failed` | The first time per cause, worded as "may not have run" |
 | The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
 | Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |

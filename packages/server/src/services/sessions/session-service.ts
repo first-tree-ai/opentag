@@ -979,6 +979,39 @@ export class SessionService {
   }
 
   /**
+   * Whether one more message fits in the hold. Each count stops at its limit, and both read the held index.
+   * Concurrent sends may each see room, so the limits can be passed by the sends in flight.
+   */
+  async heldHasRoom(
+    targetSessionId: string,
+    computerId: string,
+    cutoff: Date,
+    limits: { perTarget: number; perComputer: number },
+  ): Promise<boolean> {
+    const [target] = await this.#database.select({ count: sql<number>`count(*)::int` }).from(
+      this.#database
+        .select({ id: sessionMessages.id })
+        .from(sessionMessages)
+        .where(
+          and(eq(sessionMessages.targetSessionId, targetSessionId), gt(sessionMessages.createdAt, cutoff), HELD_ROW),
+        )
+        .limit(limits.perTarget)
+        .as("held_target"),
+    );
+    if ((target?.count ?? 0) >= limits.perTarget) return false;
+    const [computer] = await this.#database.select({ count: sql<number>`count(*)::int` }).from(
+      this.#database
+        .select({ id: sessionMessages.id })
+        .from(sessionMessages)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+        .where(and(eq(sessionPlacements.computerId, computerId), gt(sessionMessages.createdAt, cutoff), HELD_ROW))
+        .limit(limits.perComputer)
+        .as("held_computer"),
+    );
+    return (computer?.count ?? 0) < limits.perComputer;
+  }
+
+  /**
    * One page of every held message in `(created_at, id)` order through the held index. The keyset also gets
    * the sweep past a row it could not settle.
    */

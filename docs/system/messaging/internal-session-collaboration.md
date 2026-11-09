@@ -217,6 +217,13 @@ Client is upgrading, restarting or full.
   is offline, and it is never delivered late. Both post the [scheduled task message](im-feedback.md#scheduled-tasks) once per
   cause. A pause, edit or delete ends it as `schedule_disabled`, `schedule_changed` or `schedule_deleted`, which post nothing.
   The schedule's latest summary shows `unknown / delivery_held` meanwhile, and that posts nothing either.
+- **Limit.** The Server holds at most 256 messages per target Session and 1024 per Computer
+  (`SESSION_MESSAGE_HELD_LIMITS`), the same as the Client's inbox FIFO, which could not take more on recovery anyway
+  (decided 2026-11-09). A message past either limit is not held. A `session send` answers `unreachable /
+  delivery_held_full` directly, because its sender has not been told `accepted` yet. A hand-off that already answered
+  `accepted` ends the same way and its sender gets the delivery notice. A scheduled occurrence ends as a missed
+  occurrence, which the conversation hears once per cause. Each limit is counted before the message is held, so sends
+  in flight at the same moment can pass it slightly. Delivery notices are not limited.
 - **Client queue.** The inbox FIFO is 256 per Session and 1024 in total, so a Client rarely refuses for a full queue. When
   it does, the refusal is an ordinary `client_busy` and the Server holds the message.
 - **Not covered.** Cloud targets keep their own Runner queue and retry contract. IM delivery already persists each

@@ -24,6 +24,7 @@ export function viewerTimezone(): string {
 export const queryKeys = {
   imFeedbackList: (agentId: string) => ["im-feedback-list", agentId] as const,
   imFeedback: (feedbackId: string) => ["im-feedback", feedbackId] as const,
+  imFeedbackDestination: (feedbackId: string) => ["im-feedback-destination", feedbackId] as const,
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
   internalToolsOffered: () => ["internalToolsOffered"] as const,

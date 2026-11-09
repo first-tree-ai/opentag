@@ -37,5 +37,10 @@
   "im_feedback_task": "Open Task",
   "im_feedback_batch_retry_blocked": "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
   "im_feedback_history_with_count": "Recovery and error notices ({count})",
-  "im_feedback_more_failed": "More notices couldn't be loaded."
+  "im_feedback_more_failed": "More notices couldn't be loaded.",
+  "im_feedback_opening": "Opening…",
+  "im_feedback_owner_only_settings": "Only the Agent owner can change its settings",
+  "im_feedback_owner_only_restore": "Only the Agent owner can restore its connection",
+  "im_feedback_owner_only_task": "Only the Agent owner can view this task",
+  "im_feedback_owner_is": "{agent} is owned by {owner}"
 }

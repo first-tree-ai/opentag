@@ -206,6 +206,18 @@ nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations
 
+### Card links
+
+A link in a failure card or offline notice opens `/im-feedback/<id>?open=settings|task|restore`. Everyone in the
+conversation sees the same link, and an IM identity is not an Account, so the reader is decided only after sign-in.
+`GET /api/v1/im-feedback/:id/destination` answers any signed-in Account. When that Account owns both the Agent and
+the feedback target, the answer holds the Agent and Task, and the page goes straight on: `settings` opens the Agent's
+execution settings, `restore` its Computer settings, and `task` the original Task. Anyone else gets only the owner's
+display name and the Agent's name, and the page says that only the Agent owner can change its settings, restore its
+connection, or view the task, and who that owner is. Neither answer carries the error, the conversation, or any other
+target detail; a deleted Agent or unknown ID is not found. Opening a link is read-only. Without `open`, the URL is
+the owner-only details page below.
+
 The details link opens an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows
 the original Task link, exact Session, workspace generation, effects warning, selected operation, and the last-save boundary; when its
 time cannot be verified, the page says so. The Agent detail page also exposes recovery notices when a failure message cannot

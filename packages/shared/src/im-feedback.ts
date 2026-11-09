@@ -53,6 +53,16 @@ export type ImFeedbackActionKind = z.infer<typeof ImFeedbackActionKindSchema>;
 export type ImFeedbackActionRequest = z.infer<typeof ImFeedbackActionRequestSchema>;
 export type ImFeedbackView = z.infer<typeof ImFeedbackViewSchema>;
 
+/**
+ * Where a link in an IM card leads. Anyone signed in may ask, because everyone in the conversation sees the
+ * link: the Agent owner learns where to go, and anyone else only who owns the Agent.
+ */
+export const ImFeedbackDestinationSchema = z.discriminatedUnion("owner", [
+  z.object({ owner: z.literal(true), agentId: z.string().uuid(), taskId: z.string().uuid() }).strict(),
+  z.object({ owner: z.literal(false), ownerDisplayName: z.string().max(255), agentName: z.string().max(255) }).strict(),
+]);
+export type ImFeedbackDestination = z.infer<typeof ImFeedbackDestinationSchema>;
+
 export const ImFeedbackListSchema = z
   .object({
     items: z

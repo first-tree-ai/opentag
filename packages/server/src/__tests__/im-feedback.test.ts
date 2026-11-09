@@ -818,6 +818,22 @@ describe("durable IM feedback", () => {
 });
 
 describe("safe feedback actions", () => {
+  it("tells the owner where a card link leads and anyone else only who owns the Agent", async () => {
+    const h = await fixture();
+    const target = await h.target();
+    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
+    expect(await service.destinationForAccount(target.accountId, target.id)).toEqual({
+      owner: true,
+      agentId: target.agentId,
+      taskId: target.messageId,
+    });
+    const other = await service.destinationForAccount(randomUUID(), target.id);
+    expect(other).toMatchObject({ owner: false });
+    expect(Object.keys(other).sort()).toEqual(["agentName", "owner", "ownerDisplayName"]);
+    await expect(service.destinationForAccount(target.accountId, randomUUID())).rejects.toMatchObject({
+      code: "IM_FEEDBACK_NOT_FOUND",
+    });
+  });
   it("refuses new task retries without changing the original immutable report", async () => {
     const h = await fixture();
     const report = await h.finish("failed", "not_started");

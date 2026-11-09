@@ -605,11 +605,15 @@ export function runtimeSkillPresetInstallPath(presetName: string): string {
 export const IM_FEEDBACK_PATH = `${API_V1_PREFIX}/im-feedback`;
 export const IM_FEEDBACK_TEMPLATE = `${IM_FEEDBACK_PATH}/:feedbackId`;
 export const IM_FEEDBACK_ACTIONS_TEMPLATE = `${IM_FEEDBACK_TEMPLATE}/actions`;
+export const IM_FEEDBACK_DESTINATION_TEMPLATE = `${IM_FEEDBACK_TEMPLATE}/destination`;
 export function imFeedbackPath(feedbackId: string): string {
   return `${IM_FEEDBACK_PATH}/${encodeURIComponent(feedbackId)}`;
 }
 export function imFeedbackActionsPath(feedbackId: string): string {
   return `${imFeedbackPath(feedbackId)}/actions`;
+}
+export function imFeedbackDestinationPath(feedbackId: string): string {
+  return `${imFeedbackPath(feedbackId)}/destination`;
 }
 
 export const AGENT_IM_FEEDBACK_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-feedback`;

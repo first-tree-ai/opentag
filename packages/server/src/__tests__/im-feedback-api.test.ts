@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { agentImFeedbackPath, type ImFeedbackView, imFeedbackActionsPath, imFeedbackPath } from "@opentag/shared";
+import {
+  agentImFeedbackPath,
+  type ImFeedbackView,
+  imFeedbackActionsPath,
+  imFeedbackDestinationPath,
+  imFeedbackPath,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -36,6 +42,7 @@ function setup() {
     getForAccount: vi.fn(async () => view),
     listForAccount: vi.fn(async () => ({ items: [], nextCursor: null })),
     submitForAccount: vi.fn(async () => view),
+    destinationForAccount: vi.fn(async () => ({ owner: false, ownerDisplayName: "Owner", agentName: "Helper" })),
   };
   const auth = {
     getAuthenticatedUser: vi.fn(async () => ({ me, tokenExpiresAt: new Date("2030-01-01T00:00:00Z") })),
@@ -76,6 +83,19 @@ describe("owner feedback HTTP API", () => {
     ).toBe(200);
     expect(service.listForAccount).toHaveBeenCalledWith(accountId, agentId, cursor);
     expect(service.submitForAccount).not.toHaveBeenCalled();
+  });
+  it("answers where a card link leads for any signed-in reader", async () => {
+    const { app, service } = setup();
+    expect((await app.inject({ method: "GET", url: imFeedbackDestinationPath(id) })).statusCode).toBe(401);
+    const response = await app.inject({
+      method: "GET",
+      url: imFeedbackDestinationPath(id),
+      headers: { authorization: "Bearer owner" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ owner: false, ownerDisplayName: "Owner", agentName: "Helper" });
+    expect(service.destinationForAccount).toHaveBeenCalledWith(accountId, id);
   });
   it("requires browser origin and double-submit CSRF before admission", async () => {
     const { app, service } = setup();

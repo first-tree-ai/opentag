@@ -399,11 +399,13 @@ export {
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   IM_FEEDBACK_ACTIONS_TEMPLATE,
+  IM_FEEDBACK_DESTINATION_TEMPLATE,
   IM_FEEDBACK_PATH,
   IM_FEEDBACK_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
   imFeedbackActionsPath,
+  imFeedbackDestinationPath,
   imFeedbackPath,
   MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
@@ -471,10 +473,16 @@ export {
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export { renderImContentText, truncateImText } from "./im-content-text.js";
-export type { ImFeedbackActionKind, ImFeedbackActionRequest, ImFeedbackView } from "./im-feedback.js";
+export type {
+  ImFeedbackActionKind,
+  ImFeedbackActionRequest,
+  ImFeedbackDestination,
+  ImFeedbackView,
+} from "./im-feedback.js";
 export {
   ImFeedbackActionKindSchema,
   ImFeedbackActionRequestSchema,
+  ImFeedbackDestinationSchema,
   type ImFeedbackList,
   ImFeedbackListSchema,
   ImFeedbackStateSchema,

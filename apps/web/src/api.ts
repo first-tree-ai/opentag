@@ -107,6 +107,8 @@ import {
   type ImBindingSummary,
   type ImBindingUnbindRequiredDetail,
   type ImFeedbackActionRequest,
+  type ImFeedbackDestination,
+  ImFeedbackDestinationSchema,
   type ImFeedbackList,
   ImFeedbackListSchema,
   type ImFeedbackView,
@@ -115,6 +117,7 @@ import {
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
   imFeedbackActionsPath,
+  imFeedbackDestinationPath,
   imFeedbackPath,
   type ListAccountComputersResponse,
   type ListAgentMCPServersResponse,
@@ -736,6 +739,10 @@ export class BrowserApi {
 
   imFeedback(feedbackId: string): Promise<ImFeedbackView> {
     return this.request(imFeedbackPath(feedbackId), ImFeedbackViewSchema);
+  }
+
+  imFeedbackDestination(feedbackId: string): Promise<ImFeedbackDestination> {
+    return this.request(imFeedbackDestinationPath(feedbackId), ImFeedbackDestinationSchema);
   }
 
   imFeedbackAction(feedbackId: string, input: ImFeedbackActionRequest): Promise<ImFeedbackView> {

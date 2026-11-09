@@ -41,7 +41,7 @@ export function ImFeedbackList({ agentId }: { agentId: string }) {
                     className="break-all text-kumo-link"
                     to="/im-feedback/$feedbackId"
                     params={{ feedbackId: item.id }}
-                    search={{ operation: undefined }}
+                    search={{ operation: undefined, open: undefined }}
                   >
                     {m.im_feedback_code({ code: item.errorCode ?? item.state })}
                   </Link>

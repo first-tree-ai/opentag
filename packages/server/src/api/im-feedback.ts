@@ -1,6 +1,7 @@
 import {
   AGENT_IM_FEEDBACK_TEMPLATE,
   IM_FEEDBACK_ACTIONS_TEMPLATE,
+  IM_FEEDBACK_DESTINATION_TEMPLATE,
   IM_FEEDBACK_TEMPLATE,
   ImFeedbackActionRequestSchema,
   ImFeedbackListSchema,
@@ -37,6 +38,12 @@ export function registerImFeedbackRoutes(
     return reply
       .header("Cache-Control", "no-store")
       .send(ImFeedbackViewSchema.parse(await service.getForAccount(accountId, feedbackId)));
+  });
+  app.get(IM_FEEDBACK_DESTINATION_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { feedbackId } = parseRequest(Params, request.params);
+    const accountId = request.authContext?.me.user.id;
+    if (!accountId) return reply.code(401).send();
+    return reply.header("Cache-Control", "no-store").send(await service.destinationForAccount(accountId, feedbackId));
   });
   app.post(IM_FEEDBACK_ACTIONS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { feedbackId } = parseRequest(Params, request.params);

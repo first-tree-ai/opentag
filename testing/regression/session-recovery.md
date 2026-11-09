@@ -358,3 +358,14 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
   fail with a notice to their sender instead of waiting indefinitely.
+
+## Card links
+
+With an IM test binding, a second Account, and a failure or offline card that carries a link:
+
+1. Open 去设置 signed in as the Agent owner. Expected: the Agent's execution settings open directly. Open 恢复连接
+   and 打开任务 the same way. Expected: the Computer settings and the original Task.
+2. Open the same links signed in as the second Account. Expected: a page saying only the Agent owner can change its
+   settings (or restore its connection, or view the task), naming the Agent and its owner, with no error code or
+   task detail.
+3. Open a link signed out. Expected: sign-in, then the result for the signed-in Account.

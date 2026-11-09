@@ -37,5 +37,10 @@
   "im_feedback_task": "查看任务",
   "im_feedback_batch_retry_blocked": "此批量任务无法在这里重试。请打开原始任务，逐条检查输入后再开始新的工作。",
   "im_feedback_history_with_count": "恢复与错误记录（{count}）",
-  "im_feedback_more_failed": "未能加载更多记录。"
+  "im_feedback_more_failed": "未能加载更多记录。",
+  "im_feedback_opening": "正在打开…",
+  "im_feedback_owner_only_settings": "只有 Agent 所有者能修改设置",
+  "im_feedback_owner_only_restore": "只有 Agent 所有者能恢复连接",
+  "im_feedback_owner_only_task": "只有 Agent 所有者能查看这个任务",
+  "im_feedback_owner_is": "{agent} 的所有者是 {owner}"
 }

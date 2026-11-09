@@ -22,10 +22,16 @@ export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";
-export type { ImFeedbackActionKind, ImFeedbackActionRequest, ImFeedbackView } from "./im-feedback.js";
+export type {
+  ImFeedbackActionKind,
+  ImFeedbackActionRequest,
+  ImFeedbackDestination,
+  ImFeedbackView,
+} from "./im-feedback.js";
 export {
   ImFeedbackActionKindSchema,
   ImFeedbackActionRequestSchema,
+  ImFeedbackDestinationSchema,
   type ImFeedbackList,
   ImFeedbackListSchema,
   ImFeedbackStateSchema,

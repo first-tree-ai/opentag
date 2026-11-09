@@ -3,6 +3,8 @@ import {
   type ImFeedbackActionKind,
   type ImFeedbackActionRequest,
   ImFeedbackActionRequestSchema,
+  type ImFeedbackDestination,
+  ImFeedbackDestinationSchema,
   type ImFeedbackList,
   ImFeedbackListSchema,
   type ImFeedbackView,
@@ -71,6 +73,38 @@ export class ImFeedbackActionsService {
   }
   get now(): Date {
     return this.options.now?.() ?? new Date();
+  }
+
+  /**
+   * Where a card link leads for the signed-in reader. The link is visible to everyone in the conversation and
+   * IM identities aren't Accounts, so ownership is decided here: the owner gets the Agent and Task, anyone else
+   * only the owner's display name and the Agent's name.
+   */
+  async destinationForAccount(accountId: string, id: string): Promise<ImFeedbackDestination> {
+    const [row] = await this.options.database
+      .select({
+        agentId: agents.id,
+        agentName: agents.displayName,
+        ownerId: agents.createdByUserId,
+        ownerDisplayName: users.displayName,
+        targetAccountId: imFeedbackTargets.accountId,
+        taskId: imFeedbackTargets.messageId,
+      })
+      .from(imFeedbackTargets)
+      .innerJoin(agents, eq(agents.id, imFeedbackTargets.agentId))
+      .innerJoin(users, eq(users.id, agents.createdByUserId))
+      .where(and(eq(imFeedbackTargets.id, id), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!row) throw notFound();
+    return ImFeedbackDestinationSchema.parse(
+      row.ownerId === accountId && row.targetAccountId === accountId
+        ? { owner: true, agentId: row.agentId, taskId: row.taskId }
+        : {
+            owner: false,
+            ownerDisplayName: row.ownerDisplayName.slice(0, 255),
+            agentName: row.agentName.slice(0, 255),
+          },
+    );
   }
 
   async listForAccount(accountId: string, agentId: string, cursor?: string): Promise<ImFeedbackList> {

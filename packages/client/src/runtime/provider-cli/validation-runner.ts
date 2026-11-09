@@ -24,6 +24,7 @@ import {
   classifySlackAuthTest,
   classifySpawnFailure,
   extractBoundedJson,
+  isFeishuCredentialRejectedCode,
   isFeishuRateLimitCode,
   type ProviderCliValidationClassification,
 } from "./validation-classify.js";
@@ -470,7 +471,7 @@ function classifyProcessOutput(
   const payload =
     extractBoundedJson(output.stdout, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
     extractBoundedJson(output.stderr, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
-  return payload === undefined ? { status: "needs_attention" } : classify(payload);
+  return payload === undefined ? { status: "retrying", reason: "provider_unreachable" } : classify(payload);
 }
 
 function classifyProcessFailure(
@@ -488,8 +489,7 @@ function classifyProcessFailure(
     extractBoundedJson(output?.stdout ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
     extractBoundedJson(output?.stderr ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   if (payload !== undefined) return classify(payload);
-  if (isTimeout(error)) return { status: "retrying", reason: "provider_unreachable" };
-  throw error;
+  return classifySpawnFailure(error);
 }
 
 async function verifyTargetFingerprint(request: ProviderCliValidationRequest): Promise<boolean> {
@@ -544,10 +544,6 @@ function processOutput(error: unknown): { stdout: string; stderr: string } | und
     stdout: "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
     stderr: "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
   };
-}
-
-function isTimeout(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "killed" in error && error.killed === true;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -632,6 +628,10 @@ export async function exchangeFeishuTenantToken(
 function tenantTokenFromBody(body: unknown, ok: boolean): string {
   if (!isRecord(body)) throw new FeishuTokenExchangeError("credential_rejected");
   if (isFeishuRateLimitCode(body.code)) throw new FeishuTokenExchangeError("rate_limited");
+  if (isFeishuCredentialRejectedCode(body.code)) throw new FeishuTokenExchangeError("credential_rejected");
+  if (typeof body.code === "number" && body.code !== 0) {
+    throw new FeishuTokenExchangeError("provider_unreachable");
+  }
   if (!ok || body.code !== 0 || typeof body.tenant_access_token !== "string") {
     throw new FeishuTokenExchangeError("credential_rejected");
   }

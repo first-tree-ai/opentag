@@ -700,11 +700,12 @@ describe("ImProviderProxyAdapter write outcomes", () => {
   });
 
   it.each([
-    ["rejected", 10014, 400],
-    ["rate_limited", 99991400, 429],
+    ["rejected", 10014, 400, 10014],
+    ["rate_limited", 99991400, 429, 99991400],
+    ["upstream", 99991401, 503, 99991401],
   ] as const)(
     "answers a %s Feishu token exchange in Feishu's shape without any upstream call",
-    async (kind, code, status) => {
+    async (kind, code, status, expectedCode) => {
       const fetchImpl = vi.fn();
       const { instance } = adapter({ fetchImpl: fetchImpl as unknown as typeof fetch });
       const response = await instance.handle(
@@ -718,7 +719,7 @@ describe("ImProviderProxyAdapter write outcomes", () => {
       expect(response.status).toBe(status);
       const chunks: Uint8Array[] = [];
       for await (const chunk of response.body) chunks.push(chunk);
-      expect(JSON.parse(Buffer.concat(chunks).toString())).toMatchObject({ code });
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toMatchObject({ code: expectedCode });
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );

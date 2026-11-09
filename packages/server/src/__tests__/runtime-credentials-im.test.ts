@@ -107,6 +107,8 @@ describe("Feishu tenant token exchange and cache", () => {
   it.each([
     ["an invalid secret on HTTP 200", 200, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
     ["an invalid secret on HTTP 400", 400, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
+    ["an unknown non-zero code on HTTP 200", 200, { code: 99991401 }, { kind: "upstream", providerCode: 99991401 }],
+    ["an unknown non-zero code on HTTP 400", 400, { code: 99991401 }, { kind: "upstream", providerCode: 99991401 }],
     ["the rate limit code on HTTP 200", 200, { code: 99991400 }, { kind: "rate_limited" }],
     ["the rate limit code on HTTP 400", 400, { code: 99991400 }, { kind: "rate_limited" }],
     ["HTTP 429", 429, {}, { kind: "rate_limited" }],

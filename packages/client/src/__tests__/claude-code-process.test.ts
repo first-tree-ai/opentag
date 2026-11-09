@@ -121,6 +121,33 @@ describe("ClaudeCodeProcess", () => {
     await process.close();
   });
 
+  it("settles steers named by results even when their lifecycle frames are absent", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const terminals: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => {
+        if (message.type === "result") terminals.push(terminal);
+      },
+      new AbortController().signal,
+    );
+    const first = await process.steer({ type: "user", uuid: "steer-1" });
+    const later = await process.steer({ type: "user", uuid: "steer-2" });
+
+    child.stdout.write('{"type":"result","user_message_uuids":["prompt","steer-1",null]}\n');
+    expect(terminals).toEqual([false]);
+    expect(first.started()).toBe(true);
+    expect(later.started()).toBe(false);
+
+    child.stdout.write('{"type":"result","user_message_uuids":["steer-2"]}\n');
+    expect(terminals).toEqual([false, true]);
+    expect(later.started()).toBe(true);
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
   it("waits past a result Claude Code generated itself on resume for the prompt's own result", async () => {
     const child = fakeChild();
     const process = fakeProcess(child);

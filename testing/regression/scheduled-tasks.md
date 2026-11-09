@@ -34,6 +34,7 @@ error code and a clickable link that opens the schedule in Web.
 | ST-12 | Agent paused | Suspend the Agent across an occurrence | No failure message |
 | ST-13 | Untrusted name | Name a schedule with provider mention or link syntax, then make it fail | The name appears as text. Nobody is mentioned, and the only disguised link is the details link |
 | ST-14 | Language and link | Make a schedule with a Chinese task fail, then one with an English task; click the link in each | Each message follows its task's language, shows no error code, and its link opens the schedule, which shows the Run as failed with its code. Check Slack and Feishu in the client |
+| ST-15 | Cloud Sandbox release at trigger | Let a scheduled occurrence fire while idle reclaim is releasing the Sandbox. Allow release and workspace restoration to finish within the dispatch window | The original occurrence starts once after restoration. The schedule keeps its next trigger and IM posts no failure message |
 
 Automated tests cover the deterministic decisions in `scheduled-failure-notifier.test.ts` and the provider request shapes
 with mocked SDKs in `im-feedback-messenger.test.ts`. Only these cases exercise a real provider.

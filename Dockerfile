@@ -27,6 +27,7 @@ COPY packages/skill-presets packages/skill-presets
 COPY packages/mcp-presets packages/mcp-presets
 COPY packages/server packages/server
 COPY apps/web apps/web
+COPY scripts/assert-web-generated-utilities.mjs scripts/assert-web-generated-utilities.mjs
 RUN pnpm --filter @opentag/shared build
 RUN pnpm --filter @opentag/skill-presets build
 RUN pnpm --filter @opentag/mcp-presets build

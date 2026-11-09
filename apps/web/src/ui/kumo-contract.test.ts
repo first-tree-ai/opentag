@@ -14,6 +14,9 @@ const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8
 const appCss = readFileSync(resolve(root, "app.css"), "utf8");
 const themeCss = readFileSync(resolve(root, "ui/theme.css"), "utf8");
 const main = readFileSync(resolve(root, "main.tsx"), "utf8");
+const packageJson = JSON.parse(readFileSync(resolve(root, "..", "package.json"), "utf8")) as {
+  scripts?: Record<string, string>;
+};
 const viteConfig = readFileSync(resolve(root, "..", "vite.config.ts"), "utf8");
 const productModules = moduleSourceFiles
   .map((file) => {
@@ -105,6 +108,8 @@ describe("Kumo integration contract", () => {
     expect(appCss).toContain('@import "@cloudflare/kumo/styles/tailwind"');
     expect(appCss).toContain('@import "tailwindcss"');
     expect(appCss).toContain('@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}"');
+    expect(packageJson.scripts?.build).toBe("vite build && node ../../scripts/assert-web-generated-utilities.mjs");
+    expect(existsSync(resolve(root, "../../..", "scripts/assert-web-generated-utilities.mjs"))).toBe(true);
     expect(viteConfig).toContain('from "@tailwindcss/vite"');
     expect(viteConfig).toContain("tailwindcss()");
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);

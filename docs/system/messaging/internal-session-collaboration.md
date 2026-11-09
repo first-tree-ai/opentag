@@ -257,6 +257,10 @@ Safety rules:
   must have sent it. The ID is public and `session_messages.id` is global, so ordinary create/send cannot record a new row under a
   version 5 UUID: no Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one
   notice, which is then ignored and logged.
+- A recipient that has ended is replaced by the nearest active Session up its own creation chain
+  (`created_by_session_id`). If the sender and its creator have both ended, the notice goes to the creator's creator,
+  and so on up to the visible root. The search stops without a notice when the chain reaches the reporting Session
+  itself, when it reaches an ended Session with no creator, or past 32 levels.
 
 No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
 

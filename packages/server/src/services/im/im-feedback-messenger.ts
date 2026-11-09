@@ -4,7 +4,7 @@ import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-b
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
-import type { FeedbackLanguage } from "./im-feedback-copy.js";
+import type { FeedbackLanguage, WaitingNoticeReason } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 import { renderFeedbackText, renderOfflineNotice } from "./im-feedback-text.js";
 
@@ -28,7 +28,7 @@ export class FeedbackCooldownStorageError extends FeedbackProviderError {
 export interface FeedbackTransport {
   reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void>;
   post(target: FeedbackTarget, action?: FeedbackAction): Promise<string>;
-  postOfflineNotice(target: FeedbackTarget): Promise<void>;
+  postOfflineNotice(target: FeedbackTarget, reason?: WaitingNoticeReason): Promise<void>;
   update(target: FeedbackTarget, action?: FeedbackAction): Promise<void>;
   find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }>;
 }
@@ -247,9 +247,9 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * Sends a reply outside the card identity: `providerRequestId` belongs to the failure message, and
    * Feishu would swallow that later message as a duplicate of this one.
    */
-  async postOfflineNotice(target: FeedbackTarget): Promise<void> {
+  async postOfflineNotice(target: FeedbackTarget, reason: WaitingNoticeReason = "offline"): Promise<void> {
     try {
-      const text = renderOfflineNotice(target, this.publicUrl, await this.#language(target));
+      const text = renderOfflineNotice(target, this.publicUrl, await this.#language(target), reason);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
         async (signal) => {

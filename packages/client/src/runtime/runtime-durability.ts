@@ -1,3 +1,4 @@
+import { link, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   type ErrorRetryability,
@@ -7,7 +8,14 @@ import {
   StructuredErrorPhaseSchema,
   StructuredErrorSchema,
 } from "@opentag/shared";
-import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
+import {
+  ensurePrivateDirectory,
+  RuntimeStorageError,
+  readDurableJson,
+  readSecureFile,
+  syncDurableDirectory,
+  writeDurableJson,
+} from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 /**
@@ -197,25 +205,65 @@ export class MemoryRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 }
 
+/** A durable file that could not be read, moved aside so the store can start empty for its kind. */
+export interface DurableFileQuarantine {
+  readonly kind: DurableWorkKind;
+  /** Where the unreadable file now is; nothing reads it again. */
+  readonly quarantinedPath: string;
+  /** Records of this kind the file still named: an estimate, since the file could not be parsed. */
+  readonly lostRecords: number;
+  readonly error: RuntimeStorageError;
+}
+
+/** The quarantine as a reportable failure: the kind and the loss, never the file path or its content. */
+export class DurableFileQuarantinedError extends Error {
+  readonly code = "durable_file_quarantined";
+
+  constructor(quarantine: Pick<DurableFileQuarantine, "kind" | "lostRecords" | "error">) {
+    super(
+      `Unreadable ${quarantine.kind} durable file moved aside; about ${quarantine.lostRecords} records lost (${quarantine.error.message})`,
+      { cause: quarantine.error },
+    );
+    this.name = "DurableFileQuarantinedError";
+  }
+}
+
+export interface FileRuntimeDurabilityStoreOptions {
+  /**
+   * Told once per quarantined file. The records in it are lost to this Client: the host logs and
+   * reports them, because no Run, report, or notice they held will happen.
+   */
+  readonly onQuarantine?: (quarantine: DurableFileQuarantine) => void;
+  readonly now?: () => number;
+}
+
 export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
   readonly #directory: string;
   readonly #tails = new Map<DurableWorkKind, Promise<void>>();
+  readonly #onQuarantine: (quarantine: DurableFileQuarantine) => void;
+  readonly #now: () => number;
 
-  constructor(home: string) {
+  constructor(home: string, options: FileRuntimeDurabilityStoreOptions = {}) {
     this.#directory = resolve(resolveOpenTagHomeLayout(home).runtime, "durability");
+    this.#onQuarantine = options.onQuarantine ?? (() => undefined);
+    this.#now = options.now ?? Date.now;
   }
 
   async list<T = unknown>(kind: DurableWorkKind): Promise<DurableWorkRecord<T>[]> {
-    const path = durabilityPath(this.#directory, kind);
-    const records = await readDurableJson(path, (value) => parseRecords(value, kind));
-    return (records ?? []) as DurableWorkRecord<T>[];
+    try {
+      return (await this.#read(kind)) as DurableWorkRecord<T>[];
+    } catch (error) {
+      if (!isInvalidStorage(error)) throw error;
+      // Quarantine under the kind lock: a concurrent write may already have moved the file aside.
+      return (await this.#withKindLock(kind, () => this.#readOrQuarantine(kind))) as DurableWorkRecord<T>[];
+    }
   }
 
   async write<T>(record: DurableWorkRecord<T>): Promise<void> {
     await this.#withKindLock(record.kind, async () => {
       await ensurePrivateDirectory(dirname(this.#directory), this.#directory);
       const path = durabilityPath(this.#directory, record.kind);
-      const records = (await readDurableJson(path, (value) => parseRecords(value, record.kind))) ?? [];
+      const records = await this.#readOrQuarantine(record.kind);
       // Replace an existing record in place: list order is the durable FIFO that hydration restores.
       const index = records.findIndex((candidate) => candidate.key === record.key);
       const next = [...records];
@@ -223,6 +271,32 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       else next[index] = record as DurableWorkRecord;
       await writeDurableJson(path, next);
     });
+  }
+
+  async #read(kind: DurableWorkKind): Promise<DurableWorkRecord[]> {
+    return (await readDurableJson(durabilityPath(this.#directory, kind), (value) => parseRecords(value, kind))) ?? [];
+  }
+
+  /**
+   * Read a kind, moving an unreadable file aside rather than failing: one corrupt file must not keep
+   * the Client from starting or stop every later write of its kind. Called under the kind lock.
+   */
+  async #readOrQuarantine(kind: DurableWorkKind): Promise<DurableWorkRecord[]> {
+    try {
+      return await this.#read(kind);
+    } catch (error) {
+      if (!isInvalidStorage(error)) throw error;
+      const path = durabilityPath(this.#directory, kind);
+      const lostRecords = countRecords(await readSecureFile(path), kind);
+      const quarantinedPath = await archive(path, `${path}.corrupt-${this.#now()}`);
+      await syncDurableDirectory(this.#directory);
+      try {
+        this.#onQuarantine({ kind, quarantinedPath, lostRecords, error });
+      } catch {
+        // Reporting is best effort; the store has already recovered.
+      }
+      return [];
+    }
   }
 
   async #withKindLock<T>(kind: DurableWorkKind, task: () => Promise<T>): Promise<T> {
@@ -240,6 +314,36 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       /* v8 ignore else -- the tail map still holds this task while it unwinds. */
       if (this.#tails.get(kind) === tail) this.#tails.delete(kind);
     }
+  }
+}
+
+function isInvalidStorage(error: unknown): error is RuntimeStorageError {
+  return error instanceof RuntimeStorageError && error.code === "invalid";
+}
+
+/**
+ * How many records of this kind the unreadable file still names. An estimate: each record carries its
+ * kind, so a truncated or garbled file can still be counted, but an opaque payload could repeat it.
+ */
+function countRecords(content: string | undefined, kind: DurableWorkKind): number {
+  return String(content).match(new RegExp(`"kind"\\s*:\\s*"${kind}"`, "g"))?.length ?? 0;
+}
+
+/**
+ * Move `path` to the first free name starting at `base`. `link` refuses an existing destination, so an
+ * earlier archive with the same clock value is never replaced, as `rename` would on POSIX.
+ */
+async function archive(path: string, base: string): Promise<string> {
+  for (let attempt = 0; ; attempt += 1) {
+    const destination = attempt === 0 ? base : `${base}-${attempt}`;
+    try {
+      await link(path, destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    await unlink(path);
+    return destination;
   }
 }
 

@@ -166,7 +166,7 @@ current Turn settles. Local Session messages (`session send` callbacks, schedule
 into a running Turn the same way. The Server does not yet force interruption or replay an accepted
 Turn for a runtime that cannot steer.
 
-New failure targets can use plain messages through the feedback rollout described in
+Failure messages are plain text, as described in
 [IM task feedback](../system/messaging/im-feedback.md). New Task Retry admissions are disabled;
 the person sends a new message through the ordinary admission path. Previously admitted Retry
 attempts and authenticated workspace save/discard recovery retain their original identities,

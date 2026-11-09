@@ -2,10 +2,10 @@ import { createHmac, randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerSlackInteractionsRoute } from "../api/slack-interactions.js";
-import { handleFeishuFeedbackAction } from "../services/im/im-feedback-callback.js";
+import { legacyFeishuFeedbackAction } from "../services/im/im-feedback-callback.js";
 
 describe("feedback native callbacks", () => {
-  it("authenticates the Slack installation and preserves strict approval validation", async () => {
+  it("acknowledges legacy card buttons and preserves strict approval validation", async () => {
     const app = Fastify();
     const now = new Date();
     const id = randomUUID();
@@ -16,14 +16,12 @@ describe("feedback native callbacks", () => {
       generation: 3,
       signingSecret: "unit-secret",
     };
-    const submitNativeRetry = vi.fn(async () => "recorded" as const);
     const decide = vi.fn();
     registerSlackInteractionsRoute(app, {
       imBindings: { findSlackInstallationIngress: async () => installation } as never,
       inbox: {} as never,
       createAdapter: vi.fn(),
       now: () => now,
-      imFeedback: { submitNativeRetry } as never,
       approvalOwner: { decide },
     });
     async function click(action_id: string, value?: string, tamper = false) {
@@ -52,62 +50,29 @@ describe("feedback native callbacks", () => {
       });
     }
     try {
-      expect((await click("opentag_feedback_retry", `${id}:4`)).statusCode).toBe(200);
-      expect(submitNativeRetry).toHaveBeenCalledExactlyOnceWith({
-        feedbackId: id,
-        revision: 4,
-        provider: "slack",
-        userId: "original",
-        generation: 3,
-        installationId: installation.installationId,
-        channelId: "channel",
-        messageId: "card",
-      });
-      expect((await click("opentag_feedback_discard")).statusCode).toBe(200);
-      expect(submitNativeRetry).toHaveBeenCalledOnce();
+      for (const action of ["opentag_feedback_retry", "opentag_feedback_discard", "opentag_feedback_details"])
+        expect((await click(action, `${id}:4`)).statusCode).toBe(200);
+      expect((await click("opentag_feedback_retry", "bad")).statusCode).toBe(200);
       expect(decide).not.toHaveBeenCalled();
       expect((await click("opentag_approval_accept", "invalid")).statusCode).toBe(400);
       expect((await click("opentag_feedback_retry", `${id}:4`, true)).statusCode).toBe(400);
-      expect((await click("opentag_feedback_retry", "bad")).statusCode).toBe(200);
-      expect(submitNativeRetry).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
   });
-  it("extracts exact Feishu authority, returns a private result, and never handles discard", async () => {
-    const feedbackId = randomUUID();
-    const submitNativeRetry = vi.fn(async () => "unavailable" as "recorded" | "unavailable");
-    const service = { submitNativeRetry } as never;
+  it("answers a legacy Feishu Retry button with a toast and leaves other callbacks to approvals", () => {
     const event = {
       operator: { open_id: "human" },
-      action: { value: { feedbackId, revision: 2, kind: "retry_task" } },
+      action: { value: { feedbackId: randomUUID(), revision: 2, kind: "retry_task" } },
       context: { open_message_id: "card", open_chat_id: "channel" },
     };
-    expect(await handleFeishuFeedbackAction(service, { event }, "binding", 3)).toMatchObject({
-      toast: { type: "error" },
-    });
-    expect(submitNativeRetry).toHaveBeenCalledWith({
-      feedbackId,
-      revision: 2,
-      provider: "feishu",
-      userId: "human",
-      bindingId: "binding",
-      generation: 3,
-      channelId: "channel",
-      messageId: "card",
-    });
-    submitNativeRetry.mockResolvedValue("recorded");
-    expect(await handleFeishuFeedbackAction(service, event, "binding", 3)).toMatchObject({
-      toast: { type: "success" },
-    });
+    for (const input of [event, { event }])
+      expect(legacyFeishuFeedbackAction(input)).toMatchObject({ toast: { type: "error" } });
     expect(
-      await handleFeishuFeedbackAction(
-        service,
-        { ...event, action: { value: { ...event.action.value, kind: "discard" } } },
-        "binding",
-        3,
-      ),
+      legacyFeishuFeedbackAction({ ...event, action: { value: { ...event.action.value, kind: "discard" } } }),
     ).toBeUndefined();
-    expect(submitNativeRetry).toHaveBeenCalledTimes(2);
+    expect(
+      legacyFeishuFeedbackAction({ ...event, action: { value: { approvalId: randomUUID(), decision: "accept" } } }),
+    ).toBeUndefined();
   });
 });

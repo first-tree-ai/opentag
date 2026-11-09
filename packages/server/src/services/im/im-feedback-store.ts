@@ -18,7 +18,6 @@ import {
 } from "../../db/schema/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
-import { feedbackMessageFormat } from "./im-feedback-format.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
@@ -89,7 +88,8 @@ export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId
       threadKey: row.message.threadKey,
       senderExternalId: row.message.authorExternalId,
       cardOwnerDeliveryId: row.delivery.steerTargetDeliveryId ?? deliveryId,
-      messageFormat: feedbackMessageFormat(),
+      // The column default is the legacy card format, so new targets name text explicitly.
+      messageFormat: "text_v1",
       sandboxId: row.sandbox?.id,
       environmentGeneration: row.sandbox?.environmentGeneration,
       resourceUid: row.sandbox?.currentResourceUid,
@@ -393,7 +393,9 @@ export class ImFeedbackStore {
   async markSending(target: FeedbackTarget): Promise<boolean> {
     const rows = await this.database
       .update(imFeedbackTargets)
-      .set({ cardState: "sending", sendStartedAt: this.now() })
+      // Every new send is text. A legacy card target that never sent becomes text here, before any request
+      // exists, so readback and later updates match what was actually sent.
+      .set({ cardState: "sending", sendStartedAt: this.now(), messageFormat: "text_v1" })
       .where(
         and(
           eq(imFeedbackTargets.id, target.id),
@@ -616,16 +618,6 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     state,
     desiredReaction: failed ? ("warning" as const) : ("none" as const),
     errorCode: failed ? report.errorReason : null,
-    // Only the recovery buttons need a card, and the kind of failure is unknown when the target is created.
-    // This is the one format change. The caller's snapshot is unlocked, so the decision reads the live row:
-    // a worker that has already started sending keeps the format it sent.
-    ...(state === "workspace_blocked"
-      ? {
-          messageFormat: sql<
-            FeedbackTarget["messageFormat"]
-          >`case when ${imFeedbackTargets.cardMessageId} is null and ${imFeedbackTargets.cardState} in ('none','pending') then 'interactive_v1' else ${imFeedbackTargets.messageFormat} end`,
-        }
-      : {}),
     effects: report.executionEffects,
     reportHash: report.resultHash,
     actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),

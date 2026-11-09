@@ -31,8 +31,8 @@ Provider-specific configuration, binding, and protocol validation.
 - One Run is active at a time. Every mutation carries an expected Run identity.
 - `steer` resolves with a receipt whose outcome settles with the joined Run: `processed` (the Run completed),
   `not_started` (the Provider reports it never began the input, so delivering it again is safe), or `interrupted`
-  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
-  still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
+  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin and tracks whether
+  `command_lifecycle` or a result names it as started. Codex and Pi acknowledge steer
   over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
   Provider is accepting steer, only a Provider that reports the input never started may reject it (`steer_not_sent`)
   for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
@@ -156,7 +156,9 @@ initialization. The Run ends at the `result` of its own input, not at the first 
 Code reports a task that the previous process left behind by queueing a notification and emitting a `result` for it with
 `origin` set, `num_turns: 0` and empty text, ahead of the Run's input. Taking that one as the terminal stopped the process
 before the model saw the input, and the Run reported `completed` with no work done. So the Run's input carries a `uuid`, and a successful `result` with an
-`origin` and no `user_message_uuids` never ends the Run. "No response requested." in a
+`origin` and no `user_message_uuids` never ends the Run. When a result explicitly names a pending steer's UUID in
+`user_message_uuids`, that input counts as started even if its lifecycle frame was absent. The Run can end once the
+result qualifies as terminal and all other pending steers have started. "No response requested." in a
 transcript is what Claude Code writes on the next `--resume` for a user message left unanswered, with model `<synthetic>`.
 It is not a model reply. An error `result` still ends the Run, whatever its origin. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service

@@ -42,10 +42,21 @@ With an IM test binding and a runtime that can be made to fail on request:
    URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
 2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
    does not change the language.
-3. Make the workspace save fail. Expected: a card with Retry save and Discard buttons in the language of the request,
-   with no error code. The buttons open the details page.
-4. Fail an input that was created before plain text was enabled. Expected: it stays a card; nothing is converted or
-   sent again.
+3. Make the workspace save fail. Expected: one plain-text reply in the language of the request, with no card, buttons
+   or error code. Its next step says the save can be retried or the changes discarded from the details page, followed
+   by the details link. Open the link as the Agent owner, retry the save, and confirm. Expected: the operation runs from
+   the page, and the original reply is edited in place to show the result, actor and time. Repeat with Discard, which
+   asks for the permanent-loss confirmation first.
+4. Legacy cards from a release that still sent them. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the
+   messenger suite (`im-feedback-messenger.test.ts`), or a test deployment upgraded from such a release:
+   - A target stored as `interactive_v1` that never sent: it is rewritten to `text_v1` when the send is reserved and is
+     sent once as text.
+   - A card already sent: a later status change or save/discard result makes no provider call and posts no new message;
+     the details page shows the current state.
+   - A card send whose outcome is unknown: readback still binds the card (Slack by its `opentag_feedback:<id>` block ID,
+     Feishu by the details URL) and never creates a second message.
+   - Clicking a button on an old card: Slack answers without an error and does nothing; a Feishu Retry button shows a
+     "no longer available" toast. Neither returns a server error.
 
 ## Feishu system reaction projection
 
@@ -71,11 +82,11 @@ Hold a projection across several timer ticks and explicit `runOnce` calls. Verif
 start/end pair for the actual pass, including a failed pass. Fail or time out one target and verify independent targets
 still settle. Block the failed target's settlement with a PostgreSQL row lock after a cooldown-storage failure, then let
 its siblings finish. No fifth target may be claimed or started while the failed settlement is waiting; releasing the
-lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent card stays pending, then
+lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent failure message stays pending, then
 release capacity and verify one send succeeds. Queue deadlines remain definitely unsent, while in-flight send deadlines
 retain unknown-send reconciliation. During controlled shutdown,
 verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
-Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
+Cancel an in-flight working task and verify its working reaction is removed without creating a failure message or replaying
 execution. These deterministic checks do not establish native provider latency or deployment acceptance.
 
 ## Channel Session idle compaction

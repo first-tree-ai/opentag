@@ -90,7 +90,7 @@ import { AgentGitHubCredentialService } from "./services/github/agent-github-cre
 import { GitHubApiClient } from "./services/github/github-api-client.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "./services/im/im-feedback-actions.js";
-import { handleFeishuFeedbackAction } from "./services/im/im-feedback-callback.js";
+import { legacyFeishuFeedbackAction } from "./services/im/im-feedback-callback.js";
 import { ImFeedbackMessenger } from "./services/im/im-feedback-messenger.js";
 import { acknowledgeFeedbackActivity } from "./services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "./services/im/im-feedback-worker.js";
@@ -1089,8 +1089,7 @@ export async function startServer(): Promise<void> {
     });
     const feishuConnections = new FeishuConnectionManager({
       onCardAction: async (event, bindingId, generation) =>
-        (await handleFeishuFeedbackAction(imFeedback, event, bindingId, generation)) ??
-        handleFeishuApprovalAction(approvalOwner, event, bindingId, generation),
+        legacyFeishuFeedbackAction(event) ?? handleFeishuApprovalAction(approvalOwner, event, bindingId, generation),
       database,
       inbox: imMessageInbox,
       instanceId,
@@ -1518,9 +1517,7 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
       },
       slackEvents: {
-        feedbackResponse: (input) => imFeedbackMessenger.respondSlack(input),
         approvalOwner,
-        imFeedback,
         imBindings: imBindingService,
         inbox: imMessageInbox,
         receipts: slackWebhookReceipts,

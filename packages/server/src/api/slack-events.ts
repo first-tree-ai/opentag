@@ -2,7 +2,6 @@ import { AGENT_SLACK_EVENTS_TEMPLATE, hasRequiredSlackBotScopes, SLACK_EVENTS_PA
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { createServiceLoggerPort } from "../observability/service-logger.js";
 import type { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
-import type { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
 import type { InboundReceiptAttempt } from "../services/im/inbound-receipt-work-store.js";
 
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../services/im/index.js";
@@ -79,16 +78,6 @@ type SlackEventsReceiptOptions = { receipts?: SlackWebhookReceiptStoreLike };
 export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
   maxPendingEvents?: number;
   approvalOwner?: Pick<RuntimeApprovalOwner, "decide">;
-  imFeedback?: Pick<ImFeedbackActionsService, "submitNativeRetry">;
-  feedbackResponse?: (input: {
-    installationId: string;
-    generation: number;
-    token: string;
-    channelId: string;
-    userId: string;
-    threadKey: string;
-    result: "recorded" | "unavailable";
-  }) => Promise<void>;
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(installation: SlackInstallationIngress): SlackAdapter;

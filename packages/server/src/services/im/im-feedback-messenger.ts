@@ -4,9 +4,9 @@ import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-b
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
-import { renderFeedbackCard, renderFeedbackText, renderOfflineNotice } from "./im-feedback-card.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
+import { renderFeedbackText, renderOfflineNotice } from "./im-feedback-text.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -142,41 +142,6 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     };
   }
 
-  async respondSlack(input: {
-    installationId: string;
-    generation: number;
-    token: string;
-    channelId: string;
-    userId: string;
-    threadKey: string;
-    result: "recorded" | "unavailable";
-  }): Promise<void> {
-    await this.#run(
-      "slack.feedback.response",
-      async (signal) => {
-        const api = new WebClient(input.token, {
-          ...SLACK_WEB_CLIENT_OPTIONS,
-          fetch: (url, init) =>
-            fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }),
-        });
-        await this.#slackCall(
-          { provider: "slack", installationId: input.installationId, bindingGeneration: input.generation },
-          () =>
-            api.chat.postEphemeral({
-              channel: input.channelId,
-              user: input.userId,
-              thread_ts: input.threadKey,
-              text:
-                input.result === "recorded"
-                  ? "Retry queued. Check the original card for its result."
-                  : "This operation is unavailable or changed. Open the original card's current details before deciding again.",
-            }),
-        );
-      },
-      { maxAttempts: 1, timeoutMs: 3_000 },
-    );
-  }
-
   async reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void> {
     await this.#run(
       `${target.provider}.feedback.reaction`,
@@ -242,18 +207,16 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       return await this.#run(
         `${target.provider}.feedback.post`,
         async (signal) => {
-          const text =
-            target.messageFormat === "text_v1"
-              ? renderFeedbackText(target, this.publicUrl, action, language)
-              : undefined;
-          const card = renderFeedbackCard(target, this.publicUrl, action, language);
+          const text = renderFeedbackText(target, this.publicUrl, action, language);
           if (target.provider === "slack") {
             const { api } = await this.#slack(target, signal);
             const r = await this.#slackCall(target, () =>
               api.chat.postMessage({
                 channel: target.channelId,
                 thread_ts: target.threadKey ?? target.inputExternalId,
-                ...(text ? { text, unfurl_links: false, unfurl_media: false } : card.slack),
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
               }),
             );
             if (!r.ok || !r.ts || r.channel !== target.channelId)
@@ -264,8 +227,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const r = await api.im.v1.message.reply({
             path: { message_id: target.inputExternalId },
             data: {
-              msg_type: text ? "text" : "interactive",
-              content: text ? JSON.stringify({ text }) : card.feishu,
+              msg_type: "text",
+              content: JSON.stringify({ text }),
               uuid: target.providerRequestId,
             },
           });
@@ -363,38 +326,31 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     }
   }
 
+  /**
+   * Refreshes a sent failure message in place. A legacy `interactive_v1` card is left as it is: Feishu
+   * cannot turn a card into text, and a second message would repeat the failure in the conversation.
+   * Its details link still shows the current state.
+   */
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
-    const cardMessageId = target.cardMessageId;
-    if (!cardMessageId) return;
+    const messageId = target.cardMessageId;
+    if (!messageId || target.messageFormat !== "text_v1") return;
     const language = await this.#language(target);
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
-        const text =
-          target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action, language) : undefined;
-        const card = renderFeedbackCard(target, this.publicUrl, action, language);
+        const text = renderFeedbackText(target, this.publicUrl, action, language);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>
-            api.chat.update({
-              channel: target.channelId,
-              ts: cardMessageId,
-              text: text ?? card.slack.text,
-              ...(text ? {} : { blocks: card.slack.blocks }),
-            }),
+            api.chat.update({ channel: target.channelId, ts: messageId, text }),
           );
           if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
         } else {
           const { api } = await this.#feishu(target, signal);
-          const r = text
-            ? await api.im.v1.message.update({
-                path: { message_id: cardMessageId },
-                data: { msg_type: "text", content: JSON.stringify({ text }) },
-              })
-            : await api.im.v1.message.patch({
-                path: { message_id: cardMessageId },
-                data: { content: card.feishu },
-              });
+          const r = await api.im.v1.message.update({
+            path: { message_id: messageId },
+            data: { msg_type: "text", content: JSON.stringify({ text }) },
+          });
           if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
         }
       },
@@ -429,7 +385,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           m.user === material.botUserId &&
           (target.messageFormat === "text_v1"
             ? m.text?.includes(new URL(`/im-feedback/${encodeURIComponent(target.id)}`, this.publicUrl).href)
-            : m.blocks?.some((b) => b.block_id === `opentag_feedback:${target.id}`)),
+            : // A legacy card whose send was interrupted carries its identity in a block ID.
+              m.blocks?.some((b) => b.block_id === `opentag_feedback:${target.id}`)),
       )
       .flatMap((m) => (m.ts ? [m.ts] : []));
     return { ids, ...(r.response_metadata?.next_cursor ? { cursor: r.response_metadata.next_cursor } : {}) };

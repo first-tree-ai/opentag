@@ -100,7 +100,9 @@ for it. A queued input in that position gets one plain reply, built like the off
 - **How often.** Once per Session for each parked input. The period starts at the parked input's receipt. As with the
   offline notice, any feedback send of the Session since then counts, including an offline notice or failure message.
   It reuses the same `send_started_at` reservation, Session row lock, re-check under the lock, and release of a send
-  known not to have applied.
+  known not to have applied. While the Session still waits behind that parked input, the offline notice's period also
+  starts no later than the parked input's receipt, so a reconnect followed by an outage does not send a second waiting
+  notice for the same wait.
 - **Scope.** Local Computers only, like the offline notice. The parked input itself gets no notice: its working
   reaction stays until it settles or expires.
 

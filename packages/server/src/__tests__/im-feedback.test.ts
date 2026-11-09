@@ -418,6 +418,24 @@ describe("IM parked-dispatch notice", () => {
     expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
   });
 
+  it("sends no offline notice for a later outage while the same parked input still blocks the Session", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+
+    // The Computer heartbeats after that notice, then goes offline with the dispatch still parked.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    // Once the parked input settles, a later outage is an ordinary new offline period again.
+    await h.park(null);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
   it("posts the parked notice through the worker", async () => {
     const h = await behindEarlier();
     await h.park("IM_DELIVERY_PARKED");

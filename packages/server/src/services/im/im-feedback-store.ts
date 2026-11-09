@@ -242,7 +242,34 @@ async function offlinePeriodStart(
   if (now.getTime() - Math.max(row.receivedAt.getTime(), row.lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
   // A Computer that never connected has been offline since it was created. This baseline must not depend on
   // the input: a later message's receipt would exclude the earlier notice and repeat it within one outage.
-  return row.lastSeenAt ?? row.computerCreatedAt;
+  const offlineSince = row.lastSeenAt ?? row.computerCreatedAt;
+  // While the Session still waits behind a parked input, a waiting notice sent since that input arrived
+  // covers a later outage too: the person already knows this message waits, and a reconnect between the two
+  // must not turn the same wait into a second notice.
+  const parkedSince = await parkedInputReceivedAt(database, target);
+  return parkedSince && parkedSince < offlineSince ? parkedSince : offlineSince;
+}
+
+/** When the earliest parked input of the target's Session was received, if one is parked. */
+async function parkedInputReceivedAt(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+): Promise<Date | undefined> {
+  const [parked] = await database
+    .select({ receivedAt: imMessages.receivedAt })
+    .from(imMessageDeliveries)
+    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, target.sessionId),
+        eq(imMessageDeliveries.state, "pending"),
+        eq(imMessageDeliveries.lastErrorCode, PARKED_DELIVERY_CODE),
+        ne(imMessageDeliveries.id, target.deliveryId),
+      ),
+    )
+    .orderBy(imMessages.receivedAt)
+    .limit(1);
+  return parked?.receivedAt;
 }
 
 /**
@@ -260,21 +287,7 @@ async function parkedPeriodStart(
 ): Promise<Date | undefined> {
   const row = await waitingInput(database, target);
   if (!row || row.offlineAt(now) || now.getTime() - row.receivedAt.getTime() < OFFLINE_NOTICE_DELAY_MS) return;
-  const [parked] = await database
-    .select({ receivedAt: imMessages.receivedAt })
-    .from(imMessageDeliveries)
-    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
-    .where(
-      and(
-        eq(imMessageDeliveries.sessionId, target.sessionId),
-        eq(imMessageDeliveries.state, "pending"),
-        eq(imMessageDeliveries.lastErrorCode, PARKED_DELIVERY_CODE),
-        ne(imMessageDeliveries.id, target.deliveryId),
-      ),
-    )
-    .orderBy(imMessages.receivedAt)
-    .limit(1);
-  return parked?.receivedAt;
+  return parkedInputReceivedAt(database, target);
 }
 
 export class ImFeedbackStore {

@@ -51,6 +51,9 @@ loaded via a dedicated Pi RPC `get_commands` query (exactly those ten names, nev
 The Runner image applies a patch to its locked Pi package so the full syntax highlighter loads
 when highlighting is requested. Headless RPC startup skips loading the highlighter and its
 language modules. Interactive highlighting still uses the same dependency and language set.
+The image build requires the patch to apply with zero fuzz. When upgrading Pi, refresh the patch
+against the new syntax-highlighting module and verify every highlighter call still loads it on
+demand. Remove the patch and its assembly step once Pi loads the highlighter on demand itself.
 
 The image precompiles the pinned `pi-mcp-adapter` TypeScript modules to native ESM, preserving
 lazy imports. The entry is

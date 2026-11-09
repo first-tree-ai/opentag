@@ -1000,7 +1000,6 @@ async function serveOnce(
   const authRequestId = randomUUID();
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
-    handshakeTimeout: options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS,
   });
   return new Promise((resolve) => {
     let closed = false,
@@ -1112,9 +1111,8 @@ async function serveOnce(
     };
     const stop = () => finish();
     stopListeners.add(stop);
-    // The handshake deadline spans TCP+TLS+upgrade AND the Server's token/database checks, so a
-    // slow connect (Server restart, cold ingress) is a transport failure, never a permanent
-    // rejection: finish with "auth_timeout" and let the backoff path reconnect.
+    // One deadline covers TCP, TLS, upgrade, and the Server's checks through welcome.
+    // The WebSocket opening timer would race this deadline and report a generic close.
     const authTimer = setTimeout(
       () => finish("auth_timeout"),
       options.authTimeoutMs ?? (config.workspacePersistence ? PERSISTENT_AUTH_TIMEOUT_MS : DEFAULT_AUTH_TIMEOUT_MS),

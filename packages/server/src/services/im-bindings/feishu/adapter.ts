@@ -867,6 +867,7 @@ interface FeishuSenderNameWaiter {
 
 interface PendingFeishuChatScan {
   retired: boolean;
+  cursorInvalidated: boolean;
   waiters: Set<FeishuSenderNameWaiter>;
 }
 
@@ -949,6 +950,15 @@ function createCachedFeishuSenderNameResolver(
     evictOldestEntries(senderNamesByOpenId, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES);
   };
 
+  const invalidateChatCursor = (chatId: string): void => {
+    chatScanCursors.delete(chatId);
+    const pendingScan = pendingChatScans.get(chatId);
+    if (pendingScan) {
+      pendingScan.cursorInvalidated = true;
+      pendingChatScans.delete(chatId);
+    }
+  };
+
   const remember = (chatId: string, senderOpenId: string, name: string | undefined, now: number): void => {
     const key = cacheKey(chatId, senderOpenId);
     senderNames.delete(key);
@@ -959,7 +969,7 @@ function createCachedFeishuSenderNameResolver(
     evictOldestEntries(senderNames, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES, (oldest) => {
       const separator = oldest.lastIndexOf(":");
       if (separator > 0) {
-        chatScanCursors.delete(oldest.slice(0, separator));
+        invalidateChatCursor(oldest.slice(0, separator));
       }
     });
     if (name) {
@@ -967,7 +977,13 @@ function createCachedFeishuSenderNameResolver(
     }
   };
 
-  const rememberCursor = (chatId: string, nextPageToken: string, expiresAt: number): void => {
+  const rememberCursor = (
+    chatId: string,
+    scan: PendingFeishuChatScan,
+    nextPageToken: string,
+    expiresAt: number,
+  ): void => {
+    if (scan.cursorInvalidated) return;
     chatScanCursors.delete(chatId);
     chatScanCursors.set(chatId, { nextPageToken, expiresAt });
     evictOldestEntries(chatScanCursors, FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES);
@@ -1064,7 +1080,7 @@ function createCachedFeishuSenderNameResolver(
         resolveMatchedWaiters(chatId, scan, now);
         pageToken = page.nextPageToken;
         if (pageToken) {
-          rememberCursor(chatId, pageToken, initial.cursorExpiresAt);
+          rememberCursor(chatId, scan, pageToken, initial.cursorExpiresAt);
         } else {
           chatScanCursors.delete(chatId);
           resolveRemainingWaitersAtScanEnd(chatId, scan, now);
@@ -1088,6 +1104,7 @@ function createCachedFeishuSenderNameResolver(
     if (!scan) {
       scan = {
         retired: false,
+        cursorInvalidated: false,
         waiters: new Set(),
       };
       pendingChatScans.set(input.chatId, scan);

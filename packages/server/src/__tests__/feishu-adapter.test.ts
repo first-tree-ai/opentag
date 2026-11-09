@@ -869,6 +869,91 @@ describe("Feishu adapter", () => {
     });
   });
 
+  it("does not restore a successor cursor when earlier chat members are evicted during an in-flight page fetch", async () => {
+    let releasePage2: (() => void) | undefined;
+    const targetCalls: Array<string | undefined> = [];
+    const getChatMembers = vi
+      .fn()
+      .mockImplementation((request: { path?: { chat_id?: string }; params?: { page_token?: string } }) => {
+        const chatId = request.path?.chat_id ?? "";
+        const pageToken = request.params?.page_token;
+        if (chatId === "oc_target") {
+          targetCalls.push(pageToken);
+          if (!pageToken) {
+            return Promise.resolve({
+              code: 0,
+              data: {
+                items: [{ member_id: "ou_alice", name: "Alice" }],
+                has_more: true,
+                page_token: "a2",
+              },
+            });
+          }
+          if (pageToken === "a2") {
+            return new Promise((resolve) => {
+              releasePage2 = () =>
+                resolve({
+                  code: 0,
+                  data: {
+                    items: [{ member_id: "ou_bob", name: "Bob" }],
+                    has_more: true,
+                    page_token: "a3",
+                  },
+                });
+            });
+          }
+          return Promise.resolve({
+            code: 0,
+            data: {
+              items: [],
+              has_more: false,
+            },
+          });
+        }
+
+        const items = Array.from({ length: 100 }, (_, index) => ({
+          member_id: `ou_${chatId}_${index}`,
+          name: `Member ${chatId} ${index}`,
+        }));
+        return Promise.resolve({
+          code: 0,
+          data: {
+            items,
+            has_more: false,
+          },
+        });
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+    expect(targetCalls).toEqual([undefined]);
+
+    const bobPromise = http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" });
+    expect(targetCalls).toEqual([undefined, "a2"]);
+
+    for (let chatIndex = 0; chatIndex < 100; chatIndex += 1) {
+      const chatId = `oc_fill_${chatIndex}`;
+      await expect(http.resolveSenderName?.({ chatId, senderOpenId: `ou_${chatId}_0` })).resolves.toBe(
+        `Member ${chatId} 0`,
+      );
+    }
+
+    releasePage2?.();
+    await expect(bobPromise).resolves.toBe("Bob");
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+    expect(targetCalls).toEqual([undefined, "a2", undefined]);
+  });
+
   it("reuses resolved sender names across chats while preserving per-chat display name priority", async () => {
     const getChatMembers = vi
       .fn()

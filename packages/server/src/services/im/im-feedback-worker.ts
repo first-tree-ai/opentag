@@ -23,6 +23,7 @@ export class ImFeedbackWorker {
         | "latestAction"
         | "desiredReaction"
         | "reserveOfflineNotice"
+        | "reserveParkedNotice"
         | "releaseOfflineNotice"
       >;
       transport: FeedbackTransport;
@@ -115,13 +116,21 @@ export class ImFeedbackWorker {
       await this.#failure(target, error, retryAfterMs);
     }
   }
-  /** Queued targets are revisited every fifteen seconds, which bounds how late past sixty seconds this runs. */
+  /**
+   * The one waiting notice of a queued input: its Computer is offline, or, with the Computer online, it
+   * waits behind a parked dispatch. Queued targets are revisited every fifteen seconds, which bounds how
+   * late past sixty seconds this runs.
+   */
   async #offlineNotice(target: FeedbackTarget, halt: () => void): Promise<void> {
     if (target.state !== "queued" || target.cardState !== "none") return;
     let reservedAt: Date | undefined;
     try {
       reservedAt = await this.options.store.reserveOfflineNotice(target);
       if (reservedAt) await this.options.transport.postOfflineNotice(target);
+      else {
+        reservedAt = await this.options.store.reserveParkedNotice(target);
+        if (reservedAt) await this.options.transport.postOfflineNotice(target, "parked");
+      }
     } catch (error) {
       const cooldown = error instanceof FeedbackCooldownStorageError;
       if (cooldown) halt();

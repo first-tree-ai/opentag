@@ -36,6 +36,7 @@ type InboundReceipt = { receiptId: string; attempt?: number; receivedAt?: Date }
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
+const CONNECTION_CONNECT_CONCURRENCY = 8;
 /*
  * Retry pacing for a binding whose connection keeps failing: 0.5 s doubling to 5 minutes. Ten
  * consecutive refusals from Feishu itself stop the binding.
@@ -604,14 +605,37 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     while (!this.#stopped) {
       const candidates = await this.#imBindings.listFeishuConnectionIds(afterId, CONNECTION_SCAN_PAGE_SIZE);
       if (this.#stopped) return;
-      for (const candidate of candidates) {
-        if (this.#stopped) return;
-        await this.#connectEligibleChannel(candidate);
-      }
+      await this.#connectEligibleCandidates(candidates);
       if (candidates.length < CONNECTION_SCAN_PAGE_SIZE) break;
       afterId = candidates.at(-1)?.imBindingId;
     }
     await this.#recoverInboundWork();
+  }
+
+  async #connectEligibleCandidates(candidates: readonly FeishuConnectionCandidate[]): Promise<void> {
+    if (candidates.length === 0 || this.#stopped) return;
+    let nextIndex = 0;
+    let firstError: unknown;
+    let hasError = false;
+    const workerCount = Math.min(CONNECTION_CONNECT_CONCURRENCY, candidates.length);
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (!this.#stopped && !hasError) {
+          const candidate = candidates[nextIndex++];
+          if (!candidate) return;
+          try {
+            await this.#connectEligibleChannel(candidate);
+          } catch (error) {
+            if (!hasError) {
+              hasError = true;
+              firstError = error;
+            }
+            return;
+          }
+        }
+      }),
+    );
+    if (hasError) throw firstError;
   }
 
   async #connectEligibleChannel({ imBindingId, credentialGeneration }: FeishuConnectionCandidate): Promise<void> {
@@ -1325,6 +1349,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   }
 
   #scheduleMaintenance(): void {
+    if (this.#stopped || this.#maintenance) return;
     this.#trackDetached("FEISHU_CONNECTION_MAINTENANCE_FAILED", this.maintain(), "scheduler");
   }
 

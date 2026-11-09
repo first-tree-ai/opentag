@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TurnReportRequest } from "@opentag/shared";
 import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import { PARKED_DELIVERY_CODE } from "../../db/im-delivery-work.js";
 import {
   agents,
   computers,
@@ -184,15 +185,8 @@ export async function finishImFeedback(tx: DatabaseTransaction, report: TurnRepo
   }
 }
 
-/**
- * When the current offline period began, if this target's input is parked on a Local Computer that
- * has been offline, by the Web's rule, long enough for a notice.
- */
-async function offlinePeriodStart(
-  database: DatabaseClient | DatabaseTransaction,
-  target: FeedbackTarget,
-  now: Date,
-): Promise<Date | undefined> {
+/** The facts both waiting notices read about a target's input, if it is still waiting on its placement. */
+async function waitingInput(database: DatabaseClient | DatabaseTransaction, target: FeedbackTarget) {
   const [row] = await database
     .select({
       kind: computers.kind,
@@ -224,12 +218,82 @@ async function offlinePeriodStart(
   )
     return;
   const lastSeenMs = row.lastSeenAt?.getTime() ?? 0;
-  const offline =
-    row.disconnectedAt !== null || row.instanceId === null || lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
-  if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
+  return {
+    ...row,
+    lastSeenMs,
+    offlineAt: (now: Date) =>
+      row.disconnectedAt !== null ||
+      row.instanceId === null ||
+      lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS,
+  };
+}
+
+/**
+ * When the current offline period began, if this target's input is parked on a Local Computer that
+ * has been offline, by the Web's rule, long enough for a notice.
+ */
+async function offlinePeriodStart(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+  now: Date,
+): Promise<Date | undefined> {
+  const row = await waitingInput(database, target);
+  if (!row?.offlineAt(now)) return;
+  if (now.getTime() - Math.max(row.receivedAt.getTime(), row.lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
   // A Computer that never connected has been offline since it was created. This baseline must not depend on
   // the input: a later message's receipt would exclude the earlier notice and repeat it within one outage.
-  return row.lastSeenAt ?? row.computerCreatedAt;
+  const offlineSince = row.lastSeenAt ?? row.computerCreatedAt;
+  // While the Session still waits behind a parked input, a waiting notice sent since that input arrived
+  // covers a later outage too: the person already knows this message waits, and a reconnect between the two
+  // must not turn the same wait into a second notice.
+  // The parked input's own target counts too: it is queued and visited like any other input of the Session.
+  const parkedSince = await parkedInputReceivedAt(database, target, { includeOwn: true });
+  return parkedSince && parkedSince < offlineSince ? parkedSince : offlineSince;
+}
+
+/**
+ * When the earliest parked input of the target's Session was received, if one is parked. `includeOwn`
+ * counts the target's own input: right for deduplicating a notice, wrong for deciding that the target
+ * waits behind another input.
+ */
+async function parkedInputReceivedAt(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+  { includeOwn = false }: { includeOwn?: boolean } = {},
+): Promise<Date | undefined> {
+  const [parked] = await database
+    .select({ receivedAt: imMessages.receivedAt })
+    .from(imMessageDeliveries)
+    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, target.sessionId),
+        eq(imMessageDeliveries.state, "pending"),
+        eq(imMessageDeliveries.lastErrorCode, PARKED_DELIVERY_CODE),
+        includeOwn ? undefined : ne(imMessageDeliveries.id, target.deliveryId),
+      ),
+    )
+    .orderBy(imMessages.receivedAt)
+    .limit(1);
+  return parked?.receivedAt;
+}
+
+/**
+ * When the input this target waits behind was received, if the target's Computer is online but an
+ * earlier dispatch of the same Session is parked (see `PARKED_DELIVERY_CODE`). A parked row keeps
+ * custody until its ingress deadline, so every later input of that Session waits up to seven days with
+ * nothing to show for it. Only the Session: whether other Sessions of the Agent also wait depends on
+ * the Client, and a notice must not claim a wait that is not happening. The parked input's receipt is
+ * the period start: one notice per Session for each parked input.
+ */
+async function parkedPeriodStart(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+  now: Date,
+): Promise<Date | undefined> {
+  const row = await waitingInput(database, target);
+  if (!row || row.offlineAt(now) || now.getTime() - row.receivedAt.getTime() < OFFLINE_NOTICE_DELAY_MS) return;
+  return parkedInputReceivedAt(database, target);
 }
 
 export class ImFeedbackStore {
@@ -495,12 +559,32 @@ export class ImFeedbackStore {
    * eligibility is read again under it because the Computer can reconnect during the lock wait.
    */
   async reserveOfflineNotice(target: FeedbackTarget): Promise<Date | undefined> {
+    return this.#reserveWaitingNotice(target, offlinePeriodStart);
+  }
+
+  /**
+   * Reserves the one notice of this Session that its input waits behind a parked dispatch, the same
+   * way as the offline notice: any send since the parked input's receipt counts, so it is sent once
+   * per Session and parked input, and never on top of an offline notice or failure message.
+   */
+  async reserveParkedNotice(target: FeedbackTarget): Promise<Date | undefined> {
+    return this.#reserveWaitingNotice(target, parkedPeriodStart);
+  }
+
+  async #reserveWaitingNotice(
+    target: FeedbackTarget,
+    periodStartOf: (
+      database: DatabaseClient | DatabaseTransaction,
+      target: FeedbackTarget,
+      now: Date,
+    ) => Promise<Date | undefined>,
+  ): Promise<Date | undefined> {
     if (target.state !== "queued" || target.cardState !== "none") return;
     const now = this.now();
-    if ((await offlinePeriodStart(this.database, target, now)) === undefined) return;
+    if ((await periodStartOf(this.database, target, now)) === undefined) return;
     return this.database.transaction(async (tx) => {
       await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, target.sessionId)).for("update");
-      const periodStart = await offlinePeriodStart(tx, target, now);
+      const periodStart = await periodStartOf(tx, target, now);
       if (periodStart === undefined) return;
       const [sent] = await tx
         .select({ id: imFeedbackTargets.id })

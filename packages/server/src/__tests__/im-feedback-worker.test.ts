@@ -41,6 +41,7 @@ function harness(targets = Array.from({ length: 8 }, (_, i) => target(i))) {
     markSending: vi.fn(async () => true),
     settle: vi.fn(async () => {}),
     reserveOfflineNotice: vi.fn(async (): Promise<Date | undefined> => undefined),
+    reserveParkedNotice: vi.fn(async (): Promise<Date | undefined> => undefined),
     releaseOfflineNotice: vi.fn(async (_t?: FeedbackTarget, _at?: Date): Promise<void> => {}),
   };
   const transport = {

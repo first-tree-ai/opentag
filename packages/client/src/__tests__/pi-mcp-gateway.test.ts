@@ -1,11 +1,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -121,4 +123,33 @@ it("bootstraps a platform-only fallback once, without rerunning native startup h
   expect(fixture.notify).toHaveBeenCalledTimes(2);
   await fixture.fire("session_shutdown");
   expect(fixture.notify).toHaveBeenLastCalledWith("adapter stop", "info");
+});
+
+it.each(["before module timing", "after module timing"])("isolates broken diagnostic stderr %s", async (failureAt) => {
+  const stderr = new Writable({
+    write(_chunk, _encoding, done) {
+      done(Object.assign(new Error("stderr closed"), { code: "EPIPE" }));
+    },
+  });
+  const closed = new Promise<void>((resolve) => stderr.once("close", resolve));
+  vi.spyOn(process, "stderr", "get").mockReturnValue(stderr as typeof process.stderr);
+  vi.stubEnv("OPENTAG_PI_STARTUP_DIAGNOSTICS", "1");
+
+  if (failureAt === "before module timing") {
+    const { createPiDiagnosticStderrWriter } = await import("../observability/pi-diagnostics.js");
+    createPiDiagnosticStderrWriter(stderr)("prime stderr failure");
+    await closed;
+  }
+
+  const fixture = await load(true, false);
+  await closed;
+  fixture.extension();
+  await expect(fixture.fire("session_start")).resolves.toBeUndefined();
+  expect(fixture.notify).toHaveBeenCalledWith("adapter start", "info");
+
+  const originalError = new Error("gateway startup failed");
+  fixture.notify.mockImplementationOnce(() => {
+    throw originalError;
+  });
+  await expect(fixture.fire("session_start")).rejects.toBe(originalError);
 });

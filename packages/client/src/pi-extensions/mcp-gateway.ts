@@ -10,7 +10,11 @@ const loadStarted = performance.now();
 const writeStartupTiming =
   process.env.OPENTAG_PI_STARTUP_DIAGNOSTICS === "1" ? createPiDiagnosticStderrWriter(process.stderr) : undefined;
 function startupTiming(name: "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs", started: number): void {
-  writeStartupTiming?.(`${PI_STARTUP_TIMING_PREFIX}${name}=${(performance.now() - started).toFixed(3)}\n`);
+  try {
+    writeStartupTiming?.(`${PI_STARTUP_TIMING_PREFIX}${name}=${(performance.now() - started).toFixed(3)}\n`);
+  } catch {
+    // Losing the diagnostic pipe must not affect gateway initialization or hide its error.
+  }
 }
 
 const url = process.env.OPENTAG_MCP_GATEWAY_URL;

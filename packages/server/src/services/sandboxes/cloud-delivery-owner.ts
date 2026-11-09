@@ -380,6 +380,8 @@ export class CloudDeliveryOwner {
       sessionId: request.sessionId,
       deliveryId: request.deliveryId,
       sandboxId: row.id,
+      environmentGeneration: row.environmentGeneration,
+      dispatchRequestId: request.requestId,
     });
     if (row.lifecycle !== "ready" || row.currentResourceName === null || row.idleReclaimAt !== null) {
       throw new CloudDeliveryDispatchError("environment_not_ready", "The Sandbox environment is not ready");
@@ -438,6 +440,7 @@ export class CloudDeliveryOwner {
         sessionId: request.sessionId,
         deliveryId: request.deliveryId,
         sandboxId,
+        attributes: { dispatchRequestId: request.requestId },
       },
       async () => {
         const sent = this.#hub.sendToCurrent(
@@ -608,6 +611,7 @@ export class CloudDeliveryOwner {
       sessionId: connection.scope.sessionId,
       sandboxId: connection.scope.sandboxId,
       deliveryId: frame.deliveryId,
+      dispatchRequestId: frame.requestId,
       turnId: frame.turnId,
     });
     if (!this.#isExactConnection(connection)) return;

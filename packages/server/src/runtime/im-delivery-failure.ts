@@ -104,7 +104,7 @@ export interface DeliveryFailureDeps {
 
 function logDispatchRetryScheduled(
   logger: ServiceLogger | undefined,
-  deliveryId: string,
+  attempt: DeliveryAttempt,
   code: string,
   retryDelayMs: number,
 ): void {
@@ -116,7 +116,8 @@ function logDispatchRetryScheduled(
       outcome: "retry",
       code,
       errorCode: code,
-      deliveryId,
+      deliveryId: attempt.deliveryId,
+      attempt: attempt.attemptCount,
       retryDelayMs,
     },
     "IM delivery dispatch retry scheduled",
@@ -189,7 +190,7 @@ export async function recordDeliveryFailure(
     )
     .returning({ id: imMessageDeliveries.id });
   if (!updated) return;
-  logDispatchRetryScheduled(deps.logger, attempt.deliveryId, bounded, delayMs);
+  logDispatchRetryScheduled(deps.logger, attempt, bounded, delayMs);
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
   if (!options.expectedDeferral && shouldEmitFailureDiagnostic(bounded, attempt.previousErrorCode))
     deps.onDiagnostic(bounded, diagnosticContext(attempt));

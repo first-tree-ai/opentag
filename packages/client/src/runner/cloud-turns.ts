@@ -76,6 +76,8 @@ import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
 
+const startupClockId = randomUUID();
+
 /**
  * Trusted-parent Cloud Turn lifecycle (E4). Owns the durable journal boundary for every delivery
  * the Server dispatches to this Runner's Sandbox: journal+fsync BEFORE the receipt frame, start
@@ -165,6 +167,7 @@ export interface CloudTurnRunnerOptions {
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
   readonly checkpoint?: (options?: { readonly executionEffects?: TurnCompletion["executionEffects"] }) => Promise<void>;
   readonly log?: (message: string) => void;
+  readonly onStartupDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
   readonly onPersistenceError?: (error: unknown) => void;
@@ -733,6 +736,7 @@ export class CloudTurnRunner {
         await this.#reportTerminal(entry, denial.completion);
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueVerified(entry, frame, generation);
     });
   }
@@ -882,6 +886,7 @@ export class CloudTurnRunner {
         await this.#settleSessionTerminal(entry, denial);
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueSessionVerified(entry, frame, generation);
     });
   }
@@ -1643,9 +1648,9 @@ export class CloudTurnRunner {
     const openExecution =
       this.#options.openExecution ??
       ((input: CloudTurnExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
-    const openStartedAtMs = Date.now();
-    const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
-    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ delivery, scope, turnId: entry.turnId, signal }),
+    );
     try {
       // The credential bridge is open, but the worker has not started; close it without calling
       // the worker when a stop or grant revocation landed during the open.
@@ -1669,6 +1674,7 @@ export class CloudTurnRunner {
         ...scope,
         turnId: entry.turnId,
         deliveryId: delivery.deliveryId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       this.#activity.end(entry.turnId);
@@ -1750,9 +1756,9 @@ export class CloudTurnRunner {
     const openExecution =
       this.#options.openSessionExecution ??
       ((input: CloudSessionExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
-    const openStartedAtMs = Date.now();
-    const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
-    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ message, scope, turnId: entry.turnId, signal }),
+    );
     try {
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudSessionWorkerStdin({
@@ -1774,6 +1780,7 @@ export class CloudTurnRunner {
         ...scope,
         turnId: entry.turnId,
         messageId: message.messageId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
@@ -1790,7 +1797,10 @@ export class CloudTurnRunner {
     const workerSignal = execution.bridgeFailureSignal
       ? AbortSignal.any([signal, execution.bridgeFailureSignal])
       : signal;
-    const diagnostics = createPiDiagnosticReader(context, (record) => this.#options.onDiagnostic?.(record));
+    this.#startupRecord("native_exec", context);
+    const diagnostics = createPiDiagnosticReader({ ...context, clockId: startupClockId }, (record) =>
+      this.#options.onDiagnostic?.(record),
+    );
     let workerExitCode: number | undefined;
     let execFailed = false;
     let execError: unknown;
@@ -2214,9 +2224,73 @@ export class CloudTurnRunner {
     this.#options.onPersistenceError?.(error);
   }
 
+  async #traceCredentialOpen(entry: CloudJournalEntry, open: () => Promise<CloudTurnExecutionHandle>) {
+    const started = performance.now();
+    try {
+      const execution = await open();
+      const credentialOpenMs = performance.now() - started;
+      this.#startup(entry, "credential_open", { durationMs: credentialOpenMs, outcome: "completed" });
+      return { execution, credentialOpenMs };
+    } catch (error) {
+      this.#startup(entry, "credential_open", { durationMs: performance.now() - started, outcome: "failed" });
+      throw error;
+    }
+  }
+
+  #startup(
+    entry: CloudJournalEntry,
+    event: "verified" | "credential_open",
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    this.#startupRecord(
+      event,
+      {
+        ...entry.scope,
+        turnId: entry.turnId,
+        dispatchRequestId: entry.requestId,
+        ...(entry.kind === "delivery" ? { deliveryId: entry.deliveryId } : { messageId: entry.messageId }),
+      },
+      timing,
+    );
+  }
+
+  #startupRecord(
+    event: "received" | "verified" | "credential_open" | "native_exec",
+    context: PiDiagnosticContext,
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    try {
+      this.#options.onStartupDiagnostic?.({
+        ...context,
+        module: "cloud-runner",
+        operation: "runner.turn.startup",
+        event,
+        timestamp: new Date().toISOString(),
+        clockId: startupClockId,
+        monotonicMs: performance.now(),
+        ...timing,
+      });
+    } catch {
+      // Startup diagnostics must never affect custody or execution.
+    }
+  }
+
   #send(frame: RunnerClientFrame): void {
     try {
       this.#options.send(frame);
+      if (
+        frame.type === "delivery:received" ||
+        (frame.type === "session:message:received" && frame.status === "accepted")
+      ) {
+        const scope = this.#options.scope();
+        if (scope)
+          this.#startupRecord("received", {
+            ...scope,
+            turnId: frame.turnId,
+            dispatchRequestId: frame.requestId,
+            ...(frame.type === "delivery:received" ? { deliveryId: frame.deliveryId } : { messageId: frame.messageId }),
+          });
+      }
     } catch {
       this.#log("cloud delivery frame could not be sent (channel closed)");
     }

@@ -368,4 +368,5 @@ With an IM test binding, a second Account, and a failure or offline card that ca
 2. Open the same links signed in as the second Account. Expected: a page saying only the Agent owner can change its
    settings (or restore its connection, or view the task), naming the Agent and its owner, with no error code or
    task detail. Repeat with an Account that has never created an Agent. Expected: the same page, not first-Agent setup.
-3. Open a link signed out. Expected: sign-in, then the result for the signed-in Account.
+3. Open a link signed out and sign in with a password, then with Google. Expected: each sign-in returns to the same
+   card link (with its `open` value) and shows the result for the signed-in Account.

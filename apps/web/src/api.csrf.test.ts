@@ -85,6 +85,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   disconnectComputer: [ID],
   imFeedback: [ID],
   imFeedbackList: [ID],
+  imFeedbackDestination: [ID],
   imFeedbackAction: [ID, { kind: "retry_task", revision: 1, confirmation: "signed" }],
   imBinding: [ID],
   imBindingHandoff: [ID],

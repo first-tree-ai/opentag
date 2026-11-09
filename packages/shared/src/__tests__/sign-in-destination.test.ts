@@ -40,6 +40,12 @@ describe("sign-in destination", () => {
       "/usage?windowDays=7",
       "/agents/setup",
       "/login",
+      // IM card links: anyone in the conversation may open one signed out.
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24?open=settings",
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24?open=task",
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24?open=restore",
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24?open=agent",
     ]) {
       expect(resolveSignInDestination(destination)).toBe(destination);
     }
@@ -56,6 +62,10 @@ describe("sign-in destination", () => {
       "/\\evil.example",
       "\\\\evil.example",
       "/agents\\..\\settings",
+      // Only a feedback ID follows /im-feedback/.
+      "/im-feedback",
+      "/im-feedback/not-a-feedback-id",
+      "/im-feedback/1a63a21e-f6c7-4474-91ea-4dabf0566a24/../../api",
       // A fragment changes which document the browser ends up showing.
       "/agents#/../evil",
       // Control characters truncate whatever reads the value next, so the two readers disagree about the target.

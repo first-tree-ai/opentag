@@ -47,10 +47,11 @@ export function resolveSignInDestination(value?: string): string | undefined {
    * An allowlist rather than a "starts with /" test: only these areas are somewhere a sign-in is meant
    * to arrive at. `/api/v1/mcp-servers/oauth/handoff` (MCP_OAUTH_HANDOFF_PATH) is on it because an
    * Agent hands that link to a human who may not be signed in yet, and completing the round trip after
-   * signing in is the point. The destination test pins it to the real path.
+   * signing in is the point. The destination test pins it to the real path. `/im-feedback/<id>` is on it
+   * because an IM card links there, and anyone in the conversation may open it before signing in.
    */
   if (
-    /^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|account|usage|login|api\/v1\/mcp-servers\/oauth\/handoff)(?:\?[^#]*)?$/.test(
+    /^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|account|usage|login|im-feedback\/[0-9a-fA-F-]{36}|api\/v1\/mcp-servers\/oauth\/handoff)(?:\?[^#]*)?$/.test(
       next,
     )
   ) {

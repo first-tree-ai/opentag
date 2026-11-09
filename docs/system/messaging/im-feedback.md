@@ -82,6 +82,30 @@ messages.
   and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
   reply are the signal, and an expired message keeps the existing failure message.
 
+## Parked-dispatch notice
+
+A dispatch whose operation never settles is [parked](im-delivery-claim.md#parking-a-correlated-dispatch). It keeps
+custody until its ingress deadline, so later input of the same Session waits up to seven days with nothing to show
+for it. A queued input in that position gets one plain reply, built like the offline notice:
+
+> This Agent's computer hasn't confirmed an earlier message, so this message is waiting behind it and can't be handled yet.
+> If this lasts, check that computer on the Agent page. [Open the Agent]
+> If you don't manage this Agent, contact its administrator.
+> Your message is saved and will be handled once the earlier one finishes or expires. It expires after 7 days.
+
+- **When.** Sixty seconds after the input's receipt. The input's Computer must be online: an offline Computer gets the
+  offline notice instead. Another pending delivery of the same Session must carry `IM_DELIVERY_PARKED`. Other Sessions
+  of the Agent get no notice: whether they also wait depends on the Client (one that runs one Turn per Agent blocks
+  them too), and the notice must not claim a wait that is not happening.
+- **How often.** Once per Session for each parked input. The period starts at the parked input's receipt. As with the
+  offline notice, any feedback send of the Session since then counts, including an offline notice or failure message.
+  It reuses the same `send_started_at` reservation, Session row lock, re-check under the lock, and release of a send
+  known not to have applied. While the Session still waits behind that parked input, the offline notice's period also
+  starts no later than the parked input's receipt, so a reconnect followed by an outage does not send a second waiting
+  notice for the same wait, whether from a later input or from the parked input's own target.
+- **Scope.** Local Computers only, like the offline notice. The parked input itself gets no notice: its working
+  reaction stays until it settles or expires.
+
 ## Failure messages
 
 Every failure is plain text in the original conversation or thread; the Server sends no cards and no buttons. A

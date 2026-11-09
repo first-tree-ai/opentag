@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { agents, computers, imBindings, imMessages } from "../db/schema/index.js";
+import { createPerformanceLogger, instrumentServerWorkers } from "../observability/index.js";
 import { runtimeProviderMessageRef } from "../runtime/runtime-provider-message-ref.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -2368,6 +2369,183 @@ describe("FeishuConnectionManager", () => {
       expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
     } finally {
       updateSpy.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it("connects candidate bindings with bounded concurrency so a slow binding does not block other candidates", async () => {
+    const value = await connectionFixture();
+    const agentService = new AgentService(connectionDatabase.database);
+    const totalBindings = 10;
+    const bindingIds: string[] = [];
+
+    for (let index = 0; index < totalBindings; index += 1) {
+      const agent =
+        index === 0
+          ? value.agent
+          : await agentService.createForAccount(value.bootstrap.userId, {
+              name: `connection-agent-${index}`,
+              displayName: `Connection Agent ${index}`,
+              runtimeProvider: "codex",
+              computerId: value.computer.id,
+            });
+      const bindingId = await value.imBindings.activateFeishu({
+        agentId: agent.id,
+        appId: `cli_conc_${index}`,
+        appSecret: "secret",
+        teamId: `tenant_conc_${index}`,
+        botOpenId: `ou_conc_${index}`,
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      bindingIds.push(bindingId);
+    }
+
+    let releaseSlowBinding: (() => void) | undefined;
+    const slowBindingGate = new Promise<void>((resolve) => {
+      releaseSlowBinding = resolve;
+    });
+    let activeValidations = 0;
+    let maxConcurrentValidations = 0;
+    const completedAppIds: string[] = [];
+
+    const instanceId = crypto.randomUUID();
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId,
+      imBindings: value.imBindings,
+      maintenanceMs: 60_000,
+      createAdapter: (input) => {
+        const fake = fakeConnectionAdapter({
+          appId: input.appId,
+          botOpenId: input.appId.replace("cli_", "ou_"),
+        });
+        fake.adapter.validateBinding = vi.fn(async () => {
+          activeValidations += 1;
+          maxConcurrentValidations = Math.max(maxConcurrentValidations, activeValidations);
+          try {
+            if (input.appId === "cli_conc_0") {
+              await slowBindingGate;
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+            completedAppIds.push(input.appId);
+            return {
+              externalAppId: input.appId,
+              externalTeamId: input.teamId ?? "tenant_1",
+              externalBotId: input.appId.replace("cli_", "ou_"),
+            };
+          } finally {
+            activeValidations -= 1;
+          }
+        });
+        return fake.adapter;
+      },
+    });
+
+    try {
+      manager.start();
+      const maintainPromise = manager.maintain();
+
+      // Even while cli_conc_0 is blocked, the remaining 9 bindings should all complete via the other 7 workers.
+      await vi.waitFor(() => {
+        expect(completedAppIds).toHaveLength(totalBindings - 1);
+      });
+      expect(completedAppIds).not.toContain("cli_conc_0");
+      expect(maxConcurrentValidations).toBeGreaterThan(1);
+      expect(maxConcurrentValidations).toBeLessThanOrEqual(8);
+
+      releaseSlowBinding?.();
+      await maintainPromise;
+
+      expect(completedAppIds).toHaveLength(totalBindings);
+      const rows = await connectionDatabase.database.select().from(imBindings);
+      expect(rows).toHaveLength(totalBindings);
+      for (const row of rows) {
+        expect(row.connectionOwnerInstanceId).toBe(instanceId);
+        expect(row.observedConnectedAt).toBeInstanceOf(Date);
+      }
+    } finally {
+      releaseSlowBinding?.();
+      await manager.stop();
+    }
+  });
+
+  it("skips overlapping scheduled maintenance ticks while a maintenance pass is already in flight", async () => {
+    const value = await connectionFixture();
+    await value.imBindings.activateFeishu({
+      agentId: value.agent.id,
+      appId: "cli_overlap",
+      appSecret: "secret",
+      teamId: "tenant_overlap",
+      botOpenId: "ou_overlap",
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    });
+
+    let releaseValidation: (() => void) | undefined;
+    let notifyValidationStarted: (() => void) | undefined;
+    const validationStarted = new Promise<void>((resolve) => {
+      notifyValidationStarted = resolve;
+    });
+    const validationGate = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+
+    const records: Array<Record<string, unknown>> = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      maintenanceMs: 25,
+      createAdapter: (input) => {
+        const fake = fakeConnectionAdapter({ appId: input.appId, botOpenId: "ou_overlap" });
+        fake.adapter.validateBinding = vi.fn(async () => {
+          notifyValidationStarted?.();
+          await validationGate;
+          return {
+            externalAppId: input.appId,
+            externalTeamId: "tenant_overlap",
+            externalBotId: "ou_overlap",
+          };
+        });
+        return fake.adapter;
+      },
+    });
+    instrumentServerWorkers([["FeishuConnectionManager", manager]], perfLogger);
+
+    try {
+      // start() immediately schedules the first maintenance pass and starts the periodic timer.
+      manager.start();
+      await validationStarted;
+
+      // Wait across multiple scheduler intervals while the first pass is still in flight.
+      await new Promise((resolve) => setTimeout(resolve, 90));
+
+      const startedWhileInFlight = records.filter(
+        (record) => record.operation === "FeishuConnectionManager.maintain" && record.outcome === "started",
+      );
+      expect(startedWhileInFlight).toHaveLength(1);
+
+      releaseValidation?.();
+      await manager.maintain();
+
+      const completedAfterFirstPass = records.filter(
+        (record) => record.operation === "FeishuConnectionManager.maintain" && record.outcome === "completed",
+      );
+      expect(completedAfterFirstPass.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      releaseValidation?.();
       await manager.stop();
     }
   });

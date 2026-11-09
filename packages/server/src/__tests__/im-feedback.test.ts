@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -355,6 +355,146 @@ describe("IM offline notice", () => {
     await h.worker.runOnce();
     expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(2);
     expect((await h.target()).cardState).toBe("none");
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("IM parked-dispatch notice", () => {
+  const online = async (h: Awaited<ReturnType<typeof fixture>>) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID(), disconnectedAt: null })
+      .where(eq(computers.id, placement?.computerId ?? ""));
+    return placement?.computerId ?? "";
+  };
+  const receivedAgo = async (deliveryId: string, ms: number) => {
+    const [delivery] = await db.database
+      .select({ messageId: imMessageDeliveries.messageId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await db.database
+      .update(imMessages)
+      .set({ receivedAt: new Date(clock.getTime() - ms) })
+      .where(eq(imMessages.id, delivery?.messageId ?? ""));
+  };
+  /** The fixture's input, queued and received five minutes ago, behind an earlier input of its Session. */
+  async function behindEarlier() {
+    const h = await fixture();
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    const computerId = await online(h);
+    const earlier = await h.delivery();
+    await receivedAgo(earlier.frame.deliveryId, 3_600_000);
+    const park = (lastErrorCode: string | null) =>
+      db.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "pending",
+          lastErrorCode,
+          acceptedAt: null,
+          inputHash: null,
+          turnId: null,
+          reportOwnerInstanceId: null,
+        })
+        .where(eq(imMessageDeliveries.id, earlier.frame.deliveryId));
+    return { ...h, computerId, earlier, park };
+  }
+
+  it("tells a queued input once that it waits behind a parked dispatch, with its Computer online", async () => {
+    const h = await behindEarlier();
+    // An earlier dispatch still in flight is ordinary waiting.
+    await h.park(null);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+  });
+
+  it("waits sixty seconds after receipt, and leaves an offline Computer to the offline notice", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await receivedAgo(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 300_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends no offline notice for a later outage while the same parked input still blocks the Session", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+
+    // The Computer heartbeats after that notice, then goes offline with the dispatch still parked.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    // Once the parked input settles, a later outage is an ordinary new offline period again.
+    await h.park(null);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends one waiting notice in total across worker passes that include the parked input's own target", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.earlier.frame.deliveryId, clock));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.earlier.frame.deliveryId));
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(inArray(imFeedbackTargets.deliveryId, [h.frame.deliveryId, h.earlier.frame.deliveryId]));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice.mock.calls.map((call) => call[1])).toEqual(["parked"]);
+
+    // A heartbeat after that notice, then an outage, with the dispatch still parked: neither target sends again.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts the parked notice through the worker", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+    expect(h.transport.postOfflineNotice.mock.calls[0]?.[1]).toBe("parked");
+    expect((await h.target()).sendStartedAt).toEqual(clock);
     expect(h.transport.post).not.toHaveBeenCalled();
   });
 });

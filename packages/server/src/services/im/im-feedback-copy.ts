@@ -155,6 +155,31 @@ export function effectsCopy(effects: string | null, language: FeedbackLanguage):
   return copy[language];
 }
 
+/** Why a queued input gets its one waiting notice. */
+export type WaitingNoticeReason = "offline" | "parked";
+
+/**
+ * An earlier message's dispatch never settled, so this one waits behind it until that message is
+ * confirmed or expires. Names neither the earlier message nor its sender: everyone in the group reads it.
+ */
+export function parkedNoticeCopy(language: FeedbackLanguage): { before: string; label: string; after: string } {
+  return language === "zh"
+    ? {
+        before:
+          "这个 Agent 的电脑还没有确认之前的一条消息，所以这条消息要排在它后面，暂时处理不了。\n如果一直这样，请到 Agent 页面检查这台电脑。",
+        label: "查看 Agent",
+        after:
+          "如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，前面那条处理完或过期后会自动处理；7 天内没处理会过期。",
+      }
+    : {
+        before:
+          "This Agent's computer hasn't confirmed an earlier message, so this message is waiting behind it and can't be handled yet.\nIf this lasts, check that computer on the Agent page.",
+        label: "Open the Agent",
+        after:
+          "If you don't manage this Agent, contact its administrator.\nYour message is saved and will be handled once the earlier one finishes or expires. It expires after 7 days.",
+      };
+}
+
 export const FEEDBACK_LABELS = {
   details: { zh: "查看详情", en: "View details" },
   taskCompleted: { zh: "任务已完成", en: "Task completed" },

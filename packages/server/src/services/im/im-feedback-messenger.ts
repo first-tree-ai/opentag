@@ -12,7 +12,7 @@ import {
   offlineCard,
   slackCardMessage,
 } from "./im-feedback-card.js";
-import type { FeedbackLanguage } from "./im-feedback-copy.js";
+import type { FeedbackLanguage, WaitingNoticeReason } from "./im-feedback-copy.js";
 import type {
   FeedbackAction,
   FeedbackMessageContext,
@@ -20,7 +20,7 @@ import type {
   ImFeedbackStore,
   SlackFeedbackScope,
 } from "./im-feedback-store.js";
-import { renderFeedbackText } from "./im-feedback-text.js";
+import { renderFeedbackText, renderParkedNotice } from "./im-feedback-text.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -42,7 +42,7 @@ export class FeedbackCooldownStorageError extends FeedbackProviderError {
 export interface FeedbackTransport {
   reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void>;
   post(target: FeedbackTarget, action?: FeedbackAction): Promise<string>;
-  postOfflineNotice(target: FeedbackTarget): Promise<void>;
+  postOfflineNotice(target: FeedbackTarget, reason?: WaitingNoticeReason): Promise<void>;
   update(target: FeedbackTarget, action?: FeedbackAction): Promise<void>;
   find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }>;
 }
@@ -282,9 +282,10 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * Sends a card outside the failure message identity: `providerRequestId` belongs to the failure
    * message, and Feishu would swallow that later message as a duplicate of this one.
    */
-  async postOfflineNotice(target: FeedbackTarget): Promise<void> {
+  async postOfflineNotice(target: FeedbackTarget, reason: WaitingNoticeReason = "offline"): Promise<void> {
     try {
       const context = await this.#context(target);
+      if (reason === "parked") return await this.#postParkedNotice(target, context.language);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
         (signal) => this.#sendCard(target, offlineCard(target, this.publicUrl, context.language), context, signal),
@@ -293,6 +294,37 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     } catch (error) {
       throw postFailure(error);
     }
+  }
+
+  /** The parked-dispatch notice has no approved card copy yet, so it stays text in the input's thread. */
+  async #postParkedNotice(target: FeedbackTarget, language: FeedbackLanguage): Promise<void> {
+    const text = renderParkedNotice(target, this.publicUrl, language);
+    await this.#run(
+      `${target.provider}.feedback.offline_notice`,
+      async (signal) => {
+        if (target.provider === "slack") {
+          const { api } = await this.#slack(target, signal);
+          const r = await this.#slackCall(target, () =>
+            api.chat.postMessage({
+              channel: target.channelId,
+              thread_ts: target.threadKey ?? target.inputExternalId,
+              text,
+              unfurl_links: false,
+              unfurl_media: false,
+            }),
+          );
+          if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+          return;
+        }
+        const { api } = await this.#feishu(target, signal);
+        const r = await api.im.v1.message.reply({
+          path: { message_id: target.inputExternalId },
+          data: { msg_type: "text", content: JSON.stringify({ text }) },
+        });
+        if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+      },
+      { maxAttempts: 1, timeoutMs: 8_000 },
+    );
   }
 
   /**

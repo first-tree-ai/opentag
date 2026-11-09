@@ -1,9 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
+  type DurableFileQuarantine,
+  DurableFileQuarantinedError,
   durableFailureFromUnknown,
   FileRuntimeDurabilityStore,
   MemoryRuntimeDurabilityStore,
@@ -12,6 +14,7 @@ import {
   retryDelay,
   retryExhausted,
 } from "../runtime/runtime-durability.js";
+import { RuntimeStorageError } from "../storage/durable-file.js";
 
 describe("runtime durability primitives", () => {
   it("keeps retry delay exponential and bounded by age and attempts", () => {
@@ -99,12 +102,179 @@ describe("runtime durability primitives", () => {
         ]),
       );
       await expect(store.list("turn-report")).resolves.toMatchObject([{ key: "turn-1", status: "accepted" }]);
-      await writeFile(path, JSON.stringify({ invalid: true }));
-      await expect(store.list("turn-report")).rejects.toThrow(
-        "Runtime storage contains data that does not match its schema",
-      );
+      // With no options, a corrupt file is still moved aside, named by the wall clock.
       await writeFile(path, "{ invalid");
-      await expect(store.list("turn-report")).rejects.toThrow("Runtime storage contains invalid JSON");
+      await expect(store.list("turn-report")).resolves.toEqual([]);
+      expect((await readdir(dirname(path))).filter((name) => name.includes(".corrupt-"))).toHaveLength(1);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("moves an unreadable file aside, reports the loss, and keeps working for that kind", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+    try {
+      const quarantines: DurableFileQuarantine[] = [];
+      let now = 100;
+      const store = new FileRuntimeDurabilityStore(home, {
+        now: () => now,
+        onQuarantine: (quarantine) => quarantines.push(quarantine),
+      });
+      const record = {
+        acceptedAt: 1,
+        attempts: 0,
+        key: "message-1",
+        kind: "session-message" as const,
+        payload: { value: "opaque" },
+        status: "accepted" as const,
+        updatedAt: 1,
+      };
+      await store.write(record);
+      const directory = resolve(home, "data/runtime/durability");
+      const path = resolve(directory, "session-message.json");
+
+      await writeFile(path, "[{ truncated");
+      await expect(store.list("session-message")).resolves.toEqual([]);
+      expect(quarantines).toMatchObject([
+        { kind: "session-message", quarantinedPath: `${path}.corrupt-100`, lostRecords: 0 },
+      ]);
+      expect(quarantines[0]?.error.message).toBe("Runtime storage contains invalid JSON");
+      await expect(readFile(`${path}.corrupt-100`, "utf8")).resolves.toBe("[{ truncated");
+      await expect(store.list("session-message")).resolves.toEqual([]);
+      expect(quarantines).toHaveLength(1);
+
+      // A schema mismatch found by a write is moved aside too, and the write still lands.
+      now = 200;
+      await writeFile(path, JSON.stringify({ invalid: true }));
+      await store.write({ ...record, key: "message-2" });
+      await expect(store.list("session-message")).resolves.toMatchObject([{ key: "message-2" }]);
+      expect(quarantines[1]).toMatchObject({ kind: "session-message", quarantinedPath: `${path}.corrupt-200` });
+      expect((await readdir(directory)).sort()).toEqual([
+        "session-message.json",
+        "session-message.json.corrupt-100",
+        "session-message.json.corrupt-200",
+      ]);
+
+      // A truncated file is counted by the records it still names.
+      now = 300;
+      await writeFile(path, JSON.stringify([record, { ...record, key: "message-3" }]).slice(0, -20));
+      await expect(store.list("session-message")).resolves.toEqual([]);
+      expect(quarantines[2]).toMatchObject({ quarantinedPath: `${path}.corrupt-300`, lostRecords: 2 });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites an earlier archive with the same clock value", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+    try {
+      const store = new FileRuntimeDurabilityStore(home, {
+        now: () => 100,
+        onQuarantine: () => {
+          throw new Error("reporter failed");
+        },
+      });
+      await store.write({
+        acceptedAt: 1,
+        attempts: 0,
+        key: "k",
+        kind: "turn-report",
+        payload: {},
+        status: "accepted",
+        updatedAt: 1,
+      });
+      const path = resolve(home, "data/runtime/durability/turn-report.json");
+      for (const content of ["corrupt A", "corrupt B", "corrupt C"]) {
+        await writeFile(path, content);
+        // A reporter that throws does not undo the recovery.
+        await expect(store.list("turn-report")).resolves.toEqual([]);
+      }
+      await expect(readFile(`${path}.corrupt-100`, "utf8")).resolves.toBe("corrupt A");
+      await expect(readFile(`${path}.corrupt-100-1`, "utf8")).resolves.toBe("corrupt B");
+      await expect(readFile(`${path}.corrupt-100-2`, "utf8")).resolves.toBe("corrupt C");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("still fails on storage it must not touch or cannot move", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+    const directory = resolve(home, "data/runtime/durability");
+    try {
+      const quarantines: DurableFileQuarantine[] = [];
+      const store = new FileRuntimeDurabilityStore(home, {
+        onQuarantine: (quarantine) => quarantines.push(quarantine),
+      });
+      const record = {
+        acceptedAt: 1,
+        attempts: 0,
+        key: "k",
+        kind: "turn-report" as const,
+        payload: {},
+        status: "accepted" as const,
+        updatedAt: 1,
+      };
+      await store.write(record);
+      const path = resolve(directory, "turn-report.json");
+
+      // An unsafe file is not "corrupt": it is refused, never moved.
+      await rm(path);
+      await writeFile(resolve(home, "elsewhere.json"), "[]");
+      await symlink(resolve(home, "elsewhere.json"), path);
+      await expect(store.list("turn-report")).rejects.toThrow("Runtime storage files must be regular files");
+      await expect(store.write(record)).rejects.toThrow("Runtime storage files must be regular files");
+      await rm(path);
+
+      if (process.getuid?.() !== 0) {
+        // A file the daemon cannot read is a host problem, not corruption.
+        await writeFile(path, "[]", { mode: 0o000 });
+        await expect(store.list("turn-report")).rejects.toMatchObject({ code: "EACCES" });
+        await rm(path);
+
+        // A corrupt file that cannot be moved aside keeps failing, as before.
+        await writeFile(path, "{ corrupt");
+        await chmod(directory, 0o500);
+        await expect(store.list("turn-report")).rejects.toMatchObject({ code: "EACCES" });
+        await chmod(directory, 0o700);
+        await expect(readFile(path, "utf8")).resolves.toBe("{ corrupt");
+      }
+      expect(quarantines).toEqual([]);
+    } finally {
+      await chmod(directory, 0o700).catch(() => undefined);
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("treats foreign entries as absent rather than corrupt, and describes a loss without the path", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+    try {
+      const quarantines: DurableFileQuarantine[] = [];
+      const store = new FileRuntimeDurabilityStore(home, {
+        onQuarantine: (quarantine) => quarantines.push(quarantine),
+      });
+      await store.write({
+        acceptedAt: 1,
+        attempts: 0,
+        key: "turn-1",
+        kind: "turn-report",
+        payload: {},
+        status: "accepted",
+        updatedAt: 1,
+      });
+      await writeFile(resolve(home, "data/runtime/durability/turn-report.json"), JSON.stringify([{}, {}, {}]));
+      // An array whose entries are all foreign parses as empty, so it is not corrupt.
+      await expect(store.list("turn-report")).resolves.toEqual([]);
+      expect(quarantines).toHaveLength(0);
+
+      const error = new DurableFileQuarantinedError({
+        kind: "turn-report",
+        lostRecords: 3,
+        error: new RuntimeStorageError("invalid", "Runtime storage contains invalid JSON"),
+      });
+      expect(error.code).toBe("durable_file_quarantined");
+      expect(error.message).toBe(
+        "Unreadable turn-report durable file moved aside; about 3 records lost (Runtime storage contains invalid JSON)",
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
     }

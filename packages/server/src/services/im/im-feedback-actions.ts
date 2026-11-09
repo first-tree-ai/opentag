@@ -52,31 +52,8 @@ const conflict = () =>
   );
 const notFound = () => new ImFeedbackServiceError("IM_FEEDBACK_NOT_FOUND", "This feedback is unavailable.", 404);
 
-type Actor =
-  | { accountId: string }
-  | {
-      provider: "slack" | "feishu";
-      userId: string;
-      generation: number;
-      channelId: string;
-      messageId: string;
-      installationId?: string;
-      bindingId?: string;
-    };
+type Actor = { accountId: string };
 
-function nativeActorMatches(actor: Actor, target: FeedbackTarget): boolean {
-  if ("accountId" in actor) return true;
-  if (
-    actor.provider !== target.provider ||
-    actor.userId !== target.senderExternalId ||
-    actor.generation !== target.bindingGeneration
-  )
-    return false;
-  if (actor.channelId !== target.channelId || actor.messageId !== target.cardMessageId) return false;
-  return actor.provider === "slack"
-    ? actor.installationId === target.installationId
-    : actor.bindingId === target.bindingId;
-}
 export class ImFeedbackActionsService {
   readonly #jobs = new Set<Promise<void>>();
   readonly store: ImFeedbackStore;
@@ -211,19 +188,6 @@ export class ImFeedbackActionsService {
     return this.getForAccount(accountId, id);
   }
 
-  async submitNativeRetry(
-    input: { feedbackId: string; revision: number } & Exclude<Actor, { accountId: string }>,
-  ): Promise<"recorded" | "unavailable"> {
-    try {
-      const admitted = await this.#admit(input.feedbackId, input.revision, "retry_task", input);
-      this.#dispatch(admitted);
-      return "recorded";
-    } catch (error) {
-      if (error instanceof ImFeedbackServiceError) return "unavailable";
-      throw error;
-    }
-  }
-
   async #available(
     tx: DatabaseTransaction,
     t: FeedbackTarget,
@@ -285,7 +249,7 @@ export class ImFeedbackActionsService {
     await lockImAgentCustody(tx, initial.agentId);
     const [agent] = await tx.select().from(agents).where(eq(agents.id, initial.agentId)).for("update");
     if (!agent || agent.createdByUserId !== initial.accountId || agent.status === "deleted") throw notFound();
-    if ("accountId" in actor && actor.accountId !== agent.createdByUserId) throw notFound();
+    if (actor.accountId !== agent.createdByUserId) throw notFound();
     const [binding] = await tx.select().from(imBindings).where(eq(imBindings.id, initial.bindingId)).for("update");
     if (
       binding?.status !== "active" ||
@@ -307,8 +271,7 @@ export class ImFeedbackActionsService {
     const [target] = await tx.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, id)).for("update");
     if (!session || !placement || !delivery || !target || placement.generation !== target.placementGeneration)
       throw conflict();
-    if (target.bindingGeneration !== binding.credentialGeneration || !nativeActorMatches(actor, target))
-      throw notFound();
+    if (target.bindingGeneration !== binding.credentialGeneration) throw notFound();
     return { agent, session, placement, delivery, target };
   }
 
@@ -338,15 +301,12 @@ export class ImFeedbackActionsService {
     actor: Actor,
     resultDeliveryId?: string,
   ): Promise<FeedbackAction> {
-    const [user] =
-      "accountId" in actor
-        ? await tx
-            .select({ displayName: users.displayName })
-            .from(users)
-            .where(and(eq(users.id, actor.accountId), isNull(users.suspendedAt)))
-            .limit(1)
-        : [];
-    if ("accountId" in actor && !user) throw notFound();
+    const [user] = await tx
+      .select({ displayName: users.displayName })
+      .from(users)
+      .where(and(eq(users.id, actor.accountId), isNull(users.suspendedAt)))
+      .limit(1);
+    if (!user) throw notFound();
     const now = this.now;
     const [action] = await tx
       .insert(imFeedbackActions)
@@ -355,9 +315,9 @@ export class ImFeedbackActionsService {
         feedbackRevision: revision,
         kind,
         state: kind === "retry_task" ? "succeeded" : "submitting",
-        actorAccountId: "accountId" in actor ? actor.accountId : null,
-        actorProviderId: "userId" in actor ? actor.userId : null,
-        actorDisplayName: (user?.displayName ?? ("userId" in actor ? actor.userId : "Account owner")).slice(0, 255),
+        actorAccountId: actor.accountId,
+        actorProviderId: null,
+        actorDisplayName: (user.displayName ?? "Account owner").slice(0, 255),
         bindingGeneration: target.bindingGeneration,
         sessionId: target.sessionId,
         placementGeneration: target.placementGeneration,

@@ -8,6 +8,7 @@ import {
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
+  DurableFileQuarantinedError,
   RuntimeConnection,
   RuntimeConnectionError,
   type RuntimeConnectionErrorCategory,
@@ -25,6 +26,7 @@ import { channelConfig } from "../channel/config.js";
 import { resolveChannelEnvironment } from "../channel/environment.js";
 import { resolveCommandContext } from "../command/context.js";
 import { createAgentErrorReporter } from "../diagnostics/agent-error-reporting.js";
+import { reportCliError } from "../diagnostics/error-reporting.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
 import { resolveRuntimeCredentialMode } from "./credential-mode.js";
@@ -280,6 +282,14 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
       environment: context.daemonEnvironment,
       resolveProvider: (sessionId) => composed.runtime?.runtimeManager.providerId(sessionId),
     }),
+    // Records in a corrupt durable file are gone; the daemon keeps running, and the loss is reported.
+    durableQuarantineReporter: (quarantine) => {
+      void reportCliError(new DurableFileQuarantinedError(quarantine), {
+        home: context.home,
+        environment: context.daemonEnvironment,
+        command: "daemon service-run",
+      });
+    },
   });
   composed.runtime = runtime;
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);

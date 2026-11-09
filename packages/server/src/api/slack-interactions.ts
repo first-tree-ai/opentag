@@ -46,12 +46,7 @@ export function registerSlackInteractionsRoute(app: FastifyInstance, options: Sl
       if (!payload) return reply.code(400).send();
       const installation = await verifiedInstallation(request, payload, options);
       if (!installation) return reply.code(401).send();
-      await dispatchAction(options, payload, installation, () =>
-        app.log.warn(
-          { code: "IM_FEEDBACK_PRIVATE_RESPONSE_FAILED" },
-          "The private callback response could not be delivered; inspect the original card",
-        ),
-      );
+      await dispatchAction(options, payload, installation);
       return reply.code(200).send();
     });
   }
@@ -97,45 +92,12 @@ async function dispatchAction(
   options: SlackEventsRouteOptions,
   payload: z.infer<typeof PayloadSchema>,
   installation: import("../services/im-bindings/im-binding-service.js").SlackInstallationIngress,
-  onResponseFailure: () => void,
 ) {
   const action = payload.actions[0];
   if (!action) return;
-  if (action.action_id.startsWith("opentag_feedback_")) {
-    if (action.action_id !== "opentag_feedback_retry") return;
-    const parsed = z
-      .string()
-      .regex(/^[0-9a-f-]{36}:[1-9][0-9]{0,14}$/)
-      .safeParse(action.value);
-    if (!parsed.success) return;
-    const [feedbackId, revision] = parsed.data.split(":");
-    if (!feedbackId || !z.string().uuid().safeParse(feedbackId).success || !Number.isSafeInteger(Number(revision)))
-      return;
-    const result = await options.imFeedback?.submitNativeRetry({
-      feedbackId,
-      revision: Number(revision),
-      provider: "slack",
-      userId: payload.user.id,
-      generation: installation.generation,
-      installationId: installation.installationId,
-      messageId: payload.message.ts,
-      channelId: payload.channel.id,
-    });
-    if (options.feedbackResponse) {
-      void options
-        .feedbackResponse({
-          installationId: installation.installationId,
-          generation: installation.generation,
-          token: installation.botAccessToken,
-          channelId: payload.channel.id,
-          userId: payload.user.id,
-          threadKey: payload.message.thread_ts ?? payload.message.ts,
-          result: result ?? "unavailable",
-        })
-        .catch(onResponseFailure);
-    }
-    return;
-  }
+  // Buttons on legacy failure cards. Their links open the details page in the browser; the click itself is
+  // acknowledged and ignored, so Slack shows no error on an old card.
+  if (action.action_id.startsWith("opentag_feedback_")) return;
   const approvalId = z.string().uuid().safeParse(action.value);
   if (!approvalId.success) return;
   await options.approvalOwner?.decide({

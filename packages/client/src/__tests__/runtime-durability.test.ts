@@ -73,30 +73,53 @@ describe("runtime durability primitives", () => {
     await expect(store.list("turn-report")).resolves.toMatchObject([{ key: "turn-1", status: "accepted" }]);
   });
 
-  it("drops finished records past the retention on the next write, keeping pending reports and live work", async () => {
+  it.each(["turn-report", "session-message-outcome"] as const)(
+    "drops finished %s records past the retention on the next write, keeping pending reports and live work",
+    async (kind) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+      const day = 24 * 60 * 60 * 1_000;
+      const now = 100 * day;
+      try {
+        const store = new FileRuntimeDurabilityStore(home, { now: () => now });
+        const base = { acceptedAt: 1, attempts: 0, kind, payload: { value: "opaque" } };
+        const old = now - FINISHED_RECORD_RETENTION_MS - 1;
+        await store.write({ ...base, key: "old-succeeded", status: "succeeded", updatedAt: old });
+        await store.write({ ...base, key: "old-failed", status: "failed", updatedAt: old, outcomeReport: "published" });
+        await store.write({
+          ...base,
+          key: "old-pending-report",
+          status: "failed",
+          updatedAt: old,
+          outcomeReport: "pending",
+        });
+        await store.write({ ...base, key: "old-but-running", status: "running", updatedAt: old });
+        await store.write({ ...base, key: "recent-succeeded", status: "succeeded", updatedAt: now - day });
+        await store.write({ ...base, key: "new", status: "accepted", updatedAt: now });
+        expect((await store.list(kind)).map((record) => record.key)).toEqual([
+          "old-pending-report",
+          "old-but-running",
+          "recent-succeeded",
+          "new",
+        ]);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps every finished session-message record: it is the inbox's deduplication evidence", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
     const day = 24 * 60 * 60 * 1_000;
     const now = 100 * day;
     try {
       const store = new FileRuntimeDurabilityStore(home, { now: () => now });
       const base = { acceptedAt: 1, attempts: 0, kind: "session-message" as const, payload: { value: "opaque" } };
-      const old = now - FINISHED_RECORD_RETENTION_MS - 1;
-      await store.write({ ...base, key: "old-succeeded", status: "succeeded", updatedAt: old });
-      await store.write({ ...base, key: "old-failed", status: "failed", updatedAt: old, outcomeReport: "published" });
-      await store.write({
-        ...base,
-        key: "old-pending-report",
-        status: "failed",
-        updatedAt: old,
-        outcomeReport: "pending",
-      });
-      await store.write({ ...base, key: "old-but-running", status: "running", updatedAt: old });
-      await store.write({ ...base, key: "recent-succeeded", status: "succeeded", updatedAt: now - day });
+      await store.write({ ...base, key: "old-succeeded", status: "succeeded", updatedAt: day });
+      await store.write({ ...base, key: "old-dead-letter", status: "dead-letter", updatedAt: day });
       await store.write({ ...base, key: "new", status: "accepted", updatedAt: now });
       expect((await store.list("session-message")).map((record) => record.key)).toEqual([
-        "old-pending-report",
-        "old-but-running",
-        "recent-succeeded",
+        "old-succeeded",
+        "old-dead-letter",
         "new",
       ]);
     } finally {

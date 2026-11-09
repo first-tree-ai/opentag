@@ -1391,6 +1391,66 @@ describe("SessionMessageInbox", () => {
     restarted.stop();
   });
 
+  it("still deduplicates a replay of a message finished more than a week earlier, after a restart (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-old-replay-"));
+    try {
+      let now = Date.now();
+      const store = new FileRuntimeDurabilityStore(home, { now: () => now });
+      const prompts: string[] = [];
+      const inbox = () =>
+        new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          sessionCollaborationVersion: () => 4,
+          persistence: store,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(
+              async () =>
+                ({
+                  waitForIdle: vi.fn(async () => undefined),
+                  prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                    prompts.push(input.input.items.at(-1)?.text ?? "");
+                    return { runId: input.runId, status: "completed", output: [] };
+                  }),
+                }) as never,
+            ),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+        });
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const original = delivery({ text: "A", targetSessionId, agentId });
+      const first = inbox();
+      await first.ready();
+      // The acceptance reply is lost on the way back: the Server row stays unknown and may be replayed.
+      await first.accept(original);
+      await vi.waitFor(() => expect(prompts).toEqual(["A"]));
+      await first.settled();
+      first.stop();
+
+      now += 8 * 24 * 60 * 60 * 1_000;
+      await store.write({
+        acceptedAt: now,
+        attempts: 0,
+        key: "unrelated",
+        kind: "session-message",
+        payload: {},
+        status: "dead-letter",
+        updatedAt: now,
+      });
+      const restarted = inbox();
+      await restarted.ready();
+      await expect(restarted.accept(original)).resolves.toMatchObject({ status: "accepted" });
+      await restarted.settled();
+      restarted.stop();
+      expect(prompts).toEqual(["A"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-inbox-fifo-"));
     try {

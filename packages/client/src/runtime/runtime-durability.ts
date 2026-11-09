@@ -197,13 +197,21 @@ export class MemoryRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 }
 
-/** A finished record older than this leaves the file; the Server keeps its own record of each message. */
+/** A finished record older than this leaves the file, for the kinds that `PRUNED_KINDS` names. */
 export const FINISHED_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const FINISHED_STATUSES: ReadonlySet<DurableWorkStatus> = new Set(["succeeded", "failed", "dead-letter"]);
 
+/**
+ * `session-message` is not pruned: a finished record is the inbox's only deduplication evidence. A
+ * message whose acceptance reply was lost stays `unknown` on the Server, which may send it again under
+ * the same ID at any age; without the record, that replay would run the message a second time.
+ */
+const PRUNED_KINDS: ReadonlySet<DurableWorkKind> = new Set(["turn-report", "session-message-outcome"]);
+
 /** Kept while its outcome may still need handing over, or while it is recent enough to answer a replay. */
 function retained(record: DurableWorkRecord, nowMs: number): boolean {
+  if (!PRUNED_KINDS.has(record.kind)) return true;
   if (!FINISHED_STATUSES.has(record.status) || record.outcomeReport === "pending") return true;
   return nowMs - record.updatedAt < FINISHED_RECORD_RETENTION_MS;
 }

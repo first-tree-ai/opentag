@@ -12,6 +12,7 @@ import {
   type WorkspaceObjectStore,
   WorkspaceObjectStoreError,
   type WorkspaceObjectWriteInput,
+  type WorkspaceWriteInspection,
 } from "./workspace-object-store.js";
 
 /**
@@ -66,6 +67,7 @@ export interface RunnerWorkspaceUploadInput extends RunnerWorkspacePins {
   readonly md5: string;
   readonly sealed: boolean;
   readonly body: AsyncIterable<Uint8Array>;
+  readonly writeId?: string;
 }
 
 export interface RunnerWorkspaceServiceOptions {
@@ -195,12 +197,29 @@ export class RunnerWorkspaceService {
 
   /**
    * Claim the workspace for the current allocation. `preparing`/`ready` claim through the store
-   * (only the allocator may initialize storage); a `releasing` allocation may only read back
-   * current same-owner metadata and must never initialize or claim another generation.
+   * (only the allocator may initialize storage); a `releasing` allocation may read or fence
+   * existing same-owner metadata, but must never initialize or take ownership of another generation.
    */
-  async claim(context: RunnerWorkspaceContext): Promise<RunnerWorkspaceObject> {
+  async claim(
+    context: RunnerWorkspaceContext,
+    options: { fence?: boolean; upload?: WorkspaceWriteInspection } = {},
+  ): Promise<RunnerWorkspaceObject> {
     const scope = storeScope(context.row);
+    if (options.upload) {
+      try {
+        return await this.#store.inspectWrite(scope, options.upload);
+      } catch (error) {
+        throw mapStoreError(error);
+      }
+    }
     if (context.row.lifecycle === "releasing") {
+      if (options.fence) {
+        try {
+          return await this.#store.claim(scope, { fence: true, sameOwnerOnly: true });
+        } catch (error) {
+          throw mapStoreError(error);
+        }
+      }
       const head = await this.#head(scope);
       if (!head || head.ownerGeneration !== context.row.environmentGeneration) {
         throw conflict("A releasing environment cannot claim the workspace");
@@ -208,7 +227,7 @@ export class RunnerWorkspaceService {
       return head;
     }
     try {
-      const claimed = await this.#store.claim(scope);
+      const claimed = await this.#store.claim(scope, options);
       this.#emitWorkspaceLog("runner.workspace.claim", scope, {
         archiveBytes: claimed.bytes,
         workspaceGeneration: claimed.generation,
@@ -216,6 +235,35 @@ export class RunnerWorkspaceService {
         sealed: claimed.sealed,
       });
       return claimed;
+    } catch (error) {
+      throw mapStoreError(error);
+    }
+  }
+
+  async sealArchive(context: RunnerWorkspaceContext, pins: RunnerWorkspacePins): Promise<RunnerWorkspaceObject> {
+    const { row } = context;
+    if (row.lifecycle !== "ready" && row.lifecycle !== "releasing") {
+      throw conflict("Only a ready or releasing environment may seal the workspace");
+    }
+    const scope = storeScope(row);
+    const head = await this.#head(scope);
+    if (
+      !head?.saved ||
+      head.sealed ||
+      head.ownerGeneration !== row.environmentGeneration ||
+      head.generation !== pins.generation ||
+      head.metageneration !== pins.metageneration
+    ) {
+      throw conflict("The workspace preconditions do not match an unsealed saved object");
+    }
+    try {
+      const sealed = await this.#store.seal(scope, head);
+      this.#emitWorkspaceLog("runner.workspace.seal", scope, {
+        workspaceGeneration: sealed.generation,
+        saved: sealed.saved,
+        sealed: sealed.sealed,
+      });
+      return sealed;
     } catch (error) {
       throw mapStoreError(error);
     }
@@ -295,10 +343,13 @@ export class RunnerWorkspaceService {
         sha256: input.sha256,
         md5: input.md5,
         sealed: input.sealed,
+        ...(input.writeId ? { writeId: input.writeId } : {}),
       };
+      const writeStarted = performance.now();
       const written = await this.#store.write(scope, head, write);
       this.#emitWorkspaceLog("runner.workspace.upload", scope, {
         archiveBytes: written.bytes,
+        objectWriteMs: performance.now() - writeStarted,
         workspaceGeneration: written.generation,
         sealed: written.sealed,
       });

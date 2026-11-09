@@ -528,6 +528,7 @@ export class ScheduleScheduler {
           content: row.prompt,
           origin,
           attemptedAt: claimNow,
+          nextTriggerAt: next,
           detailUrl: scheduleDetailUrl(this.#options.publicUrl, row.agentId, row.id),
         },
       } as const;

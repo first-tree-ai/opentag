@@ -79,6 +79,9 @@ export interface PerformanceExecutionContext {
   environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
+  messageId?: string;
+  dispatchRequestId?: string;
+  attempt?: number;
   turnId?: string;
 }
 
@@ -94,6 +97,9 @@ export interface PerformanceStartInput {
   environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
+  messageId?: string;
+  dispatchRequestId?: string;
+  attempt?: number;
   turnId?: string;
   attributes?: Record<string, unknown>;
   startMessage?: string;
@@ -228,6 +234,9 @@ const CONTEXT_ID_KEYS = [
   "environmentGeneration",
   "sessionId",
   "deliveryId",
+  "messageId",
+  "dispatchRequestId",
+  "attempt",
   "turnId",
 ] as const;
 

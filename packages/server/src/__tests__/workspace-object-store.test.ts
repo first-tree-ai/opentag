@@ -90,6 +90,7 @@ interface StoredFakeObject {
   generation: string;
   metageneration: string;
   metadata: Record<string, string>;
+  contentDisposition?: string;
 }
 
 interface RecordedCall {
@@ -166,6 +167,7 @@ function createFakeGcs() {
       contentType: "application/octet-stream",
       updated: "2026-09-18T00:00:00.000Z",
       metadata: { ...current.metadata },
+      ...(current.contentDisposition ? { contentDisposition: current.contentDisposition } : {}),
     };
   }
 
@@ -189,6 +191,9 @@ function createFakeGcs() {
       generation: String(generationCounter),
       metageneration: "1",
       metadata: { ...(metadata as Record<string, string>) },
+      ...(typeof metadataJson.contentDisposition === "string"
+        ? { contentDisposition: metadataJson.contentDisposition }
+        : {}),
     };
     return jsonResponse(200, resourceJson());
   }
@@ -204,11 +209,17 @@ function createFakeGcs() {
     }
     const patch = JSON.parse(Buffer.from(must(call.body, "patch body")).toString("utf8")) as {
       metadata?: Record<string, string>;
+      contentDisposition?: string;
     };
+    const metadata = { ...stored.metadata, ...(patch.metadata ?? {}) };
+    const contentDisposition = patch.contentDisposition ?? stored.contentDisposition;
+    const changed =
+      JSON.stringify(metadata) !== JSON.stringify(stored.metadata) || contentDisposition !== stored.contentDisposition;
     stored = {
       ...stored,
-      metageneration: String(Number(stored.metageneration) + 1),
-      metadata: { ...stored.metadata, ...(patch.metadata ?? {}) },
+      metageneration: String(Number(stored.metageneration) + Number(changed)),
+      metadata,
+      ...(contentDisposition === undefined ? {} : { contentDisposition }),
     };
     return jsonResponse(200, resourceJson());
   }
@@ -308,6 +319,401 @@ function createFakeGcs() {
 }
 
 type FakeGcs = ReturnType<typeof createFakeGcs>;
+
+describe("workspace metadata fencing and sealing", () => {
+  it("accepts normalized disposition parameters and changes the fence on the next claim", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("unpublished work");
+    const planted = fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const writeId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    planted.contentDisposition = `attachment; filename="state-${writeId}.tar.gz"`;
+    const original = previousOf(planted);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH") return undefined;
+      await proceed();
+      const stored = must(fake.stored());
+      stored.contentDisposition = must(stored.contentDisposition).replace(
+        /; opentag-fence=([01])$/,
+        ';opentag-fence="$1"',
+      );
+      return jsonResponse(200, fake.resourceJson());
+    });
+    const store = createStore(fake);
+    const first = await store.claim(SCOPE, { fence: true });
+    expect(first).toEqual({ ...original, metageneration: "2" });
+    const second = await store.claim(SCOPE, { fence: true });
+    expect(second).toEqual({ ...original, metageneration: "3" });
+    expect(
+      fake.callsNamed("PATCH").map((call) => JSON.parse(Buffer.from(must(call.body)).toString()).contentDisposition),
+    ).toEqual([
+      `attachment; filename="state-${writeId}.tar.gz"; opentag-fence=0`,
+      `attachment; filename="state-${writeId}.tar.gz"; opentag-fence=1`,
+    ]);
+    fake.setInterceptor(undefined);
+    await expect(store.write(SCOPE, first, archiveInput(content))).rejects.toMatchObject({ code: "conflict" });
+    expect((await store.seal(SCOPE, second)).sealed).toBe(true);
+    expect(must(fake.stored()).content).toEqual(content);
+  });
+
+  it.each([false, true])("changes metadata on every same-owner fence, including saved=%s", async (saved) => {
+    const fake = createFakeGcs();
+    const content = saved ? Buffer.from("unpublished work") : new Uint8Array();
+    const planted = fake.plant(content, { owner: 1, saved, sealed: false });
+    const writeId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    if (saved) planted.contentDisposition = `attachment; filename="state-${writeId}.tar.gz"`;
+    const store = createStore(fake);
+    const original = previousOf(planted);
+    let previous = original;
+    let disposition = planted.contentDisposition;
+    for (let index = 0; index < 3; index += 1) {
+      const claimed = await store.claim(SCOPE, { fence: true });
+      expect(claimed).toEqual({ ...original, metageneration: String(index + 2) });
+      expect(must(fake.stored()).contentDisposition).not.toBe(disposition);
+      expect(must(fake.stored()).content).toEqual(content);
+      expect(must(fake.stored()).metadata).toEqual(planted.metadata);
+      if (saved) {
+        await expect(store.write(SCOPE, previous, archiveInput(content))).rejects.toMatchObject({ code: "conflict" });
+      }
+      disposition = must(fake.stored()).contentDisposition;
+      previous = claimed;
+    }
+    expect(fake.callsNamed("PATCH")).toHaveLength(3);
+    const latest = await store.claim(SCOPE);
+    expect(latest).toEqual(previous);
+    if (saved) {
+      const sealed = await store.seal(SCOPE, latest);
+      expect(must(fake.stored()).contentDisposition).toBe(disposition);
+      expect(await store.inspectWrite(SCOPE, { id: writeId, ...sealed })).toEqual(sealed);
+    }
+  });
+
+  it("keeps a same-owner sealed fencing claim byte-identical without a PATCH", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("sealed unpublished work");
+    const planted = fake.plant(content, { owner: 1, saved: true, sealed: true });
+    const before = previousOf(planted);
+    const store = createStore(fake);
+    const claimed = await store.claim(SCOPE, { fence: true });
+    expect(claimed).toEqual(before);
+    expect(claimed.sealed).toBe(true);
+    expect(fake.stored()).toEqual(planted);
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, claimed)))).toEqual(content);
+    await expect(store.write(SCOPE, claimed, archiveInput(Buffer.from("late work")))).rejects.toMatchObject({
+      code: "sealed",
+    });
+    expect(fake.callsNamed("PATCH")).toHaveLength(0);
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+  });
+
+  it.each(["rejected", "uncertain"])("never hands successor pins to an old %s fencing claim", async (outcome) => {
+    const fake = createFakeGcs();
+    const planted = fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    planted.contentDisposition = 'attachment; filename="state-d45b0afb-a231-4ffa-b562-72acd250613a.tar.gz"';
+    const original = previousOf(planted);
+    const store = createStore(fake);
+    let raced = false;
+    let successor: WorkspaceObject | undefined;
+    let oldResult: WorkspaceObject | undefined;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "PATCH") return undefined;
+      raced = true;
+      successor = await store.claim(SCOPE, { fence: true });
+      if (outcome === "rejected") return proceed();
+      throw new TypeError("old PATCH never committed, response lost");
+    });
+    await expect(
+      store.claim(SCOPE, { fence: true }).then((object) => {
+        oldResult = object;
+      }),
+    ).rejects.toMatchObject({ code: outcome === "rejected" ? "conflict" : "unknown_result" });
+    expect(oldResult).toBeUndefined();
+    expect(fake.callsNamed("PATCH")).toHaveLength(2);
+    expect(fake.callsNamed("GET")).toHaveLength(outcome === "rejected" ? 2 : 3);
+    expect(await store.head(SCOPE)).toEqual(successor);
+    await expect(store.write(SCOPE, original, archiveInput(Buffer.from("stale writer")))).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+    const sealed = await store.seal(SCOPE, must(successor));
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, sealed))).toString()).toBe("baseline");
+  });
+
+  it("bounds an uncertain fence with one deadline and no readback or retry after cancellation", async () => {
+    const fake = createFakeGcs();
+    const planted = fake.plant(Buffer.from("complete baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake, 30);
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method !== "PATCH") return undefined;
+      return new Promise<never>((_, reject) => {
+        call.signal?.addEventListener("abort", () => reject(call.signal?.reason), { once: true });
+      });
+    });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "timeout" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+    expect(fake.callsNamed("GET")).toHaveLength(1);
+    expect(fake.stored()).toEqual(planted);
+  });
+
+  it.each(["claim", "upload"])(
+    "never rebases an uncertain old fencing claim over a successor %s",
+    async (successor) => {
+      const fake = createFakeGcs();
+      fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+      const store = createStore(fake);
+      let raced = false;
+      let successorObject: WorkspaceObject | undefined;
+      fake.setInterceptor(async ({ call, proceed }) => {
+        if (raced || call.method !== "PATCH") return undefined;
+        raced = true;
+        await proceed();
+        successorObject = await store.claim(SCOPE, { fence: true });
+        if (successor === "upload")
+          successorObject = await store.write(SCOPE, successorObject, archiveInput(Buffer.from("successor work")));
+        throw new TypeError("old fencing response lost");
+      });
+      await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "unknown_result" });
+      expect(await store.head(SCOPE)).toEqual(successorObject);
+      expect(fake.callsNamed("PATCH")).toHaveLength(2);
+      expect(Buffer.from(await streamToBytes(await store.read(SCOPE, must(successorObject)))).toString()).toBe(
+        successor === "upload" ? "successor work" : "baseline",
+      );
+    },
+  );
+
+  it("retries only an unchanged original snapshot and fails closed after an unprovable committed response", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    let first = true;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH") return undefined;
+      if (first) {
+        first = false;
+        throw new TypeError("not committed");
+      }
+      await proceed();
+      throw new TypeError("committed response lost");
+    });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, metageneration: "2" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(2);
+    for (const call of fake.callsNamed("PATCH"))
+      expect(call.url).toBe(
+        `${META_URL}?ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`,
+      );
+    fake.setInterceptor(undefined);
+    const fresh = await store.claim(SCOPE, { fence: true });
+    expect(fresh).toEqual({ ...previous, metageneration: "3" });
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, fresh))).toString()).toBe("baseline");
+  });
+
+  it("never initializes or takes ownership for a same-owner-only releasing fence", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    await expect(store.claim(SCOPE, { fence: true, sameOwnerOnly: true, initialize: true })).rejects.toMatchObject({
+      code: "missing",
+    });
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const previous = must(await store.head(SCOPE));
+    await expect(
+      store.claim({ ...SCOPE, environmentGeneration: 2 }, { fence: true, sameOwnerOnly: true }),
+    ).rejects.toMatchObject({ code: "stale" });
+    expect(await store.head(SCOPE)).toEqual(previous);
+    expect(await store.claim(SCOPE, { fence: true, sameOwnerOnly: true })).toEqual({
+      ...previous,
+      metageneration: "2",
+    });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+  });
+
+  it("rejects malformed, missing and foreign inspections while tolerating legacy dispositions", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    const input = { id: "d45b0afb-a231-4ffa-b562-72acd250613a", generation: "1", metageneration: "1" };
+    await expect(store.inspectWrite(SCOPE, { ...input, id: "invalid" })).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "missing" });
+    fake.plant(Buffer.from("archive"), { owner: 2, saved: true, sealed: false });
+    await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "stale" });
+    must(fake.stored()).contentDisposition = "attachment; filename=legacy.tar.gz";
+    expect(await store.head(SCOPE)).toBeDefined();
+  });
+
+  it("uses upload identity to distinguish a competing byte-identical write after a fence", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("identical complete archive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const oldId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    const newId = "e85b0afb-a231-4ffa-b562-72acd250613a";
+    expect(await store.inspectWrite(SCOPE, { ...previous, id: oldId })).toEqual(previous);
+    let raced = false;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "POST") return undefined;
+      raced = true;
+      await proceed();
+      const claimed = await store.claim(SCOPE, { fence: true });
+      await store.write(SCOPE, claimed, { ...archiveInput(content), writeId: newId });
+      throw new TypeError("response lost after a newer identical write");
+    });
+    await expect(store.write(SCOPE, previous, { ...archiveInput(content), writeId: oldId })).rejects.toMatchObject({
+      code: "unknown_result",
+    });
+    const current = must(await store.head(SCOPE));
+    expect(current.sha256).toBe(previous.sha256);
+    expect(current.metageneration).toBe("1");
+    await expect(store.inspectWrite(SCOPE, { ...previous, id: oldId })).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.inspectWrite(SCOPE, { ...previous, id: newId })).toEqual(current);
+    const sealed = await store.seal(SCOPE, current);
+    expect(sealed.sealed).toBe(true);
+    expect(must(fake.stored()).contentDisposition).toBe(`attachment; filename="state-${newId}.tar.gz"`);
+    expect(Object.keys(must(fake.stored()).metadata).sort()).toEqual(
+      Object.keys(metadataMap({ owner: 1, saved: true, sealed: true, sha256: sha256hex(content) })).sort(),
+    );
+    await expect(store.inspectWrite(SCOPE, { ...previous, id: newId })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("does not adopt a new same-owner fence after a committed upload loses its response", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const content = Buffer.from("committed before the new process claimed");
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed();
+      await store.claim(SCOPE, { fence: true });
+      throw new TypeError("upload response lost");
+    });
+    await expect(store.write(SCOPE, previous, archiveInput(content))).rejects.toMatchObject({ code: "unknown_result" });
+    const claimed = must(await store.head(SCOPE));
+    expect(claimed.metageneration).toBe("2");
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, claimed)))).toEqual(content);
+    expect(fake.callsNamed("POST")).toHaveLength(1);
+  });
+
+  it("fences the same allocation without replacing bytes and rejects an older in-flight upload", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("unpublished baseline");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const original = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await store.claim(SCOPE, { fence: true });
+      return proceed();
+    });
+    const stale = Buffer.from("late old-process bytes");
+    await expect(store.write(SCOPE, original, archiveInput(stale))).rejects.toMatchObject({ code: "conflict" });
+    const current = await store.head(SCOPE);
+    expect(current).toEqual({ ...original, metageneration: "2" });
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, must(current))))).toEqual(content);
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+  });
+
+  it("seals the exact saved object with pinned metadata only and restores all bytes afterwards", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("Git and unpublished work must survive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const sealed = await store.seal(SCOPE, previous);
+    expect(sealed).toEqual({ ...previous, sealed: true, metageneration: "2" });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+    expect(fake.callsNamed("PATCH")[0]?.url).toBe(
+      `${META_URL}?ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`,
+    );
+    const nextScope = { ...SCOPE, environmentGeneration: 2 };
+    const restored = await store.claim(nextScope, { fence: true });
+    expect(restored).toEqual({ ...sealed, ownerGeneration: 2, metageneration: "3", sealed: false });
+    expect(Buffer.from(await streamToBytes(await store.read(nextScope, restored)))).toEqual(content);
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it.each(["lost", "invalid-json", "503"])(
+    "verifies a committed seal after %s response without retrying",
+    async (kind) => {
+      const fake = createFakeGcs();
+      fake.plant(Buffer.from("complete archive"), { owner: 1, saved: true, sealed: false });
+      const store = createStore(fake);
+      const previous = await store.claim(SCOPE);
+      fake.setInterceptor(async ({ call, proceed }) => {
+        if (call.method !== "PATCH") return undefined;
+        await proceed();
+        if (kind === "lost") throw new TypeError("lost response");
+        return new Response(kind === "503" ? null : "invalid", { status: kind === "503" ? 503 : 200 });
+      });
+      expect(await store.seal(SCOPE, previous)).toEqual({ ...previous, metageneration: "2", sealed: true });
+      expect(fake.callsNamed("PATCH")).toHaveLength(1);
+    },
+  );
+
+  it.each(["timeout", "503"])("does not claim success or retry when an uncommitted seal returns %s", async (kind) => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("last good archive"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method !== "PATCH") return undefined;
+      if (kind === "timeout") throw timeoutError();
+      return new Response(null, { status: 503 });
+    });
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual(previous);
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+  });
+
+  it("cannot seal over a concurrent new owner claim", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("latest complete archive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH" || !Buffer.from(must(call.body)).toString().includes('"sealed":"true"'))
+        return undefined;
+      await store.claim({ ...SCOPE, environmentGeneration: 2 });
+      return proceed();
+    });
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, ownerGeneration: 2, metageneration: "2" });
+    expect(Buffer.from(must(fake.stored()).content)).toEqual(content);
+  });
+
+  it("does not reopen a seal that races with a same-allocation fencing claim", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("complete archive"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    let raced = false;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "PATCH") return undefined;
+      raced = true;
+      await store.seal(SCOPE, previous);
+      return proceed();
+    });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, metageneration: "2", sealed: true });
+    expect(Buffer.from(must(fake.stored()).content).toString()).toBe("complete archive");
+  });
+
+  it("refuses missing, unsaved and corrupted objects without a metadata mutation", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    const seed = await store.claim(SCOPE, { initialize: true });
+    await expect(store.seal(SCOPE, seed)).rejects.toMatchObject({ code: "sealed" });
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    const saved = await store.claim(SCOPE);
+    must(fake.stored()).metadata.sha256 = "invalid";
+    await expect(store.seal(SCOPE, saved)).rejects.toMatchObject({ code: "corrupt" });
+    fake.clearStored();
+    await expect(store.seal(SCOPE, saved)).rejects.toMatchObject({ code: "missing" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(0);
+  });
+});
 
 function createStore(fake: FakeGcs, timeoutMs = 5_000): GcsWorkspaceObjectStore {
   return new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN, fetchImpl: fake.fetchImpl, timeoutMs });
@@ -777,6 +1183,7 @@ describe("workspace object store write", () => {
       contentType: "application/octet-stream",
       md5Hash: md5b64(content),
       metadata: metadataMap({ owner: 1, saved: true, sealed: false, sha256: sha256hex(content) }),
+      contentDisposition: expect.stringMatching(/^attachment; filename="state-[a-f0-9-]{36}\.tar\.gz"$/),
     });
     expect(Buffer.from(streamed).equals(content)).toBe(true);
     // Atomic overwrite: the old generation is gone from the fake's single latest slot.

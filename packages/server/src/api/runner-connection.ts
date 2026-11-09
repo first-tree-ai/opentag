@@ -1167,6 +1167,11 @@ export class RunnerConnection {
           ...(data.requestId ? { requestId: data.requestId } : {}),
         },
         runAuth,
+        {
+          resultAttributes: () => ({
+            authOutcome: this.#scope ? (this.#reportOnly ? "report_only" : "authenticated") : "rejected_or_closed",
+          }),
+        },
       );
       return;
     }
@@ -1194,6 +1199,7 @@ export class RunnerConnection {
           environmentGeneration: current.environmentGeneration,
           ...(this.#cloudConnection ? { computerId: this.#cloudConnection.computerId } : {}),
           ...("deliveryId" in data && typeof data.deliveryId === "string" ? { deliveryId: data.deliveryId } : {}),
+          ...receiptPerformanceIds(data),
           ...("requestId" in data && typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
         },
         () => this.#dispatchAuthenticatedFrame(current, data),
@@ -1241,4 +1247,14 @@ export class RunnerConnection {
         this.#queued -= 1;
       });
   }
+}
+
+function receiptPerformanceIds(frame: RunnerClientFrame) {
+  if (frame.type === "delivery:received") return { dispatchRequestId: frame.requestId, turnId: frame.turnId };
+  if (frame.type !== "session:message:received") return {};
+  return {
+    dispatchRequestId: frame.requestId,
+    messageId: frame.messageId,
+    ...(frame.status === "accepted" ? { turnId: frame.turnId } : {}),
+  };
 }

@@ -27,6 +27,11 @@ const piEnd = z.object({
   seq: z.number().int().positive().optional(),
   durationMs: z.number().finite().nonnegative(),
 });
+const piFirstTurn = piEnd.omit({ durationMs: true }).extend({
+  event: z.literal("milestone"),
+  milestone: z.literal("first_turn_start"),
+  receivedElapsedMs: z.number().finite().nonnegative(),
+});
 const optionsSchema = z.object({
   from: z.string().datetime(),
   to: z.string().datetime(),
@@ -62,7 +67,7 @@ function unwrap(value: unknown): { payload: Payload; timestamp: unknown } | unde
       return;
     }
   }
-  return { payload, timestamp: outer.timestamp ?? outer.time ?? payload.utc };
+  return { payload, timestamp: outer.timestamp ?? outer.time ?? payload.utc ?? payload.timestamp };
 }
 
 function rows(input: string): unknown[] {
@@ -146,23 +151,26 @@ function noteTurn(state: State, turnId: string, scope: string): void {
 }
 
 function consumePi(state: State, payload: Payload, timestamp: number): void {
-  const parsed = piEnd.safeParse(payload);
+  const parsed = (payload.event === "milestone" ? piFirstTurn : piEnd).safeParse(payload);
   if (!parsed.success) {
-    if (payload.event === "end") state.invalid++;
+    if (payload.event === "end" || payload.event === "milestone") state.invalid++;
     return;
   }
   const record = parsed.data;
-  const key = `${allocationKey(record)}/${record.turnId}/${record.phase}/${record.seq ?? "parent"}`;
+  const scope = allocationKey(record);
+  const identity = record.event === "milestone" ? record.milestone : `${record.phase}/${record.seq ?? "parent"}`;
+  const key = `${scope}/${record.turnId}/${identity}`;
   if (state.piSeen.has(key)) {
     state.duplicatePi++;
     return;
   }
   state.piSeen.add(key);
-  noteTurn(state, record.turnId, allocationKey(record));
+  noteTurn(state, record.turnId, scope);
+  const metric = record.event === "milestone" ? "native_exec_to_first_turn_observed" : record.phase;
   state.piRecords.push({
     turnId: record.turnId,
-    metric: `pi/${new Date(timestamp).toISOString().slice(0, 10)}/${record.phase}`,
-    value: record.durationMs,
+    metric: `pi/${new Date(timestamp).toISOString().slice(0, 10)}/${metric}`,
+    value: record.event === "milestone" ? record.receivedElapsedMs : record.durationMs,
   });
 }
 

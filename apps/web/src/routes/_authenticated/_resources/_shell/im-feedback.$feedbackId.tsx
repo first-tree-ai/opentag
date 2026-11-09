@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ImFeedbackDestinationPage, type ImFeedbackLink } from "../../../../features/im-feedback-destination-page.js";
 import { ImFeedbackPage } from "../../../../features/im-feedback-page.js";
 
-const LINKS: readonly ImFeedbackLink[] = ["settings", "task", "restore"];
+const LINKS: readonly ImFeedbackLink[] = ["settings", "task", "restore", "agent"];
 export const Route = createFileRoute("/_authenticated/_resources/_shell/im-feedback/$feedbackId")({
   component: FeedbackRoute,
   validateSearch: (search: Record<string, unknown>) => ({

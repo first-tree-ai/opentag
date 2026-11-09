@@ -208,13 +208,13 @@ nothing. A cancelled Run leaves the summary alone.
 
 ### Card links
 
-A link in a failure card or offline notice opens `/im-feedback/<id>?open=settings|task|restore`. Everyone in the
+A link in a failure card or a waiting notice opens `/im-feedback/<id>?open=settings|task|restore|agent`. Everyone in the
 conversation sees the same link, and an IM identity is not an Account, so the reader is decided only after sign-in.
 `GET /api/v1/im-feedback/:id/destination` answers any signed-in Account. When that Account owns both the Agent and
 the feedback target, the answer holds the Agent and Task, and the page goes straight on: `settings` opens the Agent's
-execution settings, `restore` its Computer settings, and `task` the original Task. Anyone else gets only the owner's
+execution settings, `restore` its Computer settings, `agent` the Agent page, and `task` the original Task. Anyone else gets only the owner's
 display name and the Agent's name, and the page says that only the Agent owner can change its settings, restore its
-connection, or view the task, and who that owner is. Neither answer carries the error, the conversation, or any other
+connection, view the Agent, or view the task, and who that owner is. Neither answer carries the error, the conversation, or any other
 target detail; a deleted Agent or unknown ID is not found. An Account that has never finished setup still sees this page
 rather than being sent to first-Agent setup, because a group member following a link may have no Agent of their own. Opening a link is read-only. Without `open`, the URL is
 the owner-only details page below.

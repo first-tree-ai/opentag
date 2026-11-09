@@ -43,5 +43,6 @@
   "im_feedback_owner_only_restore": "Only the Agent owner can restore its connection",
   "im_feedback_owner_only_task": "Only the Agent owner can view this task",
   "im_feedback_owner_is": "{agent} is owned by {owner}",
-  "im_feedback_go_agents": "Go to my Agents"
+  "im_feedback_go_agents": "Go to my Agents",
+  "im_feedback_owner_only_agent": "Only the Agent owner can view this Agent"
 }

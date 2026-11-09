@@ -29,6 +29,7 @@ describe("IM card links", () => {
     ["settings", { to: "/agents/$agentId/settings/$section", params: { agentId: AGENT, section: "execution" } }],
     ["restore", { to: "/agents/$agentId/settings/$section", params: { agentId: AGENT, section: "computer" } }],
     ["task", { to: "/agents/$agentId/tasks/$taskId", params: { agentId: AGENT, taskId: TASK } }],
+    ["agent", { to: "/agents/$agentId", params: { agentId: AGENT } }],
   ] as const)("sends the Agent owner straight to %s", async (link, expected) => {
     await renderInRouter(<ImFeedbackDestinationPage feedbackId={ID} link={link} api={owner} />);
     await vi.waitFor(() => expect(redirects.at(-1)).toEqual({ ...expected, replace: true }));

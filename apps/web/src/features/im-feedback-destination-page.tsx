@@ -5,18 +5,20 @@ import { browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { m } from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
-import { agentSettingsSectionLink, agentTaskDetailLink } from "./agents/agent-routes.js";
+import { agentDetailLink, agentSettingsSectionLink, agentTaskDetailLink } from "./agents/agent-routes.js";
 import { Redirect } from "./navigation/redirect.js";
 
-export type ImFeedbackLink = "settings" | "task" | "restore";
+export type ImFeedbackLink = "settings" | "task" | "restore" | "agent";
 
 function ownerOnly(link: ImFeedbackLink): string {
   if (link === "settings") return m.im_feedback_owner_only_settings();
+  if (link === "agent") return m.im_feedback_owner_only_agent();
   return link === "restore" ? m.im_feedback_owner_only_restore() : m.im_feedback_owner_only_task();
 }
 
 function destinationLink(link: ImFeedbackLink, destination: Extract<ImFeedbackDestination, { owner: true }>) {
   if (link === "task") return agentTaskDetailLink(destination.agentId, destination.taskId);
+  if (link === "agent") return agentDetailLink(destination.agentId);
   return agentSettingsSectionLink(destination.agentId, link === "settings" ? "execution" : "computer");
 }
 

@@ -172,6 +172,9 @@ const STOP_REDELIVERY_LIMIT = 64;
 // Local reconcile + delivery. Cloud preparation + receipt, including time queued before the send.
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
 const SCHEDULED_CLOUD_BUDGET_MS = 280_000;
+const SCHEDULED_CLOUD_SHORT_BUDGET_MS = 20_000;
+// Keep a quarter of the scheduler's 100 slots available for short hand-offs.
+const SCHEDULED_CLOUD_EXTENDED_SLOTS = 75;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
 
 type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; recipientSessionId: string };
@@ -257,7 +260,7 @@ export interface SessionCollaborationServiceOptions {
   /** Test seam for how long a stop waits for its execution side before answering `pending`. */
   stopAnswerBudgetMs?: number;
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
-  scheduledBudgets?: { localMs?: number; cloudMs?: number };
+  scheduledBudgets?: { localMs?: number; cloudMs?: number; cloudExtendedSlots?: number };
   onDiagnostic?: (code: string) => void;
   logger?: Pick<ServiceLogger, "error">;
 }
@@ -271,6 +274,8 @@ export class SessionCollaborationService {
   readonly #stopEnded: SessionCollaborationServiceOptions["stopEnded"];
   readonly #scheduledLocalBudgetMs: number;
   readonly #scheduledCloudBudgetMs: number;
+  readonly #scheduledCloudExtendedSlots: number;
+  #cloudExtendedInFlight = 0;
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -288,6 +293,7 @@ export class SessionCollaborationService {
     this.#stopAnswerBudgetMs = options.stopAnswerBudgetMs ?? SESSION_STOP_ANSWER_BUDGET_MS;
     this.#scheduledLocalBudgetMs = options.scheduledBudgets?.localMs ?? SCHEDULED_LOCAL_BUDGET_MS;
     this.#scheduledCloudBudgetMs = options.scheduledBudgets?.cloudMs ?? SCHEDULED_CLOUD_BUDGET_MS;
+    this.#scheduledCloudExtendedSlots = options.scheduledBudgets?.cloudExtendedSlots ?? SCHEDULED_CLOUD_EXTENDED_SLOTS;
     this.#onDiagnostic = options.onDiagnostic;
     this.#logger = options.logger;
   }
@@ -323,7 +329,9 @@ export class SessionCollaborationService {
      * known; the corrected timer then anchors the exact remaining budget to the entry time.
      */
     const startedAt = Date.now();
-    let timer = startBudgetTimer(controller, Math.max(this.#scheduledLocalBudgetMs, this.#scheduledCloudBudgetMs));
+    const shortCloudBudget = Math.min(this.#scheduledCloudBudgetMs, SCHEDULED_CLOUD_SHORT_BUDGET_MS);
+    let timer = startBudgetTimer(controller, Math.max(this.#scheduledLocalBudgetMs, shortCloudBudget));
+    let releaseExtendedCloud: (() => void) | undefined;
     try {
       const signal = controller.signal;
       const fenced = await raceWithAbort(this.#sessions.beginScheduledMessageAttempt(snapshot.messageId), signal);
@@ -353,7 +361,9 @@ export class SessionCollaborationService {
         return record("unreachable", resolution.code);
       }
       const route = resolution.route;
-      const deadline = this.#scheduledDeadline(snapshot, route.targetComputerKind, startedAt);
+      releaseExtendedCloud = this.#reserveExtendedCloudSlot(route.targetComputerKind);
+      const cloudBudget = releaseExtendedCloud ? this.#scheduledCloudBudgetMs : shortCloudBudget;
+      const deadline = this.#scheduledDeadline(snapshot, route.targetComputerKind, startedAt, cloudBudget);
       clearTimeout(timer);
       const remaining = deadline - Date.now();
       if (remaining <= 0) return record("unreachable", "delivery_timeout");
@@ -368,12 +378,26 @@ export class SessionCollaborationService {
     } finally {
       clearTimeout(timer);
       parentSignal?.removeEventListener("abort", onParentAbort);
+      releaseExtendedCloud?.();
     }
   }
 
-  #scheduledDeadline(snapshot: ScheduledMessageSnapshot, target: "local" | "cloud", startedAt: number): number {
+  #reserveExtendedCloudSlot(target: "local" | "cloud"): (() => void) | undefined {
+    if (target !== "cloud" || this.#cloudExtendedInFlight >= this.#scheduledCloudExtendedSlots) return;
+    this.#cloudExtendedInFlight += 1;
+    return () => {
+      this.#cloudExtendedInFlight -= 1;
+    };
+  }
+
+  #scheduledDeadline(
+    snapshot: ScheduledMessageSnapshot,
+    target: "local" | "cloud",
+    startedAt: number,
+    cloudBudget: number,
+  ): number {
     if (target === "local") return startedAt + this.#scheduledLocalBudgetMs;
-    const deadline = startedAt + this.#scheduledCloudBudgetMs;
+    const deadline = startedAt + cloudBudget;
     return Math.min(deadline, snapshot.nextTriggerAt?.getTime() ?? deadline);
   }
 

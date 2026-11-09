@@ -109,7 +109,7 @@ async function dispatchWithAdmission<T>(
 function makeFixture(
   route: AuthorizedScheduledMessageRoute,
   options: {
-    budgets?: { localMs?: number; cloudMs?: number };
+    budgets?: { localMs?: number; cloudMs?: number; cloudExtendedSlots?: number };
     /** Refuse the admission with `dispatch_not_marked` from this stage number onwards. */
     refuseFrom?: number;
   } = {},
@@ -499,6 +499,28 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
     await vi.advanceTimersByTimeAsync(500);
     await expect(dispatch).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+  });
+
+  it("gives excess Cloud dispatches a short window and releases the extended slot", async () => {
+    const { snapshot, route } = snapshotFixture();
+    route.targetComputerKind = "cloud";
+    const fixture = makeFixture(route, { budgets: { cloudMs: 30_000, cloudExtendedSlots: 1 } });
+    fixture.cloud.deliver.mockImplementation(() => new Promise(() => undefined));
+
+    const extended = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    const short = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(short).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(extended).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+
+    const recovered = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(recovered).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
   });
 
   it("expires an unsent Cloud occurrence at the next trigger and refuses late admission", async () => {

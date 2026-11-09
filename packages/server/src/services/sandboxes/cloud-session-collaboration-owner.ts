@@ -1293,14 +1293,22 @@ export class CloudSessionCollaborationOwner {
     ensure: () => Promise<IngressAllocationOutcome>,
     signal: AbortSignal,
   ): Promise<IngressAllocationOutcome> {
+    let allocationResumed = false;
     while (true) {
-      await delay(SCHEDULED_READINESS_POLL_MS, undefined, { signal, ref: false });
+      try {
+        await delay(SCHEDULED_READINESS_POLL_MS, undefined, { signal, ref: false });
+      } catch (error) {
+        signal.throwIfAborted();
+        throw error;
+      }
       const owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
       signal.throwIfAborted();
       if (!owned || owned.sandbox.id !== sandboxId) return "stopped";
       const row = owned.sandbox;
       if (this.#isRunnerReady(row)) return "ready";
       if (row.lifecycle !== "unallocated" || row.idleReclaimAt !== null) continue;
+      if (allocationResumed) continue;
+      allocationResumed = true;
       const outcome = await ensure();
       signal.throwIfAborted();
       if (outcome === "restore_required") return outcome;

@@ -103,13 +103,13 @@ Thread Session never compacts.
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).
 2. Start the daemon again.
 3. Expected: within about a minute the Session continues with reason "the OpenTag daemon stopped (crash, power loss, restart, or upgrade)";
-   no red "result cannot be confirmed" card appears; the working reaction stays until the retried Turn ends; the reply
+   no "result cannot be confirmed" failure message appears; the working reaction stays until the retried Turn ends; the reply
    arrives once the retry completes, followed by any messages that queued meanwhile.
 
 ## Orderly restart or upgrade
 
 1. Start a long Run, then run `opentag daemon restart` (or upgrade the client).
-2. Expected: no "cancelled" outcome is reported and no error card appears; after the restart the Session continues
+2. Expected: no "cancelled" outcome is reported and no failure message appears; after the restart the Session continues
    with reason "the OpenTag daemon was restarted or upgraded".
 
 ## Automatic upgrade while Sessions run
@@ -118,7 +118,7 @@ Thread Session never compacts.
    channel target.
 2. Expected: `opentag daemon status` does not stay in `awaiting_protected_work`. While the new version installs, a new
    IM message still gets a reply. After the restart both Sessions continue with reason "the OpenTag daemon was
-   restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
+   restarted or upgraded", with no failure message and no creator notice. A second upgrade during the same Run also
    continues it.
 
 ## Completed report delivery failures without restarting the daemon
@@ -167,14 +167,14 @@ Thread Session never compacts.
 1. Repeat the crash case, and kill the daemon again within a minute or so of each resume; start it again each time. Wait
    as long as you like between a kill and the next start: downtime does not count as running.
 2. Expected: the first two interruptions each continue the Session. After the third, no further Run starts. The IM
-   conversation shows the existing error card for the Turn (result cannot be confirmed), exactly once.
+   conversation shows the existing failure message for the Turn (result cannot be confirmed), exactly once.
 3. Let a resumed Run work for more than 5 minutes (for example `sleep 400`), then kill the daemon. Expected: the count has
    reset, so the Session continues again.
 
 ## Run timeout and model rate limit
 
 1. Give the Agent a run budget shorter than the task (Agent settings), then send the long task.
-2. Expected: when the budget expires there is no retry. The timeout error card appears once.
+2. Expected: when the budget expires there is no retry. The timeout failure message appears once.
 3. Give the Agent a budget of a few minutes, send a task that needs longer, kill the daemon about halfway through and
    start it after a while. Expected: the Session continues, and the timeout comes when the two parts of the run add up to
    the budget. The time the daemon was down does not count.
@@ -250,7 +250,7 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 2. Kill and restart the daemon while the steered message is in the Turn.
 3. Expected: the Turn continues. If the Agent had already answered after the message, it is not injected again (Claude Code and
    Codex). Otherwise, and always with Pi, it is steered in again with the notice that it may already have been handled. If that
-   Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+   Turn fails, the message fails with it and does not run again: the person gets the failure message, and the
    message's sender gets a notice.
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
@@ -331,7 +331,7 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 ## Failure notice to the sender
 
 1. Have a child send a Session message to its visible parent, and make that Run fail. Expected: the child, as the sender, gets
-   one notice naming the parent's Session, and the parent's IM conversation gets no error card.
+   one notice naming the parent's Session, and the parent's IM conversation gets no failure message.
 2. Have one child send a message to a sibling, and make that Run fail. Expected: the sending child gets one notice; their parent
    gets none.
 3. Make a parent's task fail in its child. Expected: the parent gets exactly one notice, though it is both sender and creator.

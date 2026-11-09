@@ -196,7 +196,8 @@ using the existing generation-bound sandbox service; the action is persisted bef
 A verified save says that the environment was saved and released and will restore on the next allocation, never that
 execution resumed in place. Save success requires the exact generation's sealed archive proof. An unallocated
 environment alone yields an unverified release message. Unknown or restarted operations are queried, never
-resubmitted automatically. The original failure message is edited to show the operation result, actor, and timestamp.
+resubmitted automatically. The original failure message is edited to show the operation result, actor, and timestamp. The actor's display name has its
+`<`, `>`, `[` and `]` replaced with lookalikes, as schedule names are, so a profile name can't add a link or a mention.
 
 New Task Retry admissions are disabled. Existing admitted
 retry deliveries, immutable terminal reports, attempt identity and message order remain intact.

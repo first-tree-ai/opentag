@@ -3,7 +3,8 @@ import { WebAPIRateLimitedError } from "@slack/web-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
-import type { FeedbackTarget } from "../services/im/im-feedback-store.js";
+import type { FeedbackAction, FeedbackTarget } from "../services/im/im-feedback-store.js";
+import { renderFeedbackText } from "../services/im/im-feedback-text.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 import { deferred } from "./support/deferred.js";
 
@@ -673,4 +674,24 @@ describe("postConversationText", () => {
       h.messenger.postConversationText({ ...scope, provider: "slack" }, "failed", "req"),
     ).rejects.toMatchObject({ code: "IM_FEEDBACK_SEND_UNKNOWN" });
   });
+});
+
+it("keeps link and mention syntax in an actor's display name inert, leaving only the details link", () => {
+  const actorDisplayName =
+    'x [click](http://evil.example) <http://evil.example|View details> <at user_id="all">y</at> <!channel>';
+  const action = {
+    kind: "save_release",
+    state: "succeeded",
+    resultCode: "saved_released",
+    actorDisplayName,
+    updatedAt: new Date("2026-11-09T00:00:00.000Z"),
+  } as FeedbackAction;
+  const feishu = renderFeedbackText({ ...target("feishu"), state: "workspace_blocked" }, "https://app.test", action);
+  const slack = renderFeedbackText({ ...target("slack"), state: "workspace_blocked" }, "https://app.test", action);
+  expect(feishu.match(/\]\(/gu)).toHaveLength(1);
+  expect(feishu).toContain("［click］(http://evil.example)");
+  expect(feishu).not.toContain("<at");
+  expect(slack.match(/</gu)).toHaveLength(1);
+  expect(slack).not.toContain("<!channel>");
+  expect(slack).toContain("Saved and environment released");
 });

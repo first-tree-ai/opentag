@@ -25,7 +25,10 @@ export function feedbackContent(target: FeedbackTarget, action?: FeedbackAction,
   const result =
     actionResult(language, action) ??
     (target.state === "completed" ? FEEDBACK_LABELS.taskCompleted[language] : undefined);
-  const attribution = action ? ` · ${action.actorDisplayName.slice(0, 255)} · ${action.updatedAt.toISOString()}` : "";
+  // A display name is free text, and these messages are parsed for provider link and mention syntax.
+  const attribution = action
+    ? ` · ${plainText(action.actorDisplayName.slice(0, 255))} · ${action.updatedAt.toISOString()}`
+    : "";
   const failure = failureCopy(target.errorCode, language, {
     workspaceBlocked: target.state === "workspace_blocked",
     batchRetryBlocked: target.batchRetryBlocked,
@@ -38,6 +41,20 @@ export function feedbackContent(target: FeedbackTarget, action?: FeedbackAction,
     result: !!result,
     checking: !!checking,
   };
+}
+
+/**
+ * Provider mention and link syntax need these brackets, so text a person chose (a schedule name, a display name)
+ * can't carry a link or a mention into a Bot message.
+ */
+export function plainText(text: string): string {
+  return text
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/</gu, "‹")
+    .replace(/>/gu, "›")
+    .replace(/\[/gu, "［")
+    .replace(/\]/gu, "］");
 }
 
 /** The link stays in the text so readback can match the exact details URL on both providers. */

@@ -121,7 +121,7 @@ receive role-aware managed instructions and may create further internal Sessions
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
+For eligible human IM inputs, the Server owns the working reaction and terminal failure-message projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
 
 openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
@@ -171,7 +171,7 @@ An older grant without outbox context still leaves visible Session messages queu
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. A Session message has the same goal as an IM message: once accepted, the
-Client owns retrying it, and a final failure or an unrecoverable error reaches whoever sent it, as an error card reaches the
+Client owns retrying it, and a final failure or an unrecoverable error reaches whoever sent it, as a failure message reaches the
 person for an IM message. So when a message's Run ends without completing, the Server tells the message's sender, whichever
 kind of Session the target is. A scheduled message has no sender: its notice goes to an internal target's creator
 (`created_by_session_id`), and a visible target produces none:
@@ -215,7 +215,10 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
   notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
-  see [Cloud context](../cloud/cloud-context.md).
+  see [Cloud context](../cloud/cloud-context.md). Once a finished outcome report or Turn Report is older than 7 days, a later write removes it from its local durable
+file, unless its outcome report is still pending. Finished inbox (`session-message`) records are never pruned. They are
+the inbox's deduplication evidence: if a message's acceptance reply is lost, the Server keeps its row `unknown` and can
+send it again under the same ID at any age.
 
 - Background work: a Run stays open while its background work is live, up to its limit, and a message that arrives during
   the wait joins the Run. A Run that stops at its limit is reported as `timed_out` as usual, and the Session reads what
@@ -246,6 +249,10 @@ Safety rules:
   must have sent it. The ID is public and `session_messages.id` is global, so ordinary create/send cannot record a new row under a
   version 5 UUID: no Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one
   notice, which is then ignored and logged.
+- A recipient that has ended is replaced by the nearest active Session up its own creation chain
+  (`created_by_session_id`). If the sender and its creator have both ended, the notice goes to the creator's creator,
+  and so on up to the visible root. The search stops without a notice when the chain reaches the reporting Session
+  itself, when it reaches an ended Session with no creator, or past 32 levels.
 
 No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
 

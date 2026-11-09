@@ -92,6 +92,7 @@ import {
 } from "./runtime-credential-environment-manager.js";
 import type { RuntimeProxyDataConnectionFactory, RuntimeRelayScheduler } from "./runtime-credential-relay.js";
 import {
+  type DurableFileQuarantine,
   FileRuntimeDurabilityStore,
   RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
@@ -352,6 +353,11 @@ export interface CreateClientRuntimeOptions {
    * is the host's judgement, because the answer differs between a Computer and a Runner.
    */
   readonly agentErrorReporter?: AgentTurnErrorReporter;
+  /**
+   * Relays a Local durable file that was unreadable and moved aside at start-up or on write. The
+   * records in it are lost; the runtime logs the loss and keeps running.
+   */
+  readonly durableQuarantineReporter?: (quarantine: DurableFileQuarantine) => void;
 }
 
 export class ComposedClientRuntime {
@@ -795,11 +801,23 @@ export async function createClientRuntime(
     logger: moduleLogger("context-tree"),
     managedCredentials: credentialMode === "proxy",
   });
+  const durabilityLogger = moduleLogger("runtime-durability");
+  const onQuarantine = (quarantine: DurableFileQuarantine) => {
+    durabilityLogger.error(
+      {
+        kind: quarantine.kind,
+        quarantinedPath: quarantine.quarantinedPath,
+        lostRecords: quarantine.lostRecords,
+        errorMessage: quarantine.error.message,
+      },
+      "Unreadable durable file moved aside; its records are lost",
+    );
+    options.durableQuarantineReporter?.(quarantine);
+  };
+  const localDurabilityStore = () => new FileRuntimeDurabilityStore(options.home, { onQuarantine });
   const durabilityStore =
     options.durabilityStore ??
-    (options.serverDurability
-      ? new ServerRuntimeDurabilityStore(options.serverDurability)
-      : new FileRuntimeDurabilityStore(options.home));
+    (options.serverDurability ? new ServerRuntimeDurabilityStore(options.serverDurability) : localDurabilityStore());
   const durabilityMetrics = options.durabilityMetrics ?? new RuntimeDurabilityMetrics();
   const reportOwner = new TurnReportOwner({
     connection,
@@ -892,7 +910,7 @@ export async function createClientRuntime(
   const sessionMessageOutcomes = new SessionMessageOutcomeReporter({
     connection,
     logger: moduleLogger("session-message-outcome"),
-    persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
+    persistence: options.durabilityStore ?? localDurabilityStore(),
   });
   // Durable input of accepted IM Turns, for their one automatic retry (Local only).
   const turnRetries = new TurnRetryStore(options.home);

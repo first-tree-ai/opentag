@@ -42,10 +42,21 @@ With an IM test binding and a runtime that can be made to fail on request:
    URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
 2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
    does not change the language.
-3. Make the workspace save fail. Expected: a card with Retry save and Discard buttons in the language of the request,
-   with no error code. The buttons open the details page.
-4. Fail an input that was created before plain text was enabled. Expected: it stays a card; nothing is converted or
-   sent again.
+3. Make the workspace save fail. Expected: one plain-text reply in the language of the request, with no card, buttons
+   or error code. Its next step says the save can be retried or the changes discarded from the details page, followed
+   by the details link. Open the link as the Agent owner, retry the save, and confirm. Expected: the operation runs from
+   the page, and the original reply is edited in place to show the result, actor and time. Repeat with Discard, which
+   asks for the permanent-loss confirmation first.
+4. Legacy cards from a release that still sent them. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the
+   messenger suite (`im-feedback-messenger.test.ts`), or a test deployment upgraded from such a release:
+   - A target stored as `interactive_v1` that never sent: it is rewritten to `text_v1` when the send is reserved and is
+     sent once as text.
+   - A card already sent: a later status change or save/discard result makes no provider call and posts no new message;
+     the details page shows the current state.
+   - A card send whose outcome is unknown: readback still binds the card (Slack by its `opentag_feedback:<id>` block ID,
+     Feishu by the details URL) and never creates a second message.
+   - Clicking a button on an old card: Slack answers without an error and does nothing; a Feishu Retry button shows a
+     "no longer available" toast. Neither returns a server error.
 
 ## Feishu system reaction projection
 
@@ -71,11 +82,11 @@ Hold a projection across several timer ticks and explicit `runOnce` calls. Verif
 start/end pair for the actual pass, including a failed pass. Fail or time out one target and verify independent targets
 still settle. Block the failed target's settlement with a PostgreSQL row lock after a cooldown-storage failure, then let
 its siblings finish. No fifth target may be claimed or started while the failed settlement is waiting; releasing the
-lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent card stays pending, then
+lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent failure message stays pending, then
 release capacity and verify one send succeeds. Queue deadlines remain definitely unsent, while in-flight send deadlines
 retain unknown-send reconciliation. During controlled shutdown,
 verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
-Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
+Cancel an in-flight working task and verify its working reaction is removed without creating a failure message or replaying
 execution. These deterministic checks do not establish native provider latency or deployment acceptance.
 
 ## Channel Session idle compaction
@@ -92,13 +103,13 @@ Thread Session never compacts.
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).
 2. Start the daemon again.
 3. Expected: within about a minute the Session continues with reason "the OpenTag daemon stopped (crash, power loss, restart, or upgrade)";
-   no red "result cannot be confirmed" card appears; the working reaction stays until the retried Turn ends; the reply
+   no "result cannot be confirmed" failure message appears; the working reaction stays until the retried Turn ends; the reply
    arrives once the retry completes, followed by any messages that queued meanwhile.
 
 ## Orderly restart or upgrade
 
 1. Start a long Run, then run `opentag daemon restart` (or upgrade the client).
-2. Expected: no "cancelled" outcome is reported and no error card appears; after the restart the Session continues
+2. Expected: no "cancelled" outcome is reported and no failure message appears; after the restart the Session continues
    with reason "the OpenTag daemon was restarted or upgraded".
 
 ## Automatic upgrade while Sessions run
@@ -107,7 +118,7 @@ Thread Session never compacts.
    channel target.
 2. Expected: `opentag daemon status` does not stay in `awaiting_protected_work`. While the new version installs, a new
    IM message still gets a reply. After the restart both Sessions continue with reason "the OpenTag daemon was
-   restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
+   restarted or upgraded", with no failure message and no creator notice. A second upgrade during the same Run also
    continues it.
 
 ## Completed report delivery failures without restarting the daemon
@@ -156,14 +167,14 @@ Thread Session never compacts.
 1. Repeat the crash case, and kill the daemon again within a minute or so of each resume; start it again each time. Wait
    as long as you like between a kill and the next start: downtime does not count as running.
 2. Expected: the first two interruptions each continue the Session. After the third, no further Run starts. The IM
-   conversation shows the existing error card for the Turn (result cannot be confirmed), exactly once.
+   conversation shows the existing failure message for the Turn (result cannot be confirmed), exactly once.
 3. Let a resumed Run work for more than 5 minutes (for example `sleep 400`), then kill the daemon. Expected: the count has
    reset, so the Session continues again.
 
 ## Run timeout and model rate limit
 
 1. Give the Agent a run budget shorter than the task (Agent settings), then send the long task.
-2. Expected: when the budget expires there is no retry. The timeout error card appears once.
+2. Expected: when the budget expires there is no retry. The timeout failure message appears once.
 3. Give the Agent a budget of a few minutes, send a task that needs longer, kill the daemon about halfway through and
    start it after a while. Expected: the Session continues, and the timeout comes when the two parts of the run add up to
    the budget. The time the daemon was down does not count.
@@ -247,7 +258,7 @@ Codex and Pi (on Pi with `background_bash`).
 2. Kill and restart the daemon while the steered message is in the Turn.
 3. Expected: the Turn continues. If the Agent had already answered after the message, it is not injected again (Claude Code and
    Codex). Otherwise, and always with Pi, it is steered in again with the notice that it may already have been handled. If that
-   Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+   Turn fails, the message fails with it and does not run again: the person gets the failure message, and the
    message's sender gets a notice.
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
@@ -328,7 +339,7 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 ## Failure notice to the sender
 
 1. Have a child send a Session message to its visible parent, and make that Run fail. Expected: the child, as the sender, gets
-   one notice naming the parent's Session, and the parent's IM conversation gets no error card.
+   one notice naming the parent's Session, and the parent's IM conversation gets no failure message.
 2. Have one child send a message to a sibling, and make that Run fail. Expected: the sending child gets one notice; their parent
    gets none.
 3. Make a parent's task fail in its child. Expected: the parent gets exactly one notice, though it is both sender and creator.

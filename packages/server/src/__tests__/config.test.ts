@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -1356,4 +1357,9 @@ describe("Skill storage configuration", () => {
       ).toThrow();
     }
   });
+});
+
+it("does not advertise the retired IM feedback card rollback switch", () => {
+  const example = readFileSync(new URL("../../../../.env.example", import.meta.url), "utf8");
+  expect(example).not.toContain("OPENTAG_IM_FEEDBACK_TEXT_ENABLED");
 });

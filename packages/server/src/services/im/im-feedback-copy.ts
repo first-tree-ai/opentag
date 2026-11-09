@@ -33,8 +33,8 @@ const NEXT = {
   },
   resend: { zh: "如果还需要，请再发一次。", en: "If you still need this, send it again." },
   workspace: {
-    zh: "这个 Session 的工作已暂停，新消息会继续排队。保存或放弃文件不会撤销已经发生的外部操作。",
-    en: "Work in this Session is paused; new input for this Session remains queued. Saving or discarding files will not undo external operations.",
+    zh: "这个 Session 的工作已暂停，新消息会继续排队。可以在详情页重试保存或放弃改动，但这不会撤销已经发生的外部操作。",
+    en: "Work in this Session is paused; new input for this Session remains queued. You can retry the save or discard the changes from the details page; neither undoes external operations.",
   },
   batch: {
     zh: "这批消息不能在这里重试。先打开原任务，逐条看过后再开始新工作。",
@@ -175,10 +175,6 @@ export function offlineNoticeCopy(language: FeedbackLanguage): { before: string;
 
 export const FEEDBACK_LABELS = {
   details: { zh: "查看详情", en: "View details" },
-  taskFailed: { zh: "任务失败", en: "Task failed" },
-  taskStatus: { zh: "任务状态", en: "Task status" },
-  retrySave: { zh: "重试保存", en: "Retry save" },
-  discard: { zh: "放弃改动", en: "Discard unsaved changes" },
   taskCompleted: { zh: "任务已完成", en: "Task completed" },
   checking: { zh: "正在确认操作结果，请不要重复提交", en: "Checking the operation result; do not submit it again" },
   actionFailed: {

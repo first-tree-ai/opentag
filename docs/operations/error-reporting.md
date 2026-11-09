@@ -185,6 +185,15 @@ provider. One failure per Session and reason is relayed per 30 seconds, the same
 because the daemon is long-lived and a Session whose every turn fails the same way would otherwise post one
 report per turn. The relay is not waited on: a slow tracker must not hold a turn open.
 
+**Local durable files.** The daemon keeps accepted Session messages, their outcome reports, and Turn Reports in
+one JSON file per kind under `data/runtime/durability/`. A file that does not parse, or does not match its
+schema, is moved to `<kind>.json.corrupt-<epoch ms>` (with `-1`, `-2`, … appended when that name is taken, so an
+earlier archive is never replaced) and the store continues empty for that kind, so one
+damaged file neither stops the daemon from starting nor fails every later write. The records in it are lost
+to this Computer. The daemon logs an error naming the kind, the quarantined path, and an estimated count of the
+records it still named, and relays one `durable_file_quarantined` report with the kind and that count, never the
+path or the content. The quarantined file is left for whoever diagnoses it; nothing reads or deletes it.
+
 A CLI report goes to the server this installation is connected to: the Account credentials' server URL, or the
 Computer identity's when only machine credentials exist. A CLI that has never logged in or connected sends
 nothing. Each report waits at most three seconds for the relay.

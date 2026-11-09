@@ -307,9 +307,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      const result = claudeCodeRunResult(this.#terminal, this.#assistantError);
-      if (!followUpFailed || result.status !== "failed") return result;
-      return answeredWithFollowUpFailure(result);
+      return claudeCodeRunOutcome(this.#terminal, this.#assistantError, followUpFailed);
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -1396,6 +1394,16 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
     ...(isNonNegativeNumber(message.total_cost_usd) ? { totalCostUsd: message.total_cost_usd } : {}),
     ...(usage ? { usage } : {}),
   };
+}
+
+/** The Run's result. A failure of a turn Claude Code started itself, after the input was answered, does not fail it. */
+function claudeCodeRunOutcome(
+  terminal: ClaudeCodeTerminal,
+  assistantError: string | undefined,
+  followUpFailed: boolean | undefined,
+): AgentProviderRunResult {
+  const result = claudeCodeRunResult(terminal, assistantError);
+  return followUpFailed && result.status === "failed" ? answeredWithFollowUpFailure(result) : result;
 }
 
 function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {

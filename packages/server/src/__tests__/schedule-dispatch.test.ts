@@ -29,6 +29,7 @@ import {
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
 import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
+import { deferred } from "./support/deferred.js";
 import { stubScheduleScope } from "./support/schedule-scope.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -884,19 +885,26 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     });
     await expect(messageRow(claim.snapshot.messageId)).resolves.toMatchObject({ lastErrorCode: "delivery_held" });
 
-    refuse(undefined);
     const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
     expect(held.map(({ id }) => id)).toEqual([claim.snapshot.messageId]);
-    const redelivered = held[0];
-    if (!redelivered) throw new Error("expected a held message");
-    await expect(stack.collaboration.redeliverHeld(redelivered)).resolves.toBe("settled");
+    const firstRetry = held[0];
+    if (!firstRetry) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(firstRetry)).resolves.toBe("held");
+
+    refuse(undefined);
+    const [secondRetry] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!secondRetry) throw new Error("expected a held message after the explicit refusal");
+    await expect(stack.collaboration.redeliverHeld(secondRetry)).resolves.toBe("settled");
 
     expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastOutcome: "accepted", lastErrorCode: null });
     expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ outcome: "accepted", code: null });
-    expect(stack.deliveryFrames.at(-1)).toMatchObject({
-      messageId: claim.snapshot.messageId,
-      scheduledOrigin: claim.snapshot.origin,
-    });
+    expect(stack.deliveryFrames).toHaveLength(3);
+    for (const frame of stack.deliveryFrames) {
+      expect(frame).toMatchObject({
+        messageId: claim.snapshot.messageId,
+        scheduledOrigin: claim.snapshot.origin,
+      });
+    }
     await expect(stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10)).resolves.toEqual([]);
   });
 
@@ -929,6 +937,150 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     expect(stack.deliveryFrames.map(({ messageId }) => messageId)).not.toContain(first.snapshot.messageId);
     expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
   });
+
+  it.each([
+    { boundary: "the next trigger", claimNext: false, ttl: false, code: "delivery_superseded" },
+    { boundary: "the next claim", claimNext: true, ttl: false, code: "delivery_superseded" },
+    { boundary: "the one-shot retry deadline", claimNext: false, ttl: true, code: "delivery_expired" },
+  ])("stops a held occurrence at $boundary", async ({ claimNext, ttl, code }) => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    stack.registry.currentInstanceId.mockReturnValueOnce(undefined);
+    const row = await insertSchedule(seed, {
+      schedule: ttl ? { kind: "at", at: T0.toISOString() } : EVERY_MINUTE,
+      nextTriggerAt: T0,
+    });
+    const first = await claimOf(stack, row.id);
+    if (first.kind !== "claimed") throw new Error("expected a claim");
+    await expect(stack.collaboration.dispatchScheduledMessage(first.snapshot)).resolves.toMatchObject({
+      code: "delivery_held",
+    });
+
+    const reconcileStarted = deferred<void>();
+    const reconcileReply = deferred<void>();
+    stack.domain.requestReconcile.mockImplementationOnce((_c, _i, request, onDispatched, admission) =>
+      dispatchWithAdmission<SessionReconcileResult>(
+        async () => {
+          reconcileStarted.resolve();
+          await reconcileReply.promise;
+          return {
+            type: "session:reconcile:result",
+            requestId: request.requestId,
+            sessionId: seed.targetSessionId,
+            placementGeneration: 1,
+            status: "ready",
+          };
+        },
+        admission,
+        onDispatched,
+      ),
+    );
+    const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!held) throw new Error("expected a held message");
+    const redelivery = stack.collaboration.redeliverHeld(held);
+    await reconcileStarted.promise;
+    currentTime = new Date(T0.getTime() + (ttl ? 86_400_000 : 60_000));
+    try {
+      if (claimNext) expect(await claimOf(stack, row.id)).toMatchObject({ kind: "claimed" });
+    } finally {
+      reconcileReply.resolve();
+    }
+
+    await expect(redelivery).resolves.toBe("settled");
+    expect(stack.deliveryFrames).toEqual([]);
+    await expect(messageRow(held.id)).resolves.toMatchObject({
+      lastOutcome: "unreachable",
+      lastErrorCode: code,
+    });
+  });
+
+  it("recovers a held one-shot after a reconcile timeout, then removes retry eligibility before sending", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    stack.domain.requestReconcile.mockImplementationOnce((_c, _i, _request, onDispatched, admission) =>
+      dispatchWithAdmission(
+        () => Promise.reject(new RuntimeDomainRequestError("timeout", "The reconcile reply did not arrive")),
+        admission,
+        onDispatched,
+      ),
+    );
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const claim = await claimOf(stack, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(stack.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toMatchObject({
+      code: "delivery_held",
+    });
+    expect(stack.deliveryFrames).toEqual([]);
+
+    const restarted = makeStack(seed);
+    restarted.registry.supportsCapability.mockReturnValue(true);
+    const [held] = await restarted.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!held) throw new Error("expected a held message");
+    const frame = deferred<SessionMessageDeliveryRequestV3>();
+    const receipt = deferred<void>();
+    restarted.domain.requestSessionMessageDelivery.mockImplementationOnce((_c, _i, request, onDispatched, admission) =>
+      dispatchWithAdmission<SessionMessageDeliveryResult>(
+        async () => {
+          frame.resolve(request);
+          await receipt.promise;
+          throw new RuntimeDomainRequestError("timeout", "The delivery reply did not arrive");
+        },
+        admission,
+        onDispatched,
+      ),
+    );
+    const redelivery = restarted.collaboration.redeliverHeld(held);
+    try {
+      await expect(frame.promise).resolves.toMatchObject({ messageId: claim.snapshot.messageId });
+      await expect(
+        makeStack(seed).sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10),
+      ).resolves.toEqual([]);
+    } finally {
+      receipt.resolve();
+      await redelivery;
+    }
+    await expect(messageRow(held.id)).resolves.toMatchObject({
+      lastOutcome: "unknown",
+      lastErrorCode: "delivery_timeout",
+      attemptCount: 2,
+    });
+  });
+
+  it.each(["edit", "pause and resume", "revoke authority"] as const)(
+    "settles a held occurrence with zero frames after %s",
+    async (change) => {
+      const seed = await seedStack();
+      const stack = makeStack(seed);
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValueOnce(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      const claim = await claimOf(stack, row.id);
+      if (claim.kind !== "claimed") throw new Error("expected a claim");
+      await expect(stack.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toMatchObject({
+        code: "delivery_held",
+      });
+      const scope = managementScope(seed);
+      if (change === "edit") {
+        await stack.management.updateForAgent(scope, row.id, { expectedRevision: 1, name: "Renamed" });
+      } else if (change === "pause and resume") {
+        const paused = await stack.management.pauseForAgent(scope, row.id, 1);
+        await stack.management.resumeForAgent(scope, row.id, paused.revision);
+      } else {
+        await db.database.transaction((tx) => disableImBindingInTransaction(tx, seed.bindingId, currentTime));
+      }
+
+      const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+      await expect(stack.collaboration.redeliverHeld(held)).resolves.toBe("settled");
+      expect(stack.reconcileFrames).toEqual([]);
+      expect(stack.deliveryFrames).toEqual([]);
+      await expect(messageRow(held.id)).resolves.toMatchObject({
+        lastErrorCode: change === "revoke authority" ? "binding_invalid" : "schedule_changed",
+      });
+    },
+  );
 
   describe("IM notices for a held occurrence", () => {
     async function offlineStack() {

@@ -350,3 +350,15 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 2. Expected: each send returns `accepted`, or the schedule shows its latest run as unconfirmed, and neither reports an error.
 3. Start the daemon again.
 4. Expected: within about a minute the target runs "first" and then "second", once each, or the scheduled message runs once. The sender receives no notice.
+
+### Local scheduled retry boundaries
+
+- Disconnect a Local Computer so a one-time occurrence cannot finish reconciliation, then restart the Server and
+  reconnect the Computer within 24 hours. The same message ID runs once, with no missed-occurrence post.
+- Hold a repeating occurrence, start its retry just before the next trigger and delay the reconcile reply past
+  that trigger. The older occurrence sends no business frame. The next occurrence can run, and the conversation
+  receives one missed-occurrence post for the superseded cause.
+- Hold an occurrence and edit the schedule or pause and resume it before reconnection. The old occurrence sends
+  no frame and produces no post. Repeat with the target's IM binding revoked and verify it receives no frame.
+- Interrupt the Server after a held occurrence sends its business frame and before the receipt is recorded.
+  After restart, the occurrence is unconfirmed and there is no automatic replay.

@@ -54,6 +54,7 @@ import type {
   HeldSessionMessage,
   InternalSessionStopTarget,
   ScheduledDispatchAdmissionFailure,
+  ScheduledDispatchFence,
   SessionMessageAttempt,
   SessionMessageOutcome,
   SessionService,
@@ -314,12 +315,15 @@ function handOffOfDelivery(delivery: SessionMessageDeliveryResult): LocalHandOff
  */
 function heldScheduleReplacement(
   schedule: Awaited<ReturnType<SessionService["readHeldSchedule"]>>,
-  message: { id: string; content: string },
+  message: Pick<HeldSessionMessage, "id" | "content" | "createdAt">,
 ): string | undefined {
   if (!schedule) return "schedule_deleted";
   if (!schedule.enabled) return "schedule_disabled";
-  if (schedule.prompt !== message.content) return "schedule_changed";
-  return schedule.lastDispatch?.messageId === message.id ? undefined : SESSION_MESSAGE_HELD_SUPERSEDED_CODE;
+  if (schedule.lastDispatch?.messageId !== message.id) return SESSION_MESSAGE_HELD_SUPERSEDED_CODE;
+  if (schedule.updatedAt.getTime() !== message.createdAt.getTime() || schedule.prompt !== message.content) {
+    return "schedule_changed";
+  }
+  return undefined;
 }
 
 function isAdmissionRefusal(error: unknown): boolean {
@@ -560,10 +564,15 @@ export class SessionCollaborationService {
     runtime: EffectiveRuntimeSnapshot,
     signal: AbortSignal,
     record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
+    retry?: { createdAt: Date; markDeliveryUnconfirmed: () => Promise<boolean> },
   ): Promise<ScheduledMessageDispatchOutcome> {
     const gate = this.#scheduledLocalGate(route);
     if ("code" in gate) return record("unreachable", gate.code);
-    const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision };
+    const fence: ScheduledDispatchFence = {
+      scheduleId: snapshot.scheduleId,
+      revision: snapshot.revision,
+      ...(retry ? { heldOccurrence: { messageId: snapshot.messageId, createdAt: retry.createdAt } } : {}),
+    };
     const reconcile = await this.#admitScheduled<SessionReconcileResult>(route, fence, signal, (admission) =>
       this.#domain.requestReconcile(
         route.targetComputerId,
@@ -595,6 +604,10 @@ export class SessionCollaborationService {
     if (reconcile.kind === "failed") return record("unreachable", "runtime_not_ready");
     if (!new Set(["ready", "running", "reporting"]).has(reconcile.result.status)) {
       return record("unreachable", "runtime_not_ready");
+    }
+    if (retry) {
+      if (signal.aborted) return record("unreachable", "delivery_timeout");
+      if (!(await retry.markDeliveryUnconfirmed())) return { outcome: "unknown", code: null };
     }
     const delivery = await this.#admitScheduled<SessionMessageDeliveryResult>(route, fence, signal, (admission) => {
       const request: SessionMessageDeliveryRequestV3 = {
@@ -777,16 +790,18 @@ export class SessionCollaborationService {
    */
   async #admitScheduled<T>(
     route: AuthorizedScheduledMessageRoute,
-    fence: { scheduleId: string; revision: number },
+    fence: ScheduledDispatchFence,
     signal: AbortSignal,
     operation: (admission: RuntimeDispatchAdmission<T>) => Promise<T>,
   ): Promise<ScheduledStageResult<T>> {
     if (signal.aborted) return { kind: "aborted", sent: false };
     let sent = false;
+    let transportInvoked = false;
     let rejected: ScheduledDispatchAdmissionFailure | undefined;
     const admission: RuntimeDispatchAdmission<T> = async (send) => {
       const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
         if (signal.aborted) throw new ScheduledDispatchAbortError();
+        transportInvoked = true;
         return send(() => {
           sent = true;
           markDispatched();
@@ -799,7 +814,7 @@ export class SessionCollaborationService {
       Promise.resolve().then(() => operation(admission)),
       signal,
     );
-    if (receipt.kind === "aborted") return { kind: "aborted", sent };
+    if (receipt.kind === "aborted") return { kind: "aborted", sent: transportInvoked };
     if (receipt.kind === "error") {
       if (rejected) return { kind: "rejected", reason: rejected };
       if (receipt.error instanceof ScheduledDispatchAbortError) return { kind: "aborted", sent };
@@ -807,7 +822,11 @@ export class SessionCollaborationService {
       if (receipt.error instanceof RuntimeDomainRequestError && receipt.error.code === "aborted") {
         return { kind: "aborted", sent };
       }
-      return { kind: "failed", error: receipt.error, sent };
+      return {
+        kind: "failed",
+        error: receipt.error,
+        sent: sent || (transportInvoked && !isProvablyUnsent(receipt.error)),
+      };
     }
     return { kind: "completed", result: receipt.value };
   }
@@ -832,6 +851,8 @@ export class SessionCollaborationService {
         return record("rejected", reason);
       case "agent_suspended":
       case "authority_unavailable":
+      case SESSION_MESSAGE_HELD_EXPIRED_CODE:
+      case SESSION_MESSAGE_HELD_SUPERSEDED_CODE:
         return record("unreachable", reason);
       case "dispatch_not_marked":
         // The admission gave up waiting for the send mark and refused the dispatch. The transport had
@@ -869,6 +890,7 @@ export class SessionCollaborationService {
     snapshot: ScheduledMessageSnapshot,
     outcome: SessionMessageOutcome,
     code?: string,
+    expectHeld = false,
   ): Promise<ScheduledMessageDispatchOutcome> {
     try {
       const updated = await this.#sessions.recordMessageOutcome({
@@ -876,6 +898,7 @@ export class SessionCollaborationService {
         attemptCount: snapshot.attemptCount ?? 1,
         outcome,
         ...(code ? { errorCode: code } : {}),
+        ...(expectHeld ? { expectHeld } : {}),
         scheduleSummary: {
           scheduleId: snapshot.scheduleId,
           scheduledFor: snapshot.origin.scheduledFor,
@@ -886,6 +909,7 @@ export class SessionCollaborationService {
       if (await this.#sessions.hasAcceptedScheduledMessage(snapshot.messageId, snapshot.attemptCount ?? 1)) {
         return { outcome: "accepted", code: null };
       }
+      if (expectHeld) return { outcome: "unknown", code: null };
     } catch {
       // The durable outcome remains unknown; scheduled hand-offs never replay automatically.
     }
@@ -1638,23 +1662,43 @@ export class SessionCollaborationService {
       // Only a Cloud hand-off reads this deadline; held delivery is Local, and it bounds itself by the next occurrence.
       nextTriggerAt: null,
     };
-    const runtime = await this.#assembleHeldRuntime(message);
-    if (!runtime) return "held";
     let stillHeld = false;
+    let deliveryUnconfirmed = false;
     const controller = new AbortController();
     const timer = startBudgetTimer(controller, this.#scheduledLocalBudgetMs);
     try {
-      await this.#deliverScheduledLocal(snapshot, route, runtime, controller.signal, (outcome, code) => {
-        if (outcome === "unreachable" && code && this.#canHold(route.targetComputerId, { code })) {
-          stillHeld = true;
-          return Promise.resolve({ outcome: "unknown", code: SESSION_MESSAGE_HELD_CODE });
-        }
-        return this.#recordScheduled(snapshot, outcome, code).then(async (recorded) => {
-          stillHeld = recorded.code === "outcome_write_failed";
-          if (!stillHeld && code) await this.#reportHeldScheduledMiss(message, origin, outcome, code);
+      const prepared = await raceWithAbort(this.#assembleHeldRuntime(message), controller.signal);
+      if (prepared.kind !== "ok" || !prepared.value) return "held";
+      await this.#deliverScheduledLocal(
+        snapshot,
+        route,
+        prepared.value,
+        controller.signal,
+        async (outcome, code) => {
+          if (outcome === "unreachable" && code && this.#canHold(route.targetComputerId, { code })) {
+            const held = deliveryUnconfirmed
+              ? await this.#recordScheduled(snapshot, "unknown", SESSION_MESSAGE_HELD_CODE)
+              : { outcome: "unknown" as const, code: SESSION_MESSAGE_HELD_CODE };
+            stillHeld = held.code === SESSION_MESSAGE_HELD_CODE;
+            return held;
+          }
+          const recorded = await this.#recordScheduled(snapshot, outcome, code, !deliveryUnconfirmed);
+          stillHeld = !deliveryUnconfirmed && recorded.code === "outcome_write_failed";
+          if (code && recorded.code === code) await this.#reportHeldScheduledMiss(message, origin, outcome, code);
           return recorded;
-        });
-      });
+        },
+        {
+          createdAt: message.createdAt,
+          markDeliveryUnconfirmed: async () => {
+            // Persist the uncertainty before sending so restart recovery never replays a frame
+            // that may have arrived. A provably unsent result can put the row back in the hold.
+            const recorded = await this.#recordScheduled(snapshot, "unknown", "delivery_uncertain", true);
+            deliveryUnconfirmed = recorded.code === "delivery_uncertain";
+            stillHeld = recorded.code === "outcome_write_failed";
+            return deliveryUnconfirmed;
+          },
+        },
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -1871,6 +1915,11 @@ export class SessionCollaborationService {
     this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
     return response(messageId, "unreachable", undefined, "runtime_unavailable");
   }
+}
+
+function isProvablyUnsent(error: unknown): boolean {
+  if (error instanceof RuntimeRegistrySendError) return !error.mayHaveSent;
+  return error instanceof RuntimeDomainRequestError && (error.code === "capacity" || error.code === "stopped");
 }
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {

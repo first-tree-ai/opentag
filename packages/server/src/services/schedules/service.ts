@@ -95,6 +95,12 @@ export interface ScheduleServiceOptions {
 
 type ScheduleRow = typeof agentSchedules.$inferSelect;
 
+function scheduleMutationTime(row: ScheduleRow, now: Date): Date {
+  // A claim stamps the schedule and its message with the same time. Management changes must
+  // invalidate that stamp even when they commit during the same clock tick.
+  return new Date(Math.max(now.getTime(), row.updatedAt.getTime() + 1));
+}
+
 const ListCursorSchema = z
   .object({
     at: z.string().datetime(),
@@ -241,7 +247,7 @@ export class ScheduleService {
           timezone: timing.timezone,
           nextTriggerAt: timing.nextTriggerAt,
           revision: locked.revision + 1,
-          updatedAt: now,
+          updatedAt: scheduleMutationTime(locked, now),
         })
         .where(eq(agentSchedules.id, locked.id))
         .returning();
@@ -421,7 +427,12 @@ export class ScheduleService {
       const now = await this.#clock.now(transaction);
       const [updated] = await transaction
         .update(agentSchedules)
-        .set({ enabled: false, nextTriggerAt: null, revision: locked.revision + 1, updatedAt: now })
+        .set({
+          enabled: false,
+          nextTriggerAt: null,
+          revision: locked.revision + 1,
+          updatedAt: scheduleMutationTime(locked, now),
+        })
         .where(eq(agentSchedules.id, locked.id))
         .returning();
       if (!updated) throw new Error("Schedule pause did not return a row");
@@ -455,7 +466,7 @@ export class ScheduleService {
           enabled: true,
           nextTriggerAt: next,
           revision: locked.revision + 1,
-          updatedAt: now,
+          updatedAt: scheduleMutationTime(locked, now),
           // Account resume preserves provenance; an Agent resume must attest its current task.
           ...(userTaskSource !== undefined ? { userTaskSource } : {}),
         })

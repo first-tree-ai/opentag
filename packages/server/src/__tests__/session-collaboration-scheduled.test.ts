@@ -5,6 +5,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RuntimeRegistrySendError } from "../runtime/connection-registry.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import {
   type ScheduledMessageSnapshot,
@@ -357,6 +358,38 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
       expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );
   });
+
+  it.each([
+    { sendError: undefined, outcome: "unknown", code: "delivery_timeout" },
+    {
+      sendError: new RuntimeRegistrySendError("unavailable", "The socket failed during send", true),
+      outcome: "unknown",
+      code: "delivery_uncertain",
+    },
+    {
+      sendError: new RuntimeRegistrySendError("instance_replaced", "The connection was already replaced"),
+      outcome: "unreachable",
+      code: "runtime_unavailable",
+    },
+  ])(
+    "classifies a business send without a transport mark as $outcome / $code",
+    async ({ sendError, outcome, code }) => {
+      const { snapshot, route } = snapshotFixture();
+      const fixture = makeFixture(route, { budgets: { localMs: 1_000 } });
+      fixture.domain.requestSessionMessageDelivery.mockImplementation(
+        async (_c, _i, _request, _onDispatched, admission) => {
+          const admitted = await admission?.(() =>
+            sendError ? Promise.reject(sendError) : new Promise(() => undefined),
+          );
+          if (!admitted?.admitted) throw new Error("expected admission");
+          return admitted.result;
+        },
+      );
+      const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(dispatch).resolves.toEqual({ outcome, code });
+    },
+  );
 
   it("covers preparation in the entry-anchored budget: a hung route resolve never sends", async () => {
     const { snapshot, route } = snapshotFixture();

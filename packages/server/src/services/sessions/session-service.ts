@@ -30,9 +30,12 @@ import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "./session-closure.js";
 import {
   deliveryFailureNoticeMessageId,
+  heldMessageCutoff,
   isDeliveryFailureNotice,
   renderDeliveryFailureNotice,
   SESSION_MESSAGE_HELD_CODE,
+  SESSION_MESSAGE_HELD_EXPIRED_CODE,
+  SESSION_MESSAGE_HELD_SUPERSEDED_CODE,
   SESSION_MESSAGE_TARGET_STOPPED_CODE,
 } from "./session-held-delivery.js";
 import { isRunOutcomeNotice } from "./session-run-outcome-notice.js";
@@ -271,8 +274,16 @@ export type ScheduledDispatchAdmissionFailure =
   | "schedule_disabled"
   | "schedule_changed"
   | "dispatch_not_marked"
+  | typeof SESSION_MESSAGE_HELD_EXPIRED_CODE
+  | typeof SESSION_MESSAGE_HELD_SUPERSEDED_CODE
   | ScheduledTargetPermanentCode
   | ScheduledTargetTemporaryCode;
+
+export interface ScheduledDispatchFence {
+  scheduleId: string;
+  revision: number;
+  heldOccurrence?: { messageId: string; createdAt: Date };
+}
 
 export interface CreateInternalSessionWithMessageResult extends SessionMessageAttempt {
   session: Session;
@@ -1052,10 +1063,7 @@ export class SessionService {
       .limit(limit);
   }
 
-  /**
-   * Fence one redelivery. The held code stays until a final answer is written, so a Server that crashes
-   * after this write still redelivers; the Client deduplicates by message ID.
-   */
+  /** Fence redelivery while keeping the row recoverable during preparation. */
   async beginHeldAttempt(messageId: string, attemptCount: number): Promise<number | undefined> {
     const now = this.#now();
     const [updated] = await this.#database
@@ -1094,6 +1102,7 @@ export class SessionService {
         enabled: boolean;
         revision: number;
         prompt: string;
+        updatedAt: Date;
         lastDispatch: AgentScheduleLastDispatch | null;
       }
     | undefined
@@ -1103,6 +1112,7 @@ export class SessionService {
         enabled: agentSchedules.enabled,
         revision: agentSchedules.revision,
         prompt: agentSchedules.prompt,
+        updatedAt: agentSchedules.updatedAt,
         lastDispatch: agentSchedules.lastDispatch,
       })
       .from(agentSchedules)
@@ -1628,12 +1638,12 @@ export class SessionService {
    */
   async withScheduledDispatchAdmission<T>(
     route: AuthorizedScheduledMessageRoute,
-    fence: { scheduleId: string; revision: number },
+    fence: ScheduledDispatchFence,
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: true; result: Promise<T> } | { admitted: false; reason: ScheduledDispatchAdmissionFailure }> {
     return this.#database.transaction(async (transaction) => {
       const rows = await lockScheduledAdmissionRows(transaction, route, fence.scheduleId, this.#afterPlacementLock);
-      const verdict = verdictScheduledAdmission(rows, route, fence);
+      const verdict = verdictScheduledAdmission(rows, route, fence, this.#now());
       if (verdict.kind === "disable") {
         // Permanent target failure: auto-disable in place; the row is never resurrected. The
         // verdict guarantees the row exists for this branch.
@@ -1676,7 +1686,7 @@ export class SessionService {
 
   #rejectScheduledAdmission(
     route: AuthorizedScheduledMessageRoute,
-    fence: { scheduleId: string; revision: number },
+    fence: ScheduledDispatchFence,
     reason: ScheduledDispatchAdmissionFailure,
   ): { admitted: false; reason: ScheduledDispatchAdmissionFailure } {
     this.#logger?.info(
@@ -2275,7 +2285,16 @@ interface ScheduledAdmissionRows {
   target: { endedAt: Date | null; imBindingId: string } | undefined;
   placement: { computerId: string; generation: number } | undefined;
   computer: { ownerAccountId: string } | undefined;
-  scheduleRow: { id: string; enabled: boolean; nextTriggerAt: Date | null; revision: number } | undefined;
+  scheduleRow:
+    | {
+        id: string;
+        enabled: boolean;
+        nextTriggerAt: Date | null;
+        revision: number;
+        messageId: string | null;
+        updatedAt: Date;
+      }
+    | undefined;
 }
 
 /**
@@ -2351,6 +2370,8 @@ async function lockScheduledAdmissionRows(
       enabled: agentSchedules.enabled,
       nextTriggerAt: agentSchedules.nextTriggerAt,
       revision: agentSchedules.revision,
+      messageId: sql<string | null>`${agentSchedules.lastDispatch} ->> 'messageId'`,
+      updatedAt: agentSchedules.updatedAt,
     })
     .from(agentSchedules)
     .where(eq(agentSchedules.id, scheduleId))
@@ -2387,7 +2408,8 @@ function permanentScheduledAdmissionFailure(
 function verdictScheduledAdmission(
   rows: ScheduledAdmissionRows,
   route: AuthorizedScheduledMessageRoute,
-  fence: { scheduleId: string; revision: number },
+  fence: ScheduledDispatchFence,
+  now: Date,
 ): ScheduledAdmissionVerdict {
   const permanent = permanentScheduledAdmissionFailure(rows.agent, rows.binding, rows.target, route);
   if (permanent) {
@@ -2397,6 +2419,8 @@ function verdictScheduledAdmission(
   if (!scheduleRow) return { kind: "reject", reason: "schedule_deleted" };
   if (!scheduleRow.enabled) return { kind: "reject", reason: "schedule_disabled" };
   if (scheduleRow.revision !== fence.revision) return { kind: "reject", reason: "schedule_changed" };
+  const heldFailure = fence.heldOccurrence && heldScheduledAdmissionFailure(scheduleRow, fence.heldOccurrence, now);
+  if (heldFailure) return { kind: "reject", reason: heldFailure };
   // The permanent classification above already returned when any of these rows is absent.
   if (agent?.status !== "active") return { kind: "reject", reason: "agent_suspended" };
   if (binding?.status !== "active") return { kind: "reject", reason: "authority_unavailable" };
@@ -2411,6 +2435,18 @@ function verdictScheduledAdmission(
     return { kind: "reject", reason: "authority_unavailable" };
   }
   return { kind: "admit" };
+}
+
+function heldScheduledAdmissionFailure(
+  schedule: NonNullable<ScheduledAdmissionRows["scheduleRow"]>,
+  held: NonNullable<ScheduledDispatchFence["heldOccurrence"]>,
+  now: Date,
+): ScheduledDispatchAdmissionFailure | undefined {
+  if (schedule.messageId !== held.messageId) return SESSION_MESSAGE_HELD_SUPERSEDED_CODE;
+  if (schedule.updatedAt.getTime() !== held.createdAt.getTime()) return "schedule_changed";
+  if (schedule.nextTriggerAt && schedule.nextTriggerAt <= now) return SESSION_MESSAGE_HELD_SUPERSEDED_CODE;
+  if (held.createdAt <= heldMessageCutoff(now.getTime())) return SESSION_MESSAGE_HELD_EXPIRED_CODE;
+  return undefined;
 }
 
 function encodeListCursor(at: Date, messageId: string, sessionId: string): string {

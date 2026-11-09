@@ -787,6 +787,26 @@ describe("Server-held Session message delivery", () => {
       expect(third).toMatchObject({ status: "unreachable", code: "delivery_held_full" });
     });
 
+    it("keeps a slow hand-off held when it holds the last place itself", async () => {
+      const s = await stack({ sendBudgetMs: 20, heldLimits: { perTarget: 1, perComputer: 1 } });
+      let release = () => {};
+      s.state.stalled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      s.state.answer = "stall";
+      s.state.afterStall = "client_busy";
+      const sent = await s.send("only one");
+      expect(sent.status).toBe("accepted");
+      expect(await s.row(sent.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+
+      release();
+
+      await vi.waitFor(() => expect(s.frames.some((frame) => frame.messageId === sent.messageId)).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_held" });
+      await expect(s.row(deliveryFailureNoticeMessageId(sent.messageId))).resolves.toBeUndefined();
+    });
+
     it("tells the sender when a hand-off it was told was accepted finds the hold full", async () => {
       const s = await stack({ sendBudgetMs: 20, heldLimits: { perTarget: 1, perComputer: 10 } });
       let release = () => {};

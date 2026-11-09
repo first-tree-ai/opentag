@@ -60,7 +60,7 @@ export const CLAUDE_CODE_BACKGROUND_FINISHED_FRAME = "opentag/background_finishe
 export type ClaudeCodeMessageListener = (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
 
 export interface ClaudeCodeSteerHandle {
-  /** True once Claude Code reported `command_lifecycle` `started` (or `completed`) for this input. */
+  /** True once Claude Code reports that this input started or names it in a result. */
   started(): boolean;
   /**
    * Resolves at the first top-level assistant message after `started`. `started` itself is too early:
@@ -328,15 +328,19 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     }
   }
 
+  #markSteerStarted(uuid: unknown): void {
+    if (typeof uuid !== "string" || !this.#pendingSteers.delete(uuid)) return;
+    this.#startedSteers.add(uuid);
+    // A steer that started in this turn makes the turn's result an answer someone is waiting on.
+    this.#steerInTurn = true;
+  }
+
   #deliverMessage(parsed: Record<string, unknown>): void {
-    if (
-      parsed.type === "command_lifecycle" &&
-      typeof parsed.command_uuid === "string" &&
-      (parsed.state === "started" || parsed.state === "completed") &&
-      this.#pendingSteers.delete(parsed.command_uuid)
-    ) {
-      this.#startedSteers.add(parsed.command_uuid);
-      this.#steerInTurn = true;
+    if (parsed.type === "command_lifecycle" && (parsed.state === "started" || parsed.state === "completed")) {
+      this.#markSteerStarted(parsed.command_uuid);
+    }
+    if (parsed.type === "result" && Array.isArray(parsed.user_message_uuids)) {
+      for (const uuid of parsed.user_message_uuids) this.#markSteerStarted(uuid);
     }
     if (parsed.type === "assistant" && parsed.parent_tool_use_id == null) this.#confirmStartedSteers();
     const finished = this.#observeBackgroundWork(parsed);

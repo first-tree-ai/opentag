@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && node ../../scripts/assert-web-generated-utilities.mjs",
+    "build": "vite build && node scripts/assert-generated-utilities.mjs",
     "dev": "vite",
     "paraglide": "paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --output-structure message-modules --strategy localStorage preferredLanguage baseLocale",
     "test": "vitest run --maxWorkers=1",

@@ -108,8 +108,8 @@ describe("Kumo integration contract", () => {
     expect(appCss).toContain('@import "@cloudflare/kumo/styles/tailwind"');
     expect(appCss).toContain('@import "tailwindcss"');
     expect(appCss).toContain('@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}"');
-    expect(packageJson.scripts?.build).toBe("vite build && node ../../scripts/assert-web-generated-utilities.mjs");
-    expect(existsSync(resolve(root, "../../..", "scripts/assert-web-generated-utilities.mjs"))).toBe(true);
+    expect(packageJson.scripts?.build).toBe("vite build && node scripts/assert-generated-utilities.mjs");
+    expect(existsSync(resolve(root, "..", "scripts/assert-generated-utilities.mjs"))).toBe(true);
     expect(viteConfig).toContain('from "@tailwindcss/vite"');
     expect(viteConfig).toContain("tailwindcss()");
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);

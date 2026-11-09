@@ -2,41 +2,71 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultAssetsDir = resolve(rootDir, "apps/web/dist/assets");
+const webRootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const defaultAssetsDir = resolve(webRootDir, "dist/assets");
 
-// Keep this file outside `apps/web`: `@tailwindcss/vite` scans the Vite root automatically,
-// so placing these probe strings under `apps/web` would cause Tailwind to emit them from the
-// assertion file itself even when `@source` or application source scanning is broken.
-export const REQUIRED_WEB_UTILITIES = Object.freeze([
+// `@tailwindcss/vite` scans the Vite root (`apps/web`) automatically for literal class tokens.
+// Joining segmented token parts at runtime keeps the raw utility strings out of `apps/web` source
+// files so Tailwind cannot satisfy this check by scanning the assertion script or its unit tests.
+const REQUIRED_WEB_UTILITY_SPECS = [
   // Present in `@cloudflare/kumo/dist` and absent from `apps/web`.
-  { reason: "Kumo control sizing", source: "kumo", utility: "h-9" },
-  { reason: "Kumo badge palette", source: "kumo", utility: "bg-kumo-badge-blue" },
-  { reason: "Kumo surface token", source: "kumo", utility: "bg-kumo-elevated" },
-  { reason: "Kumo control spacing", source: "kumo", utility: "px-2.5" },
+  { parts: ["h", "9"], reason: "Kumo control sizing", source: "kumo" },
+  { parts: ["bg", "kumo", "badge", "blue"], reason: "Kumo badge palette", source: "kumo" },
+  { parts: ["bg", "kumo", "elevated"], reason: "Kumo surface token", source: "kumo" },
+  { parts: ["px", "2.5"], reason: "Kumo control spacing", source: "kumo" },
   // Present in `apps/web/src` and absent from `@cloudflare/kumo/dist`.
-  { reason: "OpenTag shell canvas token", source: "web", utility: "bg-kumo-canvas" },
-  { reason: "OpenTag list divider token", source: "web", utility: "divide-kumo-line" },
-  { reason: "OpenTag row divider reset", source: "web", utility: "last:border-b-0" },
-  { reason: "OpenTag touch target sizing", source: "web", utility: "max-md:min-h-11" },
-]);
+  { parts: ["bg", "kumo", "canvas"], reason: "OpenTag shell canvas token", source: "web" },
+  { parts: ["divide", "kumo", "line"], reason: "OpenTag list divider token", source: "web" },
+  { parts: ["last:border", "b", "0"], reason: "OpenTag row divider reset", source: "web" },
+  { parts: ["max", "md:min", "h", "11"], reason: "OpenTag touch target sizing", source: "web" },
+];
 
+export const REQUIRED_WEB_UTILITIES = Object.freeze(
+  REQUIRED_WEB_UTILITY_SPECS.map(({ parts, reason, source }) =>
+    Object.freeze({
+      reason,
+      source,
+      utility: parts.join("-"),
+    }),
+  ),
+);
+
+/**
+ * @param {string} utility
+ * @returns {string}
+ */
 export function toCssClassSelectorBody(utility) {
   return utility.replace(/[^A-Za-z0-9_-]/g, "\\$&");
 }
 
+/**
+ * @param {string} value
+ * @returns {string}
+ */
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * @param {string} css
+ * @param {string} utility
+ * @returns {boolean}
+ */
 export function containsCssUtilitySelector(css, utility) {
   const escaped = escapeRegExp(toCssClassSelectorBody(utility));
-  // Require a CSS selector boundary after the class name so `.h-9` cannot match `.h-96`
+  // Require a CSS selector boundary after the class name so `.w-4` cannot match `.w-40`
   // and `.size-8` cannot match `.size-8\.5`.
   const pattern = new RegExp(`\\.${escaped}[,{:\\s\\[>~+]`);
   return pattern.test(css);
 }
 
+/**
+ * @param {{
+ *   assetsDir?: string;
+ *   requiredUtilities?: ReadonlyArray<{ reason: string; source: string; utility: string }>;
+ * }} [options]
+ * @returns {{ cssFiles: string[]; verifiedCount: number }}
+ */
 export function assertWebGeneratedUtilities({
   assetsDir = defaultAssetsDir,
   requiredUtilities = REQUIRED_WEB_UTILITIES,

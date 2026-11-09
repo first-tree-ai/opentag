@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ import {
   SANDBOX_BINARY,
   SANDBOX_ROOTFS,
 } from "../runner/native-sandbox.js";
+import type { RunnerPerformanceLogRecord } from "../runner/perf-log.js";
 import {
   cloudRunnerDirectories,
   loadRunnerServeConfig,
@@ -880,6 +881,46 @@ describe("runRunnerServe", () => {
     expect(state.destroys).toBe(1);
     expect(output.chunks.stderr.join("")).toMatch(/rejected/);
   }, 30_000);
+
+  it.each([
+    { scenario: "default deadline", expected: "auth_timeout", minDurationMs: 4_900 },
+    { scenario: "explicit deadline", expected: "auth_timeout", authTimeoutMs: 120 },
+    { scenario: "transport failure", expected: "closed" },
+    { scenario: "cancellation", expected: "closed" },
+  ])(
+    "classifies an incomplete upgrade after $scenario",
+    async (testCase) => {
+      const stop = new AbortController();
+      const server = createServer((socket) => {
+        socket.once("data", () => {
+          if (testCase.scenario === "transport failure") socket.destroy();
+          if (testCase.scenario === "cancellation") stop.abort();
+        });
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing listener");
+      const logs: RunnerPerformanceLogRecord[] = [];
+      const state = { destroys: 0, launches: 0, failDestroy: false };
+      const code = await runRunnerServe(serveConfig(`ws://127.0.0.1:${address.port}/ws`), {
+        stderr: io().stderr,
+        installSignalHandlers: false,
+        sandboxFactory: fakeSandboxFactory([], state),
+        ...(testCase.authTimeoutMs === undefined ? {} : { authTimeoutMs: testCase.authTimeoutMs }),
+        maxReconnectAttempts: 1,
+        signal: stop.signal,
+        onPerformanceLog: (record) => logs.push(record),
+      });
+      expect(code).toBe(testCase.scenario === "cancellation" ? 143 : 1);
+      const auth = logs.filter((record) => record.operation === "runner.connection.auth");
+      expect(auth).toMatchObject([{ connectionOutcome: testCase.expected }]);
+      if (testCase.minDurationMs) expect(auth[0]?.durationMs).toBeGreaterThanOrEqual(testCase.minDurationMs);
+      if (testCase.authTimeoutMs) expect(auth[0]?.durationMs).toBeLessThan(5_000);
+    },
+    15_000,
+  );
 
   it("treats an authentication timeout as a transport failure and reconnects", async () => {
     // The first connection never answers auth (a slow Server); only an explicit in-band

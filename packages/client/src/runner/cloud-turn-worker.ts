@@ -320,6 +320,7 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
+  readonly steerReady?: boolean;
   steer?(request: AgentSteerRequest): Promise<AgentSteerReceipt>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
@@ -928,7 +929,7 @@ async function openWorkerSteering(
       if (!matchesSession(input) || (sessionKind === "visible" && !context) || !activeRuntime.steer) return "refused";
       if (sessionSteers.has(message.messageId)) return "accepted";
       if (sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
-      if (sessionSteerPending) return "retry";
+      if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
       sessionSteerPending = true;
       try {
         const receipt = await activeRuntime.steer({

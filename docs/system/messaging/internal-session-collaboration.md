@@ -286,8 +286,8 @@ horizontal replicas require an explicit cross-instance owner-routing design befo
 
 A parent can redirect a child's running Turn with `session send`. The same path handles ordinary Session messages
 to an authorized visible Session with a matching IM outbox context. Pi steers the FIFO head into the active Turn,
-including a Turn started by another Session message. Each Turn carries at most 16 steered Session messages. While Pi is
-starting, the Runner rechecks about once per second. A known refusal, missing matching outbox, or the steer limit
+including a Turn started by another Session message. Each Turn carries at most 16 steered Session messages. The worker
+waits for Pi to accept its prompt before admitting a steer. During startup, the Runner rechecks about once per second. A known refusal, missing matching outbox, or the steer limit
 leaves the message at the head of the FIFO. It runs on its own after the active Turn. Scheduled occurrences keep their own
 execution context and wait in the FIFO.
 

@@ -17,13 +17,16 @@ export function ResourceLayout() {
 
 function AccountResources() {
   const { me } = useAccount();
-  const { setup, slackProvision } = useRouterState({
+  const { setup, slackProvision, cardLink } = useRouterState({
     select: (state) => {
       const location = state.resolvedLocation ?? state.location;
-      const provision = (location.search as Record<string, unknown>).slackProvision;
+      const search = location.search as Record<string, unknown>;
+      const provision = search.slackProvision;
       return {
         setup: /^\/agents\/setup\/?$/.test(location.pathname),
         slackProvision: location.pathname === "/account" && (provision === true || provision === "true"),
+        // A link from an IM card, which any conversation member may open before having an Agent.
+        cardLink: location.pathname.startsWith("/im-feedback/") && typeof search.open === "string",
       };
     },
   });
@@ -44,6 +47,6 @@ function AccountResources() {
     else clearStandaloneSetup();
   }, [setup, standalone, me.user.id]);
 
-  if ((!me.setupCompletedAt && !slackProvision) || (setup && standalone)) return <Outlet />;
+  if ((!me.setupCompletedAt && !slackProvision && !cardLink) || (setup && standalone)) return <Outlet />;
   return <AppShell />;
 }

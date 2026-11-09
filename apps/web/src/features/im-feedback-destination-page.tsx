@@ -1,5 +1,6 @@
 import type { ImFeedbackDestination } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { m } from "../paraglide/messages.js";
@@ -47,6 +48,11 @@ export function ImFeedbackDestinationPage({
         <p>{m.im_feedback_owner_is({ agent: destination.agentName, owner: destination.ownerDisplayName })}</p>
       ) : null}
       {query.isError ? <p role="alert">{m.im_feedback_unavailable()}</p> : null}
+      {query.isPending ? null : (
+        <Link className="text-kumo-link" to="/agents">
+          {m.im_feedback_go_agents()}
+        </Link>
+      )}
     </div>
   );
 }

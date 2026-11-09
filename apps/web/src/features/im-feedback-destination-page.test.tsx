@@ -38,6 +38,7 @@ describe("IM card links", () => {
     await renderInRouter(<ImFeedbackDestinationPage feedbackId={ID} link="settings" api={other} />);
     expect(await screen.findByRole("heading", { name: "只有 Agent 所有者能修改设置" })).toBeTruthy();
     expect(screen.getByText("Helper 的所有者是 Alice")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "查看我的 Agent" }).getAttribute("href")).toBe("/agents");
     expect(redirects).toHaveLength(0);
   });
   it("says the record is unavailable when the read fails", async () => {

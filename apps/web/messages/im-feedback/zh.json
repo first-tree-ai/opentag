@@ -42,5 +42,6 @@
   "im_feedback_owner_only_settings": "只有 Agent 所有者能修改设置",
   "im_feedback_owner_only_restore": "只有 Agent 所有者能恢复连接",
   "im_feedback_owner_only_task": "只有 Agent 所有者能查看这个任务",
-  "im_feedback_owner_is": "{agent} 的所有者是 {owner}"
+  "im_feedback_owner_is": "{agent} 的所有者是 {owner}",
+  "im_feedback_go_agents": "查看我的 Agent"
 }

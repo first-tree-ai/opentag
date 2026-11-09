@@ -692,6 +692,19 @@ export class CloudJournal {
     });
   }
 
+  /** Return a steer with explicit no-effect evidence to the same verified FIFO slot. */
+  async requeueUnstartedSessionSteer(steer: CloudJournalSessionEntry): Promise<CloudJournalSessionEntry> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedSessionEntry(steer.messageId, steer.scope);
+      if (entry.phase !== "started" || entry.turnId !== steer.turnId || entry.requestId !== steer.requestId) {
+        throw new CloudJournalError("invalid_transition", "The Session steer no longer owns this attempt");
+      }
+      const next: CloudJournalSessionEntry = { ...entry, phase: "received" };
+      await this.#write(entry.messageId, next);
+      return next;
+    });
+  }
+
   /**
    * Terminal Session settlement, fsynced BEFORE the settled frame. Immutable once written: a
    * replay with the same outcome returns the recorded entry and a different one is a conflict.

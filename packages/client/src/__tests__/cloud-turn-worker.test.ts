@@ -23,6 +23,11 @@ import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
+  CLOUD_STEER_RELAY_SOURCE,
+  type CloudSessionSteerRequest,
+  cloudSteerSocketPath,
+} from "../runner/cloud-steer-control.js";
+import {
   type CloudTurnPiFactory,
   type CloudTurnPiRuntime,
   cloudTurnPiDocuments,
@@ -1700,6 +1705,7 @@ it("injects authenticated input through the native socket before the Cloud promp
         },
         steer: async (input) => {
           inputs.push(input);
+          return { outcome: Promise.resolve("processed") };
         },
         close: async () => undefined,
       }),
@@ -1723,7 +1729,6 @@ it("injects authenticated input through the native socket before the Cloud promp
     expectedTurnId: request.steering.turnId,
     content: { ...base.content, text: "顺序追加的中文消息" },
   };
-  const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
   const relay = async (input: typeof steer) =>
     new Promise<string>((resolve, reject) => {
       const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(base.deliveryId)]);
@@ -1750,4 +1755,85 @@ it("injects authenticated input through the native socket before the Cloud promp
     finish();
     await completion;
   }
+});
+
+it("binds a Session steer to the running child and returns its receipt with the worker completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-steer-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const request = sessionRequest(await fixtureExecution(root, "steer-child"), { steering });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const inputs: AgentInput[] = [];
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async ({ runId }) => {
+          started();
+          await done;
+          return { runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        },
+        steer: async ({ expectedRunId, input }) => {
+          expect(expectedRunId).toBe(`cloud-session-${request.message.messageId}`);
+          inputs.push(input);
+          return { outcome: done.then(() => "processed") };
+        },
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  const input: CloudSessionSteerRequest = {
+    type: "session:message:steer",
+    expectedTurnId: steering.turnId,
+    sessionKind: "internal",
+    message: {
+      ...request.message,
+      messageId: randomUUID(),
+      requestId: randomUUID(),
+      content: { kind: "text", text: "Change the child's active task." },
+    },
+  };
+  const relay = (payload: CloudSessionSteerRequest) =>
+    new Promise<string>((resolve, reject) => {
+      const path = cloudSteerSocketPath(request.message.messageId);
+      const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, path]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+    });
+  try {
+    await ready;
+    expect(JSON.parse(await relay({ ...input, expectedTurnId: randomUUID() }))).toBe("refused");
+    expect(JSON.parse(await relay({ ...input, message: { ...input.message, placementGeneration: 2 } }))).toBe(
+      "refused",
+    );
+    expect(JSON.parse(await relay(input))).toBe("accepted");
+    expect(JSON.parse(await relay(input))).toBe("accepted");
+    expect(inputs).toHaveLength(1);
+    expect(JSON.stringify(inputs[0])).toContain(input.message.content.text);
+  } finally {
+    finish();
+    await completion;
+  }
+  await expect(completion).resolves.toMatchObject({
+    outcome: "completed",
+    sessionSteers: { [input.message.messageId]: "processed" },
+  });
 });

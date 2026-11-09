@@ -531,6 +531,11 @@ describe("E8 Session collaboration protocol", () => {
       RunnerCloudWorkerRequestSchema.safeParse({ ...sessionWorker, sessionKind: "visible", outboxContext: undefined })
         .success,
     ).toBe(false);
+    const steering = { turnId: uuid, token: uuid };
+    expect(RunnerCloudWorkerRequestSchema.parse({ ...sessionWorker, steering })).toEqual({
+      ...sessionWorker,
+      steering,
+    });
     // The exact E4 Turn worker document stays valid in the union.
     const turnWorker = {
       delivery: {

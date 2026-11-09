@@ -18,6 +18,8 @@ import type {
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
+import type { CloudSessionSteerRequest, CloudSessionSteerResult } from "../runner/cloud-steer-control.js";
+import type { CloudWorkerCompletion } from "../runner/cloud-turn-worker.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
 import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
@@ -532,6 +534,180 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
+  function steeringHarness(results: CloudSessionSteerResult[] = []) {
+    const root = sessionMessage();
+    const followUp = (text: string) =>
+      sessionMessage({
+        agentId: root.agentId,
+        runtime: root.runtime,
+        targetSessionId: root.targetSessionId,
+        content: { kind: "text", text },
+      });
+    const messages = [followUp("redirect one"), followUp("redirect two"), followUp("redirect three")] as const;
+    const started = deferred<void>();
+    const finish = deferred<ExecResult>();
+    const steered: string[] = [];
+    const prompts: string[] = [];
+    const checkpoints = vi.fn<() => Promise<void>>(async () => undefined);
+    const h = harness({
+      message: root,
+      worker: async ({ stdin }) => {
+        const input = JSON.parse(stdin) as { message: SessionMessageDeliveryRequest };
+        prompts.push(input.message.messageId);
+        if (prompts.length !== 1) return completedExec();
+        started.resolve();
+        return finish.promise;
+      },
+      runnerOptions: {
+        sessionSteeringEnabled: () => true,
+        checkpoint: checkpoints,
+        sandbox: {
+          name: "ots-cloud-turn-test",
+          exec: async (_node, _args, options) => {
+            const { request } = JSON.parse(options?.stdin as string) as { request: CloudSessionSteerRequest };
+            expect(await journal.read(request.message.messageId)).toMatchObject({ phase: "started" });
+            steered.push(request.message.messageId);
+            return { code: 0, stderr: "", stdout: JSON.stringify(results.shift() ?? "accepted") };
+          },
+          openDuplex: () => {
+            throw new Error("unexpected native duplex");
+          },
+        },
+      },
+    });
+    const deliver = (message: SessionMessageDeliveryRequest) =>
+      h.runner.handleSessionMessageRun(sessionRunFrame(message));
+    const verify = async (message: SessionMessageDeliveryRequest) => {
+      await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(message.requestId));
+    };
+    return {
+      ...h,
+      messages,
+      steered,
+      prompts,
+      checkpoints,
+      deliver,
+      verify,
+      async start() {
+        await deliver(root);
+        await verify(root);
+        await started.promise;
+      },
+      finish(completion: CloudWorkerCompletion) {
+        finish.resolve({
+          code: completion.outcome === "completed" ? 0 : 1,
+          stdout: JSON.stringify({ kind: "result", completion }),
+          stderr: "",
+        });
+      },
+    };
+  }
+
+  it("steers verified follow-ups into the running child once and settles them only after the same checkpoint", async () => {
+    const h = steeringHarness();
+    const [first, second] = h.messages;
+    const saving = deferred<void>();
+    h.checkpoints.mockImplementationOnce(() => saving.promise);
+    await h.start();
+    await h.deliver(first);
+    await h.deliver(second);
+    expect(h.steered).toEqual([]);
+    await h.verify(first);
+    await h.verify(first);
+    await h.verify(second);
+    await waitFor(() => h.steered.length === 2, "both steers before the child completes");
+    expect(h.steered).toEqual([first.messageId, second.messageId]);
+    h.runner.onChannelClosed();
+    await h.runner.reconcile();
+    expect(sessionReceiptsOf(h.sent)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: first.messageId, phase: "started" }),
+        expect.objectContaining({ messageId: second.messageId, phase: "started" }),
+      ]),
+    );
+    await h.deliver(first);
+    await h.verify(first);
+    h.finish({
+      outcome: "completed",
+      executionEffects: "completed",
+      sessionSteers: { [first.messageId]: "processed", [second.messageId]: "processed" },
+    });
+    await waitFor(() => h.checkpoints.mock.calls.length === 1, "root checkpoint");
+    expect(settledOf(h.sent)).toEqual([]);
+    saving.resolve();
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent).map((frame) => [frame.messageId, frame.outcome])).toEqual([
+      [h.message.messageId, "completed"],
+      [first.messageId, "completed"],
+      [second.messageId, "completed"],
+    ]);
+    expect(h.prompts).toEqual([h.message.messageId]);
+    expect(h.steered).toEqual([first.messageId, second.messageId]);
+    await h.runner.close();
+  });
+
+  it("keeps not_started at the head of the FIFO across reconnect and keeps interruption terminal", async () => {
+    const h = steeringHarness(["accepted", "accepted", "refused"]);
+    const [first, second, third] = h.messages;
+    await h.start();
+    for (const message of h.messages) {
+      await h.deliver(message);
+      await h.verify(message);
+    }
+    await waitFor(() => h.steered.length === 3, "two joined inputs and one refused");
+    h.runner.onChannelClosed();
+    await h.runner.reconcile();
+    await h.verify(third);
+    h.finish({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_timeout",
+      sessionSteers: { [first.messageId]: "not_started", [second.messageId]: "interrupted" },
+    });
+    await h.runner.waitForActive();
+    expect(h.prompts).toEqual([h.message.messageId]);
+    expect(settledOf(h.sent)).toEqual([
+      expect.objectContaining({ messageId: h.message.messageId, outcome: "failed", reason: "turn_timeout" }),
+      expect.objectContaining({ messageId: second.messageId, outcome: "failed", reason: "turn_timeout" }),
+    ]);
+    expect(sessionReceiptsOf(h.sent).at(-1)).toMatchObject({ messageId: first.messageId, phase: "received" });
+    await h.verify(first);
+    await waitFor(() => settledOf(h.sent).length === 4, "FIFO fallback settlements");
+    expect(h.prompts).toEqual([h.message.messageId, first.messageId, third.messageId]);
+    await h.runner.close();
+  });
+
+  it("keeps an uncertain injection terminal without trying later steers in that Turn", async () => {
+    const h = steeringHarness(["uncertain"]);
+    const [first, second] = h.messages;
+    await h.start();
+    await h.deliver(first);
+    await h.verify(first);
+    await h.deliver(second);
+    await h.verify(second);
+    h.finish({ outcome: "completed", executionEffects: "completed" });
+    await waitFor(() => settledOf(h.sent).length === 3, "uncertain and ordinary settlements");
+    expect(h.steered).toEqual([first.messageId]);
+    expect(h.prompts).toEqual([h.message.messageId, second.messageId]);
+    expect(settledOf(h.sent)[1]).toMatchObject({ messageId: first.messageId, outcome: "unknown" });
+    await h.runner.close();
+  });
+
+  it("settles a known refusal through the FIFO without letting a later message steer past it", async () => {
+    const h = steeringHarness(["refused"]);
+    const [first, second] = h.messages;
+    await h.start();
+    for (const message of [first, second]) {
+      await h.deliver(message);
+      await h.verify(message);
+    }
+    expect(h.steered).toEqual([first.messageId]);
+    h.finish({ outcome: "completed", executionEffects: "completed" });
+    await waitFor(() => settledOf(h.sent).length === 3, "refused steer FIFO");
+    expect(h.prompts).toEqual([h.message.messageId, first.messageId, second.messageId]);
+    await h.runner.close();
+  });
+
   it("never re-executes a started Session message after restart and replays unknown until acked", async () => {
     const message = sessionMessage();
     const h = harness({ message });
@@ -685,7 +861,7 @@ describe("CloudTurnRunner Session collaboration", () => {
     const h = harness();
     await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
     const [first] = sessionReceiptsOf(h.sent);
-    if (!first || first.status !== "accepted") throw new Error("missing first receipt");
+    if (first?.status !== "accepted") throw new Error("missing first receipt");
     const changed: SessionMessageDeliveryRequest = {
       ...h.message,
       requestId: randomUUID(),

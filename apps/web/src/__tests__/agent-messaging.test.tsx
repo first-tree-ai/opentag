@@ -561,6 +561,19 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(2),
     );
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) =>
+              String(input) === `/api/v1/agents/${agentId}/im-binding` && (init?.method ?? "GET") === "GET",
+          ),
+      ).toHaveLength(2),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Every message" }).getAttribute("aria-pressed")).toBe("true"),
+    );
   });
 
   it("reports a failed trigger-mode change on the page and clears it before retry", async () => {
@@ -601,21 +614,18 @@ describe("OpenTag Web App Shell", () => {
     if (!baseFetch) throw new Error("Expected the test API to be installed");
     let failDisconnect = true;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).endsWith("/disable") && init?.method === "POST") {
-        if (failDisconnect) {
-          failDisconnect = false;
-          return json(
-            {
-              error: {
-                code: "SERVICE_UNAVAILABLE",
-                category: "transient",
-                message: "Unable to disconnect messaging",
-              },
+      if (String(input).endsWith("/disable") && init?.method === "POST" && failDisconnect) {
+        failDisconnect = false;
+        return json(
+          {
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              category: "transient",
+              message: "Unable to disconnect messaging",
             },
-            503,
-          );
-        }
-        return new Response(null, { status: 204 });
+          },
+          503,
+        );
       }
       return baseFetch(input, init);
     });
@@ -626,11 +636,31 @@ describe("OpenTag Web App Shell", () => {
     const dialog = await screen.findByRole("dialog", { name: "Disconnect Lark?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect Lark" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Couldn’t disconnect Lark");
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding` && (init?.method ?? "GET") === "GET",
+        ),
+    ).toHaveLength(1);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect Lark" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect Lark?" })).toBeNull());
     expect(screen.queryByText("Couldn’t disconnect Lark. Try again.")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) =>
+              String(input) === `/api/v1/agents/${agentId}/im-binding` && (init?.method ?? "GET") === "GET",
+          ),
+      ).toHaveLength(2),
+    );
+    expect(await screen.findByRole("button", { name: "Connect Lark" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Disconnect Lark" })).toBeNull();
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {

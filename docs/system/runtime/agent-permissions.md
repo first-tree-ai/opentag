@@ -83,7 +83,7 @@ Slack callbacks are authenticated using the installation signing secret over the
 Feishu Apps must subscribe to the `card.action.trigger` callback through the existing long connection.
 New QR registrations include this callback; existing Apps need it enabled in their developer console.
 
-Approval requests appear in a private message to the task sender with **Approve** and **Deny** buttons.
+Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender when no conversation target is available) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand.
 Cards show the reason and action, without provider transport metadata or user IDs.
 Both cards include a small footer: "Whitelist command or disable approvals in Agent Model Settings".
 Only "Agent Model Settings" is linked, opening that Agent's Model settings directly.

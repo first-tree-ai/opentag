@@ -620,3 +620,33 @@ it("describes one-code Slack provisioning for visible managed Sessions without g
     "agent provision-slack",
   );
 });
+
+it("includes schedule self-management and permission pre-verification instructions when the Session CLI is available", () => {
+  const localPrompt = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
+  expect(localPrompt).toContain("## Schedules");
+  expect(localPrompt).toContain(
+    "`opentag-dev self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]`",
+  );
+  expect(localPrompt).toContain("`opentag-dev self schedule list [--limit <n>] [--cursor <cursor>] [--json]`");
+  expect(localPrompt).toContain("`opentag-dev self schedule show <id> [--json]`");
+  expect(localPrompt).toContain("`opentag-dev self schedule update <id>");
+  expect(localPrompt).toContain("`opentag-dev self schedule pause <id> [--json]`");
+  expect(localPrompt).toContain("`opentag-dev self schedule resume <id> [--json]`");
+  expect(localPrompt).toContain("`opentag-dev self schedule delete <id> [--json]`");
+  expect(localPrompt).toContain("`opentag-dev self schedule preview [id]");
+  expect(localPrompt).toContain("Every schedule fires back into the Session that created it.");
+  expect(localPrompt).toContain(
+    "Scheduled Runs execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+  );
+  expect(localPrompt).toContain(
+    "Before creating or updating a schedule, verify and exercise the commands, MCP tools, and external access the scheduled task will need during the current interactive Turn.",
+  );
+
+  const cloudPrompt = renderManagedSystemPrompt(snapshot, cloudSession);
+  expect(cloudPrompt).toContain("## Schedules");
+  expect(cloudPrompt).toContain("`opentag self schedule create");
+
+  const withoutCli = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
+  expect(withoutCli).not.toContain("## Schedules");
+  expect(withoutCli).not.toContain("self schedule");
+});

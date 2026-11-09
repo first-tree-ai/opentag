@@ -178,6 +178,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSchedules(context),
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
@@ -252,6 +253,25 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
         ]
       : []),
+  ];
+}
+
+function renderSchedules(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) return [];
+  const cli = context.cliCommand;
+  return [
+    "",
+    "## Schedules",
+    "",
+    `Manage recurring or one-shot schedules pinned to this Session with \`${cli} self schedule\`:`,
+    `- \`${cli} self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]\``,
+    `- \`${cli} self schedule list [--limit <n>] [--cursor <cursor>] [--json]\``,
+    `- \`${cli} self schedule show <id> [--json]\``,
+    `- \`${cli} self schedule update <id> [--name <name>] [--timezone <iana>] [--at <iso> | --every <seconds> | --cron <expression>] [--prompt <text> | --prompt-file <path>] [--json]\``,
+    `- \`${cli} self schedule pause <id> [--json]\`, \`${cli} self schedule resume <id> [--json]\`, \`${cli} self schedule delete <id> [--json]\``,
+    `- \`${cli} self schedule preview [id] [--timezone <iana>] [--at <iso> | --every <seconds> | --cron <expression>] [--json]\``,
+    "Every schedule fires back into the Session that created it. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "Before creating or updating a schedule, verify and exercise the commands, MCP tools, and external access the scheduled task will need during the current interactive Turn. If a required command triggers an approval card under Ask for approval, or if an MCP Server or credential is unauthorized, guide the user to complete authorization or add the required command rules in the Agent's Model settings first so unattended Runs can execute without interactive approval.",
   ];
 }
 

@@ -178,7 +178,7 @@ describe("Cloud Pi diagnostics", () => {
     observer.compactionEnd();
     observer.acceptanceArm();
     time += 60_000;
-    observer.end(undefined, "completed");
+    observer.end(undefined, { outcome: "completed" });
     expect(events.at(-1)).toMatchObject({
       durationMs: 160_020,
       compactionDurationMs: 100_000,
@@ -280,6 +280,15 @@ describe("Cloud Pi diagnostics", () => {
     reader.consume(
       Buffer.from(
         `${PI_DIAGNOSTIC_PREFIX}${JSON.stringify({ ...record, seq: 2, error: { ...piDiagnosticError(new Error()), message: "secret" } })}\n`,
+      ),
+    );
+    const terminal = { ...record, seq: 2, phase: "await_terminal", event: "end", outcome: "failed" };
+    reader.consume(
+      Buffer.from(`${PI_DIAGNOSTIC_PREFIX}${JSON.stringify({ ...terminal, terminalFailureCategory: "secret" })}\n`),
+    );
+    reader.consume(
+      Buffer.from(
+        `${PI_DIAGNOSTIC_PREFIX}${JSON.stringify({ ...terminal, outcome: "completed", terminalFailureCategory: "provider_rate_limited" })}\n`,
       ),
     );
     reader.consume(Buffer.from("x".repeat(PI_DIAGNOSTIC_LINE_BYTES + 100)));

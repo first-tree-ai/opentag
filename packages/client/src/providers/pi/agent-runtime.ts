@@ -321,7 +321,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const rawState = await client.request({ type: "get_state" }, context.signal, {
         timeoutMs: this.#getStateTimeoutMs,
       });
-      this.#diagnostics.end(undefined, undefined, client.startupMetrics);
+      this.#diagnostics.end(undefined, client.startupMetrics);
       this.#diagnostics.start("session_restore");
       const state = requireRecord(rawState, "Pi get_state returned invalid data");
       await this.#restoreSessionState(state, context);
@@ -340,7 +340,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       result = this.#runResult(terminal);
-      if (accepted) this.#diagnostics.end(undefined, result.status);
+      if (accepted) this.#diagnostics.endTerminal(result.status, terminal.stopReason, result.error?.code);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");

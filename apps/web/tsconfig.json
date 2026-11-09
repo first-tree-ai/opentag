@@ -13,5 +13,5 @@
     "types": ["vite/client", "vitest/globals"]
   },
   "references": [{ "path": "../../packages/mcp-presets" }, { "path": "../../packages/shared" }],
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js", "scripts/**/*.mjs", "vite.config.ts"]
 }

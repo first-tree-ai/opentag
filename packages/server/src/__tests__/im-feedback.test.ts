@@ -339,6 +339,100 @@ describe("IM offline notice", () => {
   });
 });
 
+describe("IM parked-dispatch notice", () => {
+  const online = async (h: Awaited<ReturnType<typeof fixture>>) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID(), disconnectedAt: null })
+      .where(eq(computers.id, placement?.computerId ?? ""));
+    return placement?.computerId ?? "";
+  };
+  const receivedAgo = async (deliveryId: string, ms: number) => {
+    const [delivery] = await db.database
+      .select({ messageId: imMessageDeliveries.messageId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await db.database
+      .update(imMessages)
+      .set({ receivedAt: new Date(clock.getTime() - ms) })
+      .where(eq(imMessages.id, delivery?.messageId ?? ""));
+  };
+  /** The fixture's input, queued and received five minutes ago, behind an earlier input of its Session. */
+  async function behindEarlier() {
+    const h = await fixture();
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    const computerId = await online(h);
+    const earlier = await h.delivery();
+    await receivedAgo(earlier.frame.deliveryId, 3_600_000);
+    const park = (lastErrorCode: string | null) =>
+      db.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "pending",
+          lastErrorCode,
+          acceptedAt: null,
+          inputHash: null,
+          turnId: null,
+          reportOwnerInstanceId: null,
+        })
+        .where(eq(imMessageDeliveries.id, earlier.frame.deliveryId));
+    return { ...h, computerId, earlier, park };
+  }
+
+  it("tells a queued input once that it waits behind a parked dispatch, with its Computer online", async () => {
+    const h = await behindEarlier();
+    // An earlier dispatch still in flight is ordinary waiting.
+    await h.park(null);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+  });
+
+  it("waits sixty seconds after receipt, and leaves an offline Computer to the offline notice", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await receivedAgo(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 300_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("posts the parked notice through the worker", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+    expect(h.transport.postOfflineNotice.mock.calls[0]?.[1]).toBe("parked");
+    expect((await h.target()).sendStartedAt).toEqual(clock);
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
+
 describe("durable IM feedback", () => {
   it("creates plain text targets", async () => {
     const h = await fixture();

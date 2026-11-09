@@ -17,9 +17,15 @@ function slackConnectionReady(view: SlackConfigurationView): boolean {
   );
 }
 
-function canRetrySlackSetup(view: SlackConfigurationView, manualOnly: boolean, readOnly: boolean): boolean {
+function canRetrySlackSetup(
+  view: SlackConfigurationView,
+  manualOnly: boolean,
+  readOnly: boolean,
+  cloud: boolean,
+): boolean {
   return (
     !readOnly &&
+    !cloud &&
     !manualOnly &&
     !view.blockedReason &&
     view.allowedIntent === "reauthorize" &&
@@ -79,6 +85,7 @@ export function SlackSavedApp({
   onOAuth,
   onRetrySetup,
   manualOnly,
+  cloud,
   readOnly,
   savedMethod,
   onClose,
@@ -92,6 +99,7 @@ export function SlackSavedApp({
   onRetrySetup?: () => void;
   savedMethod?: "auto" | "manual";
   manualOnly: boolean;
+  cloud: boolean;
   readOnly: boolean;
   onClose: () => void;
 }) {
@@ -106,7 +114,7 @@ export function SlackSavedApp({
         onDetails={() => onPanel("details")}
         onUpdate={readOnly ? undefined : onUpdate}
         onOAuth={readOnly ? undefined : onOAuth}
-        onRetrySetup={canRetrySlackSetup(view, manualOnly, readOnly) ? onRetrySetup : undefined}
+        onRetrySetup={canRetrySlackSetup(view, manualOnly, readOnly, cloud) ? onRetrySetup : undefined}
       />
     );
   return (

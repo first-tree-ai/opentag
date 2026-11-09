@@ -371,6 +371,7 @@ function SlackConfigurationContent({
         onOAuth={onOAuth}
         savedMethod={savedMethod}
         manualOnly={manualOnly}
+        cloud={cloud}
         onRetrySetup={onRetrySetup}
         onClose={onClose}
       />

@@ -71,6 +71,7 @@ function fixture(
     api?: BrowserApi;
     readOnly?: boolean;
     bindingId?: string;
+    cloud?: boolean;
   } = {},
 ) {
   const read = vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(view);
@@ -355,6 +356,37 @@ it("does not offer automatic callback setup for a pending official OAuth binding
   expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByRole("link", { name: "Open chat in Slack" })).toBeTruthy();
+});
+
+it.each([
+  ["a Cloud Agent", { cloud: true }],
+  ["manual-only setup", { manualOnly: true }],
+])("does not offer saved callback recovery for %s", async (_label, options) => {
+  fixture(bound(), options);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+});
+
+it("does not offer saved callback recovery after identity verification", async () => {
+  fixture({
+    ...bound(),
+    identityClosure: { status: "verified", verifiedAt: "2026-10-12T00:02:00.000Z" },
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "More" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+});
+
+it("does not offer saved callback recovery while credentials require reauthorization", async () => {
+  const view = bound();
+  if (view.binding?.provider === "slack") view.binding.reauthorizationRequired = true;
+  fixture(view);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
 });
 
 describe("saved Slack connection views", () => {

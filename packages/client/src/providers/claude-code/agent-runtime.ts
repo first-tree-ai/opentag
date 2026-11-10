@@ -918,7 +918,8 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
+          message:
+            "Claude Code requires stream-json, acceptEdits mode, stdio permission prompts, and --system-prompt-snapshot",
         });
       }
       if (result.credentialIssue) {

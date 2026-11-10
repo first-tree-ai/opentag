@@ -494,7 +494,7 @@ export class SessionBindingStore {
     }
     validateStoredSnapshot(current, old, oldHashes);
     assertSnapshotRevisions(old, runtime, oldHashes, nextHashes, layout ? "conflict" : "stale");
-    const retain = unchanged || canRetainRuntimeBinding(old, runtime, layout, oldHashes, nextHashes);
+    const retain = unchanged || canRetainRuntimeBinding(old, layout, oldHashes, nextHashes);
     return selectRuntimeBinding(current, retain, unchanged, old, runtime);
   }
 
@@ -978,7 +978,6 @@ function compareLegacySnapshot(
 
 function canRetainRuntimeBinding(
   old: StoredRuntimeSnapshot,
-  _runtime: EffectiveRuntimeSnapshot,
   layout: "0.1.0" | "self-configuration" | undefined,
   oldHashes: RuntimeSnapshotHashes,
   nextHashes: RuntimeSnapshotHashes,
@@ -997,6 +996,7 @@ function hasSameSystemPromptInputs(old: StoredRuntimeSnapshot, runtime: Effectiv
       model: parsed.data.model,
       reasoningEffort: parsed.data.reasoningEffort,
       execution: parsed.data.execution,
+      budget: parsed.data.budget,
     }).effectiveSnapshotHash === computeRuntimeSnapshotHashes(parsed.data).effectiveSnapshotHash
   );
 }

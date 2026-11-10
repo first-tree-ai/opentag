@@ -133,7 +133,7 @@ Agent revision. Preparation runs again when the effective snapshot changes, incl
 Agent-only revision change.
 
 An unchanged snapshot, a valid current-format update (`instructions`, `selfConfigurationEnabled`,
-`contextTrees`, `model`, `reasoningEffort`, or `execution`), or a supported compatible legacy upgrade
+`contextTrees`, `model`, `reasoningEffort`, `execution`, or `budget`), or a supported compatible legacy upgrade
 retains the native Provider conversation and resumes it on the next Run with the updated
 configuration. Legacy layout transitions that change the effective snapshot hash start a new native
 conversation within the same OpenTag Session while preserving the workspace, historical snapshots,

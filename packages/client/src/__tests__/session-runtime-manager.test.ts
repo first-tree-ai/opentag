@@ -1144,6 +1144,7 @@ describe("SessionRuntimeManager", () => {
       modelUpdated.revision.session = { sequence: 3, id: "session-model-update" };
       modelUpdated.model = "updated-model";
       modelUpdated.reasoningEffort = "high";
+      modelUpdated.budget = { maxDurationMs: 120_000 };
       await expect(reconciler.reconcile(reconcile(f.computerId, modelUpdated))).resolves.toMatchObject({
         status: "ready",
       });

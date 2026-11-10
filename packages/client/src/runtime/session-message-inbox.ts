@@ -26,6 +26,8 @@ import {
   RATE_LIMIT_RETRY_DELAY_MS,
   type RetryCount,
   recoverableFailure,
+  retryDelayMs,
+  retryLimit,
   sessionMessageKey,
   trackRunTime,
 } from "./interruption-retry.js";
@@ -1434,10 +1436,10 @@ export class SessionMessageInbox {
       return undefined;
     }
     const reason = timedOut || !mayRetry ? undefined : recoverableFailure(failure.code);
-    const retry = reason && nextRetry(messageRetryCount(record));
+    const retry = reason && nextRetry(messageRetryCount(record), retryLimit(reason));
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
-      const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
+      const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : retryDelayMs(reason);
       let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       try {
         retryable = await this.#transition(

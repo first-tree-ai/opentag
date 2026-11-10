@@ -800,6 +800,50 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("retries a Run whose model CLI failed to start once after a short delay; a second failure is reported (R3)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: { code: "provider_start_failed", message: "spawn ENOENT" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([5_000]);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(retries).toHaveLength(1);
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_start_failed" }),
+    );
+    inbox.stop();
+  });
+
   it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
     const BUDGET = 600_000;
     let now = 1_000;

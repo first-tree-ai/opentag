@@ -542,7 +542,7 @@ describe("durable IM feedback", () => {
       kind: "failure",
       tone: "failure",
       title: "The Agent ran into an error",
-      body: "Try again",
+      body: "The model call failed. Try again",
     });
   });
 
@@ -1189,7 +1189,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(cardText(posted)).toBe("The Agent ran into an error\nReview the original task in OpenTag");
+    expect(cardText(posted)).toBe("The Agent ran into an error\nTry again (2 messages)");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });

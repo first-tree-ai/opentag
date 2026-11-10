@@ -78,6 +78,7 @@ export function feedbackCard(
     failureCardCopy(target.errorCode, {
       workspaceBlocked: target.state === "workspace_blocked",
       batchRetryBlocked: target.batchRetryBlocked,
+      ...(target.batchSize ? { batchSize: target.batchSize } : {}),
     }),
     "failure",
     language,

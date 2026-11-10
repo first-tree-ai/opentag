@@ -12,63 +12,77 @@ export interface CardCopy {
 const BODY = {
   later: { zh: "请稍后重试", en: "Try again later" },
   retry: { zh: "请重试", en: "Try again" },
-  smaller: { zh: "请拆小后重试", en: "Split it into smaller tasks and try again" },
-  modelSettings: { zh: "请在 OpenTag 更新模型设置", en: "Update the model settings in OpenTag" },
 } satisfies Record<string, Localized>;
 
-const ENVIRONMENT: CardCopy = { title: { zh: "Agent 运行出错", en: "The Agent ran into an error" }, body: BODY.retry };
-const ENVIRONMENT_CONFIG: CardCopy = {
-  title: { zh: "Agent 配置有误", en: "The Agent configuration is wrong" },
-  body: { zh: "请在 OpenTag 检查 Agent 配置", en: "Check the Agent configuration in OpenTag" },
+const AGENT_ERROR_TITLE: Localized = { zh: "Agent 运行出错", en: "The Agent ran into an error" };
+/** "Agent 运行出错" with what went wrong, when it is known without naming the tool or model. */
+const agentError = (zh: string, en: string): CardCopy => ({ title: AGENT_ERROR_TITLE, body: { zh, en } });
+const ENVIRONMENT: CardCopy = { title: AGENT_ERROR_TITLE, body: BODY.retry };
+const SERVICE_UNAVAILABLE: CardCopy = {
+  title: { zh: "模型服务暂时不可用", en: "Model service temporarily unavailable" },
+  body: BODY.later,
 };
-const SMALLER = (zh: string, en: string): CardCopy => ({ title: { zh, en }, body: BODY.smaller });
 
-/** One entry per reason so a new TurnFailureReason cannot ship without a card. */
+/**
+ * One entry per reason so a new TurnFailureReason cannot ship without a card. Copy follows the final card list
+ * (Gandy 11-10); reasons whose automatic fix has not shipped use the interim copy, and cards that will name the
+ * tool or model say "模型" until they can.
+ */
 const FAILURE_CARDS = {
   provider_rate_limited: { title: { zh: "模型请求太频繁", en: "Too many model requests" }, body: BODY.later },
-  provider_unavailable: {
-    title: { zh: "模型服务暂时不可用", en: "Model service temporarily unavailable" },
-    body: BODY.later,
-  },
-  provider_connection_failed: {
-    title: { zh: "模型服务暂时不可用", en: "Model service temporarily unavailable" },
-    body: BODY.later,
-  },
+  provider_unavailable: SERVICE_UNAVAILABLE,
+  provider_connection_failed: SERVICE_UNAVAILABLE,
   provider_authentication_failed: {
-    title: { zh: "模型认证失败", en: "Model authentication failed" },
-    body: BODY.modelSettings,
+    title: { zh: "模型未登录或登录已失效", en: "The model isn't signed in, or the sign-in expired" },
+    body: { zh: "请在 Agent 所在电脑登录模型账号", en: "Sign in to the model on the Agent's computer" },
   },
   provider_access_denied: {
-    title: { zh: "没有模型访问权限", en: "No access to the model" },
-    body: BODY.modelSettings,
+    title: { zh: "没有该模型的使用权限", en: "No permission to use this model" },
+    body: { zh: "请在 OpenTag 更换模型", en: "Choose another model in OpenTag" },
   },
   provider_quota_exceeded: {
     title: { zh: "模型额度已用完", en: "Model quota used up" },
     body: { zh: "额度恢复后请重试", en: "Try again after the quota resets" },
   },
+  provider_request_rejected: {
+    title: { zh: "模型拒绝了这次请求", en: "The model rejected this request" },
+    body: {
+      zh: "请换个说法，或去掉图片和附件后重试",
+      en: "Rephrase it, or remove images and attachments, and try again",
+    },
+  },
   credential_unavailable: {
     title: { zh: "执行凭据不可用", en: "Execution credentials unavailable" },
     body: { zh: "请在 OpenTag 更新凭据", en: "Update the credentials in OpenTag" },
   },
-  provider_context_limit: SMALLER("任务超出上下文上限", "Task exceeds the context limit"),
-  provider_execution_limit: SMALLER("任务超出执行上限", "Task exceeds the execution limit"),
-  turn_timeout: SMALLER("任务超时", "Task timed out"),
-  output_too_large: SMALLER("结果太大", "Result too large"),
+  // Interim until the conversation is compacted automatically.
+  provider_context_limit: agentError("对话太长，请重试", "The conversation is too long. Try again"),
+  // Interim until a cut-off reply continues automatically.
+  provider_execution_limit: agentError("内容太长没写完，请重试", "The reply was too long to finish. Try again"),
+  // Interim until an oversized reply is sent truncated.
+  output_too_large: agentError("回复太长，请重试", "The reply is too long. Try again"),
+  // The final title names the actual limit once it is 60 minutes.
+  turn_timeout: {
+    title: { zh: "任务超时", en: "Task timed out" },
+    body: { zh: "回复“继续”，Agent 会接着做", en: 'Reply "continue" and the Agent will pick it up' },
+  },
+  sandbox_unavailable: agentError("云端运行环境断开，请重试", "The cloud environment disconnected. Try again"),
+  provider_failed: agentError("模型调用失败，请重试", "The model call failed. Try again"),
+  // These name the tool once cards can.
   provider_process_exited: ENVIRONMENT,
   provider_start_failed: ENVIRONMENT,
-  sandbox_unavailable: ENVIRONMENT,
+  provider_protocol_error: ENVIRONMENT,
+  // Not produced as a failure today; kept so every reason has a card.
   client_shutdown: ENVIRONMENT,
   session_resume_failed: ENVIRONMENT,
-  provider_protocol_error: ENVIRONMENT,
-  provider_failed: ENVIRONMENT,
   provider_empty_result: ENVIRONMENT,
   provider_teardown_failed: ENVIRONMENT,
-  provider_request_rejected: ENVIRONMENT_CONFIG,
-  configuration_conflict: ENVIRONMENT_CONFIG,
-  turn_state_unknown: {
-    title: { zh: "无法确认任务是否完成", en: "Can't confirm whether the task finished" },
-    body: { zh: "请先在 OpenTag 查看结果，再决定是否重发", en: "Check the results in OpenTag before sending it again" },
-  },
+  configuration_conflict: ENVIRONMENT,
+  // Interim until a lost result is resumed automatically.
+  turn_state_unknown: agentError(
+    "处理可能中断，请先确认结果再决定是否重发",
+    "Processing may have stopped. Check the result before sending it again",
+  ),
   workspace_failed: {
     title: { zh: "工作区改动没能保存", en: "Workspace changes weren't saved" },
     body: { zh: "请在 OpenTag 重试保存或放弃改动", en: "Retry the save or discard the changes in OpenTag" },
@@ -78,14 +92,17 @@ const FAILURE_CARDS = {
 const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
   input_expired: {
     title: { zh: "消息已过期", en: "Message expired" },
-    body: { zh: "如需要请重发", en: "Send it again if you still need it" },
+    body: {
+      zh: "Agent 太久没能处理这条消息，如需要请重发",
+      en: "The Agent couldn't handle this message for too long. Send it again if you still need it",
+    },
   },
   input_rejected: { title: { zh: "消息没能送达", en: "Message not delivered" }, body: BODY.retry },
 };
 
 export function failureCardCopy(
   code: string | null,
-  options: { batchRetryBlocked?: boolean; workspaceBlocked?: boolean } = {},
+  options: { batchRetryBlocked?: boolean; batchSize?: number; workspaceBlocked?: boolean } = {},
 ): CardCopy {
   const failure =
     code && Object.hasOwn(FAILURE_CARDS, code)
@@ -94,17 +111,21 @@ export function failureCardCopy(
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT;
   if (options.workspaceBlocked) return FAILURE_CARDS.workspace_failed;
-  if (options.batchRetryBlocked)
+  // A failed batch keeps its reason's card and says how many messages it held.
+  if (options.batchRetryBlocked && options.batchSize && options.batchSize > 1)
     return {
       title: failure.title,
-      body: { zh: "请在 OpenTag 查看原任务", en: "Review the original task in OpenTag" },
+      body: {
+        zh: `${failure.body.zh}（共 ${options.batchSize} 条消息）`,
+        en: `${failure.body.en} (${options.batchSize} messages)`,
+      },
     };
   return failure;
 }
 
 export const OFFLINE_CARD: CardCopy = {
   title: { zh: "Agent 所在电脑离线", en: "The Agent's computer is offline" },
-  body: { zh: "恢复后会自动处理", en: "Messages will be handled after it reconnects" },
+  body: { zh: "电脑恢复后会自动处理", en: "Messages will be handled after the computer reconnects" },
 };
 
 /** A message waiting behind an earlier one whose dispatch the Computer never confirmed. */

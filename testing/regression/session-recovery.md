@@ -21,7 +21,7 @@ the same Session after the daemon is back, its input begins with
 With an IM test binding on a Local Computer and permission to stop its daemon:
 
 1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then within about
-   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “恢复后会自动处理” and no link. No
+   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “电脑恢复后会自动处理” and no link. No
    Computer name or person is named. In a direct message the card is not a quote reply.
 2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
    Expected: that Session gets its own single notice.
@@ -51,14 +51,14 @@ database:
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
-   “Agent 运行出错” with the body “请重试”. It shows no error code, no link or button, and no sentence about whether
+   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no link or button, and no sentence about whether
    operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
    shows above the card.
 2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
 3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
    inside a thread. Expected: the card is in that thread on both.
-4. Make the model authentication fail. Expected: “模型认证失败” with “请在 OpenTag 更新模型设置” and no link.
+4. Make the model authentication fail. Expected: “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号” and no link.
 5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
    As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
    turns green in place and reads only 已保存. Repeat with Discard, which asks for the

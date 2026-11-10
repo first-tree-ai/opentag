@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TurnReportRequest } from "@opentag/shared";
-import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../../db/im-delivery-work.js";
 import {
@@ -20,7 +20,11 @@ import {
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
 
-export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
+export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
+  batchRetryBlocked?: boolean;
+  /** Messages in a frozen initial batch, the root included; set with `batchRetryBlocked`. */
+  batchSize?: number;
+};
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
 export interface FeedbackSettlement {
@@ -339,9 +343,7 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed
-        ? { ...claimed, batchRetryBlocked: await hasFrozenFeedbackBatch(tx, claimed.deliveryId) }
-        : undefined;
+      return claimed ? await withFrozenBatch(tx, claimed) : undefined;
     });
   }
 
@@ -408,7 +410,7 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked } : target;
+    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked, batchSize: target.batchSize } : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -792,6 +794,21 @@ function observerFeedbackUpdate(now: Date) {
     revision: sql`${imFeedbackTargets.revision}+1`,
     updatedAt: now,
   };
+}
+
+/** A claimed target with its frozen-batch flag and size: the root plus every message batched into it. */
+async function withFrozenBatch(tx: DatabaseTransaction, target: FeedbackTarget): Promise<FeedbackTarget> {
+  const [row] = await tx
+    .select({ members: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.steerTargetDeliveryId, target.deliveryId),
+        eq(imMessageDeliveries.reason, "batch_initial"),
+      ),
+    );
+  const members = row?.members ?? 0;
+  return { ...target, batchRetryBlocked: members > 0, ...(members > 0 ? { batchSize: members + 1 } : {}) };
 }
 
 export async function hasFrozenFeedbackBatch(

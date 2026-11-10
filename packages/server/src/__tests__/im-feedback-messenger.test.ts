@@ -170,7 +170,7 @@ describe("native feedback transport", () => {
         tag: "div",
         text: {
           tag: "lark_md",
-          content: "恢复后会自动处理",
+          content: "电脑恢复后会自动处理",
         },
       },
     ]);
@@ -186,7 +186,7 @@ describe("native feedback transport", () => {
     expect(sent.attachments).toEqual([
       {
         color: "#F2952F",
-        fallback: "The Agent's computer is offline: Messages will be handled after it reconnects",
+        fallback: "The Agent's computer is offline: Messages will be handled after the computer reconnects",
         blocks: [
           {
             type: "header",
@@ -197,7 +197,7 @@ describe("native feedback transport", () => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: "Messages will be handled after it reconnects.",
+              text: "Messages will be handled after the computer reconnects.",
             },
           },
         ],
@@ -247,9 +247,9 @@ describe("native feedback transport", () => {
     const data = mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data;
     expect(data).toMatchObject({ msg_type: "interactive", uuid: t.providerRequestId });
     const card = JSON.parse(data.content);
-    expect(card.header).toEqual({ title: { tag: "plain_text", content: "模型认证失败" }, template: "red" });
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "模型未登录或登录已失效" }, template: "red" });
     expect(card.elements[0].text.content).toBe(
-      `请在 OpenTag 更新模型设置[\u200b](https://app.example.test/im-feedback/${t.id})`,
+      `请在 Agent 所在电脑登录模型账号[\u200b](https://app.example.test/im-feedback/${t.id})`,
     );
     expect(data.content).not.toContain("provider_authentication_failed");
   });

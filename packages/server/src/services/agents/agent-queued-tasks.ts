@@ -15,7 +15,11 @@ const PROBE = sql`offset 0`;
  * The literal predicates keep each branch on its partial active-Session index, so the Internal Sessions a busy binding
  * accumulates are not read.
  */
-function liveSessions(agentIds: readonly string[], kind: "channel" | "thread") {
+function liveSessions(
+  agentIds: readonly string[],
+  kind: "channel" | "thread",
+  bindingCondition: ReturnType<typeof sql> = sql`binding.status <> 'disabled'`,
+) {
   return sql`
     select binding.agent_id, session.*
     from im_bindings binding
@@ -29,8 +33,82 @@ function liveSessions(agentIds: readonly string[], kind: "channel" | "thread") {
       ${PROBE}
     ) session
     where binding.agent_id = any(${`{${agentIds.join(",")}}`}::uuid[])
-      and binding.status <> 'disabled'
+      and ${bindingCondition}
   `;
+}
+
+export interface WorkingAgentActivityRow {
+  agentId: string;
+  runningTaskCount: number;
+  startedAt: Date;
+}
+
+/**
+ * The Agents' working and stale unreported-accepted activity in one statement inside the caller's snapshot. The read
+ * starts from the listed Agents' active bindings' live channel and thread Sessions via `sessions_active_channel_unique`
+ * and `sessions_active_thread_unique` (`offset 0`) and probes `im_message_deliveries_session_unreported_accepted_idx`
+ * (`(session_id, accepted_at, id) where state = 'accepted' and reported_at is null`) for each Session's latest
+ * unreported Turn, so neither Internal Sessions, historical reported Turns of a hot Session, nor other Accounts'
+ * unreported Turns are scanned.
+ */
+export async function readUnreportedAcceptedActivity(
+  executor: QueuedTaskExecutor,
+  agentIds: readonly string[],
+  recoveryStartedAt: Date,
+): Promise<{
+  workingRows: WorkingAgentActivityRow[];
+  staleAgentIds: string[];
+}> {
+  // Every probe is costed as if it found work, so a listed Account with many Agents passes the JIT threshold on a read
+  // of a few milliseconds, and compiling it took about 450 ms. Both activity reads share one read-only transaction.
+  await executor.execute(sql`set local jit = off`);
+  const recoveryCutoff = sql`${recoveryStartedAt.toISOString()}::timestamptz`;
+  const rows = await executor.execute<
+    {
+      agentId: string;
+      runningTaskCount: number;
+      startedAt: Date | string | null;
+      hasStale: boolean;
+    } & Record<string, unknown>
+  >(sql`
+    with live as materialized (
+      ${liveSessions(agentIds, "channel", sql`binding.status = 'active'`)}
+      union all
+      ${liveSessions(agentIds, "thread", sql`binding.status = 'active'`)}
+    )
+    select
+      live.agent_id as "agentId",
+      count(*) filter (where running.accepted_at >= ${recoveryCutoff})::int as "runningTaskCount",
+      max(running.accepted_at) filter (where running.accepted_at >= ${recoveryCutoff}) as "startedAt",
+      bool_or(running.accepted_at < ${recoveryCutoff}) as "hasStale"
+    from live
+    cross join lateral (
+      select "im_message_deliveries"."accepted_at" as accepted_at
+      from "im_message_deliveries"
+      where "im_message_deliveries"."session_id" = live.id
+        and "im_message_deliveries"."state" = 'accepted'
+        and "im_message_deliveries"."reported_at" is null
+      order by "im_message_deliveries"."accepted_at" desc
+      limit 1
+      ${PROBE}
+    ) running
+    group by live.agent_id
+  `);
+  const workingRows: WorkingAgentActivityRow[] = [];
+  const staleAgentIds: string[] = [];
+  for (const row of rows) {
+    if (row.runningTaskCount > 0 && row.startedAt !== null) {
+      workingRows.push({
+        agentId: row.agentId,
+        runningTaskCount: row.runningTaskCount,
+        startedAt: row.startedAt instanceof Date ? row.startedAt : new Date(row.startedAt),
+      });
+    }
+    if (row.hasStale) {
+      staleAgentIds.push(row.agentId);
+    }
+  }
+  return { workingRows, staleAgentIds };
 }
 
 /**
@@ -71,8 +149,7 @@ function sessionIsRunning(sessionAlias: string, now: Date) {
     where turn.session_id = ${session}.id
       and turn.attention in ('direct', 'ambient')
       and turn.state = 'accepted'
-      -- Written so it cannot prove the unreported index's predicate: that index leads with time, not Session, so using
-      -- it for this probe would walk every Account's outstanding Turns.
+      -- Written so it stays on im_message_deliveries_overflow_idx, which covers attention as well as session_id and state.
       and coalesce(turn.reported_at, 'infinity'::timestamptz) = 'infinity'::timestamptz
       and turn.expires_at > ${now.toISOString()}::timestamptz
       and not exists (
@@ -113,9 +190,6 @@ export async function readQueuedTaskCounts(
   agentIds: readonly string[],
   now: Date,
 ): Promise<Map<string, number>> {
-  // Every probe is costed as if it found work, so a listed Account with many Agents passes the JIT threshold on a read
-  // of a few milliseconds, and compiling it took about 450 ms. Both callers run this in a read-only transaction.
-  await executor.execute(sql`set local jit = off`);
   const rows = await executor.execute<{ agentId: string; queuedTaskCount: number } & Record<string, unknown>>(sql`
     with live as materialized (
       ${liveSessions(agentIds, "channel")}

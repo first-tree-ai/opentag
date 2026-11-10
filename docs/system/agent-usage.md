@@ -115,9 +115,12 @@ Clients declare each count separately: `x-opentag-agent-activity-task-count: 1` 
 activity strictly, so each keeps receiving the shape it was released with. Why two headers: a released Server recognizes
 only the exact value `1` of the first, so a newer Web that changed it would lose the running count from that Server.
 
-The two running reads use `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and
-reported_at is null` — as their access path. Without it the reads join every Session of a binding to reach an answer,
-which is proportional to the Agent's history rather than to the Turns actually outstanding.
+The running read starts from the listed Agents' active bindings' live channel and thread Sessions through
+`sessions_active_channel_unique` and `sessions_active_thread_unique` (`offset 0`) and probes
+`im_message_deliveries_session_unreported_accepted_idx` — `(session_id, accepted_at, id)` partial on `state = 'accepted' and
+reported_at is null` — for each Session's latest unreported Turn, splitting fresh running work from stale recovery work in
+one statement. Because `session_id` leads the partial index and each probe stays correlated to its Session (`offset 0`),
+neither Internal Sessions, historical reported Turns of a hot Session, nor other Accounts' unreported Turns are scanned.
 
 The queued read is one statement in the same snapshot. It reads the listed Agents' live channel and thread Sessions binding by binding
 through `sessions_active_channel_unique` and `sessions_active_thread_unique`, so Internal Sessions are not read when

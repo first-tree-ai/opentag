@@ -804,6 +804,8 @@ export type RunnerCredentialTunnelResultFrame = z.infer<typeof RunnerCredentialT
 /** Bounded stdin document the trusted Runner hands to the in-sandbox Turn worker. */
 export const RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES = 256 * 1024;
 
+const RunnerCloudWorkerSteeringSchema = z.object({ turnId: RuntimeOpaqueIdSchema, token: z.string().uuid() }).strict();
+
 export const RunnerCloudTurnWorkerRequestSchema = z
   .object({
     kind: z.literal("turn"),
@@ -815,7 +817,7 @@ export const RunnerCloudTurnWorkerRequestSchema = z
     webTools: RunnerCloudWebToolsSchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
-    steering: z.object({ turnId: RuntimeOpaqueIdSchema, token: z.string().uuid() }).strict().optional(),
+    steering: RunnerCloudWorkerSteeringSchema.optional(),
     /**
      * Optional allocation-stable in-sandbox directory for Pi conversation continuity across the
      * turns of one Agent Session. When absent the worker uses its own default location inside the
@@ -866,6 +868,7 @@ export const RunnerCloudSessionWorkerRequestSchema = z
     webTools: RunnerCloudWebToolsSchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
+    steering: RunnerCloudWorkerSteeringSchema.optional(),
     /** Allocation-stable in-sandbox directory for Pi conversation continuity. */
     piSessionDirectory: z.string().min(1).max(512).optional(),
     /**

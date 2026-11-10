@@ -256,6 +256,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: Deferred<PiTerminal>;
   #promptAccepted?: Deferred<void>;
+  #promptReady = false;
   #promptAcceptanceClock?: PiPromptAcceptanceClock;
   #providerFailure?: Error;
   #currentTurnId?: string;
@@ -282,6 +283,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   /** Whether the agent run in progress carries nothing but background results, after the input was answered. */
   #followUpOnly = false;
   #promptPhase: "startup" | "awaiting-ack" | "owned" = "startup";
+
+  get steerReady(): boolean {
+    return this.#promptReady && !this.#terminalClaimed;
+  }
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -347,6 +352,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const accepted = await this.#compactThenPrompt(client, request, context.signal);
       if (accepted) {
         await this.#checkNativePrompt(client, context.signal);
+        this.#promptReady = true;
         this.#promptAccepted?.resolve();
         this.#diagnostics.end();
         this.#diagnostics.start("await_terminal");
@@ -525,6 +531,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   async #cleanupRun(client: PiRpcClient | undefined): Promise<Error | undefined> {
+    this.#promptReady = false;
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     let failure: Error | undefined;

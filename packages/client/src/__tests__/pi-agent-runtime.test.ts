@@ -190,6 +190,8 @@ describe("PiAgentRuntime", () => {
       client.complete();
       await vi.waitFor(() => expect(client.commands.at(-1)?.type).toBe("prompt"));
       await new Promise((resolve) => setImmediate(resolve));
+      // Cloud steers Session messages only into a runtime that says it is ready, so the wait must say so.
+      expect(runtime.steerReady).toBe(true);
       await runtime.steer({ expectedRunId: "bg", input: input("while waiting") });
       expect(client.commands.at(-1)).toEqual({
         type: "prompt",
@@ -202,6 +204,7 @@ describe("PiAgentRuntime", () => {
       client.emit(status([]));
       client.completeAgain();
       await expect(run).resolves.toMatchObject({ status: "completed" });
+      expect(runtime.steerReady).toBe(false);
       await runtime.close();
     });
 

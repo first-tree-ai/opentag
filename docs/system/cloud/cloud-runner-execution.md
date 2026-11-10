@@ -278,6 +278,24 @@ Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasonin
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
 
+### Cloud Session message custody
+
+Ordinary Session messages use the existing Session collaboration frames. The Runner fsyncs a received journal
+entry, and the Server verifies durable custody and current target authority before execution. The Runner tries the
+FIFO head against the active worker using the same authenticated in-Sandbox control socket as IM steering. It
+checks the active Turn, Session, Agent, placement, and visible outbox context. The input uses the active Turn's
+model, tools, deadline, and credential execution.
+
+Before the relay can inject input, the Runner journals the message as started under its own settlement identity.
+A live reconnect re-announces that identity without injecting again. A lost worker or ambiguous relay with no
+worker receipt leaves an unknown settlement. Only explicit no-effect evidence returns a started steer to the FIFO.
+Worker receipts are bound to the message ID and settled after the joined Turn's checkpoint. The Runner retains each
+terminal settlement until the exact Server ack.
+
+The private parent-to-worker document is paired within the pinned Runner image. Steering uses the existing
+Session collaboration wire versions 1 through 3, journal file layout, and database schema. Older Runners
+receive the same frames and wait for the active Turn to finish.
+
 ### Model retry ownership
 
 The model proxy is the sole automatic retry owner for each managed Cloud model call, including
@@ -631,11 +649,13 @@ so workspace controls keep their existing pending-release behavior.
 Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
 most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
 15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
-release; a different UID or a failed read is an incomplete release. A still-present UID at a due
-read after the original 60-second confirmation window also becomes incomplete and returns to
-the ten-minute failure cooldown. The start of this window
-survives restarts and is never extended by a confirmation read. Explicit Account stop retains
-its bounded synchronous verification. No schema change or additional worker is needed.
+release and frees the capacity slot. A different UID or a failed read retains the binding
+and records an incomplete release. If the same UID is still present at 60 seconds, the
+automatic sweep keeps confirming at the same cadence for up to five more minutes. The
+six-minute budget starts at DELETE acceptance and survives restarts. Each due sweep gets one
+read, including the final confirmation at or after the deadline. If the same UID is still
+present at that point, the release becomes incomplete and returns to the ten-minute failure
+cooldown. Explicit Account stop retains its original bounded synchronous verification.
 
 The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
 each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createServer as createTlsServer } from "node:tls";
 import type {
   EffectiveRuntimeSnapshot,
@@ -24,11 +25,17 @@ import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
+  CLOUD_STEER_RELAY_SOURCE,
+  type CloudSessionSteerRequest,
+  cloudSteerSocketPath,
+} from "../runner/cloud-steer-control.js";
+import {
   type CloudTurnPiFactory,
   type CloudTurnPiRuntime,
   cloudTurnPiDocuments,
   runCloudTurnWorker,
 } from "../runner/cloud-turn-worker.js";
+import { executionOutboxContext } from "../runner/cloud-turns.js";
 import { generateExecutionCa } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { RUNTIME_PROXY_PROVIDER_CA_KEY, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -1755,6 +1762,7 @@ it("injects authenticated input through the native socket before the Cloud promp
         },
         steer: async (input) => {
           inputs.push(input);
+          return { outcome: Promise.resolve("processed") };
         },
         close: async () => undefined,
       }),
@@ -1778,7 +1786,6 @@ it("injects authenticated input through the native socket before the Cloud promp
     expectedTurnId: request.steering.turnId,
     content: { ...base.content, text: "顺序追加的中文消息" },
   };
-  const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
   const relay = async (input: typeof steer) =>
     new Promise<string>((resolve, reject) => {
       const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(base.deliveryId)]);
@@ -1806,3 +1813,133 @@ it("injects authenticated input through the native socket before the Cloud promp
     await completion;
   }
 });
+
+it.each(["session-message", "turn"] as const)(
+  "binds a Session steer to the running %s and returns its receipt with the worker completion",
+  async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-steer-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const steering = { turnId: randomUUID(), token: randomUUID() };
+    const executionDir = await fixtureExecution(root, "steer-session");
+    const outboxContext = {
+      provider: "feishu",
+      sessionKind: "thread",
+      chatId: "oc_visible",
+      threadId: "omt_visible",
+    } satisfies RuntimeImOutboxContext;
+    const cli = { provider: "feishu", appId: "app", teamBrand: "feishu", outboxContext } as const;
+    const request =
+      kind === "turn"
+        ? {
+            ...turnRequest(executionDir),
+            ...executionOutboxContext({
+              providers: [{ provider: "feishu", bindingId: randomUUID(), cli }],
+              cliMetadataFor: () => cli,
+            }),
+            steering,
+          }
+        : sessionRequest(executionDir, { steering });
+    const rootKey = request.kind === "turn" ? request.delivery.deliveryId : request.message.messageId;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let accept!: () => void;
+    const promptAccepted = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    let steerReady = false;
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const inputs: AgentInput[] = [];
+    const completion = runCloudTurnWorker(request, {
+      createPiFactory: () => ({
+        create: async () => ({
+          prompt: async ({ runId }) => {
+            started();
+            await promptAccepted;
+            await done;
+            return { runId, output: [{ type: "text", text: "done" }], status: "completed" };
+          },
+          get steerReady() {
+            return steerReady;
+          },
+          steer: async ({ expectedRunId, input }) => {
+            await promptAccepted;
+            expect(expectedRunId).toBe(`cloud-${kind === "turn" ? "turn" : "session"}-${rootKey}`);
+            inputs.push(input);
+            return { outcome: done.then(() => "processed") };
+          },
+          close: async () => undefined,
+        }),
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    });
+    const original = request.kind === "turn" ? request.delivery : request.message;
+    const input: CloudSessionSteerRequest = {
+      type: "session:message:steer",
+      expectedTurnId: steering.turnId,
+      sessionKind: request.kind === "turn" ? "visible" : "internal",
+      ...(request.kind === "turn" ? { outboxContext } : {}),
+      message: {
+        ...sessionRequest(executionDir).message,
+        agentId: original.agentId,
+        runtime: original.runtime,
+        placementGeneration: original.placementGeneration,
+        targetSessionId: request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId,
+        content: { kind: "text", text: "Change the active task." },
+      },
+    };
+    const relay = (payload: CloudSessionSteerRequest) =>
+      new Promise<string>((resolve, reject) => {
+        const path = cloudSteerSocketPath(rootKey);
+        const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, path]);
+        let output = "";
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+        });
+        child
+          .once("error", reject)
+          .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+        child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+      });
+    try {
+      await ready;
+      expect(JSON.parse(await relay(input))).toBe("retry");
+      if (kind === "session-message") await delay(3_100);
+      expect(inputs).toHaveLength(0);
+      steerReady = true;
+      accept();
+      expect(JSON.parse(await relay({ ...input, expectedTurnId: randomUUID() }))).toBe("refused");
+      expect(JSON.parse(await relay({ ...input, message: { ...input.message, placementGeneration: 2 } }))).toBe(
+        "refused",
+      );
+      if (kind === "turn") {
+        expect(
+          JSON.parse(await relay({ ...input, outboxContext: { ...outboxContext, threadId: "another_thread" } })),
+        ).toBe("refused");
+      }
+      expect(JSON.parse(await relay(input))).toBe("accepted");
+      expect(JSON.parse(await relay(input))).toBe("accepted");
+      expect(inputs).toHaveLength(1);
+      expect(JSON.stringify(inputs[0])).toContain(input.message.content.text);
+      if (kind === "turn") expect(JSON.stringify(inputs[0])).toContain(outboxContext.threadId);
+    } finally {
+      accept();
+      finish();
+      await completion;
+    }
+    await expect(completion).resolves.toMatchObject({
+      outcome: "completed",
+      sessionSteers: { [input.message.messageId]: "processed" },
+    });
+  },
+  12_000,
+);

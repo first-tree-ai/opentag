@@ -217,10 +217,21 @@ Thread Session never compacts.
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+## Cloud Session message steering
+
+1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that
+   the child sees both in order before its Turn ends and the Runner starts only one worker. Confirm each
+   message settles once after the joined Turn's checkpoint.
+2. With a controlled worker that refuses steer or reports `not_started`, confirm the message runs in FIFO order
+   after the child Turn. If it reports `interrupted`, confirm the failure is terminal and no second worker handles it.
+3. Disconnect the control channel after a steer starts. Reconnect the same Runner and confirm that the input is
+   never injected again and its settlement can be acknowledged. Replace the process without a worker receipt and
+   confirm it reports unknown. An older compatible Runner still runs the messages in FIFO order.
+
 ## Stopping an internal Session
 
-Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and queue a second message
-to it with `opentag session send`.
+Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and send a second message
+to it with `opentag session send`. Confirm the message is still queued or joined to the same running Turn before stopping it.
 
 - `opentag session stop <id>` from its creator answers `status=stopped execution=stopped`. The Provider process is gone
   within seconds, the queued message never runs, and the daemon does not retry anything.
@@ -307,9 +318,17 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+   Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
+   can still finish the authenticated claim and restore or save the initial empty archive.
 6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
+7. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
+   Keep the same UID visible through 60 seconds, then return 404 on a later due sweep. Expected:
+   each due sweep makes one confirmation GET and can process other candidates. After 404, the
+   old binding clears, the capacity slot is free, and a synthetic Session input can reserve the
+   next generation from the same archive. A failed read or a replacement UID keeps the binding.
+   A still-present UID at the six-minute deadline enters the failure cooldown.
 
 ## Parent message steered into a running child
 
@@ -366,3 +385,13 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
   fail with a notice to their sender instead of waiting indefinitely.
+
+## Local scheduled hand-off after a disconnect
+
+1. Disconnect a Local Computer before a one-time occurrence reaches the business send. Reconnect within the dispatch
+   window. Expected: the original message ID reaches the Agent once and no miss is posted.
+2. Keep the Computer offline through the next trigger of a repeating schedule. Expected: the old occurrence cannot send
+   after that trigger, and the occurrence produces at most one final miss notice.
+3. Drop the receipt after the business send. Expected: the hand-off stays unconfirmed and the Server does not resend it.
+4. Fill the shared extended dispatch slots with Local retries or Cloud hand-offs. Expected: additional offline Local
+   occurrences settle without waiting for retry, while a ready Local target can still receive its occurrence.

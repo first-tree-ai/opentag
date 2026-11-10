@@ -5,12 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { connect as connectTls } from "node:tls";
+import { isDeepStrictEqual } from "node:util";
 import type { RunnerCloudWorkerRequest } from "@opentag/shared";
+import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentPromptRequest,
   AgentRunResult,
   AgentRuntimeBinding,
   AgentRuntimeEvent,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
+  AgentSteerRequest,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -49,6 +54,7 @@ import {
   renderManagedSystemPrompt,
 } from "../runtime/managed-instructions.js";
 import { providerRoutingEnvironment, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
+import { buildSessionMessageInput } from "../runtime/session-message-inbox.js";
 import { skillArgsOf } from "./acceptance.js";
 import {
   CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS,
@@ -58,7 +64,13 @@ import {
   prepareCloudContextTree,
   withContextTreeReadPath,
 } from "./cloud-context-tree.js";
-import { cloudSteerResult, openCloudSteerControl } from "./cloud-steer-control.js";
+import {
+  CLOUD_SESSION_STEER_LIMIT,
+  type CloudSessionSteerRequest,
+  type CloudSessionSteerResult,
+  cloudSteerResult,
+  openCloudSteerControl,
+} from "./cloud-steer-control.js";
 import {
   cloudSessionCliEnvironment,
   cloudWorkerInput,
@@ -310,7 +322,8 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
-  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<unknown>;
+  readonly steerReady?: boolean;
+  steer?(request: AgentSteerRequest): Promise<AgentSteerReceipt>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
 }
@@ -455,10 +468,14 @@ function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory
   };
 }
 
+export interface CloudWorkerCompletion extends TurnCompletion {
+  readonly sessionSteers?: Readonly<Record<string, AgentSteerOutcome>>;
+}
+
 export async function runCloudTurnWorker(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
-): Promise<TurnCompletion> {
+): Promise<CloudWorkerCompletion> {
   const preparationStarted = performance.now();
   assertSafeInSandboxPath(request.executionDir, "execution directory");
   const executionMount = options.executionMount ?? CLOUD_EXECUTION_MOUNT;
@@ -635,9 +652,10 @@ export async function runCloudTurnWorker(
     execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
     let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
+    const sessionSteers = new Map<string, AgentSteerReceipt>();
     const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
-      steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
+      steering = await openWorkerSteering(request, activeRuntime, sessionSteers, options).catch((error: unknown) => {
         diagnostics.failure(error);
         return undefined;
       });
@@ -664,7 +682,7 @@ export async function runCloudTurnWorker(
       terminateTrackedProcesses(pids);
     }
     await recordRunLimit(backgroundWork, completion, options);
-    return completion;
+    return finishWorkerSteers(completion, sessionSteers);
   } finally {
     registerRunnerSignalCleanup(undefined);
     await rm(scratch, { recursive: true, force: true });
@@ -873,42 +891,93 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
   }
 }
 
+async function finishWorkerSteers(
+  completion: TurnCompletion,
+  steers: Map<string, AgentSteerReceipt>,
+): Promise<CloudWorkerCompletion> {
+  if (steers.size === 0) return completion;
+  const outcomes = await Promise.all([...steers].map(async ([id, receipt]) => [id, await receipt.outcome] as const));
+  return { ...completion, sessionSteers: Object.fromEntries(outcomes) };
+}
+
+function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
+  if (!(error instanceof AgentRuntimeError)) return "uncertain";
+  if (error.code === "steer_not_sent") return "retry";
+  if (error.code === "unsupported_capability" || error.code === "closed") return "refused";
+  return "uncertain";
+}
+
 async function openWorkerSteering(
   request: RunnerCloudWorkerRequest,
   activeRuntime: CloudTurnPiRuntime,
+  sessionSteers: Map<string, AgentSteerReceipt>,
   options: CloudTurnWorkerRunOptions,
 ) {
-  return request.kind === "turn" && request.steering
-    ? await openCloudSteerControl({
-        deliveryId: request.delivery.deliveryId,
-        token: request.steering.token,
-        steer: async (input) => {
-          if (
-            request.kind !== "turn" ||
-            !request.steering ||
-            input.rootDeliveryId !== request.delivery.deliveryId ||
-            input.expectedTurnId !== request.steering.turnId ||
-            input.sessionId !== request.delivery.sessionId ||
-            input.agentId !== request.delivery.agentId ||
-            input.placementGeneration !== request.delivery.placementGeneration
-          )
-            return cloudSteerResult(input, "rejected", "target_mismatch");
-          if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
-          try {
-            await activeRuntime.steer({
-              expectedRunId: randomTurnRunId(request),
-              input: buildAgentInput(
-                input,
-                undefined,
-                request.delivery.runtime,
-                new Date(options.now?.() ?? Date.now()),
-              ),
-            });
-            return cloudSteerResult(input, "steered");
-          } catch {
-            return cloudSteerResult(input, "deferred", "steer_state_unknown");
-          }
-        },
-      })
-    : undefined;
+  const steering = request.steering;
+  if (!steering) return undefined;
+  const root = request.kind === "turn" ? request.delivery : request.message;
+  const sessionId = request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId;
+  const sessionKind = request.kind === "turn" ? "visible" : request.sessionKind;
+  const outbox = request.outboxContext;
+  const runId = randomTurnRunId(request);
+  const now = () => new Date(options.now?.() ?? Date.now());
+  const matchesSession = ({
+    expectedTurnId,
+    message,
+    sessionKind: targetKind,
+    outboxContext,
+  }: CloudSessionSteerRequest) =>
+    expectedTurnId === steering.turnId &&
+    message.targetSessionId === sessionId &&
+    message.agentId === root.agentId &&
+    message.placementGeneration === root.placementGeneration &&
+    targetKind === sessionKind &&
+    isDeepStrictEqual(outboxContext, outbox);
+  const context = sessionKind === "visible" && outbox ? ({ sessionKind, outboxContext: outbox } as const) : undefined;
+  let sessionSteerPending = false;
+  return openCloudSteerControl({
+    deliveryId: request.kind === "turn" ? request.delivery.deliveryId : request.message.messageId,
+    token: steering.token,
+    steer: async (input) => {
+      if (
+        request.kind !== "turn" ||
+        input.rootDeliveryId !== request.delivery.deliveryId ||
+        input.expectedTurnId !== steering.turnId ||
+        input.sessionId !== sessionId ||
+        input.agentId !== root.agentId ||
+        input.placementGeneration !== root.placementGeneration
+      )
+        return cloudSteerResult(input, "rejected", "target_mismatch");
+      if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
+      try {
+        await activeRuntime.steer({
+          expectedRunId: runId,
+          input: buildAgentInput(input, undefined, request.delivery.runtime, now()),
+        });
+        return cloudSteerResult(input, "steered");
+      } catch {
+        return cloudSteerResult(input, "deferred", "steer_state_unknown");
+      }
+    },
+    steerSession: async (input) => {
+      const { message } = input;
+      if (!matchesSession(input) || (sessionKind === "visible" && !context) || !activeRuntime.steer) return "refused";
+      if (sessionSteers.has(message.messageId)) return "accepted";
+      if (sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
+      sessionSteerPending = true;
+      try {
+        const receipt = await activeRuntime.steer({
+          expectedRunId: runId,
+          input: buildSessionMessageInput(message, "opentag", context, now()),
+        });
+        sessionSteers.set(message.messageId, receipt);
+        return "accepted";
+      } catch (error) {
+        return sessionSteerRefusal(error);
+      } finally {
+        sessionSteerPending = false;
+      }
+    },
+  });
 }

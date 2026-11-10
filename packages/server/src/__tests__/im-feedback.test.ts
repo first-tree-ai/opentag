@@ -1224,6 +1224,10 @@ it("preserves workspace recovery and paused-Session guidance for a frozen batch 
     const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
     expect(rendered).toBe("Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag");
     expect(rendered).not.toContain("Review the original task");
+    // A batch of several messages says how many.
+    expect(cardText({ ...(await h.target()), provider, batchRetryBlocked: true, batchSize: 3 })).toBe(
+      "Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag (3 messages)",
+    );
   }
 });
 

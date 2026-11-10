@@ -36,10 +36,6 @@ const NEXT = {
     zh: "这个 Session 的工作已暂停，新消息会继续排队。可以在详情页重试保存或放弃改动，但这不会撤销已经发生的外部操作。",
     en: "Work in this Session is paused; new input for this Session remains queued. You can retry the save or discard the changes from the details page; neither undoes external operations.",
   },
-  batch: {
-    zh: "这批消息不能在这里重试。先打开原任务，逐条看过后再开始新工作。",
-    en: "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
-  },
 } satisfies Record<string, Localized>;
 
 const UNAVAILABLE = {
@@ -132,7 +128,7 @@ const INPUT_FAILURES: Record<string, { cause: Localized; next: Localized }> = {
 export function failureCopy(
   code: string | null,
   language: FeedbackLanguage,
-  options: { batchRetryBlocked?: boolean; workspaceBlocked?: boolean } = {},
+  options: { batchRetryBlocked?: boolean; batchSize?: number; workspaceBlocked?: boolean } = {},
 ): { cause: string; next: string } {
   const failure =
     code && Object.hasOwn(FAILURES, code)
@@ -140,8 +136,18 @@ export function failureCopy(
       : code && Object.hasOwn(INPUT_FAILURES, code)
         ? (INPUT_FAILURES[code] as { cause: Localized; next: Localized })
         : { cause: ENVIRONMENT, next: NEXT.environment };
-  const next = options.workspaceBlocked ? NEXT.workspace : options.batchRetryBlocked ? NEXT.batch : failure.next;
-  return { cause: failure.cause[language], next: next[language] };
+  const next = (options.workspaceBlocked ? NEXT.workspace : failure.next)[language];
+  // A failed batch keeps its reason's next step and says how many messages it held.
+  return { cause: failure.cause[language], next: next + batchSuffix(options, language) };
+}
+
+/** "（共 N 条消息）" after the body of a failed batch of more than one message. */
+export function batchSuffix(
+  options: { batchRetryBlocked?: boolean; batchSize?: number },
+  language: FeedbackLanguage,
+): string {
+  if (!options.batchRetryBlocked || !options.batchSize || options.batchSize < 2) return "";
+  return language === "zh" ? `（共 ${options.batchSize} 条消息）` : ` (${options.batchSize} messages)`;
 }
 
 export function effectsCopy(effects: string | null, language: FeedbackLanguage): string {

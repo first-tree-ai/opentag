@@ -1,5 +1,5 @@
 import type { TurnFailureReason } from "@opentag/shared";
-import type { FeedbackLanguage } from "./im-feedback-copy.js";
+import { batchSuffix, type FeedbackLanguage } from "./im-feedback-copy.js";
 
 type Localized = Record<FeedbackLanguage, string>;
 
@@ -110,17 +110,13 @@ export function failureCardCopy(
       : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT;
-  if (options.workspaceBlocked) return FAILURE_CARDS.workspace_failed;
-  // A failed batch keeps its reason's card and says how many messages it held.
-  if (options.batchRetryBlocked && options.batchSize && options.batchSize > 1)
-    return {
-      title: failure.title,
-      body: {
-        zh: `${failure.body.zh}（共 ${options.batchSize} 条消息）`,
-        en: `${failure.body.en} (${options.batchSize} messages)`,
-      },
-    };
-  return failure;
+  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : failure;
+  // A failed batch keeps its card and says how many messages it held.
+  if (!batchSuffix(options, "zh")) return card;
+  return {
+    title: card.title,
+    body: { zh: card.body.zh + batchSuffix(options, "zh"), en: card.body.en + batchSuffix(options, "en") },
+  };
 }
 
 export const OFFLINE_CARD: CardCopy = {

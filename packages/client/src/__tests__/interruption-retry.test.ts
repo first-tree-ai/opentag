@@ -72,6 +72,7 @@ describe("interruption classification and continuation", () => {
       "provider_start_failed",
       "provider_unavailable",
       "provider_connection_failed",
+      "provider_context_limit",
       "client_shutdown",
       "daemon_crash",
     ]) {
@@ -440,6 +441,27 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.prompt).toHaveBeenCalledOnce();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ outcome: "failed", errorReason: "provider_unavailable" }),
+      3,
+    );
+  });
+
+  it("compacts the conversation and retries a Turn over the context limit once, then reports it (R8)", async () => {
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt.mockImplementation(async () => ({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_context_limit", message: "Prompt is too long" },
+    }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(h.prompt.mock.calls[0]?.[0]).not.toHaveProperty("compactContext");
+    expect(h.prompt.mock.calls[1]?.[0]).toMatchObject({ compactContext: true });
+    expect(promptItems(h.prompt, 1)[0]?.text).toContain("no longer fit the model's context, so it was compacted");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_context_limit" }),
       3,
     );
   });

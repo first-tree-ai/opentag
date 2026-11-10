@@ -366,3 +366,13 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
   fail with a notice to their sender instead of waiting indefinitely.
+
+## Local scheduled hand-off after a disconnect
+
+1. Disconnect a Local Computer before a one-time occurrence reaches the business send. Reconnect within the dispatch
+   window. Expected: the original message ID reaches the Agent once and no miss is posted.
+2. Keep the Computer offline through the next trigger of a repeating schedule. Expected: the old occurrence cannot send
+   after that trigger, and the occurrence produces at most one final miss notice.
+3. Drop the receipt after the business send. Expected: the hand-off stays unconfirmed and the Server does not resend it.
+4. Fill the shared extended dispatch slots with Local retries or Cloud hand-offs. Expected: additional offline Local
+   occurrences settle without waiting for retry, while a ready Local target can still receive its occurrence.

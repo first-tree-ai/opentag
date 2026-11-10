@@ -15,7 +15,7 @@ const piPhase = z.enum([
   "await_terminal",
   "cleanup",
 ]);
-const piEnd = z.object({
+const piRecord = z.object({
   module: z.literal("cloud-pi"),
   operation: z.literal("pi.diagnostic"),
   sessionId: z.string().uuid(),
@@ -23,14 +23,16 @@ const piEnd = z.object({
   environmentGeneration: z.number().int().nonnegative(),
   turnId: z.string().uuid(),
   phase: piPhase,
-  event: z.literal("end"),
   seq: z.number().int().positive().optional(),
+});
+const piEnd = piRecord.extend({
+  event: z.literal("end"),
   durationMs: z.number().finite().nonnegative(),
   piProcessSpawnMs: z.number().finite().nonnegative().optional(),
   mcpGatewayLoadMs: z.number().finite().nonnegative().optional(),
   mcpGatewaySessionStartMs: z.number().finite().nonnegative().optional(),
 });
-const piFirstTurn = piEnd.omit({ durationMs: true }).extend({
+const piFirstTurn = piRecord.extend({
   event: z.literal("milestone"),
   milestone: z.literal("first_turn_start"),
   receivedElapsedMs: z.number().finite().nonnegative(),

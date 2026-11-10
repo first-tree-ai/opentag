@@ -162,16 +162,6 @@ proof of the save reads 操作失败, never 已保存.
 The offline and queued notices follow the same rules. A direct message is the Session's `conversation_kind = 'dm'`; a Slack
 multi-person direct message counts as a group.
 
-In a group, including its threads, five cards go to the sender's direct message with the Bot instead, because they
-concern only that person: the offline and queued notices, and the failure cards for an expired message
-(`input_expired`), an undelivered message (`input_rejected`), and used-up model quota (`provider_quota_exceeded`).
-The sender is the target's `sender_external_id`: a Feishu card goes to that `open_id`, and a Slack card to the channel
-`conversations.open` returns. When the provider refuses that message (the Feishu sender is outside the app's
-availability or is a bot, Slack cannot open the conversation, or the call is rejected), the card goes to the group
-place above. A rate limit stays a rate limit, and an unknown outcome never falls back, which could post it twice. A
-Slack card in a direct message keeps its channel in its stored message ID as `<channel>/<ts>`, which edits use; Slack
-timestamps hold no slash. Every other card, including rate limits and workspace failures, stays in the group.
-
 Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Whether operations ran
 stays on the details page, which warns that they may have unless authoritative `not_started` evidence says otherwise.
 
@@ -327,10 +317,10 @@ settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
 Before a new message request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
-abandoned send becomes `send_unknown`. Bounded readback searches the conversation the card was sent to for this Bot
-and feedback identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
+abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
+identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
-another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). An unknown send to the sender's direct message keeps the reconciliation cursor `sender:`: Slack reads that direct message's history, and Feishu, which cannot name the chat before a send, repeats the send under the same request `uuid` within fifty minutes of the first attempt; Feishu answers a repeated `uuid` within an hour with the original message instead of sending another. Past that window Feishu readback sends nothing. Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
+another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
 same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new message, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
 

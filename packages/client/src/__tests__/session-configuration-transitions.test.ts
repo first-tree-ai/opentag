@@ -203,7 +203,7 @@ describe("Current-format Session configuration transitions", () => {
     const reconciler = process === "warm" ? f.reconciler : createReconciler(f);
     await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
     const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
-    expect(prepared.binding.runtimeBinding).toBeUndefined();
+    expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
     await expectPreservedHistory(f, prepared.binding);
     await expectSingleCustody(f, runtime);
   });
@@ -262,7 +262,7 @@ describe("Current-format Session configuration transitions", () => {
     expect(after.history).toBe(before.history);
   });
 
-  it.each(["Soul", "Session instructions", "model", "reasoning effort"] as const)(
+  it.each(["Soul", "Session instructions", "contextTrees", "model", "reasoning effort"] as const)(
     "SCT-11 applies a newer %s and preserves delivery deduplication",
     async (change) => {
       const f = await fixture("current");
@@ -733,11 +733,14 @@ function currentSnapshot(original: EffectiveRuntimeSnapshot, sequence: number): 
 
 function changedSnapshot(
   original: EffectiveRuntimeSnapshot,
-  change: "Soul" | "Session instructions" | "model" | "reasoning effort",
+  change: "Soul" | "Session instructions" | "contextTrees" | "model" | "reasoning effort",
 ) {
   const changed = structuredClone(original);
   if (change === "Soul") changed.instructions.agent = "Software engineering";
   if (change === "Session instructions") changed.instructions.session = "Updated session instructions";
+  if (change === "contextTrees") {
+    changed.contextTrees = [{ kind: "git", repository: "acme/team", path: ".", ref: "main" }];
+  }
   if (change === "model") changed.model = "replacement-model";
   if (change === "reasoning effort") changed.reasoningEffort = "high";
   return changed;

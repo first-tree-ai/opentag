@@ -1131,9 +1131,24 @@ describe("SessionRuntimeManager", () => {
       expect(factory.resumed).toEqual([f.originalBinding]);
       expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
       expect(factory.runtimes[0]?.closed).toBe(true);
-      expect((await f.store.read("agent-1", "session-1"))?.lastEffectiveSnapshotHash).toBe(
-        computeRuntimeSnapshotHashes(next).effectiveSnapshotHash,
-      );
+      const afterSoulChange = await f.store.read("agent-1", "session-1");
+      expect(afterSoulChange?.lastEffectiveSnapshotHash).toBe(computeRuntimeSnapshotHashes(next).effectiveSnapshotHash);
+      expect(afterSoulChange?.runtimeBinding).toBeDefined();
+      const modelUpdated = structuredClone(next);
+      modelUpdated.revision.session = { sequence: 3, id: "session-model-update" };
+      modelUpdated.model = "updated-model";
+      modelUpdated.reasoningEffort = "high";
+      await expect(reconciler.reconcile(reconcile(f.computerId, modelUpdated))).resolves.toMatchObject({
+        status: "ready",
+      });
+      await manager.ensureRuntime("session-1");
+      expect(factory.created).toHaveLength(1);
+      expect(factory.resumed).toEqual([f.originalBinding, afterSoulChange?.runtimeBinding]);
+      expect(factory.resumedRequests[1]?.configuration).toEqual({
+        model: "updated-model",
+        reasoningEffort: "high",
+      });
+      expect(factory.runtimes[1]?.closed).toBe(true);
     } finally {
       await manager.close();
     }

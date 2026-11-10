@@ -7,7 +7,7 @@ import {
   PARKED_CARD,
 } from "./im-feedback-card-copy.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
-import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
+import type { FeedbackAction, FeedbackRuntime, FeedbackTarget } from "./im-feedback-store.js";
 
 export type CardTone = "failure" | "success" | "offline" | "pending";
 
@@ -73,6 +73,7 @@ export function feedbackCard(
   target: FeedbackTarget,
   action: FeedbackAction | undefined,
   language: FeedbackLanguage,
+  runtime?: FeedbackRuntime,
 ): FeedbackCard {
   const status = cardStatus(target, action);
   // A status card is only its state: who acted and when stay on the details page.
@@ -83,6 +84,7 @@ export function feedbackCard(
       batchRetryBlocked: target.batchRetryBlocked,
       ...(target.batchSize ? { batchSize: target.batchSize } : {}),
       provider: target.provider,
+      ...(runtime ? { runtime } : {}),
     }),
     "failure",
     language,

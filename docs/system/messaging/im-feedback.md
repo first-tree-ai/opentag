@@ -154,7 +154,14 @@ the invisible readback identity described under [Message format compatibility](#
 | A frozen batch that cannot be retried, including a workspace failure | The reason's own title | The reason's own body, then （共 N 条消息） / (N messages); a legacy plain-text message edited later keeps the reason's next step with the same count |
 
 The context-limit, cut-off, too-large, outcome-unknown and workspace bodies are interim: each changes or disappears when
-its automatic recovery ships. Cards that will name the Agent's tool or model say "模型" until they can.
+its automatic recovery ships.
+
+Sign-in, access, process-exit, start-up and protocol cards name the Agent's tool and model from its settings when the
+card is rendered: `agents.runtime_provider` (Claude Code, Codex or Pi; 云端模型 / "The cloud model" for an Agent on
+the Cloud Computer) and `agent_runtime_configs.model`. Sign-in reads "{tool} 未登录或登录已失效 / 请在 Agent 所在电脑登录
+{tool}", access "没有 {model} 的使用权限", and the Agent error body "{tool} 意外退出", "{tool} 没能启动，请检查 Agent
+所在电脑上的 {tool} 是否已安装" or "{tool} 返回了无法识别的结果". Without a chosen model, and for sign-in and start-up on
+the Cloud Computer, which happen on no computer the owner controls, the card keeps the generic copy above.
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the

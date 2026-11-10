@@ -5,21 +5,21 @@ type Localized = Record<FeedbackLanguage, string>;
 
 export interface CardCopy {
   title: Localized;
-  /** One short sentence on what to do. Absent when the title already says it. Cards carry no links. */
-  body?: Localized;
+  /** One short sentence on what to do; every card has one. Cards carry no links. */
+  body: Localized;
 }
 
 const BODY = {
   later: { zh: "请稍后重试", en: "Try again later" },
   retry: { zh: "请重试", en: "Try again" },
   smaller: { zh: "请拆小后重试", en: "Split it into smaller tasks and try again" },
-  modelSettings: { zh: "需要更新模型设置", en: "Model settings need an update" },
+  modelSettings: { zh: "请在 OpenTag 更新模型设置", en: "Update the model settings in OpenTag" },
 } satisfies Record<string, Localized>;
 
-const ENVIRONMENT: CardCopy = { title: { zh: "执行环境出错", en: "Execution environment error" }, body: BODY.retry };
+const ENVIRONMENT: CardCopy = { title: { zh: "Agent 运行出错", en: "The Agent ran into an error" }, body: BODY.retry };
 const ENVIRONMENT_CONFIG: CardCopy = {
-  title: ENVIRONMENT.title,
-  body: { zh: "需要检查 Agent 配置", en: "The Agent configuration needs a check" },
+  title: { zh: "Agent 配置有误", en: "The Agent configuration is wrong" },
+  body: { zh: "请在 OpenTag 检查 Agent 配置", en: "Check the Agent configuration in OpenTag" },
 };
 const SMALLER = (zh: string, en: string): CardCopy => ({ title: { zh, en }, body: BODY.smaller });
 
@@ -44,11 +44,11 @@ const FAILURE_CARDS = {
   },
   provider_quota_exceeded: {
     title: { zh: "模型额度已用完", en: "Model quota used up" },
-    body: { zh: "恢复时间未知", en: "Recovery time unknown" },
+    body: { zh: "额度恢复后请重试", en: "Try again after the quota resets" },
   },
   credential_unavailable: {
     title: { zh: "执行凭据不可用", en: "Execution credentials unavailable" },
-    body: { zh: "需要更新凭据", en: "Credentials need an update" },
+    body: { zh: "请在 OpenTag 更新凭据", en: "Update the credentials in OpenTag" },
   },
   provider_context_limit: SMALLER("任务超出上下文上限", "Task exceeds the context limit"),
   provider_execution_limit: SMALLER("任务超出执行上限", "Task exceeds the execution limit"),
@@ -67,9 +67,12 @@ const FAILURE_CARDS = {
   configuration_conflict: ENVIRONMENT_CONFIG,
   turn_state_unknown: {
     title: { zh: "无法确认任务是否完成", en: "Can't confirm whether the task finished" },
-    body: { zh: "请先查看结果", en: "Check the results first" },
+    body: { zh: "请先在 OpenTag 查看结果，再决定是否重发", en: "Check the results in OpenTag before sending it again" },
   },
-  workspace_failed: { title: { zh: "工作区改动没能保存", en: "Workspace changes weren't saved" } },
+  workspace_failed: {
+    title: { zh: "工作区改动没能保存", en: "Workspace changes weren't saved" },
+    body: { zh: "请在 OpenTag 重试保存或放弃改动", en: "Retry the save or discard the changes in OpenTag" },
+  },
 } satisfies Record<TurnFailureReason, CardCopy>;
 
 const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
@@ -94,7 +97,7 @@ export function failureCardCopy(
   if (options.batchRetryBlocked)
     return {
       title: failure.title,
-      body: { zh: "请打开原任务查看", en: "Open the original task to review it" },
+      body: { zh: "请在 OpenTag 查看原任务", en: "Review the original task in OpenTag" },
     };
   return failure;
 }

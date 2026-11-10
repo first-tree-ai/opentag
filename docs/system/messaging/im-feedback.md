@@ -109,8 +109,8 @@ The card has no link and names no earlier message, person or Computer.
 
 ### Cards
 
-Failures and offline notices are cards. A card has a colored title that says what happened and, when the title
-does not already say it, one short body sentence on what to do. No card shows an error code, says the task did not
+Failures and offline notices are cards. A card has a colored title that says what happened and one short body
+sentence on what to do. When the step needs the Web, the body says "在 OpenTag" (in OpenTag). No card shows an error code, says the task did not
 finish, or says whether operations ran: codes and technical details appear only on the details page, which is also
 where support reads them. The reason: an IM failure is read by people who cannot act on a code, and a short card keeps
 a failure from taking more of the conversation than the work did.
@@ -132,18 +132,18 @@ the invisible readback identity described under [Message format compatibility](#
 | --- | --- | --- |
 | Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later |
 | Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 |
-| Authentication | 模型认证失败 / Model authentication failed | 需要更新模型设置 / Model settings need an update |
-| Access denied | 没有模型访问权限 / No access to the model | 需要更新模型设置 |
-| Quota | 模型额度已用完 / Model quota used up | 恢复时间未知 / Recovery time unknown |
-| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 需要更新凭据 / Credentials need an update |
+| Authentication | 模型认证失败 / Model authentication failed | 请在 OpenTag 更新模型设置 / Update the model settings in OpenTag |
+| Access denied | 没有模型访问权限 / No access to the model | 请在 OpenTag 更新模型设置 |
+| Quota | 模型额度已用完 / Model quota used up | 额度恢复后请重试 / Try again after the quota resets |
+| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 请在 OpenTag 更新凭据 / Update the credentials in OpenTag |
 | Context, execution limit, timeout, result too large | 任务超出上下文上限, 任务超出执行上限, 任务超时, 结果太大 | 请拆小后重试 / Split it into smaller tasks and try again |
-| Process exit, start failure, environment disconnected, client stopped, resume failure, protocol error, model failure, empty result, cleanup failure, and every unknown reason | 执行环境出错 / Execution environment error | 请重试 / Try again |
-| Request rejected, configuration conflict | 执行环境出错 | 需要检查 Agent 配置 / The Agent configuration needs a check |
-| Task outcome unknown | 无法确认任务是否完成 / Can't confirm whether the task finished | 请先查看结果 / Check the results first |
-| Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | |
+| Process exit, start failure, environment disconnected, client stopped, resume failure, protocol error, model failure, empty result, cleanup failure, and every unknown reason | Agent 运行出错 / The Agent ran into an error | 请重试 / Try again |
+| Request rejected, configuration conflict | Agent 配置有误 / The Agent configuration is wrong | 请在 OpenTag 检查 Agent 配置 / Check the Agent configuration in OpenTag |
+| Task outcome unknown | 无法确认任务是否完成 / Can't confirm whether the task finished | 请先在 OpenTag 查看结果，再决定是否重发 / Check the results in OpenTag before sending it again |
+| Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | 请在 OpenTag 重试保存或放弃改动 / Retry the save or discard the changes in OpenTag |
 | Message expired | 消息已过期 / Message expired | 如需要请重发 / Send it again if you still need it |
 | Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again |
-| A frozen batch that cannot be retried | The reason's own title | 请打开原任务查看 / Open the original task to review it |
+| A frozen batch that cannot be retried | The reason's own title | 请在 OpenTag 查看原任务 / Review the original task in OpenTag |
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the

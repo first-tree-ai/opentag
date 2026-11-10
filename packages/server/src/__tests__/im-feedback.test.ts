@@ -498,7 +498,7 @@ describe("durable IM feedback", () => {
     expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
-  it("shows a workspace failure as its title alone, with no body, link or button", async () => {
+  it("shows a workspace failure with the OpenTag step, and no link or button", async () => {
     const h = await workspaceFixture();
     const target = await h.target();
     expect(target.messageFormat).toBe("interactive_v1");
@@ -506,6 +506,7 @@ describe("durable IM feedback", () => {
       kind: "failure",
       tone: "failure",
       title: "工作区改动没能保存",
+      body: "请在 OpenTag 重试保存或放弃改动",
     });
   });
 
@@ -540,7 +541,7 @@ describe("durable IM feedback", () => {
     expect(card).toEqual({
       kind: "failure",
       tone: "failure",
-      title: "Execution environment error",
+      title: "The Agent ran into an error",
       body: "Try again",
     });
   });
@@ -827,7 +828,7 @@ describe("durable IM feedback", () => {
     for (const provider of ["slack", "feishu"] as const)
       expect(cardText({ ...t, provider })).not.toContain("provider_failed");
     expect(cardText({ ...t, errorCode: "<@everyone> private raw details" })).toBe(
-      "Execution environment error\nTry again",
+      "The Agent ran into an error\nTry again",
     );
   });
 });
@@ -1188,7 +1189,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(cardText(posted)).toBe("Execution environment error\nOpen the original task to review it");
+    expect(cardText(posted)).toBe("The Agent ran into an error\nReview the original task in OpenTag");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1221,8 +1222,8 @@ it("preserves workspace recovery and paused-Session guidance for a frozen batch 
   const h = await workspaceFixture();
   for (const provider of ["slack", "feishu"] as const) {
     const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
-    expect(rendered).toBe("Workspace changes weren't saved");
-    expect(rendered).not.toContain("Open the original task");
+    expect(rendered).toBe("Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag");
+    expect(rendered).not.toContain("Review the original task");
   }
 });
 

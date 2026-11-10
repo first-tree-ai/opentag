@@ -249,7 +249,7 @@ describe("native feedback transport", () => {
     const card = JSON.parse(data.content);
     expect(card.header).toEqual({ title: { tag: "plain_text", content: "模型认证失败" }, template: "red" });
     expect(card.elements[0].text.content).toBe(
-      `需要更新模型设置[\u200b](https://app.example.test/im-feedback/${t.id})`,
+      `请在 OpenTag 更新模型设置[\u200b](https://app.example.test/im-feedback/${t.id})`,
     );
     expect(data.content).not.toContain("provider_authentication_failed");
   });

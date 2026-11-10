@@ -51,15 +51,15 @@ database:
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
-   “执行环境出错” with the body “请重试”. It shows no error code, no link or button, and no sentence about whether
+   “Agent 运行出错” with the body “请重试”. It shows no error code, no link or button, and no sentence about whether
    operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
    shows above the card.
 2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
 3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
    inside a thread. Expected: the card is in that thread on both.
-4. Make the model authentication fail. Expected: “模型认证失败” with “需要更新模型设置” and no link.
-5. Make the workspace save fail. Expected: a red card with only the title “工作区改动没能保存”: no body, link or button.
+4. Make the model authentication fail. Expected: “模型认证失败” with “请在 OpenTag 更新模型设置” and no link.
+5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
    As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
    turns green in place and reads only 已保存. Repeat with Discard, which asks for the
    permanent-loss confirmation first and ends as 已放弃改动.

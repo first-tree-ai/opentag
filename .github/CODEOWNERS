@@ -19,7 +19,7 @@
 /LICENSE                    @bestony @yuezengwu
 
 # Docs fast lane: territory. Overrides the gate for markdown anywhere outside web.
-*.md                        @yuezengwu @bestony @Gandy2025 @liuchao-001
+*.md                        @yuezengwu @bestony
 
 # Exempt: dependency manifests, no owners on purpose. GitHub auto-requests a
 # review from the owners of every file a pull request touches, which put a human

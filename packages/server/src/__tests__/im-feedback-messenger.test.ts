@@ -4,7 +4,11 @@ import { WebAPIRateLimitedError } from "@slack/web-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { feedbackCard, feishuCardContent, slackCardMessage, waitingCard } from "../services/im/im-feedback-card.js";
-import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
+import {
+  FeedbackCooldownStorageError,
+  ImFeedbackMessenger,
+  SENDER_READBACK,
+} from "../services/im/im-feedback-messenger.js";
 import type { FeedbackAction, FeedbackTarget } from "../services/im/im-feedback-store.js";
 import { renderFeedbackText } from "../services/im/im-feedback-text.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
@@ -14,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   slack: {
     reactions: { add: vi.fn(), remove: vi.fn() },
     chat: { postMessage: vi.fn(), update: vi.fn() },
-    conversations: { replies: vi.fn(), history: vi.fn() },
+    conversations: { replies: vi.fn(), history: vi.fn(), open: vi.fn() },
   },
   feishu: {
     im: {
@@ -135,6 +139,7 @@ beforeEach(() => {
     mocks.slack.chat.update,
     mocks.slack.conversations.replies,
     mocks.slack.conversations.history,
+    mocks.slack.conversations.open,
     mocks.feishu.im.v1.messageReaction.list,
     mocks.feishu.im.v1.messageReaction.create,
     mocks.feishu.im.v1.messageReaction.delete,
@@ -145,6 +150,8 @@ beforeEach(() => {
     mocks.feishu.im.v1.message.list,
   ])
     mock.mockReset();
+  // Unless a test opens it, the sender's Slack direct message is refused, so a card stays in the conversation.
+  mocks.slack.conversations.open.mockRejectedValue({ data: { error: "cannot_dm_bot" } });
   mocks.slack.reactions.add.mockResolvedValue({ ok: true });
   mocks.slack.reactions.remove.mockResolvedValue({ ok: true });
   mocks.feishu.im.v1.messageReaction.list.mockResolvedValue({ code: 0, data: { items: [], has_more: false } });
@@ -914,4 +921,116 @@ it("renders no visible link or button on any card (Gandy 11-10)", () => {
     const feishu = feishuCardContent(card, "https://app.example.test/im-feedback/f", "zh");
     expect(feishu.replaceAll("[​](https://app.example.test/im-feedback/f)", "")).not.toMatch(/\]\(|"button"|"action"/u);
   }
+});
+
+describe("cards sent to the sender's direct message", () => {
+  const quota = (provider: "slack" | "feishu"): FeedbackTarget => ({
+    ...target(provider),
+    messageFormat: "interactive_v1",
+    errorCode: "provider_quota_exceeded",
+    senderExternalId: provider === "feishu" ? "ou_sender" : "U_SENDER",
+  });
+  it("sends a Feishu group's quota card and waiting notices to the sender's open_id", async () => {
+    const { messenger } = harness();
+    const t = quota("feishu");
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "dm", chat_id: "oc_dm" } });
+    expect(await messenger.post(t)).toBe("dm");
+    await messenger.postOfflineNotice(t, "parked");
+    const [card, notice] = mocks.feishu.im.v1.message.create.mock.calls.map((c) => c[0]);
+    expect(card).toMatchObject({
+      params: { receive_id_type: "open_id" },
+      data: { receive_id: "ou_sender", uuid: t.providerRequestId },
+    });
+    expect(JSON.parse(card.data.content).header.title.content).toBe("Model quota used up");
+    expect(notice.data).not.toHaveProperty("uuid");
+    expect(JSON.parse(notice.data.content).header.title.content).toBe("Queued");
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+  });
+  it("keeps other failures, and every card of a direct message, where they were", async () => {
+    const { messenger, cooldown } = harness();
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "r", chat_id: "channel" } });
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "c", chat_id: "channel" } });
+    await messenger.post({ ...quota("feishu"), errorCode: "provider_rate_limited" });
+    await messenger.post({ ...quota("feishu"), state: "workspace_blocked" });
+    cooldown.messageContext.mockResolvedValueOnce({ language: "en", direct: true });
+    await messenger.post({ ...quota("feishu"), threadKey: null });
+    expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledTimes(2);
+    expect(mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].params).toEqual({ receive_id_type: "chat_id" });
+  });
+  it("falls back to the conversation when Feishu refuses the message or the sender is a bot", async () => {
+    const { messenger } = harness();
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "r", chat_id: "channel" } });
+    mocks.feishu.im.v1.message.create.mockResolvedValueOnce({ code: 230013, msg: "not in scope" });
+    mocks.feishu.im.v1.message.create.mockRejectedValueOnce(
+      Object.assign(new Error("400"), { response: { status: 400, data: { code: 99992361 } } }),
+    );
+    for (const t of [quota("feishu"), quota("feishu"), { ...quota("feishu"), senderExternalId: "cli_bot" }])
+      expect(await messenger.post(t)).toBe("r");
+    expect(mocks.feishu.im.v1.message.create).toHaveBeenCalledTimes(2);
+    expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledTimes(3);
+  });
+  it("never falls back after an unknown direct-message outcome, and reads back there", async () => {
+    const { messenger } = harness();
+    const t = quota("feishu");
+    mocks.feishu.im.v1.message.create.mockRejectedValueOnce(new Error("socket hang up"));
+    await expect(messenger.post(t)).rejects.toMatchObject({
+      code: "IM_FEEDBACK_SEND_UNKNOWN",
+      knownNotApplied: false,
+      readbackCursor: SENDER_READBACK,
+    });
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+    mocks.feishu.im.v1.message.create.mockResolvedValueOnce({ code: 0, data: { message_id: "dm", chat_id: "oc" } });
+    expect(await messenger.find(t, SENDER_READBACK)).toEqual({ ids: ["dm"] });
+    expect(mocks.feishu.im.v1.message.create.mock.calls[1]?.[0].data.uuid).toBe(t.providerRequestId);
+    // Past Feishu's deduplication window a repeat could post twice, so nothing is sent.
+    const old = { ...t, sendStartedAt: new Date(Date.now() - 55 * 60_000) };
+    expect(await messenger.find(old, SENDER_READBACK)).toEqual({ ids: [] });
+    expect(mocks.feishu.im.v1.message.create).toHaveBeenCalledTimes(2);
+  });
+  it("opens the Slack direct message, keeps its channel in the card ID, and edits the card there", async () => {
+    const { messenger } = harness();
+    const t: FeedbackTarget = { ...quota("slack"), errorCode: "input_expired" };
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: "D1", ts: "1.5" });
+    mocks.slack.chat.update.mockResolvedValue({ ok: true });
+    expect(await messenger.post(t)).toBe("D1/1.5");
+    expect(mocks.slack.conversations.open).toHaveBeenCalledWith({ users: "U_SENDER" });
+    const sent = mocks.slack.chat.postMessage.mock.calls[0]?.[0];
+    expect(sent.channel).toBe("D1");
+    expect(sent).not.toHaveProperty("thread_ts");
+    expect(sent.attachments[0].blocks[0].text.text).toBe("Message expired");
+    await messenger.update({ ...t, cardMessageId: "D1/1.5", state: "completed" });
+    expect(mocks.slack.chat.update.mock.calls[0]?.[0]).toMatchObject({ channel: "D1", ts: "1.5" });
+    await messenger.update({ ...t, cardMessageId: "9.9" });
+    expect(mocks.slack.chat.update.mock.calls[1]?.[0]).toMatchObject({ channel: t.channelId, ts: "9.9" });
+  });
+  it("falls back to the Slack conversation when the direct message is refused, but not on a rate limit", async () => {
+    const { messenger } = harness();
+    const t: FeedbackTarget = { ...quota("slack"), errorCode: "input_rejected" };
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "2.5" });
+    expect(await messenger.post(t)).toBe("2.5");
+    expect(mocks.slack.chat.postMessage.mock.calls[0]?.[0]).toMatchObject({ channel: t.channelId });
+    mocks.slack.chat.postMessage.mockClear();
+    mocks.slack.conversations.open.mockRejectedValueOnce(new WebAPIRateLimitedError(3));
+    await expect(messenger.post(t)).rejects.toMatchObject({ code: "IM_FEEDBACK_RATE_LIMITED", knownNotApplied: true });
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
+  it("reads a Slack card back from the sender's direct message by its identity", async () => {
+    const { messenger } = harness();
+    const t = quota("slack");
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    const card = (id: string, user = "bot") => ({
+      user,
+      ts: id,
+      attachments: [{ blocks: [{ block_id: `opentag_feedback:${t.id}` }] }],
+    });
+    mocks.slack.conversations.history.mockResolvedValue({
+      ok: true,
+      messages: [card("1.1"), card("1.2", "someone"), { user: "bot", ts: "1.3" }],
+      response_metadata: { next_cursor: "p2" },
+    });
+    expect(await messenger.find(t, SENDER_READBACK)).toEqual({ ids: ["D1/1.1"], cursor: `${SENDER_READBACK}p2` });
+    await messenger.find(t, `${SENDER_READBACK}p2`);
+    expect(mocks.slack.conversations.history.mock.calls[1]?.[0]).toMatchObject({ channel: "D1", cursor: "p2" });
+  });
 });

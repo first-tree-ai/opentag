@@ -304,6 +304,12 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
+7. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
+   Keep the same UID visible through 60 seconds, then return 404 on a later due sweep. Expected:
+   each due sweep makes one confirmation GET and can process other candidates. After 404, the
+   old binding clears, the capacity slot is free, and a synthetic Session input can reserve the
+   next generation from the same archive. A failed read or a replacement UID keeps the binding.
+   A still-present UID at the six-minute deadline enters the failure cooldown.
 
 ## Parent message steered into a running child
 

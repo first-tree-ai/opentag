@@ -30,6 +30,7 @@ import { SandboxIdleReclaimer } from "../services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
+import { countCloudCapacityOccupancy } from "../services/sandboxes/sandbox-capacity.js";
 import {
   SandboxRunnerService,
   WORKSPACE_RECOVERY_RETRY_DELAY_MS,
@@ -703,7 +704,75 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.store.stored(ready.row.storageUri)).toEqual(sealed);
   });
 
-  it("bounds pending confirmation to the original deadline, then uses the durable failure cooldown", async () => {
+  it("releases capacity for the next input when an accepted DELETE becomes absent after its confirmation window", async () => {
+    const accountId = await account();
+    const stack = makeStack({ capacity: { accountLimit: 1, platformLimit: 1 } });
+    const { row } = await readySandbox(stack, accountId, "room-late-delete");
+    const deleteInstance = keepDeletionPending(stack);
+    const resourceName = row.currentResourceName as string;
+    const instance = stack.fake.instances.get(resourceName);
+    if (!instance) throw new Error("Missing fixture Instance");
+
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const acceptedAt = stack.now();
+    await stack.service.reclaimIdleSandboxes();
+    const sealed = stack.store.stored(row.storageUri);
+    expect(sealed).toMatchObject({ saved: true, sealed: true, ownerGeneration: row.environmentGeneration });
+    expect(deleteInstance).toHaveBeenCalledExactlyOnceWith(resourceName, row.currentResourceUid);
+    expect(await sandboxRow(row.id)).toMatchObject({ lastErrorCode: "cloud_delete_pending", lastErrorAt: acceptedAt });
+
+    const read = vi.spyOn(stack.fake, "getInstance");
+    stack.advance(60_000);
+    await restartService(stack).reclaimIdleSandboxes();
+    expect(read).toHaveBeenCalledExactlyOnceWith(resourceName);
+    expect(read).toHaveResolvedWith(expect.objectContaining({ uid: row.currentResourceUid }));
+    expect(await sandboxRow(row.id)).toMatchObject({
+      lifecycle: "releasing",
+      environmentGeneration: row.environmentGeneration,
+      currentResourceName: resourceName,
+      currentResourceUid: row.currentResourceUid,
+      lastErrorCode: "cloud_delete_pending",
+      lastErrorAt: acceptedAt,
+    });
+    expect(await countCloudCapacityOccupancy(unit.database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
+    expect(await stack.service.ensureIngressAllocation(accountId, row.id)).toBe("pending");
+    expect(stack.fake.createCalls).toHaveLength(1);
+
+    instance.gone = true;
+    stack.advance(14_999);
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    stack.advance(1);
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenLastCalledWith(resourceName);
+    expect(read).toHaveLastResolvedWith(undefined);
+    expect(deleteInstance).toHaveBeenCalledTimes(1);
+    expect(await sandboxRow(row.id)).toMatchObject({
+      lifecycle: "unallocated",
+      environmentGeneration: row.environmentGeneration,
+      currentResourceName: null,
+      currentResourceUid: null,
+      idleReclaimAt: null,
+      lastErrorCode: null,
+    });
+    expect(await countCloudCapacityOccupancy(unit.database, accountId)).toEqual({ accountUsed: 0, platformUsed: 0 });
+    expect(stack.store.stored(row.storageUri)).toEqual(sealed);
+
+    expect(await stack.service.ensureIngressAllocation(accountId, row.id)).toBe("pending");
+    expect(stack.fake.createCalls).toHaveLength(2);
+    const next = await sandboxRow(row.id);
+    expect(next).toMatchObject({
+      lifecycle: "preparing",
+      environmentGeneration: row.environmentGeneration + 1,
+      storageUri: row.storageUri,
+    });
+    expect(next.currentResourceName).not.toBe(resourceName);
+    expect(next.currentResourceUid).not.toBe(row.currentResourceUid);
+    expect(await countCloudCapacityOccupancy(unit.database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
+  });
+
+  it("bounds automatic confirmation to six minutes, then uses the durable failure cooldown", async () => {
     const accountId = await account();
     const sleep = vi.fn(async (ms: number) => stack.advance(ms));
     const stack = makeStack({ sleep });
@@ -711,10 +780,12 @@ describe("E7 automatic idle reclamation", () => {
     keepDeletionPending(stack);
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
     await stack.service.reclaimIdleSandboxes();
-    for (let pass = 1; pass <= 4; pass += 1) {
+    const reads = vi.spyOn(stack.fake, "getInstance");
+    for (let pass = 1; pass <= 24; pass += 1) {
       stack.advance(15_000);
       const result = await restartService(stack).reclaimIdleSandboxes();
-      expect(result).toMatchObject({ released: 0, failed: pass === 4 ? 1 : 0 });
+      expect(result).toMatchObject({ released: 0, failed: pass === 24 ? 1 : 0 });
+      expect(reads).toHaveBeenCalledTimes(pass);
     }
     expect(await sandboxRow(ready.row.id)).toMatchObject({
       lifecycle: "releasing",
@@ -724,6 +795,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.deleteCalls).toHaveLength(1);
     stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS - 1);
     await restartService(stack).reclaimIdleSandboxes();
+    expect(reads).toHaveBeenCalledTimes(24);
     expect(stack.fake.deleteCalls).toHaveLength(1);
     stack.advance(1);
     await restartService(stack).reclaimIdleSandboxes();
@@ -731,8 +803,8 @@ describe("E7 automatic idle reclamation", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
-  it.each([20_000, 60_000])(
-    "includes a slow initial confirmation read in the original deadline (%s ms)",
+  it.each([20_000, 60_000, 360_000])(
+    "includes a slow initial confirmation read in the automatic deadline (%s ms)",
     async (readMs) => {
       const accountId = await account();
       const stack = makeStack();
@@ -746,13 +818,16 @@ describe("E7 automatic idle reclamation", () => {
       stack.advance(IDLE_TIMEOUT_MS + 1_000);
       const acceptedAt = stack.now();
       const result = await stack.service.reclaimIdleSandboxes();
-      expect(result).toMatchObject({ released: 0, failed: readMs === 60_000 ? 1 : 0 });
+      const expired = readMs === 360_000;
+      expect(result).toMatchObject({ released: 0, failed: expired ? 1 : 0 });
       const pending = await sandboxRow(ready.row.id);
       expect(pending.currentResourceUid).toBe(ready.row.currentResourceUid);
-      if (readMs === 20_000) {
+      if (expired) {
+        expect(pending.lastErrorCode).not.toBe("cloud_delete_pending");
+      } else {
         expect(pending.lastErrorAt).toEqual(acceptedAt);
         expect(pending.lastErrorCode).toBe("cloud_delete_pending");
-      } else expect(pending.lastErrorCode).not.toBe("cloud_delete_pending");
+      }
       expect(stack.fake.deleteCalls).toHaveLength(1);
     },
   );
@@ -764,6 +839,8 @@ describe("E7 automatic idle reclamation", () => {
     keepDeletionPending(stack);
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
     await stack.service.reclaimIdleSandboxes();
+    stack.advance(60_000);
+    expect(await restartService(stack).reclaimIdleSandboxes()).toMatchObject({ released: 0, failed: 0 });
     if (failure === "read failure") stack.fake.getInstanceFailures = 1;
     else stack.fake.replaceUid(ready.row.currentResourceName as string, "other-owner");
     stack.advance(15_000);

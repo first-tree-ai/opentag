@@ -1007,8 +1007,10 @@ describe("SessionRuntimeManager", () => {
     await manager.ensureRuntime("session-1");
     expect(factory.created).toHaveLength(1);
     expect(factory.resumed).toEqual([binding("thread-1")]);
+    expect(factory.resumedRequests[0]?.systemPromptUpdated).toBeUndefined();
     expect(factory.runtimes[0]?.closed).toBe(true);
     expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
+    expect((await store.read("agent-1", "session-1"))?.systemPromptUpdated).toBeUndefined();
     await expect(
       factory.runtimes[0]?.emit({ type: "binding_changed", binding: binding("late-old-thread") }),
     ).rejects.toMatchObject({ name: "SessionBindingConflictError" });
@@ -1017,6 +1019,7 @@ describe("SessionRuntimeManager", () => {
     await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
     await manager.ensureRuntime("session-1");
     expect(factory.resumed).toEqual([binding("thread-1"), binding("thread-1")]);
+    expect(factory.resumedRequests[1]?.systemPromptUpdated).toBeUndefined();
 
     await manager.close();
     const restartedFactory = new FakeFactory();
@@ -1102,7 +1105,7 @@ describe("SessionRuntimeManager", () => {
     },
   );
 
-  it("starts a new native conversation when only the Agent revision advances with a Soul change in a warm Session", async () => {
+  it("resumes the native conversation when only the Agent revision advances with a Soul change in a warm Session", async () => {
     const f = await legacyRuntimeFixture("0.1.0", "codex", false);
     const factory = new FakeFactory();
     const manager = new SessionRuntimeManager({
@@ -1122,18 +1125,21 @@ describe("SessionRuntimeManager", () => {
       });
       await manager.ensureRuntime("session-1");
       expect(factory.resumed).toEqual([f.originalBinding]);
+      expect(factory.resumedRequests[0]?.systemPromptUpdated).toBeUndefined();
       const next = structuredClone(f.runtime);
       next.revision.agent = { sequence: 3, id: "agent-only-update" };
       next.instructions.agent = "Updated Soul without a Session revision change";
       await expect(reconciler.reconcile(reconcile(f.computerId, next))).resolves.toMatchObject({ status: "ready" });
       await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.resumed).toEqual([f.originalBinding]);
-      expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.created).toHaveLength(0);
+      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding]);
+      expect(factory.resumedRequests[1]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.resumedRequests[1]?.systemPromptUpdated).toBe(true);
       expect(factory.runtimes[0]?.closed).toBe(true);
       const afterSoulChange = await f.store.read("agent-1", "session-1");
       expect(afterSoulChange?.lastEffectiveSnapshotHash).toBe(computeRuntimeSnapshotHashes(next).effectiveSnapshotHash);
-      expect(afterSoulChange?.runtimeBinding).toBeDefined();
+      expect(afterSoulChange?.runtimeBinding).toEqual(f.originalBinding);
+      expect(afterSoulChange?.systemPromptUpdated).toBeUndefined();
       const modelUpdated = structuredClone(next);
       modelUpdated.revision.session = { sequence: 3, id: "session-model-update" };
       modelUpdated.model = "updated-model";
@@ -1142,9 +1148,10 @@ describe("SessionRuntimeManager", () => {
         status: "ready",
       });
       await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.resumed).toEqual([f.originalBinding, afterSoulChange?.runtimeBinding]);
-      expect(factory.resumedRequests[1]?.configuration).toEqual({
+      expect(factory.created).toHaveLength(0);
+      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding, afterSoulChange?.runtimeBinding]);
+      expect(factory.resumedRequests[2]?.systemPromptUpdated).toBeUndefined();
+      expect(factory.resumedRequests[2]?.configuration).toEqual({
         model: "updated-model",
         reasoningEffort: "high",
       });

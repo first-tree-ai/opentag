@@ -129,7 +129,8 @@ describe.each(legacyLayouts)("Session configuration transitions from %s", (layou
       const request = withRuntime(f, changedSnapshot(currentSnapshot(f.original, 3), change));
       await expect(f.reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
       const prepared = await validateAndPrepare(f.store, request);
-      expect(prepared.binding.runtimeBinding).toEqual(change === "Soul" ? undefined : f.binding.runtimeBinding);
+      expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+      expect(prepared.binding.systemPromptUpdated).toBe(change === "Soul" ? true : undefined);
       await expectPreservedHistory(f, prepared.binding);
       expect(f.reconciler.checkDelivery(delivery(request.runtime, "pending"))).toBeUndefined();
       await expectSingleCustody(f, request.runtime);
@@ -224,7 +225,8 @@ describe("Current-format Session configuration transitions", () => {
     await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
     expect(reconciler.checkDelivery(delivery(runtime, "pending"))).toBeUndefined();
     const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
-    expect(prepared.binding.runtimeBinding).toBeUndefined();
+    expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+    expect(prepared.binding.systemPromptUpdated).toBe(true);
     await expectPreservedHistory(f, prepared.binding);
     await expectSingleCustody(f, runtime);
     await expect(createReconciler(f).reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
@@ -268,8 +270,9 @@ describe("Current-format Session configuration transitions", () => {
       const f = await fixture("current");
       const request = withRuntime(f, changedSnapshot(currentSnapshot(f.original, 2), change));
       const prepared = await validateAndPrepare(f.store, request);
-      expect(prepared.binding.runtimeBinding).toEqual(
-        change === "model" || change === "reasoning effort" ? f.binding.runtimeBinding : undefined,
+      expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+      expect(prepared.binding.systemPromptUpdated).toBe(
+        change === "model" || change === "reasoning effort" ? undefined : true,
       );
       await expectPreservedHistory(f, prepared.binding);
       await expectSingleCustody(f, request.runtime);
@@ -359,7 +362,7 @@ describe.each(["current", ...legacyLayouts] as const)("Persisted %s revision bou
       if (scenario === "newer Agent" || scenario === "newer Session") {
         const prepared = await validateAndPrepare(store, request);
         expect(prepared.binding.runtimeBinding).toEqual(
-          layout === "current" && scenario === "newer Session" && nativeBinding ? f.binding.runtimeBinding : undefined,
+          layout === "current" && nativeBinding ? f.binding.runtimeBinding : undefined,
         );
         await expectPreservedHistory(f, prepared.binding);
         expect(await validateAndPrepare(openStore(f.home), request)).toEqual(prepared);
@@ -551,7 +554,9 @@ describe.each([
 
       const restarted = openStore(f.home);
       const prepared = await validateAndPrepare(restarted, request);
-      expect(prepared.binding.runtimeBinding).toEqual(!changeSoul ? f.binding.runtimeBinding : undefined);
+      expect(prepared.binding.runtimeBinding).toEqual(
+        layout === "current" || !changeSoul ? f.binding.runtimeBinding : undefined,
+      );
       await expectPreservedHistory(f, prepared.binding);
       expect(await validateAndPrepare(restarted, request)).toEqual(prepared);
       await expectSingleCustody(f, request.runtime);

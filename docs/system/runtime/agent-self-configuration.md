@@ -170,14 +170,12 @@ observation, so the caller can tell the human the URL is still valid and check a
 
 - An owner change to the switch advances the runtime configuration revision atomically with the Agent
   update. Because the switch changes the managed system prompt, the next eligible Turn uses the new
-  setting and starts a new native conversation after any unresolved work settles. Repeating the same
+  setting and resumes the existing native conversation after any unresolved work settles. Repeating the same
   value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so
   a change applies from the next Turn of every existing Session. These fields are part of the effective runtime
-  snapshot hash: model and reasoning-effort changes resume the existing provider conversation under the updated
-  snapshot so earlier conversation context is preserved, whereas instruction changes start a new provider conversation
-  on that Turn so earlier conversation context is not carried over. Internal Sessions created with their own model or
-  reasoning-effort override keep that override.
+  snapshot hash; changes resume the existing provider conversation under the updated snapshot so earlier conversation
+  context is preserved. Internal Sessions created with their own model or reasoning-effort override keep that override.
 - MCP mounts are read by the MCP gateway on each request, so attaching, enabling, or disabling a Server changes the
   tool catalog on the next MCP request. An Agent that had no usable MCP Server gets MCP access at its next execution.
 - Detaching or deleting a Server drops this Agent's authorization and mount for it, while retaining the Account
@@ -200,12 +198,11 @@ current value with `self show` and keep what still applies.
 
 For Local Sessions saved by an older Client, a valid newer Soul can apply directly during the
 first Session preparation after upgrade. A separate format-only migration is not required.
-Unresolved work settles first; any configuration change during a legacy layout upgrade (or a
-prompt-affecting change such as `instructions`, `selfConfigurationEnabled`, or `contextTrees` on a
-current-format Session) starts a new native conversation while preserving the OpenTag Session and
-its history, whereas `model` and `reasoningEffort` updates on a current-format Session resume the
-existing native conversation. The Client checks both Agent and Session revisions from the saved
-snapshot, so restarting does not bypass same-revision conflicts.
+Unresolved work settles first; any configuration change during a legacy layout upgrade starts a new
+native conversation while preserving the OpenTag Session and its history, whereas configuration
+updates on a current-format Session resume the existing native conversation. The Client checks both
+Agent and Session revisions from the saved snapshot, so restarting does not bypass same-revision
+conflicts.
 
 ## Observability
 

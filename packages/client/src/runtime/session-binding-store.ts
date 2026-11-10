@@ -81,6 +81,7 @@ export interface LocalSessionBinding {
   /** Persisted field name retained for schema-v1/v2 compatibility; value identifies the Provider artifact boundary. */
   providerHomeIdentity: string;
   runtimeBinding?: AgentRuntimeBinding;
+  systemPromptUpdated?: boolean;
   appliedSessionRevisionSequence: number;
   appliedSessionRevisionId: string;
   sessionConfigHash: string;
@@ -174,9 +175,9 @@ export class SessionBindingStore {
       if (current?.unresolvedTurn && !resumed) {
         return { binding: current, unresolvedTurn: current.unresolvedTurn };
       }
-      const runtimeBinding = current
-        ? await this.#validateAndSelectRuntimeBinding(current, request, hashes)
-        : undefined;
+      const selected = current ? await this.#validateAndSelectRuntimeBinding(current, request, hashes) : undefined;
+      const runtimeBinding = selected?.runtimeBinding;
+      const systemPromptUpdated = selected?.systemPromptUpdated === true;
 
       const snapshot = EffectiveRuntimeSnapshotSchema.parse(runtime);
       const storedSnapshot = snapshotPath(this.#home, request.agentId, hashes.effectiveSnapshotHash);
@@ -198,6 +199,7 @@ export class SessionBindingStore {
         provider: runtime.provider,
         providerHomeIdentity: this.#artifactIdentity(runtime.provider),
         ...(runtimeBinding ? { runtimeBinding } : {}),
+        ...(runtimeBinding && systemPromptUpdated ? { systemPromptUpdated: true } : {}),
         appliedSessionRevisionSequence: runtime.revision.session.sequence,
         appliedSessionRevisionId: runtime.revision.session.id,
         sessionConfigHash: hashes.sessionConfigHash,
@@ -406,7 +408,8 @@ export class SessionBindingStore {
       ) {
         throw new SessionBindingConflictError("conflict", "The Agent Runtime binding does not match the Session");
       }
-      const updated = { ...binding, runtimeBinding };
+      const { systemPromptUpdated: _systemPromptUpdated, ...rest } = binding;
+      const updated: LocalSessionBinding = { ...rest, runtimeBinding };
       await this.#writeBinding(path, updated);
       return updated;
     });
@@ -459,14 +462,14 @@ export class SessionBindingStore {
     current: LocalSessionBinding,
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
-  ): Promise<AgentRuntimeBinding | undefined> {
+  ): Promise<{ runtimeBinding?: AgentRuntimeBinding; systemPromptUpdated: boolean }> {
     if (request.placementGeneration < current.placementGeneration) {
       throw new SessionBindingConflictError("stale", "The placement generation is stale");
     }
     const runtime = request.runtime;
     const unchanged = current.lastEffectiveSnapshotHash === hashes.effectiveSnapshotHash;
     if (!runtime || current.placementGeneration !== request.placementGeneration) {
-      return unchanged ? current.runtimeBinding : undefined;
+      return selectRuntimeBinding(current, unchanged, true);
     }
     const path = snapshotPath(this.#home, request.agentId, current.lastEffectiveSnapshotHash);
     let old = (await validatePrivateDirectory(this.#home, dirname(path)))
@@ -491,9 +494,8 @@ export class SessionBindingStore {
     }
     validateStoredSnapshot(current, old, oldHashes);
     assertSnapshotRevisions(old, runtime, oldHashes, nextHashes, layout ? "conflict" : "stale");
-    return unchanged || canRetainRuntimeBinding(old, runtime, layout, oldHashes, nextHashes)
-      ? current.runtimeBinding
-      : undefined;
+    const retain = unchanged || canRetainRuntimeBinding(old, runtime, layout, oldHashes, nextHashes);
+    return selectRuntimeBinding(current, retain, unchanged, old, runtime);
   }
 
   async #requireBinding(agentId: string, sessionId: string): Promise<LocalSessionBinding> {
@@ -612,7 +614,9 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     "lastEffectiveSnapshotHash",
     "recentRecordedInputs",
   ];
-  const optional = isLegacy ? ["providerThreadId", "unresolvedTurn"] : ["runtimeBinding", "unresolvedTurn"];
+  const optional = isLegacy
+    ? ["providerThreadId", "unresolvedTurn"]
+    : ["runtimeBinding", "systemPromptUpdated", "unresolvedTurn"];
   if (!hasOnlyKeys(value, [...required, ...optional]) || required.some((key) => !(key in value))) {
     throw new RuntimeStorageError("invalid", "Session binding fields are invalid");
   }
@@ -628,7 +632,6 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     !isString(value.appliedSessionRevisionId) ||
     !RuntimeSha256Schema.safeParse(value.sessionConfigHash).success ||
     !RuntimeSha256Schema.safeParse(value.lastEffectiveSnapshotHash).success ||
-    (isLegacy && value.providerThreadId !== undefined && !isString(value.providerThreadId)) ||
     !Array.isArray(value.recentRecordedInputs)
   ) {
     throw new RuntimeStorageError("invalid", "Session binding values are invalid");
@@ -654,19 +657,7 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
           value.agentId as string,
           value.placementGeneration as number,
         );
-  let runtimeBinding: AgentRuntimeBinding | undefined;
-  if (isLegacy && value.providerThreadId) {
-    runtimeBinding = {
-      providerId: "codex",
-      schemaVersion: 1,
-      payload: { threadId: value.providerThreadId as string },
-    };
-  } else if (!isLegacy && value.runtimeBinding !== undefined) {
-    runtimeBinding = validateRuntimeBinding(value.runtimeBinding);
-    if (runtimeBinding.providerId !== value.provider) {
-      throw new RuntimeStorageError("invalid", "Agent Runtime binding provider does not match the Session");
-    }
-  }
+  const { runtimeBinding, systemPromptUpdated } = parseStoredRuntimeBinding(value, isLegacy);
   return {
     schemaVersion: SESSION_BINDING_SCHEMA_VERSION,
     sessionId: value.sessionId,
@@ -676,12 +667,59 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     provider: value.provider,
     providerHomeIdentity: value.providerHomeIdentity as string,
     ...(runtimeBinding ? { runtimeBinding } : {}),
+    ...(systemPromptUpdated ? { systemPromptUpdated: true } : {}),
     appliedSessionRevisionSequence: value.appliedSessionRevisionSequence,
     appliedSessionRevisionId: value.appliedSessionRevisionId,
     sessionConfigHash: value.sessionConfigHash as string,
     lastEffectiveSnapshotHash: value.lastEffectiveSnapshotHash as string,
     recentRecordedInputs,
     ...(unresolvedTurn ? { unresolvedTurn } : {}),
+  };
+}
+
+function selectRuntimeBinding(
+  current: LocalSessionBinding,
+  retain: boolean,
+  unchanged: boolean,
+  old?: StoredRuntimeSnapshot,
+  runtime?: EffectiveRuntimeSnapshot,
+): { runtimeBinding?: AgentRuntimeBinding; systemPromptUpdated: boolean } {
+  const runtimeBinding = retain ? current.runtimeBinding : undefined;
+  if (!runtimeBinding) return { systemPromptUpdated: false };
+  const promptChanged =
+    !unchanged && old !== undefined && runtime !== undefined && !hasSameSystemPromptInputs(old, runtime);
+  return {
+    runtimeBinding,
+    systemPromptUpdated: current.systemPromptUpdated === true || promptChanged,
+  };
+}
+
+function parseStoredRuntimeBinding(
+  value: Record<string, unknown>,
+  isLegacy: boolean,
+): { runtimeBinding?: AgentRuntimeBinding; systemPromptUpdated?: boolean } {
+  if (isLegacy) {
+    if (value.providerThreadId !== undefined && !isString(value.providerThreadId)) {
+      throw new RuntimeStorageError("invalid", "Session binding values are invalid");
+    }
+    return value.providerThreadId
+      ? { runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: value.providerThreadId } } }
+      : {};
+  }
+  if (
+    (value.systemPromptUpdated !== undefined && typeof value.systemPromptUpdated !== "boolean") ||
+    (value.systemPromptUpdated === true && value.runtimeBinding === undefined)
+  ) {
+    throw new RuntimeStorageError("invalid", "Session binding values are invalid");
+  }
+  if (value.runtimeBinding === undefined) return {};
+  const runtimeBinding = validateRuntimeBinding(value.runtimeBinding);
+  if (runtimeBinding.providerId !== value.provider) {
+    throw new RuntimeStorageError("invalid", "Agent Runtime binding provider does not match the Session");
+  }
+  return {
+    runtimeBinding,
+    ...(value.systemPromptUpdated === true ? { systemPromptUpdated: true } : {}),
   };
 }
 
@@ -940,17 +978,26 @@ function compareLegacySnapshot(
 
 function canRetainRuntimeBinding(
   old: StoredRuntimeSnapshot,
-  runtime: EffectiveRuntimeSnapshot,
+  _runtime: EffectiveRuntimeSnapshot,
   layout: "0.1.0" | "self-configuration" | undefined,
   oldHashes: RuntimeSnapshotHashes,
   nextHashes: RuntimeSnapshotHashes,
 ): boolean {
   if (layout !== undefined) return nextHashes.effectiveSnapshotHash === oldHashes.effectiveSnapshotHash;
+  return EffectiveRuntimeSnapshotSchema.safeParse(old).success;
+}
+
+function hasSameSystemPromptInputs(old: StoredRuntimeSnapshot, runtime: EffectiveRuntimeSnapshot): boolean {
+  const parsed = EffectiveRuntimeSnapshotSchema.safeParse(old);
+  if (!parsed.success) return false;
   return (
-    EffectiveRuntimeSnapshotSchema.safeParse(old).success &&
-    computeRuntimeSnapshotHashes({ ...runtime, revision: old.revision }).agentConfigHash ===
-      oldHashes.agentConfigHash &&
-    runtime.instructions.session === old.instructions.session
+    computeRuntimeSnapshotHashes({
+      ...runtime,
+      revision: parsed.data.revision,
+      model: parsed.data.model,
+      reasoningEffort: parsed.data.reasoningEffort,
+      execution: parsed.data.execution,
+    }).effectiveSnapshotHash === computeRuntimeSnapshotHashes(parsed.data).effectiveSnapshotHash
   );
 }
 

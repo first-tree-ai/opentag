@@ -37,7 +37,7 @@ import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
 import { CloudJournal } from "./cloud-journal.js";
 import { RunnerCloudLatencyObserver } from "./cloud-latency-observer.js";
 import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
-import { CloudWorkspace } from "./cloud-workspace.js";
+import { CloudWorkspace, warmWorkspaceConnection } from "./cloud-workspace.js";
 import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
 import {
   NativeSandbox,
@@ -787,8 +787,10 @@ export async function runRunnerServe(config: RunnerServeConfig, rawOptions: Runn
     return true;
   };
 
+  const workspaceWarmup = new AbortController();
   const requestStop = (code: number) => {
     shutdown.start("request");
+    workspaceWarmup.abort();
     stopping = true;
     exitCode = code;
     if (state) {
@@ -803,6 +805,7 @@ export async function runRunnerServe(config: RunnerServeConfig, rawOptions: Runn
   try {
     await mkdir(config.workspace, { recursive: true, mode: 0o700 });
     if (stopping) return exitCode;
+    void warmWorkspaceConnection(config, options.workspaceFetchImpl ?? fetch, workspaceWarmup.signal);
     launchAttempted = true;
     const launchStarted = performance.now();
     await sandbox.launch();
@@ -853,6 +856,7 @@ export async function runRunnerServe(config: RunnerServeConfig, rawOptions: Runn
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
   } finally {
+    workspaceWarmup.abort();
     // Any exit is a stop, including non-signal exits (auth failure, reconnect exhaustion, fatal).
     // Mark it before settling the controller so an interrupted turn's verified reset can only
     // delete the namespace, never relaunch it ahead of cleanup; then await the live worker and
@@ -1000,7 +1004,6 @@ async function serveOnce(
   const authRequestId = randomUUID();
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
-    handshakeTimeout: options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS,
   });
   return new Promise((resolve) => {
     let closed = false,
@@ -1112,9 +1115,8 @@ async function serveOnce(
     };
     const stop = () => finish();
     stopListeners.add(stop);
-    // The handshake deadline spans TCP+TLS+upgrade AND the Server's token/database checks, so a
-    // slow connect (Server restart, cold ingress) is a transport failure, never a permanent
-    // rejection: finish with "auth_timeout" and let the backoff path reconnect.
+    // One deadline covers TCP, TLS, upgrade, and the Server's checks through welcome.
+    // The WebSocket opening timer would race this deadline and report a generic close.
     const authTimer = setTimeout(
       () => finish("auth_timeout"),
       options.authTimeoutMs ?? (config.workspacePersistence ? PERSISTENT_AUTH_TIMEOUT_MS : DEFAULT_AUTH_TIMEOUT_MS),

@@ -510,6 +510,7 @@ describe("scheduled reconcile with real Session CLI proof preparation", () => {
         await stack.registry.closeComputer(seedValue.computerId);
       };
       const stack = await makeRuntimeDispatchStack(seedValue, {
+        localBudgetMs: 4_000,
         ...(stage === "preparation" ? { afterPreparation: disconnect } : { beforeReconcileResult: disconnect }),
       });
       await expect(stack.collaboration.dispatchScheduledMessage(stack.snapshot)).resolves.toEqual({

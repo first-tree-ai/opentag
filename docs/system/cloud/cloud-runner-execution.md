@@ -575,7 +575,10 @@ proxy host allowlist remains unchanged.
 
 Deploy this Server before the updated Runner image: workspace Runners now opt into
 `renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
-bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.
+bounded reconnect backoff. A persistent Runner gives each connection attempt one 45-second
+authentication budget spanning connection establishment, WebSocket upgrade, and the Server's
+response, including Cloud API checks. An expired budget ends the attempt and triggers reconnect
+backoff.
 
 ## E7: idle reclamation and same-account physical reuse
 
@@ -628,11 +631,13 @@ so workspace controls keep their existing pending-release behavior.
 Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
 most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
 15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
-release; a different UID or a failed read is an incomplete release. A still-present UID at a due
-read after the original 60-second confirmation window also becomes incomplete and returns to
-the ten-minute failure cooldown. The start of this window
-survives restarts and is never extended by a confirmation read. Explicit Account stop retains
-its bounded synchronous verification. No schema change or additional worker is needed.
+release and frees the capacity slot. A different UID or a failed read retains the binding
+and records an incomplete release. If the same UID is still present at 60 seconds, the
+automatic sweep keeps confirming at the same cadence for up to five more minutes. The
+six-minute budget starts at DELETE acceptance and survives restarts. Each due sweep gets one
+read, including the final confirmation at or after the deadline. If the same UID is still
+present at that point, the release becomes incomplete and returns to the ten-minute failure
+cooldown. Explicit Account stop retains its original bounded synchronous verification.
 
 The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
 each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,

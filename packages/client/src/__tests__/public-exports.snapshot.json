@@ -43,6 +43,7 @@
   "ComposedClientRuntime",
   "ContextTreeManager",
   "DEFAULT_RUNTIME_RETRY_POLICY",
+  "DurableFileQuarantinedError",
   "FeishuTokenExchangeError",
   "FileRuntimeDurabilityStore",
   "ImCredentialEnvironmentError",

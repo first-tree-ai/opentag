@@ -6,7 +6,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentSchedules,
   agents,
@@ -58,7 +58,11 @@ afterAll(async () => db.close());
 beforeEach(async () => {
   await db.reset();
   currentTime = T0;
+  // The claim clock uses a fixed test date. Keep dispatch on the same date with real budget timers.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(T0);
 });
+afterEach(() => vi.useRealTimers());
 
 let currentTime = T0;
 const testClock: ScheduleClock = { now: async () => currentTime };
@@ -751,7 +755,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
   it("maps accepted, rejected, and unreachable honestly (D10)", async () => {
     const seed = await seedStack();
-    const stack = makeStack(seed);
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 1_000 } });
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
       nextTriggerAt: new Date(T0.getTime() + 60_000),
@@ -836,11 +840,11 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     currentTime = new Date(T0.getTime() + 180_000);
     const third = await claimOf(stack, row.id);
     if (third.kind !== "claimed") throw new Error("expected a claim");
+    const framesBefore = stack.deliveryFrames.length;
     await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
       outcome: "unknown",
       code: "delivery_held",
     });
-    const framesBefore = stack.deliveryFrames.length;
     expect(stack.deliveryFrames).toHaveLength(framesBefore);
   });
 
@@ -902,7 +906,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
   it("drops a held occurrence once the next one has been claimed", async () => {
     const seed = await seedStack();
-    const stack = makeStack(seed);
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
     stack.registry.supportsCapability.mockReturnValue(true);
     stack.registry.currentInstanceId.mockReturnValue(undefined);
     const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
@@ -930,10 +934,39 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
   });
 
+  it("leaves a held occurrence to the worker instead of retrying inside a redelivery", async () => {
+    const seed = await seedStack();
+    const dispatcher = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+    dispatcher.registry.supportsCapability.mockReturnValue(true);
+    dispatcher.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const claim = await claimOf(dispatcher, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(dispatcher.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+
+    // The default budget would allow five-second preparation retries; a redelivery must not use them.
+    const redeliverer = makeStack(seed);
+    redeliverer.registry.supportsCapability.mockReturnValue(true);
+    redeliverer.registry.currentInstanceId.mockReturnValue(undefined);
+    const [held] = await redeliverer.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!held) throw new Error("expected a held message");
+    const started = performance.now();
+    await expect(redeliverer.collaboration.redeliverHeld(held)).resolves.toBe("held");
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unknown",
+      lastErrorCode: "delivery_held",
+    });
+  });
+
   describe("IM notices for a held occurrence", () => {
     async function offlineStack() {
       const seed = await seedStack();
-      const stack = makeStack(seed);
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
       const notifyMissed = vi.fn(async () => undefined);
       const scheduler = new ScheduleScheduler({
         database: db.database,
@@ -1007,7 +1040,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
     it("carries the creator when a held occurrence is redelivered to an internal Session", async () => {
       const seed = await seedStack();
-      const stack = makeStack(seed);
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
       const creatorId = randomUUID();
       await db.database.insert(sessions).values({
         id: creatorId,

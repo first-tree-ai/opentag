@@ -82,6 +82,30 @@ messages.
   and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
   reply are the signal, and an expired message keeps the existing failure message.
 
+## Parked-dispatch notice
+
+A dispatch whose operation never settles is [parked](im-delivery-claim.md#parking-a-correlated-dispatch). It keeps
+custody until its ingress deadline, so later input of the same Session waits up to seven days with nothing to show
+for it. A queued input in that position gets one plain reply, built like the offline notice:
+
+> This Agent's computer hasn't confirmed an earlier message, so this message is waiting behind it and can't be handled yet.
+> If this lasts, check that computer on the Agent page. [Open the Agent]
+> If you don't manage this Agent, contact its administrator.
+> Your message is saved and will be handled once the earlier one finishes or expires. It expires after 7 days.
+
+- **When.** Sixty seconds after the input's receipt. The input's Computer must be online: an offline Computer gets the
+  offline notice instead. Another pending delivery of the same Session must carry `IM_DELIVERY_PARKED`. Other Sessions
+  of the Agent get no notice: whether they also wait depends on the Client (one that runs one Turn per Agent blocks
+  them too), and the notice must not claim a wait that is not happening.
+- **How often.** Once per Session for each parked input. The period starts at the parked input's receipt. As with the
+  offline notice, any feedback send of the Session since then counts, including an offline notice or failure message.
+  It reuses the same `send_started_at` reservation, Session row lock, re-check under the lock, and release of a send
+  known not to have applied. While the Session still waits behind that parked input, the offline notice's period also
+  starts no later than the parked input's receipt, so a reconnect followed by an outage does not send a second waiting
+  notice for the same wait, whether from a later input or from the parked input's own target.
+- **Scope.** Local Computers only, like the offline notice. The parked input itself gets no notice: its working
+  reaction stays until it settles or expires.
+
 ## Failure messages
 
 Every failure is plain text in the original conversation or thread; the Server sends no cards and no buttons. A
@@ -139,10 +163,19 @@ its task text by the same rule. Brackets in the task name are replaced with look
 disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
 feedback state for this and adds no column.
 
+A claimed Local occurrence retries connection lookup and reconciliation after transient preparation failures, every five
+seconds until it is ready, the next trigger arrives, or 60 seconds have elapsed since dispatch started. It keeps the same
+message ID and dispatch slot, and tries the business send at most once. A pause, edit, or deletion still wins at send
+admission. The final result distinguishes runtime assembly failure, reconcile timeout, other reconcile failures, and
+an explicit not-ready reply. Local retries and extended Cloud hand-offs share 75 slots per Server. If those slots
+are all taken, a Local preparation failure settles immediately. A Local occurrence still unreachable at that point is
+[held](internal-session-collaboration.md#held-delivery) when its Client supports it, rather than missed. A miss is
+reported only after the hand-off settles.
+
 A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
 workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
-280 seconds of dispatch entry or at the next trigger, whichever comes first. At most 75 Cloud hand-offs per Server
-use the extended window concurrently. Additional Cloud hand-offs have up to 20 seconds so they free scheduler slots
+280 seconds of dispatch entry or at the next trigger, whichever comes first. When the shared slots are full, Cloud
+hand-offs have up to 20 seconds so they free scheduler slots
 within the 30-second claim window. A pause, edit, or deletion still
 wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
 restart does not recover an unfinished scheduled hand-off.

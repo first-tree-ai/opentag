@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { agents, computers, imBindings, imMessages } from "../db/schema/index.js";
+import { createPerformanceLogger, instrumentServerWorkers } from "../observability/index.js";
 import { runtimeProviderMessageRef } from "../runtime/runtime-provider-message-ref.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -765,6 +766,381 @@ describe("Feishu adapter", () => {
       await vi.advanceTimersByTimeAsync(4_000);
 
       await expect(outcome).resolves.toBe("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces concurrent same-chat sender-name lookups and resolves early page hits before later pages finish", async () => {
+    let releaseSecondPage: (() => void) | undefined;
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [
+            { member_id: "ou_page_1_a", name: "Alice" },
+            { member_id: "ou_page_1_b", name: "Bob" },
+          ],
+          has_more: true,
+          page_token: "page_2",
+        },
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSecondPage = () =>
+              resolve({
+                code: 0,
+                data: {
+                  items: [{ member_id: "ou_page_2", name: "Charlie" }],
+                  has_more: false,
+                },
+              });
+          }),
+      );
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    const firstA = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_1_a" });
+    const firstB = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_1_b" });
+    const secondPage = http.resolveSenderName?.({ chatId: "oc_shared", senderOpenId: "ou_page_2" });
+
+    await expect(Promise.all([firstA, firstB])).resolves.toEqual(["Alice", "Bob"]);
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+    expect(getChatMembers).toHaveBeenNthCalledWith(1, {
+      path: { chat_id: "oc_shared" },
+      params: { member_id_type: "open_id", page_size: 100 },
+    });
+    expect(getChatMembers).toHaveBeenNthCalledWith(2, {
+      path: { chat_id: "oc_shared" },
+      params: { member_id_type: "open_id", page_size: 100, page_token: "page_2" },
+    });
+
+    releaseSecondPage?.();
+    await expect(secondPage).resolves.toBe("Charlie");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes pagination from the next page token on sequential lookups in the same chat", async () => {
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_1", name: "User One" }],
+          has_more: true,
+          page_token: "token_page_2",
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_2", name: "User Two" }],
+          has_more: false,
+        },
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_resume", senderOpenId: "ou_1" })).resolves.toBe("User One");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_resume", senderOpenId: "ou_2" })).resolves.toBe("User Two");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+    expect(getChatMembers).toHaveBeenNthCalledWith(2, {
+      path: { chat_id: "oc_resume" },
+      params: { member_id_type: "open_id", page_size: 100, page_token: "token_page_2" },
+    });
+  });
+
+  it("does not restore a successor cursor when earlier chat members are evicted during an in-flight page fetch", async () => {
+    let releasePage2: (() => void) | undefined;
+    const targetCalls: Array<string | undefined> = [];
+    const getChatMembers = vi
+      .fn()
+      .mockImplementation((request: { path?: { chat_id?: string }; params?: { page_token?: string } }) => {
+        const chatId = request.path?.chat_id ?? "";
+        const pageToken = request.params?.page_token;
+        if (chatId === "oc_target") {
+          targetCalls.push(pageToken);
+          if (!pageToken) {
+            return Promise.resolve({
+              code: 0,
+              data: {
+                items: [{ member_id: "ou_alice", name: "Alice" }],
+                has_more: true,
+                page_token: "a2",
+              },
+            });
+          }
+          if (pageToken === "a2") {
+            return new Promise((resolve) => {
+              releasePage2 = () =>
+                resolve({
+                  code: 0,
+                  data: {
+                    items: [{ member_id: "ou_bob", name: "Bob" }],
+                    has_more: true,
+                    page_token: "a3",
+                  },
+                });
+            });
+          }
+          return Promise.resolve({
+            code: 0,
+            data: {
+              items: [],
+              has_more: false,
+            },
+          });
+        }
+
+        const items = Array.from({ length: 100 }, (_, index) => ({
+          member_id: `ou_${chatId}_${index}`,
+          name: `Member ${chatId} ${index}`,
+        }));
+        return Promise.resolve({
+          code: 0,
+          data: {
+            items,
+            has_more: false,
+          },
+        });
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+    expect(targetCalls).toEqual([undefined]);
+
+    const bobPromise = http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" });
+    expect(targetCalls).toEqual([undefined, "a2"]);
+
+    for (let chatIndex = 0; chatIndex < 100; chatIndex += 1) {
+      const chatId = `oc_fill_${chatIndex}`;
+      await expect(http.resolveSenderName?.({ chatId, senderOpenId: `ou_${chatId}_0` })).resolves.toBe(
+        `Member ${chatId} 0`,
+      );
+    }
+
+    releasePage2?.();
+    await expect(bobPromise).resolves.toBe("Bob");
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+    expect(targetCalls).toEqual([undefined, "a2", undefined]);
+  });
+
+  it("retires a detached scan when its last waiter times out so late pages do not overwrite fresher names", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseStalePage2: (() => void) | undefined;
+      let targetPage1Count = 0;
+      const respondTargetPage = (pageToken: string | undefined) => {
+        if (pageToken === "a2") {
+          return new Promise((resolve) => {
+            releaseStalePage2 = () =>
+              resolve({
+                code: 0,
+                data: {
+                  items: [{ member_id: "ou_bob", name: "Stale Bob" }],
+                  has_more: false,
+                },
+              });
+          });
+        }
+        targetPage1Count += 1;
+        return Promise.resolve({
+          code: 0,
+          data:
+            targetPage1Count === 1
+              ? { items: [{ member_id: "ou_alice", name: "Alice" }], has_more: true, page_token: "a2" }
+              : { items: [{ member_id: "ou_bob", name: "Fresh Bob" }], has_more: false },
+        });
+      };
+      const getChatMembers = vi
+        .fn()
+        .mockImplementation((request: { path?: { chat_id?: string }; params?: { page_token?: string } }) => {
+          const chatId = request.path?.chat_id ?? "";
+          if (chatId === "oc_target") {
+            return respondTargetPage(request.params?.page_token);
+          }
+          const items = Array.from({ length: 100 }, (_, index) => ({
+            member_id: `ou_${chatId}_${index}`,
+            name: `Member ${chatId} ${index}`,
+          }));
+          return Promise.resolve({
+            code: 0,
+            data: {
+              items,
+              has_more: false,
+            },
+          });
+        });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_alice" })).resolves.toBe("Alice");
+
+      const bobTimedOut = expect(
+        http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" }),
+      ).rejects.toThrow("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT");
+
+      for (let chatIndex = 0; chatIndex < 100; chatIndex += 1) {
+        const chatId = `oc_fill_${chatIndex}`;
+        await expect(http.resolveSenderName?.({ chatId, senderOpenId: `ou_${chatId}_0` })).resolves.toBe(
+          `Member ${chatId} 0`,
+        );
+      }
+
+      await vi.advanceTimersByTimeAsync(4_001);
+      await bobTimedOut;
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" })).resolves.toBe(
+        "Fresh Bob",
+      );
+
+      releaseStalePage2?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_target", senderOpenId: "ou_bob" })).resolves.toBe(
+        "Fresh Bob",
+      );
+      await expect(http.resolveSenderName?.({ chatId: "oc_other", senderOpenId: "ou_bob" })).resolves.toBe("Fresh Bob");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reuses resolved sender names across chats while preserving per-chat display name priority", async () => {
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_shared", name: "Global Name" }],
+          has_more: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [
+            { member_id: "ou_shared", name: "Chat 2 Nickname" },
+            { member_id: "ou_chat2_only", name: "Chat 2 Member" },
+          ],
+          has_more: false,
+        },
+      });
+    const http = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: getChatMembers },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+          },
+        },
+      },
+    });
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    // Cross-chat lookup hits the open_id cache without another chatMembers.get request
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+    // Fetching oc_2 members for another user populates oc_2's per-chat nickname for ou_shared
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_chat2_only" })).resolves.toBe(
+      "Chat 2 Member",
+    );
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_2", senderOpenId: "ou_shared" })).resolves.toBe(
+      "Chat 2 Nickname",
+    );
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_shared" })).resolves.toBe("Global Name");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts expired sender-name cache entries and recovers after a failed chatMembers lookup", async () => {
+    vi.useFakeTimers();
+    try {
+      const getChatMembers = vi
+        .fn()
+        .mockResolvedValueOnce({
+          code: 99991663,
+          msg: "rate limited",
+        })
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            items: [{ member_id: "ou_1", name: "First Name" }],
+            has_more: false,
+          },
+        })
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            items: [{ member_id: "ou_1", name: "Refreshed Name" }],
+            has_more: false,
+          },
+        });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).rejects.toThrow(
+        "FEISHU_SENDER_NAME_LOOKUP_FAILED",
+      );
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).resolves.toBe("First Name");
+      expect(getChatMembers).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1);
+      await expect(http.resolveSenderName?.({ chatId: "oc_ttl", senderOpenId: "ou_1" })).resolves.toBe(
+        "Refreshed Name",
+      );
+      expect(getChatMembers).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
@@ -2368,6 +2744,183 @@ describe("FeishuConnectionManager", () => {
       expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
     } finally {
       updateSpy.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it("connects candidate bindings with bounded concurrency so a slow binding does not block other candidates", async () => {
+    const value = await connectionFixture();
+    const agentService = new AgentService(connectionDatabase.database);
+    const totalBindings = 10;
+    const bindingIds: string[] = [];
+
+    for (let index = 0; index < totalBindings; index += 1) {
+      const agent =
+        index === 0
+          ? value.agent
+          : await agentService.createForAccount(value.bootstrap.userId, {
+              name: `connection-agent-${index}`,
+              displayName: `Connection Agent ${index}`,
+              runtimeProvider: "codex",
+              computerId: value.computer.id,
+            });
+      const bindingId = await value.imBindings.activateFeishu({
+        agentId: agent.id,
+        appId: `cli_conc_${index}`,
+        appSecret: "secret",
+        teamId: `tenant_conc_${index}`,
+        botOpenId: `ou_conc_${index}`,
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      bindingIds.push(bindingId);
+    }
+
+    let releaseSlowBinding: (() => void) | undefined;
+    const slowBindingGate = new Promise<void>((resolve) => {
+      releaseSlowBinding = resolve;
+    });
+    let activeValidations = 0;
+    let maxConcurrentValidations = 0;
+    const completedAppIds: string[] = [];
+
+    const instanceId = crypto.randomUUID();
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId,
+      imBindings: value.imBindings,
+      maintenanceMs: 60_000,
+      createAdapter: (input) => {
+        const fake = fakeConnectionAdapter({
+          appId: input.appId,
+          botOpenId: input.appId.replace("cli_", "ou_"),
+        });
+        fake.adapter.validateBinding = vi.fn(async () => {
+          activeValidations += 1;
+          maxConcurrentValidations = Math.max(maxConcurrentValidations, activeValidations);
+          try {
+            if (input.appId === "cli_conc_0") {
+              await slowBindingGate;
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+            completedAppIds.push(input.appId);
+            return {
+              externalAppId: input.appId,
+              externalTeamId: input.teamId ?? "tenant_1",
+              externalBotId: input.appId.replace("cli_", "ou_"),
+            };
+          } finally {
+            activeValidations -= 1;
+          }
+        });
+        return fake.adapter;
+      },
+    });
+
+    try {
+      manager.start();
+      const maintainPromise = manager.maintain();
+
+      // Even while cli_conc_0 is blocked, the remaining 9 bindings should all complete via the other 7 workers.
+      await vi.waitFor(() => {
+        expect(completedAppIds).toHaveLength(totalBindings - 1);
+      });
+      expect(completedAppIds).not.toContain("cli_conc_0");
+      expect(maxConcurrentValidations).toBeGreaterThan(1);
+      expect(maxConcurrentValidations).toBeLessThanOrEqual(8);
+
+      releaseSlowBinding?.();
+      await maintainPromise;
+
+      expect(completedAppIds).toHaveLength(totalBindings);
+      const rows = await connectionDatabase.database.select().from(imBindings);
+      expect(rows).toHaveLength(totalBindings);
+      for (const row of rows) {
+        expect(row.connectionOwnerInstanceId).toBe(instanceId);
+        expect(row.observedConnectedAt).toBeInstanceOf(Date);
+      }
+    } finally {
+      releaseSlowBinding?.();
+      await manager.stop();
+    }
+  });
+
+  it("skips overlapping scheduled maintenance ticks while a maintenance pass is already in flight", async () => {
+    const value = await connectionFixture();
+    await value.imBindings.activateFeishu({
+      agentId: value.agent.id,
+      appId: "cli_overlap",
+      appSecret: "secret",
+      teamId: "tenant_overlap",
+      botOpenId: "ou_overlap",
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    });
+
+    let releaseValidation: (() => void) | undefined;
+    let notifyValidationStarted: (() => void) | undefined;
+    const validationStarted = new Promise<void>((resolve) => {
+      notifyValidationStarted = resolve;
+    });
+    const validationGate = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+
+    const records: Array<Record<string, unknown>> = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      maintenanceMs: 25,
+      createAdapter: (input) => {
+        const fake = fakeConnectionAdapter({ appId: input.appId, botOpenId: "ou_overlap" });
+        fake.adapter.validateBinding = vi.fn(async () => {
+          notifyValidationStarted?.();
+          await validationGate;
+          return {
+            externalAppId: input.appId,
+            externalTeamId: "tenant_overlap",
+            externalBotId: "ou_overlap",
+          };
+        });
+        return fake.adapter;
+      },
+    });
+    instrumentServerWorkers([["FeishuConnectionManager", manager]], perfLogger);
+
+    try {
+      // start() immediately schedules the first maintenance pass and starts the periodic timer.
+      manager.start();
+      await validationStarted;
+
+      // Wait across multiple scheduler intervals while the first pass is still in flight.
+      await new Promise((resolve) => setTimeout(resolve, 90));
+
+      const startedWhileInFlight = records.filter(
+        (record) => record.operation === "FeishuConnectionManager.maintain" && record.outcome === "started",
+      );
+      expect(startedWhileInFlight).toHaveLength(1);
+
+      releaseValidation?.();
+      await manager.maintain();
+
+      const completedAfterFirstPass = records.filter(
+        (record) => record.operation === "FeishuConnectionManager.maintain" && record.outcome === "completed",
+      );
+      expect(completedAfterFirstPass.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      releaseValidation?.();
       await manager.stop();
     }
   });

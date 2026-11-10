@@ -33,6 +33,21 @@ With an IM test binding on a Local Computer and permission to stop its daemon:
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
 6. Send a request to an Agent on Cloud while its Runner is unavailable. Expected: no offline notice.
 
+## Parked-dispatch notice
+
+A parked dispatch is hard to cause on purpose: the Computer must stay connected while its dispatch acknowledgement never
+arrives (for example a daemon whose reconcile hangs) until the dispatch timeout cap is reached. With a test stack where
+that can be arranged, or with a delivery row set to `pending` and `last_error_code = 'IM_DELIVERY_PARKED'` on a test
+database:
+
+1. With the Computer online, send a Chinese request in the same Session. Expected: one reply within about seventy-five
+   seconds saying an earlier message has not been confirmed and this one waits behind it, with an 查看 Agent link. It
+   names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+2. Send another request in the same Session. Expected: no further notice.
+3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
+4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
+   since the parked message arrived.
+
 ## Failure messages
 
 With an IM test binding and a runtime that can be made to fail on request:
@@ -284,9 +299,17 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+   Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
+   can still finish the authenticated claim and restore or save the initial empty archive.
 6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
+7. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
+   Keep the same UID visible through 60 seconds, then return 404 on a later due sweep. Expected:
+   each due sweep makes one confirmation GET and can process other candidates. After 404, the
+   old binding clears, the capacity slot is free, and a synthetic Session input can reserve the
+   next generation from the same archive. A failed read or a replacement UID keeps the binding.
+   A still-present UID at the six-minute deadline enters the failure cooldown.
 
 ## Parent message steered into a running child
 
@@ -343,6 +366,16 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
   fail with a notice to their sender instead of waiting indefinitely.
+
+## Local scheduled hand-off after a disconnect
+
+1. Disconnect a Local Computer before a one-time occurrence reaches the business send. Reconnect within the dispatch
+   window. Expected: the original message ID reaches the Agent once and no miss is posted.
+2. Keep the Computer offline through the next trigger of a repeating schedule. Expected: the old occurrence cannot send
+   after that trigger, and the occurrence produces at most one final miss notice.
+3. Drop the receipt after the business send. Expected: the hand-off stays unconfirmed and the Server does not resend it.
+4. Fill the shared extended dispatch slots with Local retries or Cloud hand-offs. Expected: additional offline Local
+   occurrences are held (or missed, for a Client older than `runtime.sessionRecovery`) without waiting for retry, while a ready Local target can still receive its occurrence.
 
 ## Held Session message delivery
 

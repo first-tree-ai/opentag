@@ -814,6 +814,7 @@ export class AgentTurnRunner {
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
     // A start failure is retried only when it provably ran nothing.
+    /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
     if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;

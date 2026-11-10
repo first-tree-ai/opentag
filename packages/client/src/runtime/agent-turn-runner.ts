@@ -45,6 +45,7 @@ import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
   acknowledgedSteers,
   buildContinuationNotice,
+  escalatedRetryReason,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
@@ -53,6 +54,8 @@ import {
   retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
+  retryPromptOptions,
+  startsNewConversation,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
@@ -656,7 +659,7 @@ export class AgentTurnRunner {
       turn.producedOutput = false;
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
-      const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
+      const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal, interruption);
       // An in-place retry follows a model failure; a 429 or a start failure waits first, a Provider exit does
       // not. False when an orderly stop interrupts the wait.
       const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
@@ -725,7 +728,7 @@ export class AgentTurnRunner {
       const runSignal = started.runSignal;
       runSignal.throwIfAborted();
       const ensureStartedAt = this.#now();
-      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
+      const runtime = await this.#ensureRuntime(owner.request.sessionId, runSignal, interruption);
       phaseTimings.runtimeEnsureMs = Math.max(0, this.#now() - ensureStartedAt);
       turn.runtime = runtime;
       releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
@@ -740,6 +743,7 @@ export class AgentTurnRunner {
           { ...channelTurn, retry: interruption !== undefined },
           this.#now(),
         )),
+        ...retryPromptOptions(interruption),
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential
@@ -833,6 +837,12 @@ export class AgentTurnRunner {
       .recordRunLimit({ reason: "turn_timeout", at: new Date(this.#now()).toISOString() });
   }
 
+  /** The Session's runtime for an attempt; a retry after a conversation reset starts a new conversation first (R8). */
+  async #ensureRuntime(sessionId: string, signal: AbortSignal, interruption?: Interruption): Promise<AgentRuntime> {
+    if (startsNewConversation(interruption)) await this.#runtimeManager.startNewConversation(sessionId);
+    return this.#runtimeManager.ensureRuntime(sessionId, signal);
+  }
+
   /**
    * Decide what follows a finished attempt. Returns the recorded
    * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
@@ -842,9 +852,10 @@ export class AgentTurnRunner {
     turn: RunningTurn,
     completion: TurnCompletion,
     shutdownSignal: AbortSignal,
+    previous?: Interruption,
   ): Promise<Interruption | "deferred" | undefined> {
     if (completion.outcome === "completed") return undefined;
-    const reason = recoverableFailure(completion.errorReason);
+    const reason = escalatedRetryReason(recoverableFailure(completion.errorReason), previous?.reason);
     if (!reason) return undefined;
     // A start failure is retried only when it provably ran nothing.
     /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */

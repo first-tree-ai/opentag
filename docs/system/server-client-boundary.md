@@ -116,6 +116,19 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   no model text and no tool call for an IM Turn, no output items or output tokens for
   a Session message (Gandy 11-10, R2). Once the model produced something the failure
   is reported, so a half-done answer is never silently restarted.
+- A conversation that no longer fits the model (`provider_context_limit`, including
+  Claude Code's "Prompt is too long" API error) gets one immediate retry, within the
+  same count, that first compacts the native conversation (`compactContext`) and
+  then resends the input with the continuation notice. If the compacted
+  conversation still does not fit, the next retry (the second of the 2) closes the
+  provider conversation and starts a new one instead of resuming it; its new
+  binding replaces the old. That retry carries only the original input and a reset
+  notice: an IM Turn tells the Agent to read the thread with lark-cli or the Slack
+  tools if it needs earlier context; a Session message, which has no thread, tells
+  it to ask the sender. No other history is sent, so the Server-Client protocol is
+  unchanged. If that fails too, the failure is reported (Gandy 11-10, R8). A Session
+  message keeps the reason it continues from in memory only, so after a daemon
+  restart it compacts again instead of resetting.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.

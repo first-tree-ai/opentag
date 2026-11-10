@@ -27,6 +27,7 @@ import {
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
+  escalatedRetryReason,
   type Interruption,
   type InterruptionReason,
   nextRetry,
@@ -36,7 +37,9 @@ import {
   retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
+  retryPromptOptions,
   sessionMessageKey,
+  startsNewConversation,
   trackRunTime,
 } from "./interruption-retry.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
@@ -139,7 +142,7 @@ export interface SessionMessageInboxOptions {
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
-    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime">>;
+    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime" | "startNewConversation">>;
   /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
@@ -197,6 +200,8 @@ export class SessionMessageInbox {
   readonly #stoppedPlacements = new Map<string, number>();
   /** The abort of each Session's own running Run, for a Session stop. */
   readonly #runStops = new Map<string, { controller: AbortController; placementGeneration: number }>();
+  /** The retry reason a running message continues from, by message key; its failure may escalate it (R8). */
+  readonly #continuing = new Map<string, InterruptionReason>();
   readonly #drains = new Map<string, Promise<void>>();
   /**
    * Each Session's Run, which the drain does not wait for and a Session stop does. A Run settles only after
@@ -1046,6 +1051,7 @@ export class SessionMessageInbox {
     try {
       // The interruption this Run retries is for its notice only; what ends this Run is recorded anew.
       const continuation = current?.interruption;
+      this.#rememberContinuation(key, continuation);
       if (current) {
         current = await this.#transition(current, "running", { interruption: undefined, joinedRunId: undefined });
       }
@@ -1075,7 +1081,7 @@ export class SessionMessageInbox {
       phase = "runtime";
       const runtimeSignal = credentialPrepared ? ensureRunSignal() : this.#abort.signal;
       runtimeSignal.throwIfAborted();
-      const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
+      const runtime = await this.#ensureRuntime(sessionId, runtimeSignal, continuation);
       await runtime.waitForIdle();
       ranIn = runtime;
       phase = "prompt";
@@ -1090,6 +1096,7 @@ export class SessionMessageInbox {
           { ...channelTurn, retry: Boolean(continuation) },
           this.#now(),
         )),
+        ...retryPromptOptions(continuation),
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing
@@ -1124,6 +1131,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (current) outcome = await this.#settleFailedAttempt(current, next.hash, run, phase, error, { stop, timedOut });
     } finally {
+      this.#continuing.delete(key);
       this.#runStops.delete(sessionId);
       timer?.cancel();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
@@ -1155,6 +1163,21 @@ export class SessionMessageInbox {
     await run.endAttempt();
     await this.#recordStopped(this.#records.get(record.key) ?? record, phase);
     return "ended";
+  }
+
+  #rememberContinuation(key: string, continuation: DurableWorkRecord["interruption"]): void {
+    const reason = recoverableFailure(continuation?.reason);
+    if (reason) this.#continuing.set(key, reason);
+  }
+
+  /** The Session's runtime for a Run; a retry after a conversation reset starts a new conversation first (R8). */
+  async #ensureRuntime(
+    sessionId: string,
+    signal: AbortSignal,
+    continuation: DurableWorkRecord["interruption"],
+  ): Promise<AgentRuntime> {
+    if (startsNewConversation(continuation)) await this.#runtimeManager.startNewConversation?.(sessionId);
+    return this.#runtimeManager.ensureRuntime(sessionId, signal);
   }
 
   async #attemptFailed(
@@ -1459,7 +1482,10 @@ export class SessionMessageInbox {
       await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
       return undefined;
     }
-    const reason = timedOut || !mayRetry ? undefined : retryReason(failure.code, error);
+    const reason =
+      timedOut || !mayRetry
+        ? undefined
+        : escalatedRetryReason(retryReason(failure.code, error), this.#continuing.get(record.key));
     const retry = reason && nextRetry(messageRetryCount(record), retryLimit(reason));
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
@@ -1691,7 +1717,10 @@ function withContinuation(input: AgentInput, interruption: DurableWorkRecord["in
   const reason = recoverableFailure(interruption?.reason);
   if (!interruption || !reason) return input;
   return {
-    items: [{ type: "text", text: buildContinuationNotice({ reason, at: interruption.at }) }, ...input.items],
+    items: [
+      { type: "text", text: buildContinuationNotice({ reason, at: interruption.at }, "session") },
+      ...input.items,
+    ],
   };
 }
 

@@ -96,6 +96,11 @@ the same notice, and an entry leaves only once a model turn of the retried Run s
 when the retry settles. A turn the Run started by itself after answering its input is a `followUpFailure`, not one of
 these, and is never retried.
 
+A context limit (`provider_context_limit`) retries after compacting, and one that still does not fit retries in a new
+provider conversation (`conversation_reset`). The ledger belongs to the OpenTag Session, not to a provider
+conversation, so the new conversation's first input carries the notice the ledger still holds; work the old conversation left running is
+reported as unknown, since closing the old runtime may have stopped it. The sender still hears the outcome once.
+
 ## What survives a stop
 
 Measured with the Provider process started through the Client's process wrapper:

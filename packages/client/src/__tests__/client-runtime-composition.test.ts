@@ -43,7 +43,7 @@ import {
   resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
-import { TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
+import { START_FAILURE_RETRY_DELAY_MS, TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -748,6 +748,12 @@ describe("createClientRuntime production composition", () => {
       return {} as Awaited<ReturnType<ProviderCliTurnPlanManager["prepare"]>>;
     });
     const submit = vi.spyOn(runtime.reportOwner, "submit").mockResolvedValue(undefined);
+    // The fixture provider never starts, so the Turn takes its one start-failure retry: keep that wait short.
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+        realSetTimeout(handler, ms === START_FAILURE_RETRY_DELAY_MS ? 1 : ms, ...(rest as []))) as typeof setTimeout);
     try {
       expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject(
         { status: "ready" },
@@ -779,6 +785,7 @@ describe("createClientRuntime production composition", () => {
       credentials.mockRestore();
       prepare.mockRestore();
       submit.mockRestore();
+      timers.mockRestore();
     }
   });
 

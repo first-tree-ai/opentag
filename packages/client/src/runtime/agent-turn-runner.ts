@@ -49,12 +49,14 @@ import {
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
-  RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
+  retryDelayMs,
+  retryLimit,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
 } from "./interruption-retry.js";
+import { truncateUtf8 } from "./provider-cli/outgoing-reply-process.js";
 import {
   budgetTurnReportHashInput,
   emptyCompleteOutgoingReplies,
@@ -649,14 +651,9 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      // A 429 waits before its in-place retry, a Provider exit does not; false when an orderly stop interrupts it.
-      const ready =
-        next &&
-        next !== "deferred" &&
-        (await waitUnlessAborted(
-          next.reason === "provider_rate_limited" ? RATE_LIMIT_RETRY_DELAY_MS : 0,
-          shutdownSignal,
-        ));
+      // An in-place retry follows a model failure; a 429 or a start failure waits first, a Provider exit does
+      // not. False when an orderly stop interrupts the wait.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -843,6 +840,9 @@ export class AgentTurnRunner {
     if (completion.outcome === "completed") return undefined;
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
+    // A start failure is retried only when it provably ran nothing.
+    /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
+    if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
@@ -852,7 +852,7 @@ export class AgentTurnRunner {
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
-        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs });
+        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
         return { ...ran, retries: count, retryRanMs: 0, interruption };
       });
     } catch {
@@ -1309,6 +1309,21 @@ function runtimeResourceContext(request: DirectImMessageDeliveryRequest | Runtim
   return text;
 }
 
+const FINAL_TEXT_TRUNCATED = {
+  zh: "\n\n（回复过长，后面部分已截断）",
+  en: "\n\n(The reply was too long; the rest was cut off.)",
+};
+
+/**
+ * The work is done even when its last reply is over the report bound, so the reply is cut to fit and
+ * marked, and the Turn still completes (R4). Local and cloud Turns both pass through here.
+ */
+export function boundFinalText(text: string | undefined): string | undefined {
+  if (!text || Buffer.byteLength(text, "utf8") <= RUNTIME_FINAL_TEXT_MAX_BYTES) return text;
+  const marker = /\p{Script=Han}/u.test(text) ? FINAL_TEXT_TRUNCATED.zh : FINAL_TEXT_TRUNCATED.en;
+  return truncateUtf8(text, RUNTIME_FINAL_TEXT_MAX_BYTES - Buffer.byteLength(marker, "utf8")).text + marker;
+}
+
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
@@ -1317,10 +1332,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
   }
   if (result.status === "completed") {
-    const finalText = result.output.filter((item) => item.type === "text").at(-1)?.text;
-    if (finalText && Buffer.byteLength(finalText, "utf8") > RUNTIME_FINAL_TEXT_MAX_BYTES) {
-      return { outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" };
-    }
+    const finalText = boundFinalText(result.output.filter((item) => item.type === "text").at(-1)?.text);
     return {
       outcome: "completed",
       executionEffects: "completed",

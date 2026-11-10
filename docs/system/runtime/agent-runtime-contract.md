@@ -151,6 +151,13 @@ history, and attachment context. The Platform and Agent instructions are not cop
 new message. Session instructions currently appear in both the managed system prompt and the
 per-delivery context. Session collaboration uses `buildSessionMessageInput` and has its own envelope.
 
+Local Claude Code passes `--fallback-model` when the Agent's model is explicitly an Opus model (fallback `sonnet`) or a
+Sonnet model (fallback `haiku`). Claude Code switches to it when the configured model is overloaded or unavailable and
+tries the configured model again at the start of every turn, so an overload no longer fails the Run (Gandy 11-10, R1;
+checked on Claude Code 2.1.319). An unset model, Haiku, and models of other families get no fallback: the CLI resolves an
+unset model itself, and a fallback equal to the main model is refused. Which model answered is not yet shown anywhere;
+Codex, Pi and Cloud have no fallback.
+
 Local Claude Code starts a process for each Run with the native Session ID and `--resume` after
 initialization. The Run ends at the `result` of its own input, not at the first `result` on stdout. On `--resume`, Claude
 Code reports a task that the previous process left behind by queueing a notification and emitting a `result` for it with

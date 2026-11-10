@@ -1,3 +1,4 @@
+import { createStreamCancellation } from "../stream-cancellation.js";
 import {
   type PerformanceLogger,
   type PerformanceOperationHandle,
@@ -244,6 +245,7 @@ function wrapStreamingFetchResponse(
     return response;
   }
   const reader = response.body.getReader();
+  const cancelReader = createStreamCancellation(reader);
   const wrappedBody = new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
@@ -276,7 +278,7 @@ function wrapStreamingFetchResponse(
       },
       async cancel(reason) {
         handle.complete({ status, attemptCount: 1, retryCount: 0 });
-        await reader.cancel(reason);
+        await cancelReader(reason);
       },
     },
     { highWaterMark: 2 },

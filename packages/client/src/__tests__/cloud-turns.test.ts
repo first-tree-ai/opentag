@@ -1490,6 +1490,24 @@ describe("CloudTurnRunner", () => {
     }
   });
 
+  it("reports a Turn whose deadline and grant both passed as a timeout, not as unavailable credentials", async () => {
+    // The Server's grant expires thirty seconds after the deadline, so an expired grant means a missed deadline.
+    const late = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() - 31_000).toISOString() });
+    const h = harness({ delivery: late });
+    await h.runner.handleDeliveryRun(runFrame(late));
+    await h.runner.handleVerified(
+      verifiedFrame(late.requestId, { ...MODEL_GRANT, expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+    );
+    const [report] = reportsOf(h.sent);
+    expect(report?.report).toMatchObject({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "turn_timeout",
+    });
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
   it("refuses a verified turn whose persisted runtime deadline already passed and never extends the budget", async () => {
     const expired = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() - 1_000).toISOString() });
     const refused = harness({ delivery: expired });

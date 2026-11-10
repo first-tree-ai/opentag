@@ -259,7 +259,9 @@ Distinct waiting codes ensure that a later fault is diagnosed even after repeate
 Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
-the execution and its lifetime is bounded by the runtime deadline. In E4,
+the execution and its lifetime is bounded by the runtime deadline: it expires thirty seconds after it and is never
+issued past it. Admission therefore checks the deadline before the grant, so a Turn that waited past its deadline
+reports `turn_timeout`, not `credential_unavailable`. In E4,
 credential and model grants are revoked when the Runner connection is lost (fail-closed,
 connection-scoped authority). Journal recovery still preserves the actual Turn outcome and never
 replays `started` work, but a transient Server or control-channel outage may fail an active

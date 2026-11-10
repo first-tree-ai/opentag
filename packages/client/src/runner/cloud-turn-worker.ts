@@ -16,6 +16,7 @@ import type {
   AgentSteerOutcome,
   AgentSteerReceipt,
   AgentSteerRequest,
+  AgentUsage,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -653,13 +654,21 @@ export async function runCloudTurnWorker(
         diagnostics.failure(error);
         return undefined;
       });
-      const result = await activeRuntime.prompt({
+      const first = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
         ...(await channelTurn.begin()),
         input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
         signal: execution.signal,
       });
+      const result = await continueAfterOutputLimit(first, (attempt, text) =>
+        activeRuntime.prompt({
+          runId: `${randomTurnRunId(request)}-continue-${attempt}`,
+          configuration,
+          input: { items: [{ type: "text", text }] },
+          signal: execution.signal,
+        }),
+      );
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
       completion =
         result.status === "completed"
@@ -831,6 +840,37 @@ function assertSafeInSandboxPath(value: string, label: string): string {
     throw new Error(`Unsafe ${label} for the Cloud Turn worker`);
   }
   return value;
+}
+
+/**
+ * What the Agent is told after its reply hit the output-token limit: first to continue where it stopped, then
+ * to finish in several shorter replies. Only when both also stop at the limit does the Turn fail (R7).
+ */
+export const OUTPUT_LIMIT_FOLLOW_UPS = [
+  "[OpenTag] Your previous reply stopped because it reached the model's output limit. Continue exactly where it stopped. Do not repeat what you already wrote and do not redo completed actions.",
+  "[OpenTag] Your reply reached the model's output limit again. Finish the remaining work in several shorter steps: send what is ready as separate, shorter replies, and keep every single reply and file write well under the limit. Do not repeat what you already wrote and do not redo completed actions.",
+] as const;
+
+/** Continues a Run whose reply was cut off by the output limit, in the same conversation; usage adds up. */
+export async function continueAfterOutputLimit(
+  first: AgentRunResult,
+  prompt: (attempt: number, text: string) => Promise<AgentRunResult>,
+): Promise<AgentRunResult> {
+  let result = first;
+  let usage = first.usage;
+  for (const [index, text] of OUTPUT_LIMIT_FOLLOW_UPS.entries()) {
+    if (result.status !== "failed" || result.error?.outputLimit !== true) break;
+    result = await prompt(index + 1, text);
+    usage = addUsage(usage, result.usage);
+  }
+  return usage ? { ...result, usage } : result;
+}
+
+function addUsage(left: AgentUsage | undefined, right: AgentUsage | undefined): AgentUsage | undefined {
+  if (!left || !right) return left ?? right;
+  const sum = (key: keyof AgentUsage) =>
+    left[key] === undefined && right[key] === undefined ? {} : { [key]: (left[key] ?? 0) + (right[key] ?? 0) };
+  return { ...sum("inputTokens"), ...sum("cachedInputTokens"), ...sum("outputTokens") };
 }
 
 function randomTurnRunId(request: RunnerCloudWorkerRequest): string {

@@ -374,3 +374,5 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 2. Keep the Computer offline through the next trigger of a repeating schedule. Expected: the old occurrence cannot send
    after that trigger, and the occurrence produces at most one final miss notice.
 3. Drop the receipt after the business send. Expected: the hand-off stays unconfirmed and the Server does not resend it.
+4. Fill the shared extended dispatch slots with Local retries or Cloud hand-offs. Expected: additional offline Local
+   occurrences settle without waiting for retry, while a ready Local target can still receive its occurrence.

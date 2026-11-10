@@ -90,6 +90,7 @@ The Server does not hold or replay a refused message (decision by yuezengwu, 202
 can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
 from memory, so the message runs once admission reopens. A permanent rejection stays rejected on replay. Local scheduled
 messages can retry transient preparation failures before the business send, within the [scheduled hand-off window](im-feedback.md#scheduled-tasks).
+A scheduled business send refused with `client_busy` stays `unreachable` and the next occurrence is the next chance.
 The Client logs every refused Session message with its reason.
 
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and

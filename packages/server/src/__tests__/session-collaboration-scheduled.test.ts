@@ -375,6 +375,44 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("shares extended dispatch capacity between Local retries and Cloud hand-offs", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route, { budgets: { cloudMs: 30_000, cloudExtendedSlots: 1 } });
+    fixture.registry.currentInstanceId.mockReturnValue(undefined);
+    fixture.cloud.deliver.mockImplementation(() => new Promise(() => undefined));
+
+    const stop = new AbortController();
+    const offline = fixture.service.dispatchScheduledMessage(snapshot, stop.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() })).resolves.toEqual({
+      outcome: "unreachable",
+      code: "runtime_unavailable",
+    });
+
+    fixture.registry.currentInstanceId.mockReturnValue("ready-instance");
+    await expect(fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() })).resolves.toEqual({
+      outcome: "accepted",
+      code: null,
+    });
+    fixture.registry.currentInstanceId.mockReturnValue(undefined);
+
+    fixture.sessions.resolveScheduledMessageRoute.mockResolvedValueOnce({
+      kind: "route",
+      route: { ...route, targetComputerKind: "cloud" },
+    });
+    const cloud = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(cloud).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
+
+    stop.abort();
+    await expect(offline).resolves.toEqual({ outcome: "unreachable", code: "runtime_unavailable" });
+    const recovered = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.registry.currentInstanceId.mockReturnValue("new-instance");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(recovered).resolves.toEqual({ outcome: "accepted", code: null });
+  });
+
   it("rejects with the admission's schedule gate codes and never sends", async () => {
     const { snapshot, route } = snapshotFixture();
     const fixture = makeFixture(route);

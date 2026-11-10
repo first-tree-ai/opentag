@@ -176,7 +176,7 @@ const SCHEDULED_ASSEMBLY_FAILURE_CODES = { local: "runtime_assembly_failed", clo
 const SCHEDULED_CLOUD_BUDGET_MS = 280_000;
 const SCHEDULED_CLOUD_SHORT_BUDGET_MS = 20_000;
 // Keep a quarter of the scheduler's 100 slots available for short hand-offs.
-const SCHEDULED_CLOUD_EXTENDED_SLOTS = 75;
+const SCHEDULED_EXTENDED_SLOTS = 75;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
 
 type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; recipientSessionId: string };
@@ -289,7 +289,7 @@ export interface SessionCollaborationServiceOptions {
   stopEnded?: (targets: InternalSessionStopTarget[]) => Promise<Map<string, SessionCliStopExecution>>;
   /** Test seam for how long a stop waits for its execution side before answering `pending`. */
   stopAnswerBudgetMs?: number;
-  /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
+  /** Test seam for scheduled budgets and the shared extended-slot limit. */
   scheduledBudgets?: { localMs?: number; cloudMs?: number; cloudExtendedSlots?: number };
   onDiagnostic?: (code: string) => void;
   logger?: Pick<ServiceLogger, "error">;
@@ -304,8 +304,8 @@ export class SessionCollaborationService {
   readonly #stopEnded: SessionCollaborationServiceOptions["stopEnded"];
   readonly #scheduledLocalBudgetMs: number;
   readonly #scheduledCloudBudgetMs: number;
-  readonly #scheduledCloudExtendedSlots: number;
-  #cloudExtendedInFlight = 0;
+  readonly #scheduledExtendedSlots: number;
+  #scheduledExtendedInFlight = 0;
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -323,7 +323,7 @@ export class SessionCollaborationService {
     this.#stopAnswerBudgetMs = options.stopAnswerBudgetMs ?? SESSION_STOP_ANSWER_BUDGET_MS;
     this.#scheduledLocalBudgetMs = options.scheduledBudgets?.localMs ?? SCHEDULED_LOCAL_BUDGET_MS;
     this.#scheduledCloudBudgetMs = options.scheduledBudgets?.cloudMs ?? SCHEDULED_CLOUD_BUDGET_MS;
-    this.#scheduledCloudExtendedSlots = options.scheduledBudgets?.cloudExtendedSlots ?? SCHEDULED_CLOUD_EXTENDED_SLOTS;
+    this.#scheduledExtendedSlots = options.scheduledBudgets?.cloudExtendedSlots ?? SCHEDULED_EXTENDED_SLOTS;
     this.#onDiagnostic = options.onDiagnostic;
     this.#logger = options.logger;
   }
@@ -391,7 +391,7 @@ export class SessionCollaborationService {
         return record("unreachable", resolution.code);
       }
       const route = resolution.route;
-      releaseExtendedCloud = this.#reserveExtendedCloudSlot(route.targetComputerKind);
+      releaseExtendedCloud = this.#reserveExtendedScheduleSlot(route.targetComputerKind === "cloud");
       const cloudBudget = releaseExtendedCloud ? this.#scheduledCloudBudgetMs : shortCloudBudget;
       const deadline = this.#scheduledDeadline(snapshot, route.targetComputerKind, startedAt, cloudBudget);
       clearTimeout(timer);
@@ -414,11 +414,11 @@ export class SessionCollaborationService {
     }
   }
 
-  #reserveExtendedCloudSlot(target: "local" | "cloud"): (() => void) | undefined {
-    if (target !== "cloud" || this.#cloudExtendedInFlight >= this.#scheduledCloudExtendedSlots) return;
-    this.#cloudExtendedInFlight += 1;
+  #reserveExtendedScheduleSlot(needed: boolean): (() => void) | undefined {
+    if (!needed || this.#scheduledExtendedInFlight >= this.#scheduledExtendedSlots) return;
+    this.#scheduledExtendedInFlight += 1;
     return () => {
-      this.#cloudExtendedInFlight -= 1;
+      this.#scheduledExtendedInFlight -= 1;
     };
   }
 
@@ -485,9 +485,14 @@ export class SessionCollaborationService {
     record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
   ): Promise<ScheduledMessageDispatchOutcome> {
     let preparation = await this.#prepareScheduledLocal(snapshot, route, runtime, deadline, signal);
-    while (preparation.kind === "retry" && (await waitForScheduledLocalRetry(signal))) {
-      if (signal.aborted || Date.now() >= deadline) break;
-      preparation = await this.#prepareScheduledLocal(snapshot, route, runtime, deadline, signal);
+    const releaseRetry = this.#reserveExtendedScheduleSlot(preparation.kind === "retry");
+    try {
+      while (releaseRetry && preparation.kind === "retry" && (await waitForScheduledLocalRetry(signal))) {
+        if (signal.aborted || Date.now() >= deadline) break;
+        preparation = await this.#prepareScheduledLocal(snapshot, route, runtime, deadline, signal);
+      }
+    } finally {
+      releaseRetry?.();
     }
     if (preparation.kind === "rejected")
       return this.#recordScheduledAdmissionFailure(preparation.reason, record, false);

@@ -167,12 +167,13 @@ A claimed Local occurrence retries connection lookup and reconciliation after tr
 seconds until it is ready, the next trigger arrives, or 60 seconds have elapsed since dispatch started. It keeps the same
 message ID and dispatch slot, and tries the business send at most once. A pause, edit, or deletion still wins at send
 admission. The final result distinguishes runtime assembly failure, reconcile timeout, other reconcile failures, and
-an explicit not-ready reply. A miss is reported only after the hand-off settles.
+an explicit not-ready reply. Local retries and extended Cloud hand-offs share 75 slots per Server. If those slots
+are all taken, a Local preparation failure settles immediately. A miss is reported only after the hand-off settles.
 
 A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
 workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
-280 seconds of dispatch entry or at the next trigger, whichever comes first. At most 75 Cloud hand-offs per Server
-use the extended window concurrently. Additional Cloud hand-offs have up to 20 seconds so they free scheduler slots
+280 seconds of dispatch entry or at the next trigger, whichever comes first. When the shared slots are full, Cloud
+hand-offs have up to 20 seconds so they free scheduler slots
 within the 30-second claim window. A pause, edit, or deletion still
 wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
 restart does not recover an unfinished scheduled hand-off.

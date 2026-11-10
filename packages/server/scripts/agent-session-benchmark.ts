@@ -611,7 +611,7 @@ async function measureCases(
   void withoutIndex;
   const rebuiltAt = deps.elapsed();
   await admin.unsafe(`
-    create index "${SHIPPED_UNREPORTED_INDEX}" on "im_message_deliveries" ("accepted_at", "id", "session_id")
+    create index "${SHIPPED_UNREPORTED_INDEX}" on "im_message_deliveries" ("session_id", "accepted_at", "id")
     where "state" = 'accepted' and "reported_at" is null`);
   await admin.query`analyze im_message_deliveries`;
   report.unreportedIndex = {

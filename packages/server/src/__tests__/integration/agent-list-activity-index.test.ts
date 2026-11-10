@@ -46,8 +46,7 @@ describe("Agent list unreported-accepted index", () => {
         where schemaname = 'public' and indexname = 'im_message_deliveries_unreported_accepted_idx'
       `;
       // PostgreSQL's rendering varies by version, so the assertion is on the parts that matter.
-      expect(definition?.indexdef).toContain("accepted_at");
-      expect(definition?.indexdef).toContain("session_id");
+      expect(definition?.indexdef).toContain("(session_id, accepted_at, id)");
       expect(definition?.indexdef).toMatch(/WHERE .*state = 'accepted'.*reported_at IS NULL/);
     } finally {
       await client.sql.end();
@@ -159,7 +158,8 @@ describe("Agent list unreported-accepted index", () => {
         nextAttemptAt: NOW,
         expiresAt: new Date(NOW.getTime() + 86_400_000),
       });
-      // Many long-lived idle conversations and the Internal Sessions a busy binding piles up.
+      // Many long-lived idle conversations, historical reported Turns on a hot live Session, and the Internal
+      // Sessions a busy binding piles up.
       await client.sql.unsafe(
         `
         insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
@@ -167,6 +167,30 @@ describe("Agent list unreported-accepted index", () => {
         from sessions s, generate_series(1, ${IDLE_SESSIONS}) n where s.id = $1
         `,
         [session.id],
+      );
+      await client.sql.unsafe(
+        `
+        with hot_session as (
+          select id, im_binding_id from sessions
+          where im_binding_id = (select im_binding_id from sessions where id = $1)
+            and kind = 'thread' and thread_key = 'idle-1'
+        ),
+        historical_messages as (
+          insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
+            operation,direction,thread_key,author_kind,author_external_id,content,provider_context,occurred_at)
+          select hot_session.im_binding_id,'hist-event-'||n,'idle-channel','hist-msg-'||n,'1','created','inbound','idle-1','human','human',
+            '{"version":1,"fallbackText":"done","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
+          from hot_session, generate_series(1, ${REPORTED_TURNS_IN_HOT_SESSION}) n
+          returning id
+        )
+        insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,input_hash,turn_id,
+          report_owner_instance_id,accepted_at,reported_at,turn_report,result_hash,expires_at)
+        select historical_messages.id,hot_session.id,'direct','accepted',1,'hist-input-'||historical_messages.id,
+          'hist-turn-'||historical_messages.id,$3::uuid,$2::timestamptz,$2::timestamptz,'{"status":"completed"}'::jsonb,
+          'hist-result-'||historical_messages.id,$4
+        from historical_messages cross join hot_session
+        `,
+        [session.id, NOW.toISOString(), REPORT_OWNER, new Date(NOW.getTime() + 86_400_000).toISOString()],
       );
       await client.sql.unsafe(
         `
@@ -178,13 +202,35 @@ describe("Agent list unreported-accepted index", () => {
       );
       await client.sql.unsafe("analyze");
 
+      // Warm connection/statement state once, then measure and inspect the list's activity reads at 5,000 live Sessions.
+      await agents.listForAccount(owner.userId);
       queries.length = 0;
+      const startedAtMs = performance.now();
       const listed = await agents.listForAccount(owner.userId);
+      const elapsedMs = performance.now() - startedAtMs;
+      expect(elapsedMs).toBeLessThan(500);
       expect(listed.agents.find((entry) => entry.id === agent.id)?.activity).toEqual({
         state: "idle",
         queuedTaskCount: 1,
       });
-      const queuedReads = queries.filter((entry) => entry.query.includes("live as materialized"));
+
+      const unreportedReads = queries.filter((entry) => entry.query.includes('"reported_at" is null'));
+      expect(unreportedReads).toHaveLength(2);
+      for (const unreportedRead of unreportedReads) {
+        const [explainedUnreported] = await client.sql.unsafe(
+          `explain (analyze, format json) ${unreportedRead.query}`,
+          unreportedRead.params as never[],
+        );
+        const unreportedPlan = explainedUnreported?.["QUERY PLAN"];
+        expect(rowsRead(unreportedPlan?.[0]?.Plan as PlanNode, "sessions")).toBeLessThan(IDLE_SESSIONS + 10);
+        expect(JSON.stringify(unreportedPlan)).toContain("sessions_active_channel_unique");
+        expect(JSON.stringify(unreportedPlan)).toContain("sessions_active_thread_unique");
+        expect(JSON.stringify(unreportedPlan)).toContain("im_message_deliveries_unreported_accepted_idx");
+        // Neither other Accounts' unreported Turns nor the hot Session's reported Turns are scanned.
+        expect(rowsRead(unreportedPlan?.[0]?.Plan as PlanNode, "im_message_deliveries")).toBeLessThan(10);
+      }
+
+      const queuedReads = queries.filter((entry) => entry.query.includes("waiting as materialized"));
       expect(queuedReads).toHaveLength(1);
 
       // Under the default planner the read reaches the live Sessions through their partial indexes and reads
@@ -205,8 +251,10 @@ describe("Agent list unreported-accepted index", () => {
       expect(JSON.stringify(plan)).not.toContain("im_message_deliveries_unreported_accepted_idx");
       expect(rowsRead(plan?.[0]?.Plan as PlanNode, "im_message_deliveries")).toBeLessThan(100);
 
-      // The neighbour's own count is correct too: one Task for each of its 2,000 waiting Sessions.
+      // The neighbour's own count is correct too: one Task for each of its 2,000 waiting Sessions and 2,000 running Sessions.
       expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toMatchObject({
+        state: "working",
+        runningTaskCount: NOISY_BACKLOG,
         queuedTaskCount: NOISY_BACKLOG,
       });
     } finally {
@@ -216,7 +264,8 @@ describe("Agent list unreported-accepted index", () => {
 });
 
 const NOISY_BACKLOG = 2_000;
-const IDLE_SESSIONS = 500;
+const IDLE_SESSIONS = 5_000;
+const REPORTED_TURNS_IN_HOT_SESSION = 2_000;
 const INTERNAL_SESSIONS = 80_000;
 
 interface PlanNode {

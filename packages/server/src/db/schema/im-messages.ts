@@ -136,14 +136,15 @@ export const imMessageDeliveries = pgTable(
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
     index("im_delivery_work_idx").on(table.nextAttemptAt, table.id).where(deliveryWorkPredicate(table)),
-    // The Agent list asks "which Turns are accepted but unreported?" for every Agent it shows. Without this
-    // partial index the query walks every Session of the binding to answer it: 100,001 probes for one hot
-    // Agent in the 100k-row benchmark, and the hot list read 161.85 ms against a 100 ms target. The rows it
-    // covers are exactly the turns a Computer still owes a report for, so it stays small and shrinks as
-    // reports arrive. `accepted_at` leads because both list reads range-filter it; `id` keeps the
-    // deduplication deterministic and `session_id` lets the join stay index-only.
+    // The Agent list asks "which Turns are accepted but unreported?" for every live channel or thread Session
+    // of the Agents it shows. Without this partial index the probe walks all historical reported Turns of a
+    // hot Session (50,000 rows for one Session in the 100k-row benchmark). The rows it covers are only the
+    // Turns a Computer still owes a report for, so it stays small and shrinks as reports arrive. `session_id`
+    // leads so each live Session probes only its own unreported Turns instead of walking other Accounts'
+    // backlog, `accepted_at` splits fresh running work from stale recovery work, and `id` keeps the index
+    // covering.
     index("im_message_deliveries_unreported_accepted_idx")
-      .on(table.acceptedAt, table.id, table.sessionId)
+      .on(table.sessionId, table.acceptedAt, table.id)
       .where(sql`${table.state} = 'accepted' and ${table.reportedAt} is null`),
     index("im_message_deliveries_expiry_idx")
       .on(table.expiresAt, table.id)

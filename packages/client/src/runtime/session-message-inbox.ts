@@ -29,6 +29,7 @@ import {
   retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
+  retryPromptOptions,
   sessionMessageKey,
   trackRunTime,
 } from "./interruption-retry.js";
@@ -1084,6 +1085,7 @@ export class SessionMessageInbox {
           { ...channelTurn, retry: Boolean(continuation) },
           this.#now(),
         )),
+        ...retryPromptOptions(continuation),
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing

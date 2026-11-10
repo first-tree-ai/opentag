@@ -108,7 +108,13 @@ it("tells a Turn what the last one left, from a file that outlives the sandbox",
       return { runId: input.runId, output: [], status: "aborted" as const };
     }
     await sink({ type: "model_turn_started", runId: input.runId, modelTurnId: "m" });
-    return { runId: input.runId, output: [{ text: "done", type: "text" as const }], status: "completed" as const };
+    const result = {
+      runId: input.runId,
+      output: [{ text: "done", type: "text" as const }],
+      status: "completed" as const,
+    };
+    await sink({ type: "run_completed", runId: input.runId, result });
+    return result;
   };
   const createPiFactory = () => ({
     create: async (request: CreateAgentRuntimeRequest) => {

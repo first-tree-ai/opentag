@@ -56,7 +56,9 @@ export interface BackgroundWorkLedgerStorage {
  * What a Session must be told about its past Runs, kept by the Client because no Provider can be relied on
  * for it: Codex and Pi say nothing on resume, and Claude Code's `stopped` is not always true. It is written
  * from the Run's event stream and read when the next Run starts. An entry leaves only once a model turn
- * started after it ended, so a crash before that tells the next Run again; a repeat is harmless, a miss is not.
+ * started after it ended and that Run then completed, so a crash or a failed Run tells the next Run again; a
+ * repeat is harmless, a miss is not. A turn start alone is not proof: a Provider reports an API error (429,
+ * an unavailable model, a prompt over the context) as an assistant message the model never wrote.
  *
  * Storage failures never reach the Run: losing this notice is better than losing the work.
  */
@@ -64,6 +66,8 @@ export class BackgroundWorkLedger {
   readonly #storage: BackgroundWorkLedgerStorage;
   readonly #onError: (error: unknown) => void;
   #tail: Promise<unknown> = Promise.resolve();
+  /** What the current Run's model turns were shown, removed only if that Run completes. */
+  #shown: ShownNotice | undefined;
 
   constructor(storage: BackgroundWorkLedgerStorage, onError: (error: unknown) => void = () => undefined) {
     this.#storage = storage;
@@ -107,19 +111,31 @@ export class BackgroundWorkLedger {
         ),
       }));
     }
-    if (event.type === "run_completed" && event.result.followUpFailure) {
-      const { code, retryAt } = event.result.followUpFailure;
-      return this.#change(({ followUpRetryAt: _earlier, ...state }) => ({
-        ...state,
-        followUpFailure: code,
-        ...(retryAt ? { followUpRetryAt: retryAt } : {}),
-      }));
+    if (event.type === "run_completed") {
+      const shown = this.#shown;
+      this.#shown = undefined;
+      const failure = event.result.followUpFailure;
+      return this.#change((state) => {
+        const next = shown ? withoutShown(state, shown) : state;
+        if (!failure) return next;
+        const { followUpRetryAt: _earlier, ...rest } = next;
+        return {
+          ...rest,
+          followUpFailure: failure.code,
+          ...(failure.retryAt ? { followUpRetryAt: failure.retryAt } : {}),
+        };
+      });
+    }
+    // A Run that did not complete removes nothing: its model may never have read the notice.
+    if (event.type === "run_failed" || event.type === "run_aborted" || event.type === "run_cancelled") {
+      this.#shown = undefined;
+      return Promise.resolve();
     }
     // Model turns are optional in the event grammar (Codex reports none), so a message counts too.
     if (event.type === "model_turn_started" || event.type === "message_started") {
-      return this.#change((state) => {
-        const entries = state.entries.filter((entry) => entry.status === "running");
-        return { schemaVersion: 1, entries };
+      return this.#enqueue(async () => {
+        const state = await this.#read();
+        if (state) this.#shown = shownIn(state, this.#shown);
       });
     }
     return Promise.resolve();
@@ -179,6 +195,34 @@ export class BackgroundWorkLedger {
     this.#tail = run;
     return run;
   }
+}
+
+interface ShownNotice {
+  entries: Set<string>;
+  runLimit: boolean;
+  followUpFailure: boolean;
+}
+
+/** Adds what a model turn starting now is shown: every ended entry and the limit or failure on record. */
+function shownIn(state: BackgroundWorkLedgerState, earlier: ShownNotice | undefined): ShownNotice {
+  const entries = new Set(earlier?.entries);
+  for (const entry of state.entries) if (entry.status !== "running") entries.add(entry.id);
+  return {
+    entries,
+    runLimit: (earlier?.runLimit ?? false) || state.runLimit !== undefined,
+    followUpFailure: (earlier?.followUpFailure ?? false) || state.followUpFailure !== undefined,
+  };
+}
+
+function withoutShown(state: BackgroundWorkLedgerState, shown: ShownNotice): BackgroundWorkLedgerState {
+  const { runLimit, followUpFailure, followUpRetryAt, ...rest } = state;
+  const keepFailure = followUpFailure && !shown.followUpFailure;
+  return {
+    ...rest,
+    entries: state.entries.filter((entry) => entry.status === "running" || !shown.entries.has(entry.id)),
+    ...(runLimit && !shown.runLimit ? { runLimit } : {}),
+    ...(keepFailure ? { followUpFailure, ...(followUpRetryAt ? { followUpRetryAt } : {}) } : {}),
+  };
 }
 
 function renderNotice(state: BackgroundWorkLedgerState): string | undefined {

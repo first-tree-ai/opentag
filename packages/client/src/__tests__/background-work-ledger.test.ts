@@ -41,6 +41,18 @@ const finished = (
   extra: { detail?: string; outputPath?: string } = {},
 ): AgentRuntimeEvent => ({ type: "background_work_finished", runId: "run", id, status, ...extra });
 const turn: AgentRuntimeEvent = { type: "model_turn_started", runId: "run", modelTurnId: "t" };
+const completed: AgentRuntimeEvent = {
+  type: "run_completed",
+  runId: "run",
+  result: { runId: "run", status: "completed", output: [] },
+};
+const failedWith = (
+  code: "provider_rate_limited" | "provider_unavailable" | "provider_context_limit",
+): AgentRuntimeEvent => ({
+  type: "run_failed",
+  runId: "run",
+  result: { runId: "run", status: "failed", output: [], error: { code, message: code } },
+});
 
 describe("BackgroundWorkLedger", () => {
   it("has nothing to say about a Session with no history", async () => {
@@ -83,7 +95,7 @@ describe("BackgroundWorkLedger", () => {
     await expect(ledger.notice()).resolves.toBe(notice);
   });
 
-  it("keeps the notice until a model turn starts, so a crash before that tells the next Run again", async () => {
+  it("keeps the notice until a Run whose model turn started completes, so a crash before that tells the next Run again", async () => {
     const storage = memory();
     const ledger = new BackgroundWorkLedger(storage);
     await ledger.apply(changed({ id: "a", label: "suite" }));
@@ -94,8 +106,54 @@ describe("BackgroundWorkLedger", () => {
     expect(first.items[1]?.text).toBe("next");
     await expect(ledger.notice()).resolves.toContain("duration limit");
     await ledger.apply(turn);
+    await expect(ledger.notice()).resolves.toContain("duration limit");
+    await ledger.apply(completed);
     await expect(ledger.notice()).resolves.toBeUndefined();
     expect(storage.box.state).toBeUndefined();
+  });
+
+  it.each(["provider_rate_limited", "provider_unavailable", "provider_context_limit"] as const)(
+    "keeps everything when a Run fails with %s after its error turn started, so the retry is told again",
+    async (code) => {
+      const ledger = new BackgroundWorkLedger(memory());
+      await ledger.apply(changed({ id: "a", label: "suite" }));
+      await ledger.apply(finished("a", "completed", { detail: "exit 0" }));
+      await ledger.recordRunLimit({ reason: "turn_timeout", at: "T" });
+      const notice = await ledger.notice();
+      // The Provider reports the API error as an assistant message: a turn starts that the model never wrote.
+      await ledger.apply({ type: "run_started", runId: "run" });
+      await ledger.apply(turn);
+      await ledger.apply({ type: "message_started", runId: "run", messageId: "error" });
+      await ledger.apply(failedWith(code));
+      await expect(ledger.notice()).resolves.toBe(notice);
+      // The retry's model reads it and completes: only then does it leave.
+      await ledger.apply(turn);
+      await ledger.apply(completed);
+      await expect(ledger.notice()).resolves.toBeUndefined();
+    },
+  );
+
+  it("removes only what a model turn was shown, and forgets it when the Run is stopped", async () => {
+    const storage = memory();
+    const ledger = new BackgroundWorkLedger(storage);
+    const ids = () => (storage.box.state as BackgroundWorkLedgerState).entries.map(({ id }) => id);
+    await ledger.apply(changed({ id: "a", label: "suite" }, { id: "b", label: "build" }));
+    await ledger.apply(finished("a", "completed"));
+    await ledger.apply(turn);
+    await ledger.apply({
+      type: "run_aborted",
+      runId: "run",
+      result: { runId: "run", status: "aborted", output: [] },
+    });
+    await ledger.apply(completed);
+    expect(ids()).toEqual(["a", "b"]);
+    await ledger.apply(turn);
+    // Finished after the last turn started: that turn never saw it.
+    await ledger.apply(finished("b", "failed"));
+    await ledger.apply(completed);
+    const notice = await ledger.notice();
+    expect(notice).not.toContain("- suite");
+    expect(notice).toContain("- build (failed)");
   });
 
   it("tells a Session its Run hit a limit even with no background work, and names a new kind of limit", async () => {
@@ -124,6 +182,7 @@ describe("BackgroundWorkLedger", () => {
     expect(notice).toContain("failed (provider_rate_limited)");
     expect(notice).toContain("- suite (completed; exit 0)");
     await ledger.apply(turn);
+    await ledger.apply(completed);
     await expect(ledger.notice()).resolves.toBeUndefined();
   });
 
@@ -147,6 +206,7 @@ describe("BackgroundWorkLedger", () => {
     await ledger.apply(quota());
     await expect(ledger.notice()).resolves.not.toContain("available again");
     await ledger.apply(turn);
+    await ledger.apply(completed);
     await expect(ledger.notice()).resolves.toBeUndefined();
   });
 
@@ -155,6 +215,7 @@ describe("BackgroundWorkLedger", () => {
     await ledger.apply(changed({ id: "a", label: "suite" }));
     await ledger.apply(finished("a", "completed"));
     await ledger.apply({ type: "message_started", runId: "run", messageId: "m" });
+    await ledger.apply(completed);
     await expect(ledger.notice()).resolves.toBeUndefined();
   });
 
@@ -164,6 +225,7 @@ describe("BackgroundWorkLedger", () => {
     await ledger.apply(changed({ id: "a", label: "suite" }, { id: "b", label: "build" }));
     await ledger.apply(finished("a", "completed"));
     await ledger.apply(turn);
+    await ledger.apply(completed);
     expect((storage.box.state as BackgroundWorkLedgerState).entries).toEqual([
       { id: "b", label: "build", status: "running" },
     ]);
@@ -250,10 +312,12 @@ describe("BackgroundWorkLedgers", () => {
     await expect(after.forSession("session-1").notice()).resolves.toContain("- suite");
     await expect(after.forSession("session-1").notice()).resolves.not.toContain("- other");
     await after.forSession("session-1").apply(turn);
+    await after.forSession("session-1").apply(completed);
     await expect(after.forSession("session-1").notice()).resolves.toBeUndefined();
     // Removing what is already gone is fine.
     await after.forSession("session-1").recordRunLimit({ reason: "turn_timeout", at: "T" });
     await after.forSession("session-1").apply(turn);
+    await after.forSession("session-1").apply(completed);
     const runtime = join(home, ...(await findRuntime(home)));
     await expect(readdir(runtime)).resolves.toHaveLength(1);
   });
@@ -268,10 +332,12 @@ describe("BackgroundWorkLedgers", () => {
     const runtime = join(home, ...(await findRuntime(home)));
     const [file] = await readdir(runtime);
     const storagePath = join(runtime, file as string);
-    const racing = ledger.apply(turn);
+    await ledger.apply(turn);
+    const racing = ledger.apply(completed);
     await rm(storagePath, { force: true });
     await racing;
     await ledger.apply(turn);
+    await ledger.apply(completed);
     expect(onError).not.toHaveBeenCalled();
   });
 });

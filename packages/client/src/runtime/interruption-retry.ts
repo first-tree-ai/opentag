@@ -26,10 +26,19 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
+ * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
+export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited" | "provider_start_failed";
 
-const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
+const REASONS = new Set<InterruptionReason>([
+  "daemon_crash",
+  "client_shutdown",
+  "provider_rate_limited",
+  "provider_start_failed",
+]);
+
+/** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
+const IN_PLACE = new Set<InterruptionReason>(["provider_rate_limited", "provider_start_failed"]);
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -41,6 +50,24 @@ export const RUN_TIME_RECORD_INTERVAL_MS = 60_000;
 const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+/** A model CLI that failed to start gets a short pause before its one retry. */
+export const START_FAILURE_RETRY_DELAY_MS = 5_000;
+
+/** At most this many retries in a row for a reason; a start failure is retried once. */
+export function retryLimit(reason: InterruptionReason): number {
+  return reason === "provider_start_failed" ? 1 : MAX_AUTOMATIC_RETRIES;
+}
+
+/** The wait before an in-place retry for this reason. */
+export function retryDelayMs(reason: InterruptionReason): number {
+  if (reason === "provider_rate_limited") return RATE_LIMIT_RETRY_DELAY_MS;
+  return reason === "provider_start_failed" ? START_FAILURE_RETRY_DELAY_MS : 0;
+}
+
+/** Whether a retry for this reason was already counted when the attempt failed. */
+export function countedAtFailure(reason: InterruptionReason | undefined): boolean {
+  return reason !== undefined && IN_PLACE.has(reason);
+}
 
 export interface Interruption {
   reason: InterruptionReason;
@@ -59,10 +86,13 @@ export interface RetryCount {
  * The count after a failure or an interruption. `exhausted` means no retry is left. It is recorded as
  * one past the limit, so a later restart cannot revive work whose failure is already being reported.
  */
-export function nextRetry(previous: RetryCount): { count: number; exhausted: boolean } {
+export function nextRetry(
+  previous: RetryCount,
+  limit: number = MAX_AUTOMATIC_RETRIES,
+): { count: number; exhausted: boolean } {
   if (previous.count > MAX_AUTOMATIC_RETRIES) return { count: previous.count, exhausted: true };
   const count = previous.ranMs >= RETRY_RESET_AFTER_MS ? 0 : previous.count;
-  if (count >= MAX_AUTOMATIC_RETRIES) return { count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
+  if (count >= Math.min(limit, MAX_AUTOMATIC_RETRIES)) return { count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
   return { count: count + 1, exhausted: false };
 }
 
@@ -126,6 +156,8 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the OpenTag daemon was restarted or upgraded";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
+    case "provider_start_failed":
+      return "the model CLI failed to start before doing any work";
   }
 }
 

@@ -54,13 +54,12 @@ custody. After sixty seconds the Bot sends one orange [card](#cards), placed lik
 
 | Title | Body |
 | --- | --- |
-| Agent 所在电脑离线 / The Agent's computer is offline | 恢复后会自动处理，**恢复连接** / Messages will be handled after it reconnects. **Restore connection** |
+| Agent 所在电脑离线 / The Agent's computer is offline | 恢复后会自动处理 / Messages will be handled after it reconnects. |
 
-The link opens the card's feedback page with `?open=restore`. For the Agent owner, the Agent page shows the Computer
-row as **Offline** with a link to the recovery page and its restore command. Signed-out people reach sign-in. The card
-names neither the Computer nor an administrator, because everyone in the conversation reads it; checking the computer,
-who manages the Agent, and the seven-day expiry belong on the recovery page, not in the conversation. It follows the
-same language rule as failure cards.
+The card has no link (see [Cards](#cards)); the Agent owner finds the Computer marked **Offline**, with its recovery
+page and restore command, on the Agent page. The card names neither the Computer nor an administrator, because
+everyone in the conversation reads it; checking the computer, who manages the Agent, and the seven-day expiry belong on
+the recovery page, not in the conversation. It follows the same language rule as failure cards.
 
 - **When.** Sixty seconds after the later of the message's receipt and the Computer's `last_seen_at`, with the Computer
   offline by the same rule the Web uses: disconnected, no current instance, or silent past the presence timeout. A
@@ -89,10 +88,9 @@ for it. A queued input in that position gets one orange [card](#cards), placed l
 
 | Title | Body |
 | --- | --- |
-| 排队中 / Queued | 前一条完成后处理，**查看 Agent** / Handled after the earlier message finishes. **View Agent** |
+| 排队中 / Queued | 前一条完成后处理 / Handled after the earlier message finishes. |
 
-The link opens the card's feedback page with `?open=agent`, which takes the Agent owner to the Agent page. The card
-names no earlier message, person or Computer.
+The card has no link and names no earlier message, person or Computer.
 
 - **When.** Sixty seconds after the input's receipt. The input's Computer must be online: an offline Computer gets the
   offline notice instead. Another pending delivery of the same Session must carry `IM_DELIVERY_PARKED`. Other Sessions
@@ -126,28 +124,28 @@ Slack paints the attachment bar only from a hex color: the `danger` and `good` k
 attachment holds blocks. The message has no top-level `text`, because Slack would show it above the card as a second
 copy; the attachment `fallback` is the notification text.
 
-A destination on the Web is a text link at the end of the body sentence, never its own line: Feishu `[words](url)`,
-Slack `<url|words>`. Every link opens the card's feedback page with an `open` parameter (`settings`, `task`,
-`restore` or `agent`). An operation finished in the conversation is a button. There is no details button by default.
+Cards carry no visible link and no button: no settings, task, recovery or details link, and no save or discard button
+(product decision, 2026-11-10). The details page stays reachable from the Agent page. The only link a card holds is
+the invisible readback identity described under [Message format compatibility](#message-format-compatibility).
 
-| Failure | Title | Body | Link or buttons |
-| --- | --- | --- | --- |
-| Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later | |
-| Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 | |
-| Authentication | 模型认证失败 / Model authentication failed | 需要更新模型设置 / Model settings need an update | 去设置 / Open settings |
-| Access denied | 没有模型访问权限 / No access to the model | 需要更新模型设置 | 去设置 |
-| Quota | 模型额度已用完 / Model quota used up | 恢复时间未知 / Recovery time unknown | |
-| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 需要更新凭据 / Credentials need an update | 去设置 |
-| Context, execution limit, timeout, result too large | 任务超出上下文上限, 任务超出执行上限, 任务超时, 结果太大 | 请拆小后重试 / Split it into smaller tasks and try again | |
-| Process exit, start failure, environment disconnected, client stopped, resume failure, protocol error, model failure, empty result, cleanup failure, and every unknown reason | 执行环境出错 / Execution environment error | 请重试 / Try again | |
-| Request rejected, configuration conflict | 执行环境出错 | 需要检查 Agent 配置 / The Agent configuration needs a check | 去设置 |
-| Task outcome unknown | 无法确认任务是否完成 / Can't confirm whether the task finished | 请先查看结果 / Check the results first | |
-| Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | | 重试保存, 放弃改动 buttons |
-| Message expired | 消息已过期 / Message expired | 如需要请重发 / Send it again if you still need it | |
-| Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again | |
-| A frozen batch that cannot be retried | The reason's own title | 请打开原任务查看 / Open the original task to review it | 打开任务 / Open task |
+| Failure | Title | Body |
+| --- | --- | --- |
+| Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later |
+| Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 |
+| Authentication | 模型认证失败 / Model authentication failed | 需要更新模型设置 / Model settings need an update |
+| Access denied | 没有模型访问权限 / No access to the model | 需要更新模型设置 |
+| Quota | 模型额度已用完 / Model quota used up | 恢复时间未知 / Recovery time unknown |
+| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 需要更新凭据 / Credentials need an update |
+| Context, execution limit, timeout, result too large | 任务超出上下文上限, 任务超出执行上限, 任务超时, 结果太大 | 请拆小后重试 / Split it into smaller tasks and try again |
+| Process exit, start failure, environment disconnected, client stopped, resume failure, protocol error, model failure, empty result, cleanup failure, and every unknown reason | 执行环境出错 / Execution environment error | 请重试 / Try again |
+| Request rejected, configuration conflict | 执行环境出错 | 需要检查 Agent 配置 / The Agent configuration needs a check |
+| Task outcome unknown | 无法确认任务是否完成 / Can't confirm whether the task finished | 请先查看结果 / Check the results first |
+| Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | |
+| Message expired | 消息已过期 / Message expired | 如需要请重发 / Send it again if you still need it |
+| Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again |
+| A frozen batch that cannot be retried | The reason's own title | 请打开原任务查看 / Open the original task to review it |
 
-The workspace buttons open the details page with the operation selected, which owns both operations and their
+Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the
 card is edited in place: its title becomes the state (已完成, 处理中，请勿重复点击, 操作失败, 环境已变化，请刷新, 已保存,
 已放弃改动, 已重新排队), green on success, with no body: the actor and time stay on the details page. An environment released without
@@ -279,13 +277,12 @@ text.
 - **A card from before the text period.** Those cards were sent with `update_multi`, so a later change edits them in
   place with the current card. On Slack, the edit clears the old top-level text and blocks.
 - **Readback.** A failure card is found by an identity the provider returns: on Slack the `opentag_feedback:<id>`
-  block ID, in an attachment or (old cards) at the top level; on Feishu the details URL, or a feedback link that only a
-  failure card carries (`open=settings` or `open=task`). Feishu's message read API returns a card's links but not its
-  button values, so a failure card whose body has no link carries a zero-width link to the details page. A text message
+  block ID, in an attachment or (old cards) at the top level; on Feishu the exact details URL. Feishu's message read
+  API returns a card's links but not its text formatting or button values, so every failure card carries a zero-width
+  link to its details page: invisible, with nothing to click. A text message
   is still found by its details URL.
 - **Waiting notices.** An offline or queued notice can precede the failure card of the same target, so it carries a
-  different identity: the Slack block ID `opentag_notice:<id>`, and on Feishu only `open=restore` or `open=agent`
-  links. Failure readback never binds a notice, so a notice followed by a failure whose send is unknown still binds the
+  different identity: the Slack block ID `opentag_notice:<id>`, and on Feishu no feedback URL at all. Failure readback never binds a notice, so a notice followed by a failure whose send is unknown still binds the
   failure, or stays unknown, without a second send.
 - **Where Slack looks.** A thread is read with `conversations.replies`. A card for a top-level input is looked for
   first in the input's replies, where cards from before the text period went, and then in the channel with

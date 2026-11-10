@@ -37,16 +37,9 @@ import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /** Everything a card shows, as one string. */
-function cardText(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction): string {
-  const card = feedbackCard(target, publicUrl, action, "en");
-  return [
-    card.title,
-    card.body?.text,
-    card.body?.link && `${card.body.link.label} ${card.body.link.url}`,
-    ...card.buttons.map((b) => `${b.label} ${b.url}`),
-  ]
-    .filter(Boolean)
-    .join("\n");
+function cardText(target: FeedbackTarget, action?: FeedbackAction): string {
+  const card = feedbackCard(target, action, "en");
+  return [card.title, card.body].filter(Boolean).join("\n");
 }
 
 let db: UnitDatabase;
@@ -505,17 +498,15 @@ describe("durable IM feedback", () => {
     expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
-  it("gives a workspace failure save and discard buttons and no body", async () => {
+  it("shows a workspace failure as its title alone, with no body, link or button", async () => {
     const h = await workspaceFixture();
     const target = await h.target();
     expect(target.messageFormat).toBe("interactive_v1");
-    const card = feedbackCard(target, "https://example.test", undefined, "zh");
-    expect(card).toMatchObject({ tone: "failure", title: "工作区改动没能保存" });
-    expect(card.body).toBeUndefined();
-    expect(card.buttons.map((b) => [b.label, b.url])).toEqual([
-      ["重试保存", `https://example.test/im-feedback/${target.id}?operation=save_release`],
-      ["放弃改动", `https://example.test/im-feedback/${target.id}?operation=discard`],
-    ]);
+    expect(feedbackCard(target, undefined, "zh")).toEqual({
+      kind: "failure",
+      tone: "failure",
+      title: "工作区改动没能保存",
+    });
   });
 
   it("sends a plain-text target that never sent as a card", async () => {
@@ -545,13 +536,12 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     await h.finish();
     const target = await h.target();
-    const card = feedbackCard(target, "https://example.test", undefined, "en");
+    const card = feedbackCard(target, undefined, "en");
     expect(card).toEqual({
       kind: "failure",
       tone: "failure",
       title: "Execution environment error",
-      body: { text: "Try again" },
-      buttons: [],
+      body: "Try again",
     });
   });
 
@@ -596,7 +586,7 @@ describe("durable IM feedback", () => {
       expect((await h.target()).state).toBe("completed");
       if (bound) {
         expect(h.transport.update).toHaveBeenCalledOnce();
-        expect(cardText(await h.target(), "https://app.test")).toBe("Done");
+        expect(cardText(await h.target())).toBe("Done");
       } else expect(h.transport.post).not.toHaveBeenCalled();
     },
   );
@@ -835,8 +825,8 @@ describe("durable IM feedback", () => {
     await h.finish();
     const t = await h.target();
     for (const provider of ["slack", "feishu"] as const)
-      expect(cardText({ ...t, provider }, "https://example.test")).not.toContain("provider_failed");
-    expect(cardText({ ...t, errorCode: "<@everyone> private raw details" }, "https://example.test")).toBe(
+      expect(cardText({ ...t, provider })).not.toContain("provider_failed");
+    expect(cardText({ ...t, errorCode: "<@everyone> private raw details" })).toBe(
       "Execution environment error\nTry again",
     );
   });
@@ -972,11 +962,7 @@ describe("safe feedback actions", () => {
         state: "succeeded",
         resultCode: kind === "discard" ? "discarded" : "saved_released",
       });
-      const content = cardText(
-        await h.target(),
-        "https://app.test",
-        (await db.database.select().from(imFeedbackActions))[0],
-      );
+      const content = cardText(await h.target(), (await db.database.select().from(imFeedbackActions))[0]);
       expect(content).toBe(kind === "discard" ? "Changes discarded" : "Saved");
       expect(content).not.toContain("Done");
       expect(h.transport.post).toHaveBeenCalledOnce();
@@ -1202,9 +1188,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(cardText(posted, "https://example.test")).toBe(
-      `Execution environment error\nOpen the original task to review it\nOpen task https://example.test/im-feedback/${posted.id}?open=task`,
-    );
+    expect(cardText(posted)).toBe("Execution environment error\nOpen the original task to review it");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1236,9 +1220,9 @@ describe("feedback review regressions", () => {
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
   for (const provider of ["slack", "feishu"] as const) {
-    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true }, "https://example.test");
-    expect(rendered).toMatch(/^Workspace changes weren't saved\nRetry save .*\nDiscard changes /u);
-    expect(rendered).not.toContain("Open task");
+    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
+    expect(rendered).toBe("Workspace changes weren't saved");
+    expect(rendered).not.toContain("Open the original task");
   }
 });
 

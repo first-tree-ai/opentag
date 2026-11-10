@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { TurnFailureReasonSchema } from "@opentag/shared";
 import { WebAPIRateLimitedError } from "@slack/web-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
+import { feedbackCard, feishuCardContent, slackCardMessage, waitingCard } from "../services/im/im-feedback-card.js";
 import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
 import type { FeedbackAction, FeedbackTarget } from "../services/im/im-feedback-store.js";
 import { renderFeedbackText } from "../services/im/im-feedback-text.js";
@@ -168,7 +170,7 @@ describe("native feedback transport", () => {
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `恢复后会自动处理，[恢复连接](https://app.example.test/im-feedback/${t.id}?open=restore)`,
+          content: "恢复后会自动处理",
         },
       },
     ]);
@@ -195,7 +197,7 @@ describe("native feedback transport", () => {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `Messages will be handled after it reconnects. <https://app.example.test/im-feedback/${t.id}?open=restore|Restore connection>`,
+              text: "Messages will be handled after it reconnects.",
             },
           },
         ],
@@ -212,9 +214,7 @@ describe("native feedback transport", () => {
     expect(data).not.toHaveProperty("uuid");
     const card = JSON.parse(data.content);
     expect(card.header).toEqual({ title: { tag: "plain_text", content: "排队中" }, template: "orange" });
-    expect(card.elements[0].text.content).toBe(
-      `前一条完成后处理，[查看 Agent](https://app.example.test/im-feedback/${t.id}?open=agent)`,
-    );
+    expect(card.elements[0].text.content).toBe("前一条完成后处理");
     expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
     const slack = target("slack");
     mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: slack.channelId, ts: "n" });
@@ -224,9 +224,7 @@ describe("native feedback transport", () => {
       color: "#F2952F",
       fallback: "Queued: Handled after the earlier message finishes",
     });
-    expect(sent.attachments[0].blocks[1].text.text).toBe(
-      `Handled after the earlier message finishes. <https://app.example.test/im-feedback/${slack.id}?open=agent|View Agent>`,
-    );
+    expect(sent.attachments[0].blocks[1].text.text).toBe("Handled after the earlier message finishes.");
   });
   it("does not submit a send whose language cannot be read, and keeps it retryable", async () => {
     const { messenger, cooldown } = harness();
@@ -251,11 +249,11 @@ describe("native feedback transport", () => {
     const card = JSON.parse(data.content);
     expect(card.header).toEqual({ title: { tag: "plain_text", content: "模型认证失败" }, template: "red" });
     expect(card.elements[0].text.content).toBe(
-      `需要更新模型设置，[去设置](https://app.example.test/im-feedback/${t.id}?open=settings)`,
+      `需要更新模型设置[\u200b](https://app.example.test/im-feedback/${t.id})`,
     );
     expect(data.content).not.toContain("provider_authentication_failed");
   });
-  it("gives a Feishu card without a link a zero-width identity link for readback", async () => {
+  it("gives a Feishu failure card a zero-width identity link for readback", async () => {
     const { messenger } = harness();
     const t: FeedbackTarget = { ...target("feishu"), errorCode: "provider_unavailable" };
     mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "m", chat_id: t.channelId } });
@@ -677,8 +675,8 @@ describe("native feedback transport", () => {
           provider === "slack"
             ? mocks.slack.chat.postMessage.mock.calls.at(-1)?.[0]
             : JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls.at(-1)?.[0].data.content);
-        // What the provider returns on read: Slack keeps the blocks, Feishu degrades the card to its links.
-        const noticeHref = JSON.stringify(sentNotice).match(/https:[^)"]+open=[a-z]+/u)?.[0];
+        // What the provider returns on read: Slack keeps the blocks, Feishu degrades the card to text and links.
+        expect(JSON.stringify(sentNotice)).not.toContain("/im-feedback/");
         if (provider === "slack")
           mocks.slack.conversations.replies.mockResolvedValueOnce({
             ok: true,
@@ -695,7 +693,11 @@ describe("native feedback transport", () => {
                 {
                   message_id: "notice",
                   sender: { sender_type: "app", id: "app" },
-                  body: { content: JSON.stringify({ elements: [[{ tag: "a", href: noticeHref }]] }) },
+                  body: {
+                    content: JSON.stringify({
+                      elements: [[{ tag: "text", text: sentNotice.elements[0].text.content }]],
+                    }),
+                  },
                 },
                 {
                   message_id: "failure",
@@ -709,7 +711,6 @@ describe("native feedback transport", () => {
               ],
             },
           });
-        expect(noticeHref).toBeTruthy();
         expect((await messenger.find(t)).ids).toEqual(["failure"]);
       }
     },
@@ -894,4 +895,23 @@ it("keeps link and mention syntax in an actor's display name inert, leaving only
   expect(slack.match(/</gu)).toHaveLength(1);
   expect(slack).not.toContain("<!channel>");
   expect(slack).toContain("Saved and environment released");
+});
+
+it("renders no visible link or button on any card (Gandy 11-10)", () => {
+  const cards = [
+    ...[...TurnFailureReasonSchema.options, "input_expired", "input_rejected", null].flatMap((code) =>
+      [false, true].map((batchRetryBlocked) =>
+        feedbackCard({ ...target(), errorCode: code, batchRetryBlocked }, undefined, "zh"),
+      ),
+    ),
+    feedbackCard({ ...target(), state: "workspace_blocked", errorCode: "workspace_failed" }, undefined, "en"),
+    waitingCard("zh"),
+    waitingCard("en", "parked"),
+  ];
+  for (const card of cards) {
+    const slack = JSON.stringify(slackCardMessage(card, "f", "zh"));
+    expect(slack).not.toMatch(/<https?:|"actions"|"button"/u);
+    const feishu = feishuCardContent(card, "https://app.example.test/im-feedback/f", "zh");
+    expect(feishu.replaceAll("[​](https://app.example.test/im-feedback/f)", "")).not.toMatch(/\]\(|"button"|"action"/u);
+  }
 });

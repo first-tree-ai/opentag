@@ -268,7 +268,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (signal) =>
           this.#sendCard(
             target,
-            feedbackCard(target, this.publicUrl, action, context.language),
+            feedbackCard(target, action, context.language),
             context,
             signal,
             target.providerRequestId,
@@ -289,8 +289,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) =>
-          this.#sendCard(target, waitingCard(target, this.publicUrl, context.language, reason), context, signal),
+        (signal) => this.#sendCard(target, waitingCard(context.language, reason), context, signal),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
@@ -356,7 +355,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       `${target.provider}.feedback.update`,
       async (signal) => {
         if (target.messageFormat === "text_v1") return this.#updateText(target, messageId, action, language, signal);
-        const card = feedbackCard(target, this.publicUrl, action, language);
+        const card = feedbackCard(target, action, language);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>

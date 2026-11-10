@@ -21,13 +21,12 @@ the same Session after the daemon is back, its input begins with
 With an IM test binding on a Local Computer and permission to stop its daemon:
 
 1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then within about
-   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “恢复后会自动处理，恢复连接”, where
-   恢复连接 is a link. No Computer name or person is named. In a direct message the card is not a quote reply.
+   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “恢复后会自动处理” and no link. No
+   Computer name or person is named. In a direct message the card is not a quote reply.
 2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
    Expected: that Session gets its own single notice.
-3. Open the link signed in as the Agent owner. Expected: the Agent page shows the Computer as offline, and its link
-   opens the recovery page with the restore command. Open it signed out. Expected: sign-in. Open it as an Account with
-   other Agents. Expected: not found. Open it as an Account with no Agents. Expected: first-Agent setup.
+3. Open the Agent page signed in as the Agent owner. Expected: the Computer shows as offline, and its link opens the
+   recovery page with the restore command.
 4. Restart the daemon. Expected: the parked messages run and no "back online" message appears. Stop it again and send
    a request. Expected: one new notice for this new offline period.
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
@@ -41,8 +40,7 @@ that can be arranged, or with a delivery row set to `pending` and `last_error_co
 database:
 
 1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
-   one orange card titled “排队中” with the body “前一条完成后处理，查看 Agent”, where 查看 Agent is a link, placed like
-   the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+   one orange card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
@@ -53,18 +51,17 @@ database:
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
-   “执行环境出错” with the body “请重试”. It shows no error code, no details button, and no sentence about whether
+   “执行环境出错” with the body “请重试”. It shows no error code, no link or button, and no sentence about whether
    operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
    shows above the card.
 2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
 3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
    inside a thread. Expected: the card is in that thread on both.
-4. Make the model authentication fail. Expected: “模型认证失败” with “需要更新模型设置，去设置”, where 去设置 is a link
-   to the feedback page.
-5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with 重试保存 and 放弃改动 buttons and no
-   body. A button opens the details page with that operation selected. Confirm a save as the Agent owner. Expected:
-   the card turns green in place and reads only 已保存. Repeat with Discard, which asks for the
+4. Make the model authentication fail. Expected: “模型认证失败” with “需要更新模型设置” and no link.
+5. Make the workspace save fail. Expected: a red card with only the title “工作区改动没能保存”: no body, link or button.
+   As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
+   turns green in place and reads only 已保存. Repeat with Discard, which asks for the
    permanent-loss confirmation first and ends as 已放弃改动.
 6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
    (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:

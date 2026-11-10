@@ -153,6 +153,8 @@ export type AgentRunErrorCode =
 export interface AgentRunError {
   readonly code: AgentRunErrorCode;
   readonly message: string;
+  /** The model stopped because its reply reached the output-token limit; the conversation can continue it. */
+  readonly outputLimit?: true;
 }
 
 export interface AgentRunResult {

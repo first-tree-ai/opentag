@@ -89,10 +89,12 @@ a row, reset once a retry actually ran for five minutes. It retries at once, wit
 gets the continuation notice and the ledger. A new process cannot take over the old process's work, so the Session starts
 it again if it still needs it. Cloud Turns do not use these automatic retries; their next Run reads the ledger.
 
-A model CLI that fails to start (`provider_start_failed`, `not_started`) gets its one retry the same way, after its short
-wait. Nothing ran, so no model turn started and the ledger is unchanged: the retry reads the same notice, and an entry
-leaves only once the retried Run's model turn starts. The sender hears the outcome once, when the retry settles. A turn the
-Run started by itself after answering its input is a `followUpFailure`, not a start failure, and is never retried.
+A model CLI that fails to start (`provider_start_failed`, `not_started`) and a model service that is unavailable or
+unreachable before it produced anything (`provider_unavailable`, `provider_connection_failed`) are retried the same way,
+after their short wait and counted when they fail. The ledger is unchanged unless a model turn started: the retry reads
+the same notice, and an entry leaves only once a model turn of the retried Run starts. The sender hears the outcome once,
+when the retry settles. A turn the Run started by itself after answering its input is a `followUpFailure`, not one of
+these, and is never retried.
 
 ## What survives a stop
 

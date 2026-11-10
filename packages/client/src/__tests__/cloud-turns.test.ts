@@ -840,7 +840,13 @@ describe("CloudTurnRunner", () => {
                           request: async (command) => {
                             commands.push(command.type);
                             if (command.type === "get_state") {
-                              return { sessionId, sessionFile: join(directory, "session.jsonl"), messageCount: 0 };
+                              // A follow-up Run reopens the same conversation, which then holds the earlier prompt.
+                              const prompts = commands.filter((type) => type === "prompt").length;
+                              return {
+                                sessionId,
+                                sessionFile: join(directory, "session.jsonl"),
+                                messageCount: prompts * 2,
+                              };
                             }
                             if (command.type !== "prompt") throw new Error("unexpected Pi RPC");
                             // The RPC resolves before the terminal sequence, as it does after a prompt acknowledgement.
@@ -888,28 +894,49 @@ describe("CloudTurnRunner", () => {
       expect(frozenCloudV1ReportSchema.parse(frame)).toEqual(frame);
       expect(report.resultHash).toBe(computeTurnResultHash(report));
       expect(await journal.read(h.delivery.deliveryId)).toMatchObject({ phase: "reported", report });
-      expect(
-        diagnostics.filter((record) => record.event === "end" && record.phase !== "worker_startup").slice(-3),
-      ).toMatchObject([
-        { phase: "prompt_acceptance" },
-        {
-          phase: "await_terminal",
-          outcome: "failed",
-          terminalFailureCategory: category,
-          turnId: report.turnId,
-          deliveryId: h.delivery.deliveryId,
-          dispatchRequestId: h.delivery.requestId,
-        },
-        { phase: "cleanup" },
-      ]);
-      expect(diagnostics.at(-1)).toMatchObject({ event: "worker_end", diagnosticIncomplete: false });
+      if (stopReason === "length") {
+        // The cut-off reply and its follow-ups end at the output limit (R7); the three prompts are checked below.
+        const terminals = diagnostics.filter((record) => record.phase === "await_terminal" && record.event === "end");
+        expect(terminals.length).toBeGreaterThan(0);
+        for (const record of terminals)
+          expect(record).toMatchObject({
+            phase: "await_terminal",
+            outcome: "failed",
+            terminalFailureCategory: category,
+            turnId: report.turnId,
+            deliveryId: h.delivery.deliveryId,
+            dispatchRequestId: h.delivery.requestId,
+          });
+      } else {
+        expect(
+          diagnostics.filter((record) => record.event === "end" && record.phase !== "worker_startup").slice(-3),
+        ).toMatchObject([
+          { phase: "prompt_acceptance" },
+          {
+            phase: "await_terminal",
+            outcome: "failed",
+            terminalFailureCategory: category,
+            turnId: report.turnId,
+            deliveryId: h.delivery.deliveryId,
+            dispatchRequestId: h.delivery.requestId,
+          },
+          { phase: "cleanup" },
+        ]);
+      }
+      // Three Runs exceed the per-worker diagnostic record budget, which the worker reports as incomplete.
+      expect(diagnostics.at(-1)).toMatchObject({ event: "worker_end", diagnosticIncomplete: stopReason === "length" });
       expect(JSON.stringify(diagnostics)).not.toMatch(
         /private-prompt-body|private-provider-detail|fixture-secret|unit-execution-token/,
       );
       h.sent.length = 0;
       await h.runner.reconcile();
       expect(reportsOf(h.sent).map((replay) => replay.report)).toEqual([report]);
-      expect(commands).toEqual(["get_state", "prompt"]);
+      // A reply cut off by the output limit gets two follow-ups in the same conversation before it fails (R7).
+      expect(commands).toEqual(
+        stopReason === "length"
+          ? ["get_state", "prompt", "get_state", "prompt", "get_state", "prompt"]
+          : ["get_state", "prompt"],
+      );
       expect(h.workerInputs).toHaveLength(1);
       await h.runner.handleReportAck({
         type: "delivery:report:ack",

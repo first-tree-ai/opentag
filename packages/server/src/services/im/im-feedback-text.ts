@@ -25,7 +25,7 @@ export function feedbackContent(target: FeedbackTarget, action?: FeedbackAction,
     : "";
   const failure = failureCopy(target.errorCode, language, {
     workspaceBlocked: target.state === "workspace_blocked",
-    batchRetryBlocked: target.batchRetryBlocked,
+    batchSize: target.batchSize,
   });
   const title = result ? `${resolved ? "✅" : checking ? "⏳" : "⚠️"} ${result}${attribution}` : failure.cause;
   return {

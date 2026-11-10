@@ -20,7 +20,8 @@ import {
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
 
-export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
+/** `batchSize` counts every input of a frozen initial batch, the root included; absent or 1 for a single message. */
+export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchSize?: number };
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
 export interface FeedbackSettlement {
@@ -339,9 +340,7 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed
-        ? { ...claimed, batchRetryBlocked: await hasFrozenFeedbackBatch(tx, claimed.deliveryId) }
-        : undefined;
+      return claimed ? { ...claimed, batchSize: await feedbackBatchSize(tx, claimed.deliveryId) } : undefined;
     });
   }
 
@@ -408,7 +407,7 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked } : target;
+    return updated ? { ...updated, batchSize: target.batchSize } : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -792,6 +791,20 @@ function observerFeedbackUpdate(now: Date) {
     revision: sql`${imFeedbackTargets.revision}+1`,
     updatedAt: now,
   };
+}
+
+/** How many inputs the root's frozen initial batch holds, the root included: 1 when it is a single message. */
+export async function feedbackBatchSize(
+  database: DatabaseClient | DatabaseTransaction,
+  deliveryId: string,
+): Promise<number> {
+  const [row] = await database
+    .select({ members: sql<number>`count(*)::int` })
+    .from(imMessageDeliveries)
+    .where(
+      and(eq(imMessageDeliveries.steerTargetDeliveryId, deliveryId), eq(imMessageDeliveries.reason, "batch_initial")),
+    );
+  return 1 + (row?.members ?? 0);
 }
 
 export async function hasFrozenFeedbackBatch(

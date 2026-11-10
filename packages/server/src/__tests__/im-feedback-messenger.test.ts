@@ -900,9 +900,7 @@ it("keeps link and mention syntax in an actor's display name inert, leaving only
 it("renders no visible link or button on any card (Gandy 11-10)", () => {
   const cards = [
     ...[...TurnFailureReasonSchema.options, "input_expired", "input_rejected", null].flatMap((code) =>
-      [false, true].map((batchRetryBlocked) =>
-        feedbackCard({ ...target(), errorCode: code, batchRetryBlocked }, undefined, "zh"),
-      ),
+      [1, 3].map((batchSize) => feedbackCard({ ...target(), errorCode: code, batchSize }, undefined, "zh")),
     ),
     feedbackCard({ ...target(), state: "workspace_blocked", errorCode: "workspace_failed" }, undefined, "en"),
     waitingCard("zh"),

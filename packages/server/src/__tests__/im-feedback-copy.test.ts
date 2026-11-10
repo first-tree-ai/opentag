@@ -1,5 +1,6 @@
 import { ImContentV1Schema, TurnFailureReasonSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
+import { failureCardCopy } from "../services/im/im-feedback-card-copy.js";
 import { effectsCopy, failureCopy, feedbackLanguage } from "../services/im/im-feedback-copy.js";
 
 function content(blocks: unknown[], fallbackText = "") {
@@ -43,6 +44,21 @@ describe("IM failure copy", () => {
     ["turn_state_unknown", "无法确认任务是否完成。", "先看看结果，再决定要不要重发。"],
   ])("uses the agreed sentences for %s", (code, cause, next) => {
     expect(failureCopy(code, "zh")).toEqual({ cause, next });
+  });
+
+  it("keeps a frozen batch's own failure card and only appends how many messages it held (R5)", () => {
+    expect(failureCardCopy("provider_unavailable", { batchSize: 3 })).toEqual({
+      title: { zh: "模型服务暂时不可用", en: "Model service temporarily unavailable" },
+      body: { zh: "请稍后重试（共 3 条消息）", en: "Try again later (3 messages)" },
+    });
+    expect(failureCardCopy("provider_unavailable", { batchSize: 1 })).toEqual(failureCardCopy("provider_unavailable"));
+    expect(failureCardCopy("turn_timeout", { batchSize: 2, workspaceBlocked: true }).body.zh).toBe(
+      "请在 OpenTag 重试保存或放弃改动（共 2 条消息）",
+    );
+    const text = failureCopy("provider_quota_exceeded", "zh", { batchSize: 4 });
+    expect(text.cause).toBe(failureCopy("provider_quota_exceeded", "zh").cause);
+    expect(text.next).toBe(`${failureCopy("provider_quota_exceeded", "zh").next}（共 4 条消息）`);
+    expect(failureCopy("provider_failed", "en", { batchSize: 2 }).next).toMatch(/ \(2 messages\)$/u);
   });
 
   it("only claims nothing ran on authoritative not-started evidence", () => {

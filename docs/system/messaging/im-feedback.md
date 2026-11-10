@@ -143,7 +143,7 @@ the invisible readback identity described under [Message format compatibility](#
 | Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | 请在 OpenTag 重试保存或放弃改动 / Retry the save or discard the changes in OpenTag |
 | Message expired | 消息已过期 / Message expired | 如需要请重发 / Send it again if you still need it |
 | Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again |
-| A frozen batch that cannot be retried | The reason's own title | 请在 OpenTag 查看原任务 / Review the original task in OpenTag |
+| A frozen batch (several queued messages run as one task) | The reason's own title | The reason's own body, followed by （共 N 条消息） / (N messages). The batch still cannot be retried from IM, but the card no longer replaces the real cause (Gandy 11-10, R5). |
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the

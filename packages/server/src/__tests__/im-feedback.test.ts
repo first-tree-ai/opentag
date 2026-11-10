@@ -1189,7 +1189,8 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(cardText(posted)).toBe("The Agent ran into an error\nReview the original task in OpenTag");
+    // The root's own failure card stays, with the count of messages the batch held (R5).
+    expect(cardText(posted)).toBe("The Agent ran into an error\nTry again (2 messages)");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1221,9 +1222,10 @@ describe("feedback review regressions", () => {
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
   for (const provider of ["slack", "feishu"] as const) {
-    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
-    expect(rendered).toBe("Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag");
-    expect(rendered).not.toContain("Review the original task");
+    const rendered = cardText({ ...(await h.target()), provider, batchSize: 2 });
+    expect(rendered).toBe(
+      "Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag (2 messages)",
+    );
   }
 });
 

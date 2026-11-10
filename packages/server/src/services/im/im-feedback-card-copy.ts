@@ -85,21 +85,22 @@ const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
 
 export function failureCardCopy(
   code: string | null,
-  options: { batchRetryBlocked?: boolean; workspaceBlocked?: boolean } = {},
+  options: { batchSize?: number; workspaceBlocked?: boolean } = {},
 ): CardCopy {
-  const failure =
-    code && Object.hasOwn(FAILURE_CARDS, code)
+  const failure = options.workspaceBlocked
+    ? FAILURE_CARDS.workspace_failed
+    : code && Object.hasOwn(FAILURE_CARDS, code)
       ? FAILURE_CARDS[code as TurnFailureReason]
       : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT;
-  if (options.workspaceBlocked) return FAILURE_CARDS.workspace_failed;
-  if (options.batchRetryBlocked)
-    return {
-      title: failure.title,
-      body: { zh: "请在 OpenTag 查看原任务", en: "Review the original task in OpenTag" },
-    };
-  return failure;
+  // A frozen batch keeps its root's own card, so the real cause stays visible, and only says how many messages failed.
+  const size = options.batchSize ?? 1;
+  if (size <= 1) return failure;
+  return {
+    title: failure.title,
+    body: { zh: `${failure.body.zh}（共 ${size} 条消息）`, en: `${failure.body.en} (${size} messages)` },
+  };
 }
 
 export const OFFLINE_CARD: CardCopy = {

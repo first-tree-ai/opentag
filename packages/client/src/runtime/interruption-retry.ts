@@ -26,10 +26,46 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
+ * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
+ * - `provider_unavailable`, `provider_connection_failed`: the model service was down or unreachable
+ *   before the model produced anything (R2).
+ * - `provider_context_limit`: the conversation no longer fits the model; retried once after compacting it (R8).
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
+export type InterruptionReason =
+  | "daemon_crash"
+  | "client_shutdown"
+  | "provider_rate_limited"
+  | "provider_start_failed"
+  | "provider_unavailable"
+  | "provider_connection_failed"
+  | "provider_context_limit";
 
-const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
+const REASONS = new Set<InterruptionReason>([
+  "daemon_crash",
+  "client_shutdown",
+  "provider_rate_limited",
+  "provider_start_failed",
+  "provider_unavailable",
+  "provider_connection_failed",
+  "provider_context_limit",
+]);
+
+/** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
+const IN_PLACE = new Set<InterruptionReason>([
+  "provider_rate_limited",
+  "provider_start_failed",
+  "provider_unavailable",
+  "provider_connection_failed",
+  "provider_context_limit",
+]);
+
+/** Retried only when the failed attempt produced no model output (R2). */
+const BEFORE_OUTPUT = new Set<InterruptionReason>(["provider_unavailable", "provider_connection_failed"]);
+
+/** Whether this reason is retried only when the failed attempt produced no model output. */
+export function retriedOnlyBeforeOutput(reason: InterruptionReason): boolean {
+  return BEFORE_OUTPUT.has(reason);
+}
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -41,6 +77,32 @@ export const RUN_TIME_RECORD_INTERVAL_MS = 60_000;
 const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+/** A model CLI that failed to start gets a short pause before its one retry. */
+export const START_FAILURE_RETRY_DELAY_MS = 5_000;
+/** An unavailable or unreachable model service gets a little time to recover before the retry. */
+export const UNAVAILABLE_RETRY_DELAY_MS = 15_000;
+
+/** At most this many retries in a row for a reason; a start failure is retried once. */
+export function retryLimit(reason: InterruptionReason): number {
+  return reason === "provider_start_failed" || reason === "provider_context_limit" ? 1 : MAX_AUTOMATIC_RETRIES;
+}
+
+/** Prompt options for a retry: after a context-limit failure it compacts the conversation first (R8). */
+export function retryPromptOptions(interruption: { reason: string } | undefined): { compactContext?: true } {
+  return interruption?.reason === "provider_context_limit" ? { compactContext: true } : {};
+}
+
+/** The wait before an in-place retry for this reason. */
+export function retryDelayMs(reason: InterruptionReason): number {
+  if (reason === "provider_rate_limited") return RATE_LIMIT_RETRY_DELAY_MS;
+  if (BEFORE_OUTPUT.has(reason)) return UNAVAILABLE_RETRY_DELAY_MS;
+  return reason === "provider_start_failed" ? START_FAILURE_RETRY_DELAY_MS : 0;
+}
+
+/** Whether a retry for this reason was already counted when the attempt failed. */
+export function countedAtFailure(reason: InterruptionReason | undefined): boolean {
+  return reason !== undefined && IN_PLACE.has(reason);
+}
 
 export interface Interruption {
   reason: InterruptionReason;
@@ -59,10 +121,13 @@ export interface RetryCount {
  * The count after a failure or an interruption. `exhausted` means no retry is left. It is recorded as
  * one past the limit, so a later restart cannot revive work whose failure is already being reported.
  */
-export function nextRetry(previous: RetryCount): { count: number; exhausted: boolean } {
+export function nextRetry(
+  previous: RetryCount,
+  limit: number = MAX_AUTOMATIC_RETRIES,
+): { count: number; exhausted: boolean } {
   if (previous.count > MAX_AUTOMATIC_RETRIES) return { count: previous.count, exhausted: true };
   const count = previous.ranMs >= RETRY_RESET_AFTER_MS ? 0 : previous.count;
-  if (count >= MAX_AUTOMATIC_RETRIES) return { count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
+  if (count >= Math.min(limit, MAX_AUTOMATIC_RETRIES)) return { count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
   return { count: count + 1, exhausted: false };
 }
 
@@ -126,6 +191,14 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the OpenTag daemon was restarted or upgraded";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
+    case "provider_start_failed":
+      return "the model CLI failed to start before doing any work";
+    case "provider_unavailable":
+      return "the model service was temporarily unavailable before answering";
+    case "provider_connection_failed":
+      return "the model service could not be reached before answering";
+    case "provider_context_limit":
+      return "the conversation no longer fit the model's context, so it was compacted";
   }
 }
 

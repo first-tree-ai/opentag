@@ -702,7 +702,11 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         stopReason: "length",
         status: "failed",
         event: "run_failed",
-        error: { code: "provider_execution_limit", message: "Pi stopped because the model reached its output limit" },
+        error: {
+          code: "provider_execution_limit",
+          message: "Pi stopped because the model reached its output limit",
+          outputLimit: true,
+        },
       },
       {
         stopReason: "toolUse",
@@ -802,7 +806,11 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     await expect(run).resolves.toMatchObject({
       status: "failed",
       output: [{ type: "text", text: "partial answer" }],
-      error: { code: "provider_execution_limit", message: "Pi stopped because the model reached its output limit" },
+      error: {
+        code: "provider_execution_limit",
+        message: "Pi stopped because the model reached its output limit",
+        outputLimit: true,
+      },
       providerDiagnostics: { stopReason: "length" },
     });
     expect(events.some((event) => event.type === "run_completed")).toBe(false);

@@ -493,6 +493,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
+      ...fallbackModelArguments(configuration?.model),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       "--append-system-prompt",
       this.#systemPrompt,
@@ -1193,6 +1194,26 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 const { validate: validateConfiguration, merge: mergeConfiguration } =
   providerConfiguration(parseProviderConfiguration);
 
+/**
+ * The smaller model of the same family that Claude Code switches to when the configured one is overloaded or
+ * unavailable; the CLI tries the configured model again at the start of every turn (R1). Only an explicit Opus
+ * or Sonnet model gets one: an unset model resolves inside the CLI, and a fallback equal to the main model makes
+ * the CLI refuse to start, so nothing is guessed. A model outside these families (another vendor behind a gateway,
+ * Haiku) gets none.
+ */
+export function claudeFallbackModel(model: string | undefined): string | undefined {
+  const name = model?.trim().toLowerCase();
+  if (!name) return undefined;
+  if (/(^|[^a-z])opus([^a-z]|$)/u.test(name)) return "sonnet";
+  if (/(^|[^a-z])sonnet([^a-z]|$)/u.test(name)) return "haiku";
+  return undefined;
+}
+
+function fallbackModelArguments(model: string | undefined): string[] {
+  const fallback = claudeFallbackModel(model);
+  return fallback ? ["--fallback-model", fallback] : [];
+}
+
 function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodeProviderConfiguration {
   if (value === undefined) return {};
   assertJsonValue(value, "configuration.provider");
@@ -1404,12 +1425,25 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: strin
       code:
         providerFailureCode(terminal.subtype) !== "provider_error"
           ? providerFailureCode(terminal.subtype)
-          : providerFailureCode(assistantError, terminal.apiErrorStatus),
+          : promptTooLong(terminal)
+            ? "provider_context_limit"
+            : providerFailureCode(assistantError, terminal.apiErrorStatus),
       message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
     },
     diagnostics,
   };
 }
+
+/**
+ * Claude Code reports a request over the model's context as an API error whose text starts with its fixed
+ * "Prompt is too long" message (2.1.319); the envelope code is only `invalid_request`. It is a context limit,
+ * which compaction can fix, not a rejected request (R8).
+ */
+function promptTooLong(terminal: ClaudeCodeTerminal): boolean {
+  return [terminal.result, ...terminal.errors].some((text) => text?.startsWith(CLAUDE_PROMPT_TOO_LONG) === true);
+}
+
+const CLAUDE_PROMPT_TOO_LONG = "Prompt is too long";
 
 function parseUsage(
   value: unknown,

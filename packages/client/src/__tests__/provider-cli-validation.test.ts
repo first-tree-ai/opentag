@@ -148,8 +148,8 @@ describe("provider CLI validation classification", () => {
       { status: "retrying", reason: "provider_unreachable" },
     ],
     [
-      "unknown non-zero Feishu code",
-      { code: 99992402, msg: "upstream hiccup" },
+      "transient Feishu internal error code (99991644)",
+      { code: 99991644, msg: "upstream hiccup" },
       { status: "retrying", reason: "provider_unreachable" },
     ],
     [
@@ -179,16 +179,28 @@ describe("provider CLI validation classification", () => {
       { status: "needs_attention", reason: "credential_rejected" },
     ],
     [
-      "permanent Feishu app or token rejection codes (10005, 20002, 99991401, 99991543, 99991662, 99991673)",
+      "IP allowlist rejection (99991401)",
       { code: 99991401, msg: "ip not in whitelist" },
       { status: "needs_attention", reason: "credential_rejected" },
     ],
-    ["app not installed (10005)", { code: 10005 }, { status: "needs_attention", reason: "credential_rejected" }],
-    ["app disabled (20002)", { code: 20002 }, { status: "needs_attention", reason: "credential_rejected" }],
-    ["app forbidden (99991543)", { code: 99991543 }, { status: "needs_attention", reason: "credential_rejected" }],
-    ["token invalid (99991662)", { code: 99991662 }, { status: "needs_attention", reason: "credential_rejected" }],
+    ["app id unauthorized (10005)", { code: 10005 }, { status: "needs_attention", reason: "credential_rejected" }],
     [
-      "tenant token invalid (99991673)",
+      "app_id and app_secret mismatch (20002)",
+      { code: 20002 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "app_id or app_secret does not exist (99991543)",
+      { code: 99991543 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "app not in use / deactivated (99991662)",
+      { code: 99991662 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "unauthorized app / not installed (99991673)",
       { code: 99991673 },
       { status: "needs_attention", reason: "credential_rejected" },
     ],
@@ -308,14 +320,14 @@ describe("Feishu tenant token exchange", () => {
       exchangeFeishuTenantToken(
         grant,
         undefined,
-        (async () => new Response(JSON.stringify({ code: 99992402 }), { status: 200 })) as typeof fetch,
+        (async () => new Response(JSON.stringify({ code: 99991644 }), { status: 200 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "provider_unreachable" });
     await expect(
       exchangeFeishuTenantToken(
         grant,
         undefined,
-        (async () => new Response(JSON.stringify({ code: 99992402 }), { status: 400 })) as typeof fetch,
+        (async () => new Response(JSON.stringify({ code: 99991644 }), { status: 400 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "provider_unreachable" });
     await expect(

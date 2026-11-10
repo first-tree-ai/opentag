@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudBilling } from "../cloud-billing.js";
 import { users } from "../db/schema/index.js";
+import { createInstrumentedFetch, createPerformanceLogger } from "../observability/index.js";
 import { CloudAgentRuntimeTester } from "../services/agents/cloud-agent-runtime-tester.js";
 import { CloudCallStore } from "../services/cloud-call-store.js";
 import { CloudModelService } from "../services/cloud-model-service.js";
@@ -44,7 +45,7 @@ afterEach(async () => {
 afterAll(async () => {
   await unit.close();
 });
-function fixture(billed = false) {
+function fixture(billed = false, instrumented = false) {
   const calls = new CloudCallStore({ query: (statement, parameters) => unit.engine.query(statement, parameters) });
   const billing = {
     beginCall: vi.fn<CloudBilling["beginCall"]>((context, model) => calls.create(context, model, rates)),
@@ -65,7 +66,9 @@ function fixture(billed = false) {
     model: body.model,
     usage,
   }));
-  const completion = vi.fn(() => Response.json({ choices: [], usage: { prompt_tokens: 999999 } }));
+  const completion = vi.fn((_signal?: AbortSignal | null) =>
+    Response.json({ choices: [], usage: { prompt_tokens: 999999 } }),
+  );
   const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
     if (String(input).includes("/requests/usage")) {
       key = new URL(String(input)).searchParams.get("idempotency_key") ?? "";
@@ -73,11 +76,16 @@ function fixture(billed = false) {
       return result instanceof Response ? result : Response.json(result);
     }
     key = new Headers(init?.headers).get("idempotency-key") ?? "";
-    return completion();
+    return completion(init?.signal);
   });
   const service = new CloudModelService(config, {
     calls,
-    fetchImpl,
+    fetchImpl: instrumented
+      ? createInstrumentedFetch(
+          createPerformanceLogger(() => undefined),
+          { provider: "cloud-router", baseFetch: fetchImpl },
+        )
+      : fetchImpl,
     onError: vi.fn(),
     ...(billed ? { billing: billing as unknown as CloudBilling } : {}),
   });
@@ -92,6 +100,118 @@ function fixture(billed = false) {
     status.mockImplementation(() => ({ status: "pending", requestId, idempotencyKey: key, model: body.model }));
   return { calls, billing, fetchImpl, service, status, completion, row, run, pending };
 }
+describe("cloud model response cleanup", () => {
+  it("settles an upstream read failure without reporting a failed cancel", async () => {
+    const f = fixture(true);
+    f.completion.mockReturnValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new Error("upstream disconnected"));
+          },
+        }),
+      ),
+    );
+
+    await expect(f.run()).rejects.toThrow("Cloud model stream failed");
+    expect(f.service.options.onError).not.toHaveBeenCalled();
+    expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+    expect(f.service.active.size).toBe(0);
+  });
+
+  it.each([
+    ["caller", false],
+    ["downstream", false],
+    ["timeout", false],
+    ["caller", true],
+    ["downstream", true],
+    ["timeout", true],
+  ] as const)(
+    "settles %s cancellation when abort errors the upstream body, instrumented=%s",
+    async (kind, instrumented) => {
+      if (kind === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const f = fixture(true, instrumented);
+        const cancelUpstream = vi.fn();
+        f.completion.mockImplementation(
+          (signal) =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+                },
+                cancel: cancelUpstream,
+              }),
+            ),
+        );
+        const caller = new AbortController();
+        const response = await f.service.request(body, caller.signal, config, context);
+        const active = [...f.service.active.values()];
+        if (kind === "downstream") {
+          await response.body?.cancel();
+        } else {
+          const stopped = expect(response.text()).rejects.toThrow("Cloud model request stopped");
+          if (kind === "caller") caller.abort();
+          else await vi.advanceTimersByTimeAsync(config.requestTimeoutMs);
+          await stopped;
+        }
+        await Promise.all(active);
+
+        expect(cancelUpstream).not.toHaveBeenCalled();
+        expect(f.service.options.onError).not.toHaveBeenCalled();
+        expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+        expect(f.service.active.size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([false, true])("actively cancels an oversized response, cancel fails=%s", async (fails) => {
+    const f = fixture(true);
+    const cancelUpstream = vi.fn(async () => {
+      if (fails) throw new Error("upstream cleanup failed");
+    });
+    f.completion.mockReturnValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(config.maxResponseBytes + 1));
+          },
+          cancel: cancelUpstream,
+        }),
+      ),
+    );
+
+    await expect(f.run()).rejects.toThrow("Cloud model stream failed");
+    expect(cancelUpstream).toHaveBeenCalledTimes(1);
+    expect(f.service.options.onError).toHaveBeenCalledTimes(fails ? 1 : 0);
+    if (fails) expect(f.service.options.onError).toHaveBeenCalledWith("cloud_model_cancel_failed");
+    expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+    expect(f.service.active.size).toBe(0);
+  });
+
+  it.each([false, true])(
+    "reports an actual cancellation failure after abort, instrumented=%s",
+    async (instrumented) => {
+      const f = fixture(true, instrumented);
+      const cancelUpstream = vi.fn().mockRejectedValue(new DOMException("upstream cleanup failed", "AbortError"));
+      f.completion.mockReturnValue(new Response(new ReadableStream<Uint8Array>({ cancel: cancelUpstream })));
+      const caller = new AbortController();
+      const response = await f.service.request(body, caller.signal, config, context);
+      const active = [...f.service.active.values()];
+      const stopped = expect(response.text()).rejects.toThrow("Cloud model request stopped");
+      caller.abort();
+      await stopped;
+      await Promise.all(active);
+
+      expect(cancelUpstream).toHaveBeenCalledTimes(1);
+      expect(f.service.options.onError).toHaveBeenCalledExactlyOnceWith("cloud_model_cancel_failed");
+      expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+      expect(f.service.active.size).toBe(0);
+    },
+  );
+});
 describe("router-authoritative cloud usage", () => {
   it.each([false, true])("records final router counts with customer billing enabled=%s", async (billed) => {
     const f = fixture(billed);

@@ -6,7 +6,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentSchedules,
   agents,
@@ -52,7 +52,11 @@ afterAll(async () => db.close());
 beforeEach(async () => {
   await db.reset();
   currentTime = T0;
+  // The claim clock uses a fixed test date. Keep dispatch on the same date with real budget timers.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(T0);
 });
+afterEach(() => vi.useRealTimers());
 
 let currentTime = T0;
 const testClock: ScheduleClock = { now: async () => currentTime };
@@ -742,7 +746,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
   it("maps accepted, rejected, and unreachable honestly (D10)", async () => {
     const seed = await seedStack();
-    const stack = makeStack(seed);
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 1_000 } });
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
       nextTriggerAt: new Date(T0.getTime() + 60_000),
@@ -827,11 +831,11 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     currentTime = new Date(T0.getTime() + 180_000);
     const third = await claimOf(stack, row.id);
     if (third.kind !== "claimed") throw new Error("expected a claim");
+    const framesBefore = stack.deliveryFrames.length;
     await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
       outcome: "unreachable",
       code: "runtime_unavailable",
     });
-    const framesBefore = stack.deliveryFrames.length;
     expect(stack.deliveryFrames).toHaveLength(framesBefore);
   });
 

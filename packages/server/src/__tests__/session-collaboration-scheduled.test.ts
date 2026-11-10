@@ -187,7 +187,7 @@ function makeFixture(
     ),
   };
   const registry = {
-    currentInstanceId: vi.fn(() => randomUUID()),
+    currentInstanceId: vi.fn((): string | undefined => randomUUID()),
     capabilityVersion: vi.fn((_computerId: string, _instanceId: string, capability: string) => {
       if (capability === "runtime.sessionCollaboration") return 3;
       if (capability === "runtime.imCredentialGrant") return 2;
@@ -313,6 +313,68 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
+  it("retries preparation on the reconnected Local runtime with the original message ID", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route);
+    fixture.registry.currentInstanceId.mockReturnValueOnce("old-instance").mockReturnValue("new-instance");
+    fixture.domain.requestReconcile.mockRejectedValueOnce(
+      new RuntimeDomainRequestError("timeout", "The reconcile reply did not arrive"),
+    );
+
+    const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+    expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(dispatch).resolves.toEqual({ outcome: "accepted", code: null });
+    expect(fixture.domain.requestReconcile.mock.calls.map((call) => call[1])).toEqual(["old-instance", "new-instance"]);
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+    expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.slice(1, 3)).toEqual([
+      "new-instance",
+      expect.objectContaining({ messageId: snapshot.messageId }),
+    ]);
+    expect(fixture.sessions.beginScheduledMessageAttempt).toHaveBeenCalledExactlyOnceWith(snapshot.messageId);
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledOnce();
+  });
+
+  it("finishes an offline Local occurrence at the next trigger with one final outcome", async () => {
+    const { snapshot, route } = snapshotFixture();
+    snapshot.nextTriggerAt = new Date(Date.now() + 8_000);
+    const fixture = makeFixture(route);
+    fixture.registry.currentInstanceId.mockReturnValue(undefined);
+
+    const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(fixture.registry.currentInstanceId).toHaveBeenCalledTimes(2);
+    expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+    fixture.registry.currentInstanceId.mockReturnValue("new-instance");
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(dispatch).resolves.toEqual({ outcome: "unreachable", code: "runtime_unavailable" });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a Local business send that reaches admission at the next trigger", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const nextTriggerAt = new Date(Date.now() + 8_000);
+    snapshot.nextTriggerAt = nextTriggerAt;
+    const fixture = makeFixture(route);
+    const send = vi.fn<() => Promise<SessionMessageDeliveryResult>>();
+    fixture.domain.requestSessionMessageDelivery.mockImplementation((_c, _i, _request, onDispatched, admission) => {
+      // Move the wall clock without running timers, as if a lock wait delayed the send callback.
+      vi.setSystemTime(nextTriggerAt);
+      return dispatchWithAdmission(send, admission, onDispatched);
+    });
+
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+      outcome: "unreachable",
+      code: "delivery_timeout",
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("rejects with the admission's schedule gate codes and never sends", async () => {
     const { snapshot, route } = snapshotFixture();
     const fixture = makeFixture(route);
@@ -349,6 +411,7 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(dispatch).resolves.toEqual({ outcome: "unknown", code: "delivery_timeout" });
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );

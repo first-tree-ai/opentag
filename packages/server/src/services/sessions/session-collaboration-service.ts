@@ -171,6 +171,8 @@ const STOP_REDELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const STOP_REDELIVERY_LIMIT = 64;
 // Local reconcile + delivery. Cloud preparation + receipt, including time queued before the send.
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
+const SCHEDULED_LOCAL_RETRY_DELAY_MS = 5_000;
+const SCHEDULED_ASSEMBLY_FAILURE_CODES = { local: "runtime_assembly_failed", cloud: "runtime_not_ready" } as const;
 const SCHEDULED_CLOUD_BUDGET_MS = 280_000;
 const SCHEDULED_CLOUD_SHORT_BUDGET_MS = 20_000;
 // Keep a quarter of the scheduler's 100 slots available for short hand-offs.
@@ -233,6 +235,34 @@ type ScheduledStageResult<T> =
   | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure }
   | { kind: "aborted"; sent: boolean }
   | { kind: "failed"; error: unknown; sent: boolean };
+
+type ScheduledLocalPreparation =
+  | { kind: "ready"; instanceId: string }
+  | { kind: "retry" | "unreachable"; code: string }
+  | { kind: "rejected"; reason: ScheduledDispatchAdmissionFailure };
+
+async function waitForScheduledLocalRetry(signal: AbortSignal): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const wait = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, SCHEDULED_LOCAL_RETRY_DELAY_MS);
+    timer.unref?.();
+  });
+  try {
+    return (await raceWithAbort(wait, signal)).kind === "ok";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function scheduledReconcileFailure(error: unknown): ScheduledLocalPreparation {
+  if (error instanceof RuntimeDomainRequestError && error.code === "timeout") {
+    return { kind: "retry", code: "runtime_reconcile_timeout" };
+  }
+  const transient =
+    (error instanceof RuntimeRegistrySendError && error.code !== "frame_too_large") ||
+    (error instanceof RuntimeDomainRequestError && (error.code === "send_unavailable" || error.code === "capacity"));
+  return { kind: transient ? "retry" : "unreachable", code: "runtime_reconcile_failed" };
+}
 
 export interface SessionCollaborationServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
@@ -303,8 +333,8 @@ export class SessionCollaborationService {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * Dispatch one claimed scheduled occurrence exactly once. The claim already committed the
-   * message row at attempt 0; this entry fences it to 1 (never replayed, never retried), reuses
+   * Dispatch one claimed scheduled occurrence. The claim already committed the message row at
+   * attempt 0; this entry fences it to 1 and may retry Local preparation before the business send. It reuses
    * the existing Local/Cloud transport with the schedule-gated final admission, and records the
    * honest outcome — `accepted` only when the receiver took custody, `rejected` for authority and
    * schedule-gate refusals, `unreachable` when provably nothing was sent, `unknown` when the send
@@ -370,11 +400,13 @@ export class SessionCollaborationService {
       timer = startBudgetTimer(controller, remaining);
       const assembly = await this.#assembleScheduledRuntime(snapshot, signal);
       if (assembly.kind === "aborted") return record("unreachable", "delivery_timeout");
-      if (assembly.kind === "failed") return record("unreachable", "runtime_not_ready");
+      if (assembly.kind === "failed") {
+        return record("unreachable", SCHEDULED_ASSEMBLY_FAILURE_CODES[route.targetComputerKind]);
+      }
       if (route.targetComputerKind === "cloud") {
         return await this.#deliverScheduledCloud(snapshot, route, assembly.runtime, signal, record);
       }
-      return await this.#deliverScheduledLocal(snapshot, route, assembly.runtime, signal, record);
+      return await this.#deliverScheduledLocal(snapshot, route, assembly.runtime, deadline, signal, record);
     } finally {
       clearTimeout(timer);
       parentSignal?.removeEventListener("abort", onParentAbort);
@@ -396,22 +428,21 @@ export class SessionCollaborationService {
     startedAt: number,
     cloudBudget: number,
   ): number {
-    if (target === "local") return startedAt + this.#scheduledLocalBudgetMs;
-    const deadline = startedAt + cloudBudget;
+    const deadline = startedAt + (target === "local" ? this.#scheduledLocalBudgetMs : cloudBudget);
     return Math.min(deadline, snapshot.nextTriggerAt?.getTime() ?? deadline);
   }
 
-  /** Local target scheduled dispatch over the existing reconcile + delivery boundaries. */
-  async #deliverScheduledLocal(
+  /** Recheck the current instance each time. Reconcile frames prepare the Session without carrying the message. */
+  async #prepareScheduledLocal(
     snapshot: ScheduledMessageSnapshot,
     route: AuthorizedScheduledMessageRoute,
     runtime: EffectiveRuntimeSnapshot,
+    deadline: number,
     signal: AbortSignal,
-    record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
-  ): Promise<ScheduledMessageDispatchOutcome> {
+  ): Promise<ScheduledLocalPreparation> {
     const gate = this.#scheduledLocalGate(route);
-    if ("code" in gate) return record("unreachable", gate.code);
-    const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision };
+    if ("code" in gate) return { kind: gate.code === "runtime_unavailable" ? "retry" : "unreachable", code: gate.code };
+    const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision, deadline };
     const reconcile = await this.#admitScheduled<SessionReconcileResult>(route, fence, signal, (admission) =>
       this.#domain.requestReconcile(
         route.targetComputerId,
@@ -434,16 +465,36 @@ export class SessionCollaborationService {
         signal,
       ),
     );
-    // The reconcile frame is preparation, never the business message: any pre-delivery failure
-    // means the scheduled message provably never left, so the honest outcome is unreachable.
-    if (reconcile.kind === "aborted") return record("unreachable", "delivery_timeout");
-    if (reconcile.kind === "rejected") {
-      return this.#recordScheduledAdmissionFailure(reconcile.reason, record, false);
+    if (reconcile.kind === "aborted") return { kind: "unreachable", code: "delivery_timeout" };
+    if (reconcile.kind === "rejected") return reconcile;
+    if (reconcile.kind === "failed") return scheduledReconcileFailure(reconcile.error);
+    const { status } = reconcile.result;
+    if (status === "ready" || status === "running" || status === "reporting") {
+      return { kind: "ready", instanceId: gate.instanceId };
     }
-    if (reconcile.kind === "failed") return record("unreachable", "runtime_not_ready");
-    if (!new Set(["ready", "running", "reporting"]).has(reconcile.result.status)) {
-      return record("unreachable", "runtime_not_ready");
+    return { kind: status === "busy" ? "retry" : "unreachable", code: "runtime_reconcile_not_ready" };
+  }
+
+  /** Local target scheduled dispatch over the existing reconcile + delivery boundaries. */
+  async #deliverScheduledLocal(
+    snapshot: ScheduledMessageSnapshot,
+    route: AuthorizedScheduledMessageRoute,
+    runtime: EffectiveRuntimeSnapshot,
+    deadline: number,
+    signal: AbortSignal,
+    record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
+  ): Promise<ScheduledMessageDispatchOutcome> {
+    let preparation = await this.#prepareScheduledLocal(snapshot, route, runtime, deadline, signal);
+    while (preparation.kind === "retry" && (await waitForScheduledLocalRetry(signal))) {
+      if (signal.aborted || Date.now() >= deadline) break;
+      preparation = await this.#prepareScheduledLocal(snapshot, route, runtime, deadline, signal);
     }
+    if (preparation.kind === "rejected")
+      return this.#recordScheduledAdmissionFailure(preparation.reason, record, false);
+    if (preparation.kind !== "ready") return record("unreachable", preparation.code);
+
+    const { instanceId } = preparation;
+    const fence = { scheduleId: snapshot.scheduleId, revision: snapshot.revision, deadline };
     const delivery = await this.#admitScheduled<SessionMessageDeliveryResult>(route, fence, signal, (admission) => {
       const request: SessionMessageDeliveryRequestV3 = {
         type: "session:message:deliver",
@@ -462,7 +513,7 @@ export class SessionCollaborationService {
       };
       return this.#domain.requestSessionMessageDelivery(
         route.targetComputerId,
-        gate.instanceId,
+        instanceId,
         request,
         undefined,
         admission,
@@ -477,9 +528,7 @@ export class SessionCollaborationService {
    * session-collaboration v3 capability, and the v2 credential grant for visible targets. Every
    * refusal here happens before a single frame exists.
    */
-  #scheduledLocalGate(
-    route: AuthorizedScheduledMessageRoute,
-  ): { code: string; instanceId?: never } | { code?: never; instanceId: string } {
+  #scheduledLocalGate(route: AuthorizedScheduledMessageRoute): { code: string } | { instanceId: string } {
     const targetInstanceId = this.#registry.currentInstanceId(route.targetComputerId);
     const collaborationVersion = targetInstanceId
       ? this.#registry.capabilityVersion(
@@ -625,16 +674,16 @@ export class SessionCollaborationService {
    */
   async #admitScheduled<T>(
     route: AuthorizedScheduledMessageRoute,
-    fence: { scheduleId: string; revision: number },
+    fence: { scheduleId: string; revision: number; deadline: number },
     signal: AbortSignal,
     operation: (admission: RuntimeDispatchAdmission<T>) => Promise<T>,
   ): Promise<ScheduledStageResult<T>> {
-    if (signal.aborted) return { kind: "aborted", sent: false };
+    if (signal.aborted || Date.now() >= fence.deadline) return { kind: "aborted", sent: false };
     let sent = false;
     let rejected: ScheduledDispatchAdmissionFailure | undefined;
     const admission: RuntimeDispatchAdmission<T> = async (send) => {
       const admitted = await this.#sessions.withScheduledDispatchAdmission(route, fence, (markDispatched) => {
-        if (signal.aborted) throw new ScheduledDispatchAbortError();
+        if (signal.aborted || Date.now() >= fence.deadline) throw new ScheduledDispatchAbortError();
         return send(() => {
           sent = true;
           markDispatched();
@@ -689,7 +738,7 @@ export class SessionCollaborationService {
     }
   }
 
-  /** Assemble the target Session's runtime under the budget; a failure is runtime_not_ready. */
+  /** Assemble the target Session's runtime under the dispatch budget. */
   async #assembleScheduledRuntime(
     snapshot: ScheduledMessageSnapshot,
     signal: AbortSignal,

@@ -10,7 +10,7 @@ import {
   ImFeedbackMessenger,
   SENDER_READBACK,
 } from "../services/im/im-feedback-messenger.js";
-import type { FeedbackAction, FeedbackTarget } from "../services/im/im-feedback-store.js";
+import type { FeedbackAction, FeedbackMessageContext, FeedbackTarget } from "../services/im/im-feedback-store.js";
 import { renderFeedbackText } from "../services/im/im-feedback-text.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 import { deferred } from "./support/deferred.js";
@@ -19,13 +19,14 @@ const mocks = vi.hoisted(() => ({
   slack: {
     reactions: { add: vi.fn(), remove: vi.fn() },
     chat: { postMessage: vi.fn(), update: vi.fn() },
-    conversations: { replies: vi.fn(), history: vi.fn(), open: vi.fn() },
+    conversations: { replies: vi.fn(), history: vi.fn(), open: vi.fn(), info: vi.fn() },
   },
   feishu: {
     im: {
       v1: {
         messageReaction: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
         message: { create: vi.fn(), reply: vi.fn(), patch: vi.fn(), update: vi.fn(), list: vi.fn() },
+        chat: { get: vi.fn() },
       },
     },
   },
@@ -121,7 +122,7 @@ function harness(policy = new ExternalCallPolicy({ allowedHosts: [] })) {
   const cooldown = {
     slackCooldownRemaining: vi.fn(async () => 0 as number | undefined),
     deferSlackInstallation: vi.fn(async () => true),
-    messageContext: vi.fn(async () => ({ language: "en" as "en" | "zh", direct: false })),
+    messageContext: vi.fn(async (): Promise<FeedbackMessageContext> => ({ language: "en", direct: false })),
   };
   return {
     messenger: new ImFeedbackMessenger(bindings, policy, "https://app.example.test", cooldown),
@@ -141,6 +142,8 @@ beforeEach(() => {
     mocks.slack.conversations.replies,
     mocks.slack.conversations.history,
     mocks.slack.conversations.open,
+    mocks.slack.conversations.info,
+    mocks.feishu.im.v1.chat.get,
     mocks.feishu.im.v1.messageReaction.list,
     mocks.feishu.im.v1.messageReaction.create,
     mocks.feishu.im.v1.messageReaction.delete,
@@ -1148,5 +1151,81 @@ describe("readback of a card meant for the sender", () => {
     const result = await messenger.find(quota("slack"), SENDER_READBACK);
     expect(mocks.slack.conversations.replies).toHaveBeenCalledOnce();
     expect(result.cursor?.startsWith(CONVERSATION_READBACK)).toBe(true);
+  });
+});
+
+describe("the origin line on a card sent to the sender", () => {
+  const quota = (provider: "slack" | "feishu"): FeedbackTarget => ({
+    ...target(provider),
+    messageFormat: "interactive_v1",
+    errorCode: "provider_quota_exceeded",
+    senderExternalId: provider === "feishu" ? "ou_sender" : "U_SENDER",
+  });
+  it("names the Feishu group and the start of the message in plain text above the body", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "帮我*整理*一下周报…" });
+    mocks.feishu.im.v1.chat.get.mockResolvedValue({ code: 0, data: { name: "产品 [群]" } });
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "dm", chat_id: "oc_dm" } });
+    await messenger.post(quota("feishu"));
+    const card = JSON.parse(mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].data.content);
+    expect(card.elements[0]).toEqual({
+      tag: "div",
+      text: { tag: "plain_text", content: "你在「产品 [群]」发的：帮我*整理*一下周报…" },
+    });
+    expect(card.elements[1]).toMatchObject({ tag: "div", text: { tag: "lark_md" } });
+  });
+  it("names the Slack channel, and still sends the card when the name can't be read", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "en", direct: false, excerpt: "<!here> ship it" });
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: "D1", ts: "1.1" });
+    mocks.slack.conversations.info.mockResolvedValueOnce({ ok: true, channel: { name: "launch" } });
+    await messenger.post(quota("slack"));
+    mocks.slack.conversations.info.mockRejectedValueOnce({ data: { error: "missing_scope" } });
+    await messenger.post(quota("slack"));
+    const [named, unnamed] = mocks.slack.chat.postMessage.mock.calls.map((c) => c[0].attachments[0].blocks[1]);
+    expect(named).toEqual({
+      type: "section",
+      text: { type: "plain_text", text: 'Your message in "launch": <!here> ship it', emoji: false },
+    });
+    expect(unnamed.text.text).toBe("Your message in the group: <!here> ship it");
+  });
+  it("sends without the group name when its lookup hangs, within the send deadline", async () => {
+    vi.useFakeTimers();
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "你好" });
+    mocks.feishu.im.v1.chat.get.mockImplementation(() => new Promise(() => undefined));
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "dm", chat_id: "oc_dm" } });
+    mocks.slack.conversations.info.mockImplementation(() => new Promise(() => undefined));
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: "D1", ts: "1.1" });
+    const feishu = messenger.post(quota("feishu"));
+    const slack = messenger.post(quota("slack"));
+    await vi.advanceTimersByTimeAsync(2_001);
+    expect(await feishu).toBe("dm");
+    expect(await slack).toBe("D1/1.1");
+    const card = JSON.parse(mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].data.content);
+    expect(card.elements[0].text.content).toBe("你在群里发的：你好");
+    expect(mocks.slack.chat.postMessage.mock.calls[0]?.[0].attachments[0].blocks[1].text.text).toBe(
+      "你在群里发的：你好",
+    );
+  });
+  it("reports a deadline before any provider write as nothing sent", async () => {
+    vi.useFakeTimers();
+    const { messenger } = harness();
+    mocks.slack.conversations.open.mockImplementation(() => new Promise(() => undefined));
+    const result = messenger.postOfflineNotice(quota("slack")).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(8_001);
+    expect(await result).toMatchObject({ code: "IM_FEEDBACK_SEND_NOT_STARTED", knownNotApplied: true });
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
+  it("adds no origin line to a card that stays in the conversation", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "hi" });
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "r", chat_id: "channel" } });
+    await messenger.post({ ...quota("feishu"), errorCode: "provider_rate_limited" });
+    const card = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content);
+    expect(card.elements).toHaveLength(1);
+    expect(mocks.feishu.im.v1.chat.get).not.toHaveBeenCalled();
   });
 });

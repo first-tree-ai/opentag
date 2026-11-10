@@ -91,6 +91,7 @@ const diagnosticSchema = z
     phase: phaseSchema,
     event: z.enum(["ready", "start", "end", "failure", "worker_end", "milestone"]),
     milestone: z.literal("first_turn_start").optional(),
+    promptAckToFirstTurnMs: durationSchema.optional(),
     diagnosticIncomplete: z.boolean().optional(),
     outcome: z.enum(["completed", "failed", "aborted", "cancelled"]).optional(),
     terminalFailureCategory: z
@@ -125,6 +126,7 @@ const diagnosticSchema = z
   .strict()
   .refine((record) => record.event !== "failure" || record.error !== undefined)
   .refine((record) => (record.event === "milestone") === (record.milestone !== undefined))
+  .refine((record) => record.promptAckToFirstTurnMs === undefined || record.milestone === "first_turn_start")
   .refine(
     (record) =>
       record.terminalFailureCategory === undefined ||
@@ -237,6 +239,7 @@ export class PiRunDiagnostics {
   readonly #now: () => number;
   #phase: PiDiagnosticPhase = "pi_spawn";
   #firstTurnStarted = false;
+  #promptAckAt: number | undefined;
   #started = 0;
   #timeoutMs: number | undefined;
   #compactions = 0;
@@ -258,6 +261,10 @@ export class PiRunDiagnostics {
     this.#emit("start");
   }
 
+  promptAcknowledged(): void {
+    this.#promptAckAt = this.#now();
+  }
+
   firstTurnStarted(): void {
     if (this.#firstTurnStarted) return;
     this.#firstTurnStarted = true;
@@ -266,6 +273,7 @@ export class PiRunDiagnostics {
       event: "milestone",
       milestone: "first_turn_start",
       durationMs: 0,
+      ...(this.#promptAckAt === undefined ? {} : { promptAckToFirstTurnMs: this.#now() - this.#promptAckAt }),
     });
   }
 

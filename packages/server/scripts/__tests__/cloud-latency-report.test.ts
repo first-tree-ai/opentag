@@ -78,11 +78,38 @@ describe("read-only Staging latency aggregation", () => {
       seq: 8,
       receivedElapsedMs: 72,
       elapsedMs: 50,
+      promptAckToFirstTurnMs: 7,
     };
     const result = aggregateLatency(lines([record, { ...record, seq: 9 }]), options);
     expect(result.metrics["pi/2026-11-03/native_exec_to_first_turn_observed"]).toMatchObject({ n: 1, p50: 72 });
+    expect(result.metrics["pi/2026-11-03/prompt_ack_to_first_turn"]).toMatchObject({ n: 1, p50: 7 });
     expect(result.evidence.duplicatePi).toBe(1);
     expect(result.endToEnd.available).toBe(false);
+  });
+
+  it("reports each available get_state startup timing without counting missing values as zero", () => {
+    const record = {
+      module: "cloud-pi",
+      operation: "pi.diagnostic",
+      sessionId,
+      sandboxId,
+      environmentGeneration: 1,
+      phase: "get_state",
+      event: "end",
+      timestamp: utc,
+      durationMs: 120,
+    };
+    const result = aggregateLatency(
+      lines([
+        { ...record, turnId: randomUUID(), piProcessSpawnMs: 0, mcpGatewayLoadMs: 12, mcpGatewaySessionStartMs: 30 },
+        { ...record, turnId: randomUUID() },
+      ]),
+      { ...options, expectedTurns: 2 },
+    );
+    expect(result.metrics["pi/2026-11-03/get_state"]).toMatchObject({ n: 2, p50: 120 });
+    expect(result.metrics["pi/2026-11-03/pi_process_spawn"]).toMatchObject({ n: 1, p50: 0 });
+    expect(result.metrics["pi/2026-11-03/mcp_gateway_load"]).toMatchObject({ n: 1, p50: 12 });
+    expect(result.metrics["pi/2026-11-03/mcp_gateway_session_start"]).toMatchObject({ n: 1, p50: 30 });
   });
 
   it("supports P99 only for at least 1,000 valid measurements", () => {

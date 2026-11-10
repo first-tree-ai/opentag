@@ -422,13 +422,11 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#promptPhase = "awaiting-ack";
       await client.request({ type: "prompt", message }, AbortSignal.any([signal, expired.signal]), {
         timeoutMs: null,
-        ...(this.#nativeResources
-          ? {
-              onResponse: () => {
-                this.#promptPhase = "owned";
-              },
-            }
-          : {}),
+        onResponse: () => {
+          // The next Turn event can arrive in the same stdout chunk as the acknowledgement.
+          this.#promptPhase = "owned";
+          this.#diagnostics.promptAcknowledged();
+        },
       });
       this.#promptPhase = "owned";
       return true;

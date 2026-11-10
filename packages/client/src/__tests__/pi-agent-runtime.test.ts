@@ -204,7 +204,8 @@ describe("PiAgentRuntime", () => {
   it("creates a persistent session and translates a complete Pi RPC run", async () => {
     const client = new ScriptedPiClient("complete");
     const events: AgentRuntimeEvent[] = [];
-    const runtime = await piFactory(client).create(
+    const diagnostics: PiDiagnosticEvent[] = [];
+    const runtime = await piFactory(client, (event) => diagnostics.push(event)).create(
       createRequest(
         (event) => {
           events.push(event);
@@ -219,6 +220,13 @@ describe("PiAgentRuntime", () => {
 
     const result = await runtime.prompt({ runId: "run-1", input: input("hello") });
 
+    expect(diagnostics.filter((event) => event.event === "milestone")).toEqual([
+      expect.objectContaining({
+        milestone: "first_turn_start",
+        phase: "prompt_acceptance",
+        promptAckToFirstTurnMs: expect.any(Number),
+      }),
+    ]);
     expect(runtime).toBeInstanceOf(PiAgentRuntime);
     expect(runtime.binding).toEqual(materializedBinding());
     expect(result).toMatchObject({
@@ -920,7 +928,7 @@ describe("PiAgentRuntime", () => {
     const run = runtime.prompt({ runId: "run-preflight-compaction", input: input("next message") });
     await vi.waitFor(() => expect(client.promptPending).toBe(true));
     // Pi owns the acceptance deadline only outside compaction: the RPC timer is disabled.
-    expect(client.promptOptions).toEqual([{ timeoutMs: null }]);
+    expect(client.promptOptions).toEqual([{ timeoutMs: null, onResponse: expect.any(Function) }]);
 
     // Pi 0.84.2 compacts in prompt preflight, before it acknowledges the prompt.
     client.emit({ type: "compaction_start", reason: "threshold" });
@@ -1469,7 +1477,6 @@ class ScriptedPiClient implements PiRpcClient {
       return undefined;
     }
     if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
-    options?.onResponse?.();
     if (this.promptError) {
       if (this.persistSession) {
         writeFileSync(
@@ -1480,6 +1487,7 @@ class ScriptedPiClient implements PiRpcClient {
       }
       throw this.promptError;
     }
+    options?.onResponse?.();
     if (this.#scenario === "complete") this.#emitRun("stop", true);
     if (this.#scenario === "error") this.#emitRun("error");
     if (this.#scenario === "failure") this.#emit({ type: "opentag/process_error", error: new Error("process exited") });
@@ -1683,6 +1691,7 @@ class PreflightPiClient implements PiRpcClient {
       this.#pendingPrompt = {
         resolve: () => {
           settle();
+          options?.onResponse?.();
           resolve(undefined);
         },
         reject: (error) => {
@@ -1713,8 +1722,9 @@ class PreflightPiClient implements PiRpcClient {
   }
 }
 
-function piFactory(client: ScriptedPiClient): PiAgentRuntimeFactory {
+function piFactory(client: ScriptedPiClient, onDiagnostic?: (event: PiDiagnosticEvent) => void): PiAgentRuntimeFactory {
   return new PiAgentRuntimeFactory({
+    onDiagnostic,
     createSessionId: () => SESSION_ID,
     createClient: (_cwd, args) => {
       client.args = args;

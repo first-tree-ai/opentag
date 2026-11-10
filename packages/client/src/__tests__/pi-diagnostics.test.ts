@@ -125,7 +125,9 @@ describe("Cloud Pi diagnostics", () => {
     );
     const observer = new PiRunDiagnostics(writer.emit, () => time);
     observer.start("prompt_acceptance");
-    time += 20;
+    time += 12;
+    observer.promptAcknowledged();
+    time += 8;
     observer.firstTurnStarted();
     time += 30;
     observer.firstTurnStarted();
@@ -136,6 +138,7 @@ describe("Cloud Pi diagnostics", () => {
       {
         milestone: "first_turn_start",
         phase: "prompt_acceptance",
+        promptAckToFirstTurnMs: 8,
         elapsedMs: 20,
         receivedElapsedMs: 20,
         monotonicMs: 30,

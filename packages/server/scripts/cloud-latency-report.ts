@@ -26,11 +26,15 @@ const piEnd = z.object({
   event: z.literal("end"),
   seq: z.number().int().positive().optional(),
   durationMs: z.number().finite().nonnegative(),
+  piProcessSpawnMs: z.number().finite().nonnegative().optional(),
+  mcpGatewayLoadMs: z.number().finite().nonnegative().optional(),
+  mcpGatewaySessionStartMs: z.number().finite().nonnegative().optional(),
 });
 const piFirstTurn = piEnd.omit({ durationMs: true }).extend({
   event: z.literal("milestone"),
   milestone: z.literal("first_turn_start"),
   receivedElapsedMs: z.number().finite().nonnegative(),
+  promptAckToFirstTurnMs: z.number().finite().nonnegative().optional(),
 });
 const optionsSchema = z.object({
   from: z.string().datetime(),
@@ -166,12 +170,26 @@ function consumePi(state: State, payload: Payload, timestamp: number): void {
   }
   state.piSeen.add(key);
   noteTurn(state, record.turnId, scope);
-  const metric = record.event === "milestone" ? "native_exec_to_first_turn_observed" : record.phase;
-  state.piRecords.push({
-    turnId: record.turnId,
-    metric: `pi/${new Date(timestamp).toISOString().slice(0, 10)}/${metric}`,
-    value: record.event === "milestone" ? record.receivedElapsedMs : record.durationMs,
-  });
+  const day = new Date(timestamp).toISOString().slice(0, 10);
+  const metrics =
+    record.event === "milestone"
+      ? {
+          native_exec_to_first_turn_observed: record.receivedElapsedMs,
+          prompt_ack_to_first_turn: record.promptAckToFirstTurnMs,
+        }
+      : {
+          [record.phase]: record.durationMs,
+          ...(record.phase === "get_state"
+            ? {
+                pi_process_spawn: record.piProcessSpawnMs,
+                mcp_gateway_load: record.mcpGatewayLoadMs,
+                mcp_gateway_session_start: record.mcpGatewaySessionStartMs,
+              }
+            : {}),
+        };
+  for (const [metric, value] of Object.entries(metrics)) {
+    if (value !== undefined) state.piRecords.push({ turnId: record.turnId, metric: `pi/${day}/${metric}`, value });
+  }
 }
 
 function consumeLatency(state: State, payload: Payload): void {

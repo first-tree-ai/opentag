@@ -142,8 +142,11 @@ Failures have `severity=ERROR`; normal transitions have `severity=INFO`.
 The first Pi `turn_start` accepted for the owned prompt emits one `event=milestone`,
 `milestone=first_turn_start` record per OpenTag Turn. It has child `elapsedMs` and Runner
 `receivedElapsedMs`, `clockId`, and `monotonicMs`, with parent-owned allocation, Turn, and
-`dispatchRequestId` correlation. The milestone can precede the `prompt_acceptance` end
-because the native prompt also waits for a post-ack state fence. It leaves phase tracking intact.
+`dispatchRequestId` correlation. The worker measures `promptAckToFirstTurnMs` from receipt of
+the successful prompt RPC response to receipt of the first `turn_start` event on the same
+monotonic clock, including when both arrive in one stdout chunk. The milestone can precede
+the `prompt_acceptance` end because the native prompt also waits for a post-ack state fence.
+It leaves phase tracking intact.
 The `get_state` end can include the OS child-spawn observation and the OpenTag MCP gateway
 extension's own module-load and Session-start durations, when those stderr markers have arrived.
 These are independently observed, potentially overlapping timings. Other Pi extensions and native
@@ -261,8 +264,10 @@ IDs, a process clock identity, UTC and monotonic durations; they exclude content
 Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
 
 The [manual stdin-only aggregator](https://github.com/first-tree-ai/opentag/blob/main/packages/server/scripts/cloud-latency-report.ts) reuses existing
-Pi phase durations and the Runner-observed native-exec-to-first-Turn interval, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
-aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
+Pi phase durations, available first-state startup timings, the prompt-ack-to-first-Turn interval,
+and the Runner-observed native-exec-to-first-Turn interval. It rejects incomplete or conflicting
+evidence for complete-trace metrics and emits aggregate counts and quantiles without resource
+IDs or raw files. It does not infer timeout or genuine
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
 separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
 

@@ -49,6 +49,7 @@ import {
   MAX_RECORDED_STEERS,
   nextRetry,
   recoverableFailure,
+  retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
   type TurnRetryRecord,
@@ -205,6 +206,8 @@ interface RunningTurn {
   finalized: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
+  /** The current attempt saw model text or a tool call; an unavailable model is then not retried. */
+  producedOutput?: boolean;
   /** Messages an earlier attempt held, replayed in the current attempt's input unless its conversation has them. */
   steers: readonly SteeredInput[];
   /** Which provider conversation durably holds each IM steer, by delivery. */
@@ -496,6 +499,8 @@ export class AgentTurnRunner {
     const owner = turn.owner;
     return this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
       trace.record(event);
+      if (event.type === "message_started" || event.type === "message_delta" || event.type === "tool_started")
+        turn.producedOutput = true;
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
       if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -643,6 +648,7 @@ export class AgentTurnRunner {
     // Outgoing-reply receipts of every attempt share the Turn's run id; collect them once at the end.
     let planInput: ProviderCliTurnPlanPrepareInput | undefined;
     for (;;) {
+      turn.producedOutput = false;
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
@@ -817,6 +823,8 @@ export class AgentTurnRunner {
     // A start failure is retried only when it provably ran nothing.
     /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
     if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
+    // An unavailable or unreachable model is retried only before it produced anything (R2).
+    if (retriedOnlyBeforeOutput(reason) && turn.producedOutput) return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };

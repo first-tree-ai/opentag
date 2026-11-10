@@ -844,6 +844,46 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it.each([
+    { name: "before any output", output: [], usage: undefined, retried: true },
+    { name: "after text", output: [{ type: "text", text: "half" }], usage: undefined, retried: false },
+    { name: "after output tokens", output: [], usage: { outputTokens: 3 }, retried: false },
+  ])("retries an unavailable model only $name (R2)", async ({ output, usage, retried }) => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output,
+      ...(usage ? { usage } : {}),
+      error: { code: "provider_unavailable", message: "503" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual(retried ? [15_000] : []);
+    expect(inbox.getState(request.messageId)?.status).toBe(retried ? "retryable" : "failed");
+    inbox.stop();
+  });
+
   it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
     const BUDGET = 600_000;
     let now = 1_000;

@@ -299,6 +299,8 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+   Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
+   can still finish the authenticated claim and restore or save the initial empty archive.
 6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.

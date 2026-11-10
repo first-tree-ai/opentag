@@ -140,6 +140,11 @@ with unknown effects follow existing custody reconciliation and are never automa
 
 The Server reuses its Google identity to access GCS. The trusted Runner transfers archive bytes
 over authenticated streaming HTTP, using its current allocation-scoped bootstrap credential.
+At process startup, a Runner with workspace persistence starts a bounded, unauthenticated
+`GET /healthz` against the same HTTP origin in parallel with native startup and control-channel
+setup. The workspace client can reuse a connection opened by the probe. Probe completion is
+independent of authorization and readiness. The fencing claim still runs after authenticated
+assignment binding and native cleanup, and archive downloads use the pins returned by that claim.
 Small control messages remain on WSS. The Sandbox receives neither a Google token nor an extra
 parent management listener. The Server derives the destination from the database; the caller
 cannot supply a bucket, object name, or another Session's storage address.

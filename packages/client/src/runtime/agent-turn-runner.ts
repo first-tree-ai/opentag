@@ -1390,6 +1390,9 @@ export function completionForError(error: unknown, abortReason: unknown, expired
       errorReason: "turn_timeout",
     };
   }
+  if (error instanceof ImCredentialEnvironmentError && error.code === "im_connection_unavailable") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "im_connection_unavailable" };
+  }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
   }
@@ -1398,7 +1401,7 @@ export function completionForError(error: unknown, abortReason: unknown, expired
       outcome: "failed",
       executionEffects: "not_started",
       errorReason: error.result.issues.some((issue) => issue.code === "credential_missing")
-        ? "credential_unavailable"
+        ? "model_login_missing"
         : "provider_start_failed",
     };
   }

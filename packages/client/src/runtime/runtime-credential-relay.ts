@@ -54,6 +54,8 @@ export class RuntimeCredentialRelayError extends Error {
     readonly code: RuntimeCredentialRelayErrorCode,
     message: string,
     readonly serverCode?: string,
+    /** The provider whose acquire the Server rejected. */
+    readonly provider?: string,
   ) {
     super(message);
     this.name = "RuntimeCredentialRelayError";
@@ -443,6 +445,7 @@ export class RuntimeCredentialRelay {
         "acquire_failed",
         `The Server rejected the credential acquire for ${provider.provider}: ${result.code}`,
         result.code,
+        provider.provider,
       );
     }
     return this.#grantState(provider.provider, provider.bindingId, result);

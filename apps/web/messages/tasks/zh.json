@@ -35,6 +35,8 @@
   "tasks_failure_client_shutdown": "电脑上的 openTag 已关闭",
   "tasks_failure_configuration_conflict": "配置冲突",
   "tasks_failure_credential_unavailable": "凭据不可用",
+  "tasks_failure_im_connection_unavailable": "消息连接已失效",
+  "tasks_failure_model_login_missing": "模型账号未登录",
   "tasks_failure_output_too_large": "结果过大",
   "tasks_failure_progress_restore_failed": "已保存的执行进展未能恢复，本次请求无法继续。",
   "tasks_failure_provider_access_denied": "无权访问所选模型。请检查模型权限。",

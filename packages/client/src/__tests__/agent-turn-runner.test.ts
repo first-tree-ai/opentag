@@ -729,7 +729,12 @@ describe("AgentTurnRunner", () => {
         }),
         undefined,
       ),
-    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" });
+    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "model_login_missing" });
+    expect(completionForError(new ImCredentialEnvironmentError("im_connection_unavailable"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "im_connection_unavailable",
+    });
     expect(
       completionForError(
         new AgentRuntimeProviderUnavailableError("claude-code", {
@@ -1298,7 +1303,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "model_login_missing",
       }),
       expect.any(Number),
     );

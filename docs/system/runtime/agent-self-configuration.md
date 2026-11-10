@@ -169,12 +169,12 @@ observation, so the caller can tell the human the URL is still valid and check a
 ## When changes apply
 
 - An owner change to the switch advances the runtime configuration revision atomically with the Agent
-  update. The next eligible Turn uses the new setting and starts a new native conversation after
+  update. The next eligible Turn uses the new setting and resumes the existing native conversation after
   any unresolved work settles. Repeating the same value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so
   a change applies from the next Turn of every existing Session. These fields are part of the effective runtime
-  snapshot hash, so that Turn starts a new provider conversation instead of resuming the previous one: earlier
-  conversation context is not carried over. Internal Sessions created with their own model or reasoning-effort override
+  snapshot hash, and the next Turn resumes the existing provider conversation under the updated snapshot so earlier
+  conversation context is preserved. Internal Sessions created with their own model or reasoning-effort override
   keep that override.
 - MCP mounts are read by the MCP gateway on each request, so attaching, enabling, or disabling a Server changes the
   tool catalog on the next MCP request. An Agent that had no usable MCP Server gets MCP access at its next execution.

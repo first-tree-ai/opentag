@@ -491,9 +491,9 @@ export class SessionBindingStore {
     }
     validateStoredSnapshot(current, old, oldHashes);
     assertSnapshotRevisions(old, runtime, oldHashes, nextHashes, layout ? "conflict" : "stale");
-    const compatibleLegacy =
-      layout !== undefined && nextHashes.effectiveSnapshotHash === oldHashes.effectiveSnapshotHash;
-    return unchanged || compatibleLegacy ? current.runtimeBinding : undefined;
+    return unchanged || canRetainRuntimeBinding(old, layout, oldHashes, nextHashes)
+      ? current.runtimeBinding
+      : undefined;
   }
 
   async #requireBinding(agentId: string, sessionId: string): Promise<LocalSessionBinding> {
@@ -936,6 +936,16 @@ function compareLegacySnapshot(
     },
     layout,
   );
+}
+
+function canRetainRuntimeBinding(
+  old: StoredRuntimeSnapshot,
+  layout: "0.1.0" | "self-configuration" | undefined,
+  oldHashes: RuntimeSnapshotHashes,
+  nextHashes: RuntimeSnapshotHashes,
+): boolean {
+  if (layout !== undefined) return nextHashes.effectiveSnapshotHash === oldHashes.effectiveSnapshotHash;
+  return EffectiveRuntimeSnapshotSchema.safeParse(old).success;
 }
 
 function assertSettledBindingChange(

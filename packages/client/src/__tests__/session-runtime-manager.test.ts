@@ -1005,17 +1005,18 @@ describe("SessionRuntimeManager", () => {
     const upgraded = reconcile(computerId, snapshot(2));
     await expect(reconciler.reconcile(upgraded)).resolves.toMatchObject({ status: "ready" });
     await manager.ensureRuntime("session-1");
-    expect(factory.created).toHaveLength(2);
+    expect(factory.created).toHaveLength(1);
+    expect(factory.resumed).toEqual([binding("thread-1")]);
     expect(factory.runtimes[0]?.closed).toBe(true);
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
     await expect(
       factory.runtimes[0]?.emit({ type: "binding_changed", binding: binding("late-old-thread") }),
     ).rejects.toMatchObject({ name: "SessionBindingConflictError" });
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
     await factory.runtimes[1]?.close();
     await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
     await manager.ensureRuntime("session-1");
-    expect(factory.resumed).toEqual([binding("thread-2")]);
+    expect(factory.resumed).toEqual([binding("thread-1"), binding("thread-1")]);
 
     await manager.close();
     const restartedFactory = new FakeFactory();
@@ -1034,7 +1035,7 @@ describe("SessionRuntimeManager", () => {
       status: "ready",
     });
     await restartedManager.ensureRuntime("session-1");
-    expect(restartedFactory.resumed).toEqual([binding("thread-2")]);
+    expect(restartedFactory.resumed).toEqual([binding("thread-1")]);
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("slack api chat.postMessage --json");
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("messages-resources-download");
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("GitHub MCP");
@@ -1101,7 +1102,7 @@ describe("SessionRuntimeManager", () => {
     },
   );
 
-  it("prepares a new native conversation when only the Agent revision advances in a warm Session", async () => {
+  it("resumes the existing native conversation when only the Agent revision advances in a warm Session", async () => {
     const f = await legacyRuntimeFixture("0.1.0", "codex", false);
     const factory = new FakeFactory();
     const manager = new SessionRuntimeManager({
@@ -1126,8 +1127,9 @@ describe("SessionRuntimeManager", () => {
       next.instructions.agent = "Updated Soul without a Session revision change";
       await expect(reconciler.reconcile(reconcile(f.computerId, next))).resolves.toMatchObject({ status: "ready" });
       await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.created).toHaveLength(0);
+      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding]);
+      expect(factory.resumedRequests[1]?.systemPrompt).toContain(next.instructions.agent);
       expect(factory.runtimes[0]?.closed).toBe(true);
       expect((await f.store.read("agent-1", "session-1"))?.lastEffectiveSnapshotHash).toBe(
         computeRuntimeSnapshotHashes(next).effectiveSnapshotHash,

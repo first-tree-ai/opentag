@@ -132,11 +132,12 @@ rejected, including after a Client restart. A newer Session revision does not ex
 Agent revision. Preparation runs again when the effective snapshot changes, including an
 Agent-only revision change.
 
-An unchanged snapshot or a supported compatible legacy upgrade can retain the native Provider
-conversation. A valid newer configuration with changed content creates a new native conversation
-within the same OpenTag Session. It preserves the workspace, historical snapshots, and delivery
-receipts, and uses the current requested permissions. Historical messages are not automatically
-replayed. An unresolved Turn must settle before a configuration switch.
+An unchanged snapshot, a valid current-format configuration update, or a supported compatible
+legacy upgrade retains the native Provider conversation and resumes it on the next Run with the
+updated prompt, model, reasoning effort, and execution policy. Legacy layout transitions that
+change the effective snapshot hash start a new native conversation within the same OpenTag
+Session while preserving the workspace, historical snapshots, and delivery receipts. An unresolved
+Turn must settle before a configuration switch.
 
 The Client writes the new snapshot before atomically updating the binding. A missing snapshot
 can be reconstructed from a request with the exact saved hash and identity; a different request

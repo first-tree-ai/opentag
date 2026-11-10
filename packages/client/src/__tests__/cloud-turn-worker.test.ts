@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
+  AgentRunResult,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -32,6 +33,8 @@ import {
   type CloudTurnPiFactory,
   type CloudTurnPiRuntime,
   cloudTurnPiDocuments,
+  continueAfterOutputLimit,
+  OUTPUT_LIMIT_FOLLOW_UPS,
   runCloudTurnWorker,
 } from "../runner/cloud-turn-worker.js";
 import { executionOutboxContext } from "../runner/cloud-turns.js";
@@ -186,6 +189,38 @@ it("compacts a Channel Session on the first Turn after 8 idle hours in the conti
   await expect(runAt("at-threshold", start + hours(8))).resolves.toBeUndefined();
   await expect(runAt("over-threshold", start + hours(16) + 1)).resolves.toBe(true);
   await expect(runAt("thread", start + hours(40), "thread")).resolves.toBeUndefined();
+});
+
+it("continues a Cloud reply cut off by the output limit in the same conversation and completes (R7)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-output-limit-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "output-limit-turn");
+  const seen: AgentPromptRequest[] = [];
+  const runtime = {
+    close: async () => undefined,
+    prompt: async (input: AgentPromptRequest): Promise<AgentRunResult> => {
+      seen.push(input);
+      return seen.length === 1
+        ? {
+            runId: input.runId,
+            status: "failed",
+            output: [{ type: "text", text: "partial" }],
+            error: { code: "provider_execution_limit", message: "limit", outputLimit: true },
+          }
+        : { runId: input.runId, status: "completed", output: [{ type: "text", text: "rest" }] };
+    },
+  };
+  const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
+    createPiFactory: () => ({ create: async () => runtime, resume: async () => runtime }),
+  });
+  expect(completion).toMatchObject({ outcome: "completed", finalText: "rest" });
+  expect(seen).toHaveLength(2);
+  expect(seen[1]?.runId).toBe(`${seen[0]?.runId}-continue-1`);
+  expect(seen[1]?.input).toEqual({ items: [{ type: "text", text: OUTPUT_LIMIT_FOLLOW_UPS[0] }] });
 });
 
 it("captures a prompt rejection before runtime execution converts it to a completion", async () => {
@@ -1888,3 +1923,55 @@ it.each(["session-message", "turn"] as const)(
   },
   12_000,
 );
+
+describe("continuing a reply cut off by the output limit (R7)", () => {
+  const cut = (runId: string, outputTokens: number): AgentRunResult => ({
+    runId,
+    status: "failed",
+    output: [{ type: "text", text: "partial" }],
+    usage: { inputTokens: 10, outputTokens },
+    error: { code: "provider_execution_limit", message: "limit", outputLimit: true },
+  });
+  const done = (runId: string): AgentRunResult => ({
+    runId,
+    status: "completed",
+    output: [{ type: "text", text: "rest" }],
+    usage: { inputTokens: 5, outputTokens: 3 },
+  });
+
+  it("asks the Agent to continue where it stopped and completes with the usage of both", async () => {
+    const prompt = vi.fn(async (attempt: number) => done(`continue-${attempt}`));
+    const result = await continueAfterOutputLimit(cut("first", 8192), prompt);
+    expect(prompt).toHaveBeenCalledExactlyOnceWith(1, OUTPUT_LIMIT_FOLLOW_UPS[0]);
+    expect(result).toMatchObject({ status: "completed", usage: { inputTokens: 15, outputTokens: 8195 } });
+  });
+
+  it("then asks for several shorter replies, and fails only when that is cut off too", async () => {
+    const prompt = vi.fn(async (attempt: number) => cut(`continue-${attempt}`, 1));
+    const result = await continueAfterOutputLimit(cut("first", 1), prompt);
+    expect(prompt.mock.calls).toEqual([
+      [1, OUTPUT_LIMIT_FOLLOW_UPS[0]],
+      [2, OUTPUT_LIMIT_FOLLOW_UPS[1]],
+    ]);
+    expect(OUTPUT_LIMIT_FOLLOW_UPS[1]).toContain("several shorter steps");
+    expect(result).toMatchObject({
+      status: "failed",
+      error: { code: "provider_execution_limit" },
+      usage: { outputTokens: 3 },
+    });
+  });
+
+  it("leaves completed runs and every other failure, including max turns, alone", async () => {
+    const prompt = vi.fn();
+    const maxTurns: AgentRunResult = {
+      runId: "first",
+      status: "failed",
+      output: [],
+      error: { code: "provider_execution_limit", message: "max turns" },
+    };
+    for (const first of [done("first"), maxTurns, { ...cut("first", 1), status: "aborted" as const }]) {
+      expect(await continueAfterOutputLimit(first, prompt)).toEqual(first);
+    }
+    expect(prompt).not.toHaveBeenCalled();
+  });
+});

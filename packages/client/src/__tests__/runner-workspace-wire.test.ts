@@ -44,6 +44,7 @@ interface ProtocolPeerOptions {
   readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
   readonly upgradeDelayMs?: number;
+  readonly onHealthRequest?: (request: IncomingMessage) => void;
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
@@ -164,6 +165,10 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
   };
 
   const http = createServer((request, response) => {
+    if (request.url === "/healthz" && options.onHealthRequest) {
+      options.onHealthRequest(request);
+      return;
+    }
     void serve(request, response).catch(() => response.destroy());
   });
   const wss = new WebSocketServer({
@@ -324,6 +329,65 @@ it("welcomes a persistent Runner on its first attempt when the upgrade takes mor
     await rm(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+it("initializes and reconnects while the credential-free workspace warmup is stalled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-workspace-warmup-"));
+  const warmupReachedPeer = deferred();
+  const peer = await protocolPeer({
+    onHealthRequest(request) {
+      expect(request.method).toBe("GET");
+      expect(request.headers.authorization).toBeUndefined();
+      warmupReachedPeer.resolve();
+    },
+  });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async (): Promise<void> => {}).mockImplementationOnce(() => warmupReachedPeer.promise),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const stop = new AbortController();
+  const fetchWorkspace = vi.fn<typeof fetch>((input, init) => fetch(input, init));
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: "fixture-1",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      workspaceFetchImpl: fetchWorkspace,
+      sleep: async () => undefined,
+    },
+  );
+  try {
+    await peer.wait("runner:ready");
+    const [input, init] = fetchWorkspace.mock.calls[0] ?? [];
+    expect(String(input)).toBe(new URL("/healthz", peer.url.replace("ws:", "http:")).href);
+    expect(init?.signal?.aborted).toBe(false);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-1"]);
+    expect(peer.object().saved).toBe(true);
+
+    peer.disconnect();
+    await peer.wait("runner:ready", 1);
+    expect(fetchWorkspace.mock.calls.filter(([url]) => String(url).endsWith("/healthz"))).toHaveLength(1);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-1"]);
+    stop.abort();
+    expect(init?.signal?.aborted).toBe(true);
+  } finally {
+    warmupReachedPeer.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it("retains unsaved files through rejected auth and renews before saving on a fresh connection", async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-auth-recovery-"));

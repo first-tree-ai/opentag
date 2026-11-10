@@ -3,6 +3,7 @@ import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
@@ -234,7 +235,9 @@ export class ImFeedbackWorker {
       reaction: reaction.value,
       errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
-      reconciliationCursor: cursor ?? null,
+      // An exhausted direct-message readback starts over there, not in the conversation.
+      reconciliationCursor:
+        cursor ?? (target.reconciliationCursor?.startsWith(SENDER_READBACK) ? SENDER_READBACK : null),
     });
   }
   async #readback(target: FeedbackTarget): Promise<{ matches: Set<string>; cursor?: string } | undefined> {
@@ -298,9 +301,19 @@ function reactionRetry(target: FeedbackTarget, result: ReactionResult) {
 function sendFailure(
   error: unknown,
   target: FeedbackTarget,
-): { cardState: FeedbackTarget["cardState"]; errorCode: string; delayMs: number } {
+): {
+  cardState: FeedbackTarget["cardState"];
+  errorCode: string;
+  delayMs: number;
+  reconciliationCursor?: string | null;
+} {
   if (!(error instanceof FeedbackProviderError) || !error.knownNotApplied)
-    return { cardState: "send_unknown", errorCode: "IM_FEEDBACK_SEND_UNKNOWN", delayMs: 30_000 };
+    return {
+      cardState: "send_unknown",
+      errorCode: "IM_FEEDBACK_SEND_UNKNOWN",
+      delayMs: 30_000,
+      reconciliationCursor: error instanceof FeedbackProviderError ? (error.readbackCursor ?? null) : null,
+    };
   return {
     cardState: error.permanent ? "blocked" : "pending",
     errorCode: error.code,

@@ -771,13 +771,22 @@ function scheduleSettlement(target: FeedbackTarget, input: FeedbackSettlement, n
   };
 }
 
+/**
+ * Why an input never reached the Agent. `configuration_unsupported` means the Agent's Computer cannot run its
+ * settings, which an OpenTag upgrade there fixes; every other rejection keeps the general code.
+ */
+export function rejectedInputCode(reason: string | null): string {
+  if (reason === "ttl") return "input_expired";
+  return reason === "configuration_unsupported" ? "input_unsupported" : "input_rejected";
+}
+
 function rejectedFeedbackUpdate(delivery: typeof imMessageDeliveries.$inferSelect, now: Date) {
   const silent = ["cancelled", "duplicate_pending"].includes(delivery.reason ?? "");
   return {
     state: silent ? ("completed" as const) : ("failed" as const),
     desiredReaction: silent ? ("none" as const) : ("warning" as const),
     effects: delivery.dispatchRequestId ? ("may_have_occurred" as const) : ("not_started" as const),
-    errorCode: silent ? null : delivery.reason === "ttl" ? "input_expired" : "input_rejected",
+    errorCode: silent ? null : rejectedInputCode(delivery.reason),
     cardState: silent ? ("none" as const) : ("pending" as const),
     settledAt: silent ? now : null,
     revision: sql`${imFeedbackTargets.revision} + 1`,

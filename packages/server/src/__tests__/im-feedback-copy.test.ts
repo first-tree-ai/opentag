@@ -1,6 +1,8 @@
 import { ImContentV1Schema, TurnFailureReasonSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
+import { failureCardCopy } from "../services/im/im-feedback-card-copy.js";
 import { effectsCopy, failureCopy, feedbackLanguage } from "../services/im/im-feedback-copy.js";
+import { rejectedInputCode } from "../services/im/im-feedback-store.js";
 
 function content(blocks: unknown[], fallbackText = "") {
   return ImContentV1Schema.parse({ version: 1, fallbackText, blocks });
@@ -65,6 +67,19 @@ describe("IM failure copy", () => {
     expect(failureCopy("provider_failed", "zh", { batchRetryBlocked: true, batchSize: 2 }).next).not.toContain(
       "这批消息",
     );
+  });
+
+  it("says why an undelivered message did not reach the Agent", () => {
+    expect(rejectedInputCode("ttl")).toBe("input_expired");
+    expect(rejectedInputCode("configuration_unsupported")).toBe("input_unsupported");
+    for (const reason of ["invalid_input", "computer_owner_mismatch", "steer_state_unknown", null])
+      expect(rejectedInputCode(reason)).toBe("input_rejected");
+    expect(failureCardCopy("input_unsupported")).toEqual({
+      title: { zh: "消息没能送达", en: "Message not delivered" },
+      body: { zh: "Agent 所在电脑的 OpenTag 需要升级", en: "OpenTag on the Agent's computer needs an upgrade" },
+    });
+    expect(failureCardCopy("input_rejected").body.zh).toBe("请重试");
+    expect(failureCopy("input_unsupported", "zh").next).toBe("请 Agent 所有者升级后再发一次。");
   });
 
   it("only claims nothing ran on authoritative not-started evidence", () => {

@@ -98,6 +98,13 @@ const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
     },
   },
   input_rejected: { title: { zh: "消息没能送达", en: "Message not delivered" }, body: BODY.retry },
+  input_unsupported: {
+    title: { zh: "消息没能送达", en: "Message not delivered" },
+    body: {
+      zh: "Agent 所在电脑的 OpenTag 需要升级",
+      en: "OpenTag on the Agent's computer needs an upgrade",
+    },
+  },
 };
 
 export function failureCardCopy(

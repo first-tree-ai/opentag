@@ -148,6 +148,7 @@ the invisible readback identity described under [Message format compatibility](#
 | Workspace save failed | 工作区改动没能保存 / Workspace changes weren't saved | 请在 OpenTag 重试保存或放弃改动 / Retry the save or discard the changes in OpenTag |
 | Message expired | 消息已过期 / Message expired | Agent 太久没能处理这条消息，如需要请重发 |
 | Message rejected | 消息没能送达 / Message not delivered | 请重试 / Try again |
+| Message rejected because the Agent's Computer cannot run its settings (`configuration_unsupported`, code `input_unsupported`) | 消息没能送达 | Agent 所在电脑的 OpenTag 需要升级 / OpenTag on the Agent's computer needs an upgrade |
 | A frozen batch that cannot be retried, including a workspace failure | The reason's own title | The reason's own body, then （共 N 条消息） / (N messages); a legacy plain-text message edited later keeps the reason's next step with the same count |
 
 The context-limit, cut-off, too-large, outcome-unknown and workspace bodies are interim: each changes or disappears when

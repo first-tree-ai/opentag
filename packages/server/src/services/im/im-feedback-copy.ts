@@ -123,6 +123,13 @@ const INPUT_FAILURES: Record<string, { cause: Localized; next: Localized }> = {
     cause: { zh: "消息没能送达，任务没有完成。", en: "The message couldn't be delivered, so the task didn't finish." },
     next: NEXT.environment,
   },
+  input_unsupported: {
+    cause: {
+      zh: "Agent 所在电脑的 OpenTag 版本太旧，消息没能送达。",
+      en: "OpenTag on the Agent's computer is too old, so the message couldn't be delivered.",
+    },
+    next: { zh: "请 Agent 所有者升级后再发一次。", en: "Ask the Agent owner to upgrade it, then send it again." },
+  },
 };
 
 export function failureCopy(

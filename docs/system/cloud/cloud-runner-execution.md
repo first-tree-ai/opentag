@@ -278,6 +278,24 @@ Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasonin
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
 
+### Cloud Session message custody
+
+Ordinary Session messages use the existing Session collaboration frames. The Runner fsyncs a received journal
+entry, and the Server verifies durable custody and current target authority before execution. The Runner tries the
+FIFO head against the active worker using the same authenticated in-Sandbox control socket as IM steering. It
+checks the active Turn, Session, Agent, placement, and visible outbox context. The input uses the active Turn's
+model, tools, deadline, and credential execution.
+
+Before the relay can inject input, the Runner journals the message as started under its own settlement identity.
+A live reconnect re-announces that identity without injecting again. A lost worker or ambiguous relay with no
+worker receipt leaves an unknown settlement. Only explicit no-effect evidence returns a started steer to the FIFO.
+Worker receipts are bound to the message ID and settled after the joined Turn's checkpoint. The Runner retains each
+terminal settlement until the exact Server ack.
+
+The private parent-to-worker document is paired within the pinned Runner image. Steering uses the existing
+Session collaboration wire versions 1 through 3, journal file layout, and database schema. Older Runners
+receive the same frames and wait for the active Turn to finish.
+
 ### Model retry ownership
 
 The model proxy is the sole automatic retry owner for each managed Cloud model call, including

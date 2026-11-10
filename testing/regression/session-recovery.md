@@ -217,10 +217,21 @@ Thread Session never compacts.
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+## Cloud Session message steering
+
+1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that
+   the child sees both in order before its Turn ends and the Runner starts only one worker. Confirm each
+   message settles once after the joined Turn's checkpoint.
+2. With a controlled worker that refuses steer or reports `not_started`, confirm the message runs in FIFO order
+   after the child Turn. If it reports `interrupted`, confirm the failure is terminal and no second worker handles it.
+3. Disconnect the control channel after a steer starts. Reconnect the same Runner and confirm that the input is
+   never injected again and its settlement can be acknowledged. Replace the process without a worker receipt and
+   confirm it reports unknown. An older compatible Runner still runs the messages in FIFO order.
+
 ## Stopping an internal Session
 
-Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and queue a second message
-to it with `opentag session send`.
+Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and send a second message
+to it with `opentag session send`. Confirm the message is still queued or joined to the same running Turn before stopping it.
 
 - `opentag session stop <id>` from its creator answers `status=stopped execution=stopped`. The Provider process is gone
   within seconds, the queued message never runs, and the daemon does not retry anything.

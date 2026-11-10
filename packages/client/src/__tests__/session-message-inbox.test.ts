@@ -928,6 +928,56 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("starts a new conversation when compacting was not enough, telling the Agent to ask the sender (R8)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const prompt = vi.fn(async (_request: { input: { items: Array<{ text?: string }> } }) =>
+      prompt.mock.calls.length > 2
+        ? { runId: "run", status: "completed" as const, output: [] }
+        : {
+            runId: "run",
+            status: "failed" as const,
+            output: [],
+            error: { code: "provider_context_limit", message: "Prompt is too long" },
+          },
+    );
+    const startNewConversation = vi.fn(async (_sessionId: string) => undefined);
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+        startNewConversation,
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    retries[0]?.task();
+    await vi.waitFor(() => expect(retries).toHaveLength(2));
+    expect(startNewConversation).not.toHaveBeenCalled();
+    retries[1]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(3));
+    await inbox.settled();
+    expect(startNewConversation).toHaveBeenCalledExactlyOnceWith(request.targetSessionId);
+    const notice = prompt.mock.calls[2]?.[0].input.items[0]?.text ?? "";
+    expect(notice).toContain("ask the sender");
+    expect(notice).not.toContain("lark-cli");
+    expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+    inbox.stop();
+  });
+
   it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
     const BUDGET = 600_000;
     let now = 1_000;

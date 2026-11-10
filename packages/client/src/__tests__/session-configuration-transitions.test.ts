@@ -122,14 +122,14 @@ describe.each(legacyLayouts)("Session configuration transitions from %s", (layou
   });
 
   it.each(["Soul", "model", "reasoning effort"] as const)(
-    "SCT-07 retains the conversation for a newer %s after compatible migration has completed",
+    "SCT-07 applies a newer %s after compatible migration has completed",
     async (change) => {
       const f = await fixture(layout);
       await validateAndPrepare(f.store, withRuntime(f, currentSnapshot(f.original, 2)));
       const request = withRuntime(f, changedSnapshot(currentSnapshot(f.original, 3), change));
       await expect(f.reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
       const prepared = await validateAndPrepare(f.store, request);
-      expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+      expect(prepared.binding.runtimeBinding).toEqual(change === "Soul" ? undefined : f.binding.runtimeBinding);
       await expectPreservedHistory(f, prepared.binding);
       expect(f.reconciler.checkDelivery(delivery(request.runtime, "pending"))).toBeUndefined();
       await expectSingleCustody(f, request.runtime);
@@ -203,7 +203,7 @@ describe("Current-format Session configuration transitions", () => {
     const reconciler = process === "warm" ? f.reconciler : createReconciler(f);
     await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
     const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
-    expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+    expect(prepared.binding.runtimeBinding).toBeUndefined();
     await expectPreservedHistory(f, prepared.binding);
     await expectSingleCustody(f, runtime);
   });
@@ -224,7 +224,7 @@ describe("Current-format Session configuration transitions", () => {
     await expect(reconciler.reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
     expect(reconciler.checkDelivery(delivery(runtime, "pending"))).toBeUndefined();
     const prepared = await validateAndPrepare(openStore(f.home), withRuntime(f, runtime));
-    expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+    expect(prepared.binding.runtimeBinding).toBeUndefined();
     await expectPreservedHistory(f, prepared.binding);
     await expectSingleCustody(f, runtime);
     await expect(createReconciler(f).reconcile(withRuntime(f, runtime))).resolves.toMatchObject({ status: "ready" });
@@ -262,13 +262,15 @@ describe("Current-format Session configuration transitions", () => {
     expect(after.history).toBe(before.history);
   });
 
-  it.each(["Soul", "model", "reasoning effort"] as const)(
-    "SCT-11 retains the native binding for a newer %s and preserves delivery deduplication",
+  it.each(["Soul", "Session instructions", "model", "reasoning effort"] as const)(
+    "SCT-11 applies a newer %s and preserves delivery deduplication",
     async (change) => {
       const f = await fixture("current");
       const request = withRuntime(f, changedSnapshot(currentSnapshot(f.original, 2), change));
       const prepared = await validateAndPrepare(f.store, request);
-      expect(prepared.binding.runtimeBinding).toEqual(f.binding.runtimeBinding);
+      expect(prepared.binding.runtimeBinding).toEqual(
+        change === "model" || change === "reasoning effort" ? f.binding.runtimeBinding : undefined,
+      );
       await expectPreservedHistory(f, prepared.binding);
       await expectSingleCustody(f, request.runtime);
     },
@@ -357,7 +359,7 @@ describe.each(["current", ...legacyLayouts] as const)("Persisted %s revision bou
       if (scenario === "newer Agent" || scenario === "newer Session") {
         const prepared = await validateAndPrepare(store, request);
         expect(prepared.binding.runtimeBinding).toEqual(
-          layout === "current" && nativeBinding ? f.binding.runtimeBinding : undefined,
+          layout === "current" && scenario === "newer Session" && nativeBinding ? f.binding.runtimeBinding : undefined,
         );
         await expectPreservedHistory(f, prepared.binding);
         expect(await validateAndPrepare(openStore(f.home), request)).toEqual(prepared);
@@ -549,9 +551,7 @@ describe.each([
 
       const restarted = openStore(f.home);
       const prepared = await validateAndPrepare(restarted, request);
-      expect(prepared.binding.runtimeBinding).toEqual(
-        layout === "current" || !changeSoul ? f.binding.runtimeBinding : undefined,
-      );
+      expect(prepared.binding.runtimeBinding).toEqual(!changeSoul ? f.binding.runtimeBinding : undefined);
       await expectPreservedHistory(f, prepared.binding);
       expect(await validateAndPrepare(restarted, request)).toEqual(prepared);
       await expectSingleCustody(f, request.runtime);
@@ -731,9 +731,13 @@ function currentSnapshot(original: EffectiveRuntimeSnapshot, sequence: number): 
   };
 }
 
-function changedSnapshot(original: EffectiveRuntimeSnapshot, change: "Soul" | "model" | "reasoning effort") {
+function changedSnapshot(
+  original: EffectiveRuntimeSnapshot,
+  change: "Soul" | "Session instructions" | "model" | "reasoning effort",
+) {
   const changed = structuredClone(original);
   if (change === "Soul") changed.instructions.agent = "Software engineering";
+  if (change === "Session instructions") changed.instructions.session = "Updated session instructions";
   if (change === "model") changed.model = "replacement-model";
   if (change === "reasoning effort") changed.reasoningEffort = "high";
   return changed;

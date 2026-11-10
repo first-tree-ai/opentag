@@ -87,9 +87,9 @@ function renderSkills(cliCommand: string): readonly string[] {
 
 /**
  * The Agent may tune its own instructions, model, and reasoning effort through the Session proof.
- * Those fields feed the effective snapshot hash, so a change applies from the next Turn in every
- * existing Session without resetting the provider conversation. The Agent is told to change them
- * only when asked, not mid-task.
+ * Model and reasoning-effort changes apply from the next Turn in every existing Session without
+ * resetting the provider conversation; instruction changes start a new provider conversation on
+ * the next Turn. The Agent is told to change them only when asked, not mid-task.
  *
  * MCP configuration is a separate section (`renderMcpInChat`). It used to be one sentence inside
  * this paragraph, which the model skipped when the user named a product or asked to connect a
@@ -99,7 +99,7 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Model and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation; instruction changes start a new provider conversation on your next Turn, so earlier conversation context is not carried over. Change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
     "",
   ];
 }

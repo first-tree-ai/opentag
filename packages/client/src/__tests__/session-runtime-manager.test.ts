@@ -1102,7 +1102,7 @@ describe("SessionRuntimeManager", () => {
     },
   );
 
-  it("resumes the existing native conversation when only the Agent revision advances in a warm Session", async () => {
+  it("starts a new native conversation when only the Agent revision advances with a Soul change in a warm Session", async () => {
     const f = await legacyRuntimeFixture("0.1.0", "codex", false);
     const factory = new FakeFactory();
     const manager = new SessionRuntimeManager({
@@ -1127,9 +1127,9 @@ describe("SessionRuntimeManager", () => {
       next.instructions.agent = "Updated Soul without a Session revision change";
       await expect(reconciler.reconcile(reconcile(f.computerId, next))).resolves.toMatchObject({ status: "ready" });
       await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(0);
-      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding]);
-      expect(factory.resumedRequests[1]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.created).toHaveLength(1);
+      expect(factory.resumed).toEqual([f.originalBinding]);
+      expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
       expect(factory.runtimes[0]?.closed).toBe(true);
       expect((await f.store.read("agent-1", "session-1"))?.lastEffectiveSnapshotHash).toBe(
         computeRuntimeSnapshotHashes(next).effectiveSnapshotHash,

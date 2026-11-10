@@ -61,7 +61,7 @@ export function registerAgentSelfCommands(agent: Command): void {
   self
     .command("update")
     .description(
-      "Change this Agent's instructions, model, or reasoning effort; changes apply on the next Turn without resetting the conversation",
+      "Change this Agent's instructions, model, or reasoning effort; model and reasoning-effort changes apply on the next Turn without resetting the conversation, while instruction changes start a new provider conversation",
     )
     .addOption(new Option("--model <model>", "exact model ID for this Agent's runtime").conflicts("clearModel"))
     .addOption(new Option("--clear-model", "let the runtime manage model selection").conflicts("model"))

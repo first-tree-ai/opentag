@@ -58,7 +58,9 @@ With an IM test binding and a runtime that can be made to fail on request:
    does not change the language.
 3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
    inside a thread. Expected: the card is in that thread on both.
-4. Make the model authentication fail. Expected: “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号” and no link.
+4. Make the model authentication fail. Expected: the card names the Agent’s tool, for example “Claude Code 未登录或登录已失效”
+   with “请在 Agent 所在电脑登录 Claude Code” (Codex and Pi likewise), and no link. Only an Agent on the Cloud Computer
+   keeps the generic “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号”.
 5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
    As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
    turns green in place and reads only 已保存. Repeat with Discard, which asks for the

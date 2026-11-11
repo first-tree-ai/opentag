@@ -182,6 +182,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
+  readonly #systemPromptSnapshotOff: boolean;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
@@ -216,7 +217,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       eventSink: options.eventSink,
       binding: options.binding,
     });
-    this.#sessionId = parseClaudeCodeBinding(options.binding);
+    const parsedBinding = parseClaudeCodeBinding(options.binding);
+    this.#sessionId = parsedBinding.sessionId;
+    this.#systemPromptSnapshotOff = parsedBinding.systemPromptSnapshotOff;
     this.#cwd = options.cwd;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
@@ -495,6 +498,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...fallbackModelArguments(configuration?.model),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
+      ...(this.#systemPromptSnapshotOff ? ["--system-prompt-snapshot", "off"] : []),
       "--append-system-prompt",
       this.#systemPrompt,
       ...(provider.maxBudgetUsd !== undefined ? ["--max-budget-usd", String(provider.maxBudgetUsd)] : []),
@@ -914,7 +918,8 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
+          message:
+            "Claude Code requires stream-json, acceptEdits mode, stdio permission prompts, and --system-prompt-snapshot",
         });
       }
       if (result.credentialIssue) {
@@ -1016,12 +1021,18 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   ): Promise<ClaudeCodeAgentRuntime> {
     validateFactoryRequest(request);
     validateConfiguration(request.configuration);
-    const binding =
-      mode === "resume" && "binding" in request
-        ? request.binding
-        : claudeCodeBinding(requireUuid(this.#createSessionId(), "generated Claude Code session id"));
-    assertBinding(binding, this.manifest);
-    parseClaudeCodeBinding(binding);
+    let binding: AgentRuntimeBinding;
+    if (mode === "resume" && "binding" in request) {
+      assertBinding(request.binding, this.manifest);
+      const parsed = parseClaudeCodeBinding(request.binding);
+      binding = claudeCodeBinding(
+        parsed.sessionId,
+        parsed.systemPromptSnapshotOff || ("systemPromptUpdated" in request && request.systemPromptUpdated === true),
+      );
+    } else {
+      binding = claudeCodeBinding(requireUuid(this.#createSessionId(), "generated Claude Code session id"));
+      assertBinding(binding, this.manifest);
+    }
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
@@ -1084,7 +1095,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--allowedTools") &&
     /\bacceptEdits\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
-    helpResult.stdout.includes("--append-system-prompt");
+    helpResult.stdout.includes("--append-system-prompt") &&
+    helpResult.stdout.includes("--system-prompt-snapshot");
   const authentication = await probeClaudeCodeCredential(command, execution, signal);
   const credential = authentication?.loggedIn === true;
   // Managed gateway sign-in can override explicit environment credentials. Honor the CLI's
@@ -1351,19 +1363,34 @@ function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCode
   };
 }
 
-function claudeCodeBinding(sessionId: string): AgentRuntimeBinding {
+function claudeCodeBinding(sessionId: string, systemPromptSnapshotOff = false): AgentRuntimeBinding {
   return {
     providerId: CLAUDE_CODE_PROVIDER_ID,
     schemaVersion: CLAUDE_CODE_BINDING_SCHEMA_VERSION,
-    payload: { sessionId },
+    payload: {
+      sessionId,
+      ...(systemPromptSnapshotOff ? { systemPromptSnapshotOff: true } : {}),
+    },
   };
 }
 
-function parseClaudeCodeBinding(binding: AgentRuntimeBinding): string {
+function parseClaudeCodeBinding(binding: AgentRuntimeBinding): {
+  readonly sessionId: string;
+  readonly systemPromptSnapshotOff: boolean;
+} {
   const payload = record(binding.payload);
   if (!payload) throw new AgentRuntimeError("binding_incompatible", "Claude Code binding payload is invalid");
+  if (payload.systemPromptSnapshotOff !== undefined && typeof payload.systemPromptSnapshotOff !== "boolean") {
+    throw new AgentRuntimeError(
+      "binding_incompatible",
+      "Claude Code binding systemPromptSnapshotOff must be a boolean",
+    );
+  }
   try {
-    return requireUuid(payload.sessionId, "Claude Code binding sessionId");
+    return {
+      sessionId: requireUuid(payload.sessionId, "Claude Code binding sessionId"),
+      systemPromptSnapshotOff: payload.systemPromptSnapshotOff === true,
+    };
   } catch (error) {
     logger.debug({ code: "binding_invalid", error: String(error) }, "Claude Code binding was rejected");
     throw new AgentRuntimeError("binding_incompatible", (error as Error).message, { cause: error });

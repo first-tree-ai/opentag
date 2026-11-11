@@ -243,6 +243,8 @@ export interface CreateAgentRuntimeRequest {
 
 export interface ResumeAgentRuntimeRequest extends CreateAgentRuntimeRequest {
   readonly binding: AgentRuntimeBinding;
+  /** The Session's system prompt inputs changed since the bound conversation was last opened. */
+  readonly systemPromptUpdated?: boolean;
 }
 
 export interface AgentRuntimeProbeRequest {

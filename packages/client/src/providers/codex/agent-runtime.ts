@@ -1380,6 +1380,23 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       const threadId = requireString(thread.id, `${method} returned no thread id`);
       if (method === "thread/resume" && expectedThreadId && threadId !== expectedThreadId)
         throw protocolError("thread/resume restored another thread");
+      if (method === "thread/resume" && "systemPromptUpdated" in request && request.systemPromptUpdated === true) {
+        await client.request("thread/inject_items", {
+          threadId,
+          items: [
+            {
+              type: "message",
+              role: "developer",
+              content: [
+                {
+                  type: "input_text",
+                  text: `Updated instructions (supersede all earlier developer instructions):\n\n${request.systemPrompt}`,
+                },
+              ],
+            },
+          ],
+        });
+      }
       const runtimeBinding: AgentRuntimeBinding = {
         providerId: CODEX_PROVIDER_ID,
         schemaVersion: CODEX_BINDING_SCHEMA_VERSION,

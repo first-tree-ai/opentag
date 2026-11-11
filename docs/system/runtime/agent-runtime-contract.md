@@ -132,11 +132,13 @@ rejected, including after a Client restart. A newer Session revision does not ex
 Agent revision. Preparation runs again when the effective snapshot changes, including an
 Agent-only revision change.
 
-An unchanged snapshot or a supported compatible legacy upgrade can retain the native Provider
-conversation. A valid newer configuration with changed content creates a new native conversation
-within the same OpenTag Session. It preserves the workspace, historical snapshots, and delivery
-receipts, and uses the current requested permissions. Historical messages are not automatically
-replayed. An unresolved Turn must settle before a configuration switch.
+An unchanged snapshot, a valid current-format update (`instructions`, `selfConfigurationEnabled`,
+`contextTrees`, `model`, `reasoningEffort`, `execution`, or `budget`), or a supported compatible legacy upgrade
+retains the native Provider conversation and resumes it on the next Run with the updated
+configuration. Legacy layout transitions that change the effective snapshot hash start a new native
+conversation within the same OpenTag Session while preserving the workspace, historical snapshots,
+and delivery receipts. Historical messages are not automatically replayed. An unresolved Turn must
+settle before a configuration switch.
 
 The Client writes the new snapshot before atomically updating the binding. A missing snapshot
 can be reconstructed from a request with the exact saved hash and identity; a different request
@@ -174,11 +176,16 @@ result: `num_turns: 0` and `No conversation found with session ID: <id>`. Resumi
 on every later message. Instead, the Run closes that process and starts a new conversation under the same Session
 ID with `--session-id`. It emits a `claude_session_history_unavailable` provider warning and puts an
 `[openTag notice]` saying the earlier history is unavailable ahead of the Run's input. The binding does not change,
-and later Runs resume the new conversation. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+and later Runs resume the new conversation. On a new or unchanged Session, Local Claude Code omits
+`--system-prompt-snapshot`; once a bound Session's system prompt changes, the binding records a sticky
+`systemPromptSnapshotOff` marker and passes `--system-prompt-snapshot off` with `--append-system-prompt` on that Run
+and every later Run of the Session so Claude Code does not restore the cached transcript prompt snapshot. Local Pi also
+starts a process per Run, restoring the exact Pi Session and applying the current `--append-system-prompt`. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service
-attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
-resume RPC response; it does not remove the model's conversation history. Local configuration
-replacement follows the binding rules above, rather than replaying the old history.
+attachment may reload that same thread, and when a bound Session's system prompt changes, `thread/resume` is followed by
+`thread/inject_items` to append a developer message superseding earlier developer instructions in the rollout.
+`excludeTurns: true` suppresses history returned in the resume RPC response; it does not remove the model's conversation
+history. Local configuration replacement follows the binding rules above, rather than replaying the old history.
 
 Cloud execution uses Pi only. Its worker restores the binding and Pi history under
 `.opentag/pi-session` and appends the current input. The Cloud model transport is Chat Completions,

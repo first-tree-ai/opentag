@@ -52,7 +52,6 @@ import {
   retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
-  retryPromptOptions,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
@@ -737,7 +736,6 @@ export class AgentTurnRunner {
           { ...channelTurn, retry: interruption !== undefined },
           this.#now(),
         )),
-        ...retryPromptOptions(interruption),
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential

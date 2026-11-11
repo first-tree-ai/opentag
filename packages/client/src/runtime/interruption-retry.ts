@@ -29,7 +29,6 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
  * - `provider_unavailable`, `provider_connection_failed`: the model service was down or unreachable
  *   before the model produced anything (R2).
- * - `provider_context_limit`: the conversation no longer fits the model; retried once after compacting it (R8).
  */
 export type InterruptionReason =
   | "daemon_crash"
@@ -37,8 +36,7 @@ export type InterruptionReason =
   | "provider_rate_limited"
   | "provider_start_failed"
   | "provider_unavailable"
-  | "provider_connection_failed"
-  | "provider_context_limit";
+  | "provider_connection_failed";
 
 const REASONS = new Set<InterruptionReason>([
   "daemon_crash",
@@ -47,7 +45,6 @@ const REASONS = new Set<InterruptionReason>([
   "provider_start_failed",
   "provider_unavailable",
   "provider_connection_failed",
-  "provider_context_limit",
 ]);
 
 /** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
@@ -56,7 +53,6 @@ const IN_PLACE = new Set<InterruptionReason>([
   "provider_start_failed",
   "provider_unavailable",
   "provider_connection_failed",
-  "provider_context_limit",
 ]);
 
 /** Retried only when the failed attempt produced no model output (R2). */
@@ -84,12 +80,7 @@ export const UNAVAILABLE_RETRY_DELAY_MS = 15_000;
 
 /** At most this many retries in a row for a reason; a start failure is retried once. */
 export function retryLimit(reason: InterruptionReason): number {
-  return reason === "provider_start_failed" || reason === "provider_context_limit" ? 1 : MAX_AUTOMATIC_RETRIES;
-}
-
-/** Prompt options for a retry: after a context-limit failure it compacts the conversation first (R8). */
-export function retryPromptOptions(interruption: { reason: string } | undefined): { compactContext?: true } {
-  return interruption?.reason === "provider_context_limit" ? { compactContext: true } : {};
+  return reason === "provider_start_failed" ? 1 : MAX_AUTOMATIC_RETRIES;
 }
 
 /** The wait before an in-place retry for this reason. */
@@ -197,8 +188,6 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model service was temporarily unavailable before answering";
     case "provider_connection_failed":
       return "the model service could not be reached before answering";
-    case "provider_context_limit":
-      return "the conversation no longer fit the model's context, so it was compacted";
   }
 }
 

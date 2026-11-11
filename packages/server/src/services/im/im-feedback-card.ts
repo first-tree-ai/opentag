@@ -11,12 +11,13 @@ import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
 
 export type CardTone = "failure" | "success" | "offline" | "pending";
 
-const FEISHU_TEMPLATE = { failure: "red", success: "green", offline: "orange", pending: "grey" } as const;
+/** Waiting notices share the failure color: a card is red when something did not happen as asked. */
+const FEISHU_TEMPLATE = { failure: "red", success: "green", offline: "red", pending: "grey" } as const;
 /**
  * Slack only paints the attachment bar from a hex color when the attachment holds blocks; the
  * `danger` and `good` keywords render as a grey bar there.
  */
-const SLACK_COLOR = { failure: "#E01E5A", success: "#2EB67D", offline: "#F2952F", pending: "#9E9EA6" } as const;
+const SLACK_COLOR = { failure: "#E01E5A", success: "#2EB67D", offline: "#E01E5A", pending: "#9E9EA6" } as const;
 
 export interface FeedbackCard {
   /**
@@ -89,7 +90,7 @@ export function feedbackCard(
   );
 }
 
-/** Both waiting notices are orange: the offline Computer, or a message parked behind an unconfirmed one. */
+/** Both waiting notices are red, like a failure: the offline Computer, or a message parked behind an unconfirmed one. */
 export function waitingCard(language: FeedbackLanguage, reason: "offline" | "parked" = "offline"): FeedbackCard {
   return { ...fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language), kind: "notice" };
 }

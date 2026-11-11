@@ -62,27 +62,6 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
   });
 
   it.each([
-    [{ result: "Prompt is too long" }],
-    [{ errors: ["Prompt is too long · automatic compaction failed: overloaded"] }],
-  ])("reports Claude Code's prompt-too-long API error as a context limit (R8): %j", async (override) => {
-    const process = new ManualClaudeCodeProcess([
-      {
-        type: "assistant",
-        uuid: "22222222-2222-4222-8222-222222222222",
-        message: { id: "message-1", content: [] },
-        error: "invalid_request",
-      },
-      successResult({ subtype: "success", is_error: true, api_error_status: 400, ...override }),
-    ]);
-    const runtime = await factory(process).create(createRequest(() => undefined));
-    await expect(runtime.prompt({ runId: "run-1", input: input("fail") })).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "provider_context_limit" },
-    });
-    await runtime.close();
-  });
-
-  it.each([
     [401, "provider_authentication_failed"],
     [402, "provider_quota_exceeded"],
     [403, "provider_access_denied"],

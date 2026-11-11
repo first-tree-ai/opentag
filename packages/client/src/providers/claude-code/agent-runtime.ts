@@ -1460,9 +1460,7 @@ function claudeCodeRunResult(
         code:
           providerFailureCode(terminal.subtype) !== "provider_error"
             ? providerFailureCode(terminal.subtype)
-            : promptTooLong(terminal)
-              ? "provider_context_limit"
-              : providerFailureCode(assistantError, terminal.apiErrorStatus),
+            : providerFailureCode(assistantError, terminal.apiErrorStatus),
         message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
       },
       quotaResetAt,
@@ -1477,17 +1475,6 @@ function withQuotaReset(error: AgentRunError, quotaResetAt: string | undefined):
     return error;
   return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt };
 }
-
-/**
- * Claude Code reports a request over the model's context as an API error whose text starts with its fixed
- * "Prompt is too long" message (2.1.319); the envelope code is only `invalid_request`. It is a context limit,
- * which compaction can fix, not a rejected request (R8).
- */
-function promptTooLong(terminal: ClaudeCodeTerminal): boolean {
-  return [terminal.result, ...terminal.errors].some((text) => text?.startsWith(CLAUDE_PROMPT_TOO_LONG) === true);
-}
-
-const CLAUDE_PROMPT_TOO_LONG = "Prompt is too long";
 
 function parseUsage(
   value: unknown,

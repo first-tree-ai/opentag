@@ -153,6 +153,8 @@ export type AgentRunErrorCode =
 export interface AgentRunError {
   readonly code: AgentRunErrorCode;
   readonly message: string;
+  /** When a used-up model quota is available again, as the model CLI reported it. */
+  readonly retryAt?: string;
 }
 
 export interface AgentRunResult {

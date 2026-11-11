@@ -4,6 +4,7 @@ import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../../db/im-delivery-work.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
@@ -24,6 +25,8 @@ export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
   batchRetryBlocked?: boolean;
   /** Messages in a frozen initial batch, the root included; set with `batchRetryBlocked`. */
   batchSize?: number;
+  /** A quota failure's reset time, read from the Turn report the Client sent; never stored on the target. */
+  retryAt?: string;
 };
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
@@ -38,11 +41,18 @@ export interface FeedbackSettlement {
   stale?: boolean;
   dormant?: boolean;
 }
+export interface FeedbackRuntime {
+  /** `cloud` for an Agent on the Cloud Computer, which runs the platform model. */
+  tool: "claude-code" | "codex" | "pi" | "cloud";
+  model: string | null;
+}
 export interface FeedbackMessageContext {
   language: FeedbackLanguage;
   direct: boolean;
   /** The start of what the sender wrote, for a card sent to their direct message. */
   excerpt?: string;
+  /** The Agent's tool and model as its settings name them, for cards that tell someone what to fix. */
+  runtime?: FeedbackRuntime;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -345,7 +355,7 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed ? await withFrozenBatch(tx, claimed) : undefined;
+      return claimed ? await withReportedRetry(tx, await withFrozenBatch(tx, claimed)) : undefined;
     });
   }
 
@@ -412,7 +422,14 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked, batchSize: target.batchSize } : target;
+    return updated
+      ? {
+          ...updated,
+          batchRetryBlocked: target.batchRetryBlocked,
+          batchSize: target.batchSize,
+          ...(target.retryAt ? { retryAt: target.retryAt } : {}),
+        }
+      : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -550,7 +567,9 @@ export class ImFeedbackStore {
 
   /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
   /** The reader's language, and whether the conversation is a direct message, which decides where a card goes. */
-  async messageContext(target: Pick<FeedbackTarget, "messageId" | "sessionId">): Promise<FeedbackMessageContext> {
+  async messageContext(
+    target: Pick<FeedbackTarget, "messageId" | "sessionId"> & Partial<Pick<FeedbackTarget, "agentId">>,
+  ): Promise<FeedbackMessageContext> {
     const [message] = await this.database
       .select({ content: imMessages.content })
       .from(imMessages)
@@ -561,10 +580,26 @@ export class ImFeedbackStore {
       .from(sessions)
       .where(eq(sessions.id, target.sessionId))
       .limit(1);
+    const [agent] = target.agentId
+      ? await this.database
+          .select({
+            provider: agents.runtimeProvider,
+            model: agentRuntimeConfigs.model,
+            computerKind: computers.kind,
+          })
+          .from(agents)
+          .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
+          .where(eq(agents.id, target.agentId))
+          .limit(1)
+      : [];
     return {
       language: message ? feedbackLanguage(message.content) : "en",
       ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
       direct: session?.conversationKind === "dm",
+      ...(agent
+        ? { runtime: { tool: agent.computerKind === "cloud" ? "cloud" : agent.provider, model: agent.model ?? null } }
+        : {}),
     };
   }
 
@@ -812,6 +847,21 @@ async function withFrozenBatch(tx: DatabaseTransaction, target: FeedbackTarget):
     );
   const members = row?.members ?? 0;
   return { ...target, batchRetryBlocked: members > 0, ...(members > 0 ? { batchSize: members + 1 } : {}) };
+}
+
+/**
+ * A quota failure card names when the quota is back if the Client said so. The time travels inside the Turn
+ * report the delivery already keeps; it is passed through to the card, not copied anywhere.
+ */
+async function withReportedRetry(tx: DatabaseTransaction, target: FeedbackTarget): Promise<FeedbackTarget> {
+  if (target.errorCode !== "provider_quota_exceeded") return target;
+  const [row] = await tx
+    .select({ report: imMessageDeliveries.turnReport })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, target.cardOwnerDeliveryId))
+    .limit(1);
+  const retryAt = row?.report?.retryAt;
+  return retryAt ? { ...target, retryAt } : target;
 }
 
 export async function hasFrozenFeedbackBatch(

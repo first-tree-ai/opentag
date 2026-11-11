@@ -148,6 +148,16 @@ export class TurnReportOwner {
     if (CREDENTIAL_DETAIL_FAILURE_REASONS.includes(input.errorReason ?? "") && reportVersion < 4) {
       input = { ...input, errorReason: "credential_unavailable" };
     }
+    // Optional reset metadata never blocks the failure report itself.
+    if (
+      input.retryAt !== undefined &&
+      (reportVersion < 5 ||
+        input.errorReason !== "provider_quota_exceeded" ||
+        !TurnReportRequestSchema.shape.retryAt.safeParse(input.retryAt).success)
+    ) {
+      const { retryAt: _dropped, ...withoutRetry } = input;
+      input = withoutRetry;
+    }
     const report = {
       type: "turn:report" as const,
       requestId: this.#id(),

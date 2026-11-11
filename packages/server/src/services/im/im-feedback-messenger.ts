@@ -45,13 +45,22 @@ export const SENDER_READBACK = "sender:";
 /** The readback cursor of a card that fell back to the conversation after the sender's direct message was refused. */
 export const CONVERSATION_READBACK = "conversation:";
 
+/**
+ * The readback of a group card meant for the sender whose leg was never recorded (a crash or a lost acknowledgement):
+ * the conversation first, read-only, then the sender's direct message (`either-sender:`).
+ */
+export const EITHER_READBACK = "either:";
+const EITHER_SENDER_READBACK = "either-sender:";
+
 /** Where a send's provider write actually started, so an unknown outcome is read back there. */
 interface DeliveryLeg {
   to?: "sender" | "conversation";
 }
 
 function withReadback(failure: FeedbackProviderError, leg: DeliveryLeg): FeedbackProviderError {
-  if (failure.knownNotApplied || !leg.to) return failure;
+  if (failure.knownNotApplied) return failure;
+  // No provider write started, so nothing can have been sent: retry instead of reading back.
+  if (!leg.to) return new FeedbackProviderError("IM_FEEDBACK_SEND_NOT_STARTED", true, false, failure.retryAfterMs);
   const cursor = leg.to === "sender" ? SENDER_READBACK : CONVERSATION_READBACK;
   return new FeedbackProviderError(failure.code, false, failure.permanent, failure.retryAfterMs, cursor);
 }
@@ -330,8 +339,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         // The outer boundary adds the readback cursor of the leg that started, even after its own deadline.
         if (!(error instanceof SenderUnreachable)) throw error;
       }
-      leg.to = "conversation";
     }
+    leg.to = "conversation";
     return this.#sendCard(target, card, context, signal, requestId);
   }
 
@@ -561,18 +570,32 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * that goes to the sender is looked for in their direct message first.
    */
   async find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }> {
-    const start =
-      cursor ?? (failureGoesToSender(target) && !(await this.#context(target)).direct ? SENDER_READBACK : undefined);
+    const start = cursor ?? ((await this.#mayBeWithSender(target)) ? EITHER_READBACK : undefined);
     return this.#run(
       `${target.provider}.feedback.find`,
-      (signal) =>
-        start?.startsWith(SENDER_READBACK)
-          ? this.#findSender(target, signal, start.slice(SENDER_READBACK.length) || undefined)
-          : start?.startsWith(CONVERSATION_READBACK)
-            ? this.#findFallback(target, signal, start.slice(CONVERSATION_READBACK.length) || undefined)
-            : this.#findConversation(target, signal, start),
+      (signal) => {
+        const after = (prefix: string) => start?.slice(prefix.length) || undefined;
+        if (start?.startsWith(SENDER_READBACK)) return this.#findSender(target, signal, after(SENDER_READBACK));
+        if (start?.startsWith(EITHER_SENDER_READBACK))
+          return this.#findSender(target, signal, after(EITHER_SENDER_READBACK), EITHER_SENDER_READBACK);
+        if (start?.startsWith(EITHER_READBACK)) return this.#findEither(target, signal, after(EITHER_READBACK));
+        if (start?.startsWith(CONVERSATION_READBACK))
+          return this.#findFallback(target, signal, after(CONVERSATION_READBACK));
+        return this.#findConversation(target, signal, start);
+      },
       { maxAttempts: 1, timeoutMs: 8_000 },
     );
+  }
+  /** A card sent before cards went to the sender (plain text) stays in the conversation. */
+  async #mayBeWithSender(target: FeedbackTarget): Promise<boolean> {
+    if (target.messageFormat === "text_v1" || !failureGoesToSender(target)) return false;
+    return !(await this.#context(target)).direct;
+  }
+  /** The conversation pages of an unrecorded leg, then the sender's direct message. */
+  async #findEither(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    const result = await this.#findConversation(target, signal, cursor);
+    if (result.ids.length > 0) return result;
+    return { ids: [], cursor: result.cursor ? `${EITHER_READBACK}${result.cursor}` : EITHER_SENDER_READBACK };
   }
   #findConversation(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     return target.provider === "slack"
@@ -589,7 +612,9 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * name that chat before a send, so it repeats the send under the same request `uuid`, which Feishu answers with
    * the original message when there was one; past its deduplication window nothing is repeated.
    */
-  async #findSender(target: FeedbackTarget, signal: AbortSignal, page?: string) {
+  async #findSender(target: FeedbackTarget, signal: AbortSignal, page?: string, prefix = SENDER_READBACK) {
+    // After the conversation was already read, an unreachable direct message has nothing left to find.
+    const fallback = () => (prefix === SENDER_READBACK ? this.#findFallback(target, signal) : { ids: [] });
     if (target.provider === "feishu") {
       const startedAt = (target.sendStartedAt ?? target.createdAt).getTime();
       if (Date.now() - startedAt > FEISHU_REQUEST_DEDUP_MS) return { ids: [] };
@@ -605,7 +630,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         throw error;
       });
       // A refused direct message means the card fell back to the conversation.
-      if (sent === "rejected") return this.#findFallback(target, signal);
+      if (sent === "rejected") return fallback();
       return { ids: sent === "unknown" ? [] : [sent] };
     }
     const { api, material } = await this.#slack(target, signal);
@@ -613,7 +638,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     try {
       channel = await this.#slackSenderChannel(target, api);
     } catch (error) {
-      if (error instanceof SenderUnreachable) return this.#findFallback(target, signal);
+      if (error instanceof SenderUnreachable) return fallback();
       throw error;
     }
     const identity = slackCardIdentity("failure", target.id);
@@ -634,7 +659,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       )
       .flatMap((m) => (m.ts ? [`${channel}/${m.ts}`] : []));
     const next = r.response_metadata?.next_cursor;
-    return { ids, ...(next ? { cursor: `${SENDER_READBACK}${next}` } : {}) };
+    return { ids, ...(next ? { cursor: `${prefix}${next}` } : {}) };
   }
   async #findSlack(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     const { api, material } = await this.#slack(target, signal);

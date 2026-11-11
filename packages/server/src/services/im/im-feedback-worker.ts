@@ -323,6 +323,7 @@ function sendFailure(
 
 /** An exhausted readback starts over on the same leg: the sender's direct message or the fallback conversation. */
 function readbackLeg(cursor: string | null): string | null {
+  // An unrecorded leg (no cursor, or `either:` phases) starts over from the conversation.
   if (cursor?.startsWith(SENDER_READBACK)) return SENDER_READBACK;
   return cursor?.startsWith(CONVERSATION_READBACK) ? CONVERSATION_READBACK : null;
 }

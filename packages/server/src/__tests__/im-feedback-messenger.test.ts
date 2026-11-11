@@ -1073,18 +1073,47 @@ describe("readback of a card meant for the sender", () => {
     });
     expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
   });
-  it("looks in the sender's direct message first when no leg was recorded", async () => {
+  it("reads the conversation, then the sender's direct message, when no leg was recorded", async () => {
     const { messenger, cooldown } = harness();
+    mocks.slack.conversations.replies.mockResolvedValue({ ok: true, messages: [] });
     mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
     mocks.slack.conversations.history.mockResolvedValue({ ok: true, messages: [] });
-    await messenger.find(quota("slack"));
+    const first = await messenger.find(quota("slack"));
+    expect(mocks.slack.conversations.replies).toHaveBeenCalledOnce();
+    expect(mocks.slack.conversations.open).not.toHaveBeenCalled();
+    expect(first).toEqual({ ids: [], cursor: "either-sender:" });
+    await messenger.find(quota("slack"), first.cursor);
     expect(mocks.slack.conversations.history.mock.calls[0]?.[0]).toMatchObject({ channel: "D1" });
-    // A direct conversation, and a card that never goes to the sender, read the conversation itself.
-    mocks.slack.conversations.replies.mockResolvedValue({ ok: true, messages: [] });
+    // Feishu re-creates in the direct message only after the read-only conversation search found nothing.
+    mocks.feishu.im.v1.message.list.mockResolvedValue({ code: 0, data: { items: [], has_more: false } });
+    expect(await messenger.find(quota("feishu"))).toEqual({ ids: [], cursor: "either-sender:" });
+    expect(mocks.feishu.im.v1.message.create).not.toHaveBeenCalled();
+    // A direct conversation, a card that never goes to the sender, and a legacy text message read the conversation.
+    mocks.slack.conversations.replies.mockClear();
     cooldown.messageContext.mockResolvedValueOnce({ language: "en", direct: true });
-    await messenger.find(quota("slack"));
-    await messenger.find({ ...quota("slack"), errorCode: "provider_rate_limited" });
-    expect(mocks.slack.conversations.replies).toHaveBeenCalledTimes(2);
+    expect(await messenger.find(quota("slack"))).toEqual({ ids: [] });
+    expect(await messenger.find({ ...quota("slack"), errorCode: "provider_rate_limited" })).toEqual({ ids: [] });
+    expect(await messenger.find({ ...quota("slack"), messageFormat: "text_v1" })).toEqual({ ids: [] });
+    expect(mocks.slack.conversations.replies).toHaveBeenCalledTimes(3);
+  });
+  it("finds a card that fell back to the group though its leg was never recorded", async () => {
+    const { messenger, material } = { ...harness(), material: "bot" };
+    const t = quota("slack");
+    mocks.slack.conversations.replies.mockResolvedValue({
+      ok: true,
+      messages: [{ user: material, ts: "9.9", attachments: [{ blocks: [{ block_id: `opentag_feedback:${t.id}` }] }] }],
+    });
+    expect(await messenger.find(t)).toEqual({ ids: ["9.9"] });
+    expect(mocks.slack.conversations.open).not.toHaveBeenCalled();
+  });
+  it("reports a deadline while the direct message opens as nothing sent", async () => {
+    vi.useFakeTimers();
+    const { messenger } = harness();
+    mocks.slack.conversations.open.mockImplementation(() => new Promise(() => undefined));
+    const result = messenger.post(quota("slack")).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(8_001);
+    expect(await result).toMatchObject({ code: "IM_FEEDBACK_SEND_NOT_STARTED", knownNotApplied: true });
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
   });
   it("reads the conversation when the sender's direct message cannot be opened", async () => {
     const { messenger } = harness();

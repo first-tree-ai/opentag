@@ -122,7 +122,7 @@ The worker writes fixed-prefix JSON lines to stderr; the parent consumes them wh
 No diagnostic is stored in the workspace, database, or Turn report. Local Pi runs do not enable
 this stream.
 
-The parent owns `turnId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
+The parent owns `turnId`, `dispatchRequestId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
 `sandboxId`, `environmentGeneration`, and the Instance's `resourceName`. Child fields cannot
 replace them. The parent's startup record includes the probed Runner and Pi versions once.
 Use `module=cloud-pi`, `operation=pi.diagnostic`, and `provider=pi` to identify this stream.
@@ -164,6 +164,12 @@ and elapsed time, and whether its timer is paused. These observe the existing pa
 Total prompt wall time can exceed the RPC budget during compaction. An acknowledged prompt's
 timer is already cleared, so its end record reports it as paused. Cancellation before acknowledgement
 records the aborted RPC in `prompt_acceptance` and does not enter `await_terminal`.
+
+A failed result returned after acknowledgement adds `terminalFailureCategory` to the
+`await_terminal` end record with `outcome=failed`. An allowlisted runtime provider failure code
+takes precedence. Without one, the category is `unfinished_tool_use` for Pi's `toolUse` stop
+or `unknown` otherwise. Only the category is emitted. The Cloud delivery v1 Turn report still
+uses `provider_failed` for these results.
 
 The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
 when later cleanup fails. Errors preserve safe name/code, including the owned `AgentRuntimeError`
@@ -329,6 +335,7 @@ streaming telemetry:
 - **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents). Runner claim times the initial metadata fence. Restore reports download and extraction separately when reached. For a saved archive, restore `durationMs` includes the post-restore fingerprint, reported separately as `fingerprintMs`. Use matching phase boundaries when comparing versions. Save reports fingerprint, pack, upload, and uncertain-commit verification durations where applicable. Upload includes the object write and its response, and verification covers read-back after a failed response. The Server upload record includes the object-store write span. A save without a prior saved archive has `reason=initial_empty_workspace`, including retries of the initial save. An existing archive is fenced and restored without this save.
 - **Runner native sandbox lifecycle (`module="cloud-runner"`)** — `runner.native_sandbox.start`, `runner.native_sandbox.probe`, `runner.native_sandbox.reset`, and `runner.boot.ready` emit single-line JSON records to stderr with `durationMs`, `thresholdMs`, `slow`, `outcome`, and `runnerVersion`.
 - **Cloud Model streaming (`module="cloud-model-proxy"`, `operation="cloud_model.chat_completions"`)** — Records `firstEventMs` (time to first upstream chunk), `streamDurationMs`, `responseBytes`, `retryCount`, and `retryWaitMs`.
+  `cloud_model_cancel_failed` reports a failure in active upstream cancellation. An upstream body that has already errored, including after a request abort or deadline, has no cancellation work left.
 - **MCP probe and Skill archive operations** — `McpProbe` logs `durationMs` on both `"MCP probe succeeded"` and `"MCP probe failed"`. `SkillService` records `normalizeDurationMs` on archive validation and `durationMs` on bundle opening, while `RemoteSkillService` records `openDurationMs` and `durationMs` on source resolution and installation.
 
 ## Configuration

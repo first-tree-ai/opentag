@@ -53,7 +53,6 @@ import {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillFilePath,
-  agentSkillPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -973,11 +972,7 @@ export class BrowserApi {
   }
 
   updateAgentSkill(agentId: string, skillId: string, input: UpdateSkillRequest): Promise<SkillDetail> {
-    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateAgentSkill(agentId, skillId, input));
   }
 
   removeAgentSkill(agentId: string, skillId: string): Promise<void> {

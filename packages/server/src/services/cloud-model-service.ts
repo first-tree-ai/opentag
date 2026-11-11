@@ -7,6 +7,7 @@ import {
   type CloudModelTransportLimits,
 } from "../cloud-model-request.js";
 import { cloudModelRetryAfter } from "../cloud-model-retry.js";
+import { createStreamCancellation } from "../stream-cancellation.js";
 import { CLOUD_USAGE_FAST_RETRY_SECONDS, type CloudCall, type CloudCallStore } from "./cloud-call-store.js";
 import { RouterClient } from "./router-client.js";
 
@@ -105,7 +106,8 @@ export class CloudModelService {
     timer.unref();
     let id: string | undefined;
     let sent = false;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let cancelReader: (() => Promise<void>) | undefined;
+    let cancellation: Promise<void> | undefined;
     let processing: Promise<void> | undefined;
     let settled: Promise<void> | undefined;
     const settle = () =>
@@ -121,13 +123,7 @@ export class CloudModelService {
           release();
         }
       })());
-    const cancel = async () => {
-      try {
-        await reader?.cancel();
-      } catch {
-        this.report("cloud_model_cancel_failed");
-      }
-    };
+    const cancel = () => (cancellation ??= cancelReader?.().catch(() => this.report("cloud_model_cancel_failed")));
     try {
       if (controller.signal.aborted) throw new Error("Cloud call cancelled");
       id = await this.begin(context, body.model);
@@ -139,7 +135,8 @@ export class CloudModelService {
         await settle();
         return response;
       }
-      reader = response.body.getReader();
+      const reader = response.body.getReader();
+      cancelReader = createStreamCancellation(reader);
       const type = response.headers.get("content-type") ?? "";
       const retryAfter = cloudModelRetryAfter(response.headers.get("retry-after"));
       let total = 0;
@@ -160,8 +157,8 @@ export class CloudModelService {
         pull: (controller) =>
           (processing = (async () => {
             try {
-              const chunk = await reader?.read();
-              if (!chunk || chunk.done) {
+              const chunk = await reader.read();
+              if (chunk.done) {
                 await settle();
                 controllerSignalCleanup();
                 controller.close();

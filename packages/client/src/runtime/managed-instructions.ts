@@ -87,9 +87,8 @@ function renderSkills(cliCommand: string): readonly string[] {
 
 /**
  * The Agent may tune its own instructions, model, and reasoning effort through the Session proof.
- * Those fields feed the effective snapshot hash, so a change applies from the next Turn and that
- * Turn starts a new provider conversation instead of resuming the old one. The Agent is told so it
- * does not change them casually mid-task.
+ * Changes apply from the next Turn in every existing Session without resetting the provider
+ * conversation. The Agent is told to change them only when asked, not mid-task.
  *
  * MCP configuration is a separate section (`renderMcpInChat`). It used to be one sentence inside
  * this paragraph, which the model skipped when the user named a product or asked to connect a
@@ -99,7 +98,7 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
     "",
   ];
 }

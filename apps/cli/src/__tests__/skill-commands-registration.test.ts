@@ -1,4 +1,4 @@
-import type { Skill } from "@opentag/shared";
+import type { SkillDetail } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import * as skillOperations from "../core/skill/operations.js";
@@ -12,7 +12,7 @@ import * as presetOperations from "../core/skill/preset-operations.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
-function skill(overrides: Partial<Skill> = {}): Skill {
+function skill(overrides: Partial<SkillDetail> = {}): SkillDetail {
   return {
     id: "8e63f0b3-2b3c-4e57-9d6f-9b4dbb1e0f2a",
     agentId,
@@ -23,6 +23,8 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     archiveSha256: "a".repeat(64),
     archiveBytes: 128,
     fileCount: 1,
+    files: [{ path: "SKILL.md", bytes: 128 }],
+    filesTruncated: false,
     revision: 1,
     createdAt: "2030-01-01T00:00:00.000Z",
     updatedAt: "2030-01-01T00:00:00.000Z",

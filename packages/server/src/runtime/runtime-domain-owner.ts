@@ -33,7 +33,12 @@ import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, with
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
-import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
+import type {
+  AcceptedDeliveryRecord,
+  RecordedTurnRecord,
+  RuntimeCustodyStore,
+  SteerReleaseDisposition,
+} from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
@@ -1546,7 +1551,8 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   return `turn:${frame.turnId}`;
 }
 
-function steerReleaseDisposition(result: RuntimeImSteerResult): "retry" | "deferred" | "uncertain" {
+function steerReleaseDisposition(result: RuntimeImSteerResult): SteerReleaseDisposition {
   if (result.status === "deferred" && result.reason === "steer_state_unknown") return "uncertain";
+  if (result.status === "deferred" && result.reason === "turn_not_running") return "turn_not_running";
   return result.status === "retry" ? "retry" : "deferred";
 }

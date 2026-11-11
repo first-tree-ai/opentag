@@ -157,6 +157,7 @@ export interface SandboxRunnerServiceOptions {
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
+const AUTOMATIC_DELETE_CONFIRM_GRACE_MS = 5 * 60_000;
 const IDLE_RECLAIM_DEFAULT_MS = 120_000;
 /** Durable create-phase markers recorded in `lastErrorCode`. */
 type Marker =
@@ -1573,35 +1574,29 @@ export class SandboxRunnerService {
     resourceName: string,
     resourceUid: string,
   ): Promise<boolean> {
-    if (row.lastErrorCode === CLOUD_DELETE_PENDING) {
-      if (await this.#deletionConfirmed(resourceName, resourceUid)) return true;
-      if (
-        row.lastErrorAt === null ||
-        this.#now().getTime() - row.lastErrorAt.getTime() >= this.#deleteVerifyTimeoutMs
-      ) {
-        throw new CloudRunAdminError(
-          "unavailable",
-          `Cloud Run Instance ${resourceName} removal was not verified in time`,
-        );
-      }
-      return false;
-    }
-    const deleted = await this.#cloud.deleteInstance(resourceName, resourceUid);
-    const confirmationStartedAt = this.#now();
-    if (deleted.alreadyGone || (await this.#deletionConfirmed(resourceName, resourceUid))) return true;
-    if (this.#now().getTime() - confirmationStartedAt.getTime() >= this.#deleteVerifyTimeoutMs) {
+    const confirming = row.lastErrorCode === CLOUD_DELETE_PENDING;
+    const deleted = confirming ? undefined : await this.#cloud.deleteInstance(resourceName, resourceUid);
+    const confirmationStartedAt = confirming ? row.lastErrorAt : this.#now();
+    if (deleted?.alreadyGone || (await this.#deletionConfirmed(resourceName, resourceUid))) return true;
+
+    const now = this.#now();
+    if (
+      confirmationStartedAt === null ||
+      now.getTime() - confirmationStartedAt.getTime() >= this.#deleteVerifyTimeoutMs + AUTOMATIC_DELETE_CONFIRM_GRACE_MS
+    ) {
       throw new CloudRunAdminError(
         "unavailable",
         `Cloud Run Instance ${resourceName} removal was not verified in time`,
       );
     }
-    // Sealing succeeded before DELETE. Persist only for this exact automatic attempt; a lost
-    // acknowledgement is reconciled by the next UID/etag-fenced delete after the retry cooldown.
-    const now = this.#now();
-    await this.#database
-      .update(sandboxes)
-      .set({ lastErrorCode: CLOUD_DELETE_PENDING, lastErrorAt: confirmationStartedAt, updatedAt: now })
-      .where(automaticAttemptMatches(row));
+    if (!confirming) {
+      // Sealing succeeded before DELETE. Persist only for this exact automatic attempt; a lost
+      // acknowledgement is reconciled by the next UID/etag-fenced delete after the retry cooldown.
+      await this.#database
+        .update(sandboxes)
+        .set({ lastErrorCode: CLOUD_DELETE_PENDING, lastErrorAt: confirmationStartedAt, updatedAt: now })
+        .where(automaticAttemptMatches(row));
+    }
     return false;
   }
 

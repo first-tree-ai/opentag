@@ -23,6 +23,7 @@ import {
 
 const CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS = 3;
 const CLOUD_WORKSPACE_RETRY_DELAY_MS = 1000;
+const WORKSPACE_WARMUP_TIMEOUT_MS = 5000;
 
 export class CloudWorkspaceError extends Error {
   readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
@@ -112,6 +113,26 @@ async function boundedJson(response: Response): Promise<unknown> {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch (error) {
     throw new CloudWorkspaceError("save_failed", false, { cause: error });
+  }
+}
+
+export async function warmWorkspaceConnection(
+  config: { backendUrl: string; workspacePersistence?: boolean },
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!config.workspacePersistence) return;
+  try {
+    const url = new URL("/healthz", workspaceOrigin(config.backendUrl));
+    const response = await fetchImpl(url, {
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(WORKSPACE_WARMUP_TIMEOUT_MS)]),
+    });
+    // Read the small response to completion so the workspace requests can reuse the connection.
+    await boundedJson(response);
+  } catch {
+    // A slow, unavailable, or unsupported probe must never gate startup or the authenticated claim.
   }
 }
 

@@ -657,12 +657,26 @@ describe("AgentTurnRunner", () => {
         undefined,
       ),
     ).toEqual({ outcome: "completed", executionEffects: "completed", finalText: "answer", usage: { outputTokens: 1 } });
-    expect(
-      completionForResult(
-        result("completed", { output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }] }),
-        undefined,
-      ),
-    ).toMatchObject({ outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" });
+    // R4: an oversized last reply is cut to the report bound and marked; the finished work still completes.
+    for (const [text, marker] of [
+      ["x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1), "\n\n(The reply was too long; the rest was cut off.)"],
+      ["好".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES), "\n\n（回复过长，后面部分已截断）"],
+    ] as const) {
+      const completion = completionForResult(result("completed", { output: [{ type: "text", text }] }), undefined);
+      expect(completion).toMatchObject({ outcome: "completed", executionEffects: "completed" });
+      expect(completion.errorReason).toBeUndefined();
+      const finalText = completion.finalText ?? "";
+      expect(finalText.endsWith(marker)).toBe(true);
+      expect(Buffer.byteLength(finalText, "utf8")).toBeLessThanOrEqual(RUNTIME_FINAL_TEXT_MAX_BYTES);
+      expect(text.startsWith(finalText.slice(0, -marker.length))).toBe(true);
+      expect(finalText).not.toContain("\uFFFD");
+    }
+    const exact = "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES);
+    expect(completionForResult(result("completed", { output: [{ type: "text", text: exact }] }), undefined)).toEqual({
+      outcome: "completed",
+      executionEffects: "completed",
+      finalText: exact,
+    });
     for (const status of ["aborted", "cancelled"] as const) {
       expect(completionForResult(result(status, { usage: { inputTokens: 1 } }), undefined)).toMatchObject({
         outcome: "cancelled",
@@ -968,19 +982,13 @@ describe("AgentTurnRunner", () => {
       }),
     );
 
-    // A result the runner itself refused carries no provider error and is described by its reason.
+    // An oversized last reply is no longer a failure (R4), so nothing is reported.
     const oversized = await runWith({
       runId: "turn-1",
       status: "completed",
       output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }],
     });
-    expect(oversized).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        errorReason: "output_too_large",
-        outcome: "failed",
-        error: expect.objectContaining({ message: "Agent run completed was classified as output_too_large" }),
-      }),
-    );
+    expect(oversized).not.toHaveBeenCalled();
 
     const completed = await runWith({ runId: "turn-1", status: "completed", output: [] });
     expect(completed).not.toHaveBeenCalled();

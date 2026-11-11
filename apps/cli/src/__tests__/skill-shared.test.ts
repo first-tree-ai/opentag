@@ -1,4 +1,4 @@
-import type { Skill } from "@opentag/shared";
+import type { SkillDetail } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import {
   formatSkill,
@@ -9,7 +9,7 @@ import {
   formatSkillRemoval,
 } from "../core/skill/shared.js";
 
-function skill(overrides: Partial<Skill> = {}): Skill {
+function skill(overrides: Partial<SkillDetail> = {}): SkillDetail {
   return {
     id: "8e63f0b3-2b3c-4e57-9d6f-9b4dbb1e0f2a",
     agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
@@ -20,6 +20,11 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     archiveSha256: "a".repeat(64),
     archiveBytes: 128,
     fileCount: 2,
+    files: [
+      { path: "SKILL.md", bytes: 64 },
+      { path: "notes.txt", bytes: 64 },
+    ],
+    filesTruncated: false,
     revision: 3,
     createdAt: "2030-01-01T00:00:00.000Z",
     updatedAt: "2030-01-02T00:00:00.000Z",

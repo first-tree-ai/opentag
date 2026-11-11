@@ -122,7 +122,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("## Self-configuration");
     expect(prompt).toContain("`opentag-dev agent self show`");
     expect(prompt).toContain("`opentag-dev agent self update`");
-    expect(prompt).toContain("apply from your next Turn and start a new provider conversation");
+    expect(prompt).toContain(
+      "Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation",
+    );
     expect(prompt).toContain("read the current value first");
     expect(prompt).toContain("## MCP");
     expect(prompt).toContain("Run `opentag-dev self mcp` before you reply.");

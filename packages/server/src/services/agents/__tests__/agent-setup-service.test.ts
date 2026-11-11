@@ -427,6 +427,34 @@ describe("Agent setup preparation refresh", () => {
       statusCode: 503,
     });
   });
+
+  it("treats refreshing an offline bound local Computer as a no-op re-read trigger without commanding preparation", async () => {
+    const bootstrap = await account();
+    const prepareComputer = vi.fn(async () => {
+      throw new Error("offline computer cannot prepare");
+    });
+    const { service } = harness({ prepareComputer });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: false });
+
+    await expect(service.refreshPreparationById(bootstrap.userId, agentId)).resolves.toBeUndefined();
+    expect(prepareComputer).not.toHaveBeenCalled();
+  });
+
+  it("treats refreshing a bound local Computer whose heartbeat lapsed as a no-op re-read trigger", async () => {
+    const bootstrap = await account();
+    const prepareComputer = vi.fn(async () => {
+      throw new Error("stale computer cannot prepare");
+    });
+    const { service } = harness({ prepareComputer });
+    const { agentId, computerId } = await boundAgent(bootstrap.userId, { online: true });
+    await unitDatabase.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(NOW.getTime() - 120_000) })
+      .where(eq(computers.id, computerId));
+
+    await expect(service.refreshPreparationById(bootstrap.userId, agentId)).resolves.toBeUndefined();
+    expect(prepareComputer).not.toHaveBeenCalled();
+  });
 });
 
 describe("Agent setup projection Computer states", () => {

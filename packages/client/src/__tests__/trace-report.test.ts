@@ -95,6 +95,17 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it.each([4, 5])("sends a quota reset time only on report capability 5 (%s)", (version) => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = version;
+    const owner = new TurnReportOwner({ connection });
+    const retryAt = "2026-11-11T07:30:00.000Z";
+    const report = owner.create(reportInput({ outcome: "failed", errorReason: "provider_quota_exceeded", retryAt }));
+    expect(report.retryAt).toBe(version === 5 ? retryAt : undefined);
+    expect(report.resultHash).toBe(computeTurnResultHash(report));
+    owner.stop();
+  });
+
   it("keeps a durable v3 failure unchanged while reconnecting through an older Server", async () => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = 3;

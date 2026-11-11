@@ -220,6 +220,8 @@ export interface TurnCompletion {
   readonly finalText?: string;
   readonly outcome: "completed" | "failed" | "cancelled" | "unknown";
   readonly usage?: TurnReportHashInput["usage"];
+  /** When a used-up model quota is available again; sent only on Turn report v5. */
+  readonly retryAt?: string;
 }
 
 interface TurnPhaseTimings {
@@ -607,6 +609,8 @@ export class AgentTurnRunner {
       executionEffects: completion.executionEffects,
       ...(completion.finalText ? { finalText: completion.finalText } : {}),
       ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
+      // The report owner drops it below Turn report v5 or on any other reason.
+      ...(completion.retryAt ? { retryAt: completion.retryAt } : {}),
       ...(completion.usage ? { usage: completion.usage } : {}),
       traceSummary,
       ...(outgoingReplies ? { outgoingReplies } : {}),
@@ -1326,6 +1330,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
     errorReason: providerTurnFailureReason(result.error?.code),
+    ...(result.error?.retryAt ? { retryAt: result.error.retryAt } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
   };
 }

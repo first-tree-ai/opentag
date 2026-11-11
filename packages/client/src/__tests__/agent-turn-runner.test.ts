@@ -663,6 +663,19 @@ describe("AgentTurnRunner", () => {
         undefined,
       ),
     ).toMatchObject({ outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" });
+    expect(
+      completionForResult(
+        result("failed", {
+          error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+        }),
+        undefined,
+      ),
+    ).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "provider_quota_exceeded",
+      retryAt: "2026-11-11T07:30:00.000Z",
+    });
     for (const status of ["aborted", "cancelled"] as const) {
       expect(completionForResult(result(status, { usage: { inputTokens: 1 } }), undefined)).toMatchObject({
         outcome: "cancelled",
@@ -920,6 +933,40 @@ describe("AgentTurnRunner", () => {
         outcome: "unknown",
         error: expect.any(AgentProviderError),
       }),
+    );
+  });
+
+  it("passes a quota reset time to the report owner, which decides whether the Server can take it", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "d".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => ({
+          prompt: async (): Promise<AgentRunResult> => ({
+            runId: "turn-1",
+            status: "failed",
+            output: [],
+            error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+          }),
+        }),
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ errorReason: "provider_quota_exceeded", retryAt: "2026-11-11T07:30:00.000Z" }),
+      expect.any(Number),
     );
   });
 

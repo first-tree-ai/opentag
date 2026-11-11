@@ -32,6 +32,7 @@ import {
   type AgentProviderRunResult,
   type AgentProviderSteerCustody,
   type AgentRunConfiguration,
+  type AgentRunError,
   type AgentRuntimeBinding,
   type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
@@ -204,6 +205,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #processReady?: ProcessReady;
   #providerFailure?: Error;
   #assistantError?: string;
+  /** When Claude Code said a usage window that rejected this Run opens again (`rate_limit_event`). */
+  #quotaResetAt?: string;
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
@@ -243,6 +246,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#continuedTerminals.length = 0;
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
+    this.#quotaResetAt = undefined;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
     this.#resumedRun = false;
@@ -303,7 +307,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
       return {
-        ...claudeCodeRunResult(this.#terminal, this.#assistantError),
+        ...claudeCodeRunResult(this.#terminal, this.#assistantError, this.#quotaResetAt),
         ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
       };
     } catch (error) {
@@ -357,6 +361,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#resumedRun = false;
     this.#terminal = undefined;
     this.#assistantError = undefined;
+    this.#quotaResetAt = undefined;
     this.#continuedTerminals.length = 0;
     // An abort that arrived while the first process was exiting interrupted nothing that is still running.
     context.signal.throwIfAborted();
@@ -573,6 +578,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "assistant") {
       await this.#handleAssistant(message);
+      return;
+    }
+    if (type === "rate_limit_event") {
+      this.#quotaResetAt = rejectedUsageWindowReset(message) ?? this.#quotaResetAt;
+      await this.#emitProviderEvent(message);
       return;
     }
     if (type === "user") {
@@ -1403,7 +1413,25 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
   };
 }
 
-function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {
+/**
+ * Claude Code reports each subscription usage window in a `rate_limit_event` (2.1.319): `rate_limit_info` holds its
+ * `status` and `resetsAt` in Unix seconds. A `rejected` window is a used-up quota, and its reset is when to try again.
+ */
+function rejectedUsageWindowReset(message: Readonly<Record<string, unknown>>): string | undefined {
+  const info = message.rate_limit_info;
+  if (!info || typeof info !== "object") return undefined;
+  const status = Reflect.get(info, "status");
+  const resetsAt = Reflect.get(info, "resetsAt");
+  // Unix seconds within the range a Date can hold; anything else is not a time.
+  if (status !== "rejected" || typeof resetsAt !== "number" || !(resetsAt > 0 && resetsAt < 8.64e12)) return undefined;
+  return new Date(resetsAt * 1000).toISOString();
+}
+
+function claudeCodeRunResult(
+  terminal: ClaudeCodeTerminal,
+  assistantError: string | undefined,
+  quotaResetAt?: string,
+): AgentProviderRunResult {
   const output = [...(terminal.earlierResults ?? []), ...(terminal.result === undefined ? [] : [terminal.result])].map(
     (text) => ({ type: "text" as const, text }),
   );
@@ -1427,17 +1455,27 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: strin
     status: "failed",
     output,
     ...(terminal.usage ? { usage: terminal.usage } : {}),
-    error: {
-      code:
-        providerFailureCode(terminal.subtype) !== "provider_error"
-          ? providerFailureCode(terminal.subtype)
-          : promptTooLong(terminal)
-            ? "provider_context_limit"
-            : providerFailureCode(assistantError, terminal.apiErrorStatus),
-      message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
-    },
+    error: withQuotaReset(
+      {
+        code:
+          providerFailureCode(terminal.subtype) !== "provider_error"
+            ? providerFailureCode(terminal.subtype)
+            : promptTooLong(terminal)
+              ? "provider_context_limit"
+              : providerFailureCode(assistantError, terminal.apiErrorStatus),
+        message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
+      },
+      quotaResetAt,
+    ),
     diagnostics,
   };
+}
+
+/** A rate-limited or quota failure after a rejected usage window is that used-up quota, with its reset. */
+function withQuotaReset(error: AgentRunError, quotaResetAt: string | undefined): AgentRunError {
+  if (!quotaResetAt || (error.code !== "provider_rate_limited" && error.code !== "provider_quota_exceeded"))
+    return error;
+  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt };
 }
 
 /**

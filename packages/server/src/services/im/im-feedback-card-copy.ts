@@ -53,8 +53,12 @@ const FAILURE_CARDS = {
   },
   // A Computer too old to report which cause it was, or a missing Cloud model grant.
   credential_unavailable: ENVIRONMENT,
-  // The CLI the Agent replies through could not be prepared.
-  tool_setup_failed: agentError("消息工具准备失败，请重试", "The messaging tool couldn't be prepared. Try again"),
+  // The Feishu or Slack command line the Agent replies through, or its connection, could not be prepared.
+  // Named by the conversation's provider in `failureCardCopy`.
+  tool_setup_failed: agentError(
+    "飞书命令行没能准备好，请重试",
+    "The Feishu command line couldn't be prepared. Try again",
+  ),
   // Titled by the conversation's provider in `failureCardCopy`.
   im_connection_unavailable: {
     title: { zh: "飞书连接已失效", en: "The Feishu connection is no longer valid" },
@@ -71,9 +75,9 @@ const FAILURE_CARDS = {
   provider_execution_limit: agentError("内容太长没写完，请重试", "The reply was too long to finish. Try again"),
   // Interim until an oversized reply is sent truncated.
   output_too_large: agentError("回复太长，请重试", "The reply is too long. Try again"),
-  // The final title names the actual limit once it is 60 minutes.
+  // The limit is per Agent, so the card does not name a duration.
   turn_timeout: {
-    title: { zh: "任务超时", en: "Task timed out" },
+    title: { zh: "任务超时未完成", en: "The task timed out before it finished" },
     body: { zh: "回复“继续”，Agent 会接着做", en: 'Reply "continue" and the Agent will pick it up' },
   },
   sandbox_unavailable: agentError("云端运行环境断开，请重试", "The cloud environment disconnected. Try again"),
@@ -115,6 +119,11 @@ const SLACK_CONNECTION_TITLE: Localized = {
   en: "The Slack connection is no longer valid",
 };
 
+const SLACK_TOOL_SETUP: CardCopy = agentError(
+  "Slack 命令行没能准备好，请重试",
+  "The Slack command line couldn't be prepared. Try again",
+);
+
 export function failureCardCopy(
   reportedCode: string | null,
   options: {
@@ -136,9 +145,13 @@ export function failureCardCopy(
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT;
   const failure =
-    code === "im_connection_unavailable" && options.provider === "slack"
-      ? { ...reason, title: SLACK_CONNECTION_TITLE }
-      : reason;
+    options.provider !== "slack"
+      ? reason
+      : code === "im_connection_unavailable"
+        ? { ...reason, title: SLACK_CONNECTION_TITLE }
+        : code === "tool_setup_failed"
+          ? SLACK_TOOL_SETUP
+          : reason;
   const card = options.workspaceBlocked
     ? FAILURE_CARDS.workspace_failed
     : code === "provider_quota_exceeded"

@@ -20,14 +20,13 @@ the same Session after the daemon is back, its input begins with
 
 With an IM test binding on a Local Computer and permission to stop its daemon:
 
-1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then one reply within
-   about seventy-five seconds with the agreed four sentences and a Restore connection link. No Computer name or person
-   is named.
+1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then within about
+   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “电脑恢复后会自动处理” and no link. No
+   Computer name or person is named. In a direct message the card is not a quote reply.
 2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
    Expected: that Session gets its own single notice.
-3. Open the link signed in as the Agent owner. Expected: the Agent page shows the Computer as offline, and its link
-   opens the recovery page with the restore command. Open it signed out. Expected: sign-in. Open it as an Account with
-   other Agents. Expected: not found. Open it as an Account with no Agents. Expected: first-Agent setup.
+3. Open the Agent page signed in as the Agent owner. Expected: the Computer shows as offline, and its link opens the
+   recovery page with the restore command.
 4. Restart the daemon. Expected: the parked messages run and no "back online" message appears. Stop it again and send
    a request. Expected: one new notice for this new offline period.
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
@@ -40,9 +39,8 @@ arrives (for example a daemon whose reconcile hangs) until the dispatch timeout 
 that can be arranged, or with a delivery row set to `pending` and `last_error_code = 'IM_DELIVERY_PARKED'` on a test
 database:
 
-1. With the Computer online, send a Chinese request in the same Session. Expected: one reply within about seventy-five
-   seconds saying an earlier message has not been confirmed and this one waits behind it, with an 查看 Agent link. It
-   names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
+   one orange card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
@@ -52,26 +50,29 @@ database:
 
 With an IM test binding and a runtime that can be made to fail on request:
 
-1. Send a Chinese request that fails. Expected: one plain-text reply in the same conversation or thread with three
-   Chinese sentences (what happened, whether operations ran, what to do next) and a clickable 查看详情 link with no raw
-   URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
-2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
+1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
+   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no link or button, and no sentence about whether
+   operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
+   shows above the card.
+2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
-3. Make the workspace save fail. Expected: one plain-text reply in the language of the request, with no card, buttons
-   or error code. Its next step says the save can be retried or the changes discarded from the details page, followed
-   by the details link. Open the link as the Agent owner, retry the save, and confirm. Expected: the operation runs from
-   the page, and the original reply is edited in place to show the result, actor and time. Repeat with Discard, which
-   asks for the permanent-loss confirmation first.
-4. Legacy cards from a release that still sent them. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the
-   messenger suite (`im-feedback-messenger.test.ts`), or a test deployment upgraded from such a release:
-   - A target stored as `interactive_v1` that never sent: it is rewritten to `text_v1` when the send is reserved and is
-     sent once as text.
-   - A card already sent: a later status change or save/discard result makes no provider call and posts no new message;
-     the details page shows the current state.
-   - A card send whose outcome is unknown: readback still binds the card (Slack by its `opentag_feedback:<id>` block ID,
-     Feishu by the details URL) and never creates a second message.
-   - Clicking a button on an old card: Slack answers without an error and does nothing; a Feishu Retry button shows a
-     "no longer available" toast. Neither returns a server error.
+3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
+   inside a thread. Expected: the card is in that thread on both.
+4. Make the model authentication fail. Expected: “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号” and no link.
+5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
+   As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
+   turns green in place and reads only 已保存. Repeat with Discard, which asks for the
+   permanent-loss confirmation first and ends as 已放弃改动.
+6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
+   (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:
+   - A target stored as `text_v1` that never sent: it is rewritten to `interactive_v1` when the send is reserved and
+     is sent once as a card.
+   - A text message already sent: a later status change edits it as text and posts no new message.
+   - A card from before the text period: a later status change edits it in place as a current card.
+   - A send whose outcome is unknown: readback binds the message (Slack by its `opentag_feedback:<id>` block ID or a
+     text message's details URL, Feishu by the feedback URL) and never creates a second message.
+   - Clicking a button on a card from before the text period: Slack answers without an error and does nothing; a
+     Feishu Retry button shows a "no longer available" toast. Neither returns a server error.
 
 ## Feishu system reaction projection
 

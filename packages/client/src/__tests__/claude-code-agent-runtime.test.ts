@@ -230,7 +230,63 @@ describe("ClaudeCodeAgentRuntime", () => {
     });
     expect(argumentAfter(processes[0]?.args ?? [], "--resume")).toBe(SESSION_ID);
     expect(processes[0]?.args).not.toContain("--session-id");
+    expect(processes[0]?.args).not.toContain("--system-prompt-snapshot");
     await runtime.close();
+  });
+
+  it("persists systemPromptSnapshotOff on the Session binding after the first system prompt change and passes --system-prompt-snapshot off on every subsequent run", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const events: AgentRuntimeEvent[] = [];
+    const factory = claudeFactory(processes, "complete");
+    const request = createRequest((event) => {
+      events.push(event);
+    });
+
+    const created = await factory.create(request);
+    await created.prompt({ runId: "run-create", input: input("first") });
+    expect(processes[0]?.args).not.toContain("--system-prompt-snapshot");
+    expect(created.binding).toEqual({
+      providerId: "claude-code",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID },
+    });
+    await created.close();
+
+    const updated = await factory.resume({
+      ...request,
+      systemPrompt: "Updated OpenTag managed system prompt",
+      systemPromptUpdated: true,
+      binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+    expect(updated.binding).toEqual({
+      providerId: "claude-code",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID, systemPromptSnapshotOff: true },
+    });
+    await updated.prompt({ runId: "run-updated", input: input("second") });
+    expect(argumentAfter(processes[1]?.args ?? [], "--system-prompt-snapshot")).toBe("off");
+    expect(argumentAfter(processes[1]?.args ?? [], "--append-system-prompt")).toBe(
+      "Updated OpenTag managed system prompt",
+    );
+    await updated.close();
+
+    const subsequent = await factory.resume({
+      ...request,
+      systemPrompt: "Updated OpenTag managed system prompt",
+      binding: {
+        providerId: "claude-code",
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID, systemPromptSnapshotOff: true },
+      },
+    });
+    expect(subsequent.binding).toEqual({
+      providerId: "claude-code",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID, systemPromptSnapshotOff: true },
+    });
+    await subsequent.prompt({ runId: "run-subsequent", input: input("third") });
+    expect(argumentAfter(processes[2]?.args ?? [], "--system-prompt-snapshot")).toBe("off");
+    await subsequent.close();
   });
 
   it("starts a new conversation and says the history is gone when resume finds no conversation", async () => {

@@ -50,12 +50,18 @@ they are a `pending` row with a frozen frame whose request timer passed, and a `
 | `pending` | recorded; with a frozen frame the frame was sent and is resent unchanged on every retry; `last_error_code` carries the backoff reason or `IM_DELIVERY_PARKED` | ingress inserts it (IM Inbox, `session send` and `session create`, the schedule claim); the delivery worker writes the frame and the backoff |
 | `accepted` | the Client or Runner persisted the input and answered; execution is theirs | the custody store on `im:deliver:result`, `session:message:deliver:result`, `delivery:received`, or `session:message:received`, including a receipt that arrives after the request timer |
 | `steered` | IM only: joined a running Turn through `im:steer` | the custody store |
-| `expired` | `reason` is `ttl` (past `expires_at`), `superseded` (the next occurrence was claimed), `capacity`, or `duplicate_pending` | the janitor; the schedule claim writes `superseded`; the IM Inbox writes the last two |
+| `expired` | `reason` is `ttl` (past `expires_at`), `superseded` (the next occurrence was claimed), `capacity`, or `duplicate_pending`. A row that carries a frozen frame keeps its correlation when it expires: the frame may have been received, so its execution effects are `may_have_occurred`, and a late receipt or report still settles it, as for an expired IM dispatch today | the janitor; the schedule claim writes `superseded`; the IM Inbox writes the last two |
 | `terminal_rejected` | a permanent refusal: the Client's reason, `retry_exhausted`, `target_stopped`, or a schedule pause, edit, or delete | the worker on a terminal receipt or exhaustion; `session stop`; the schedule admission |
 
 After `accepted`, settlement writes `reported_at` (for IM also `turn_report`); the report cutoffs and recovery stay as
-they are. A late receipt moves a `pending` row with a frame to `accepted` whenever it arrives, for every kind, through
-the worker's existing late-result map.
+they are.
+
+No timer in this model is evidence about the connection or about execution. The request timer only sets the retry
+cadence: heartbeats can keep a connection current while one receipt is late (inbox persistence or the Agent lock can
+delay a single delivery), so a receipt is applied whenever it arrives, for every kind: through the worker's late-result
+map while the attempt is remembered there, and otherwise through the resend of the same frozen frame, which the Client
+answers from its own record. The map is bounded by entries, not by time, and the frozen frame on the row is the durable
+correlation that survives a Server restart. A `pending` row with a frame is "sent, unanswered", never "not delivered".
 
 ## How each kind uses the record
 
@@ -66,15 +72,18 @@ the worker's existing late-result map.
 | Retry before acceptance | the worker's capped backoff, offline term, reconnect wakeup, parking, until `expires_at` | the same, until the 24-hour limit | the same, until the next trigger |
 | Running Turn | `im:steer` from the Server | the worker skips the custody fence for this kind and sends the frame; the Client inbox queues or steers as today | same as Session |
 | Queue capacity | 99 pending per Session, as today | 256 pending per target Session | 256 |
-| Terminal notice | IM feedback, unchanged | one delivery-failure notice to the sender on `expired` or `terminal_rejected`; Run outcome notices unchanged | the "didn't run" message on `expired` or `terminal_rejected`, once per cause; a failed Run posts as today |
+| Terminal notice | IM feedback, unchanged | one notice to the sender on `expired` or `terminal_rejected`: "not delivered" for a row that never carried a frame, "may not have run" for one that did; Run outcome notices unchanged | the scheduled task message on `expired` or `terminal_rejected`, once per cause: "didn't run" for a row that never carried a frame, "may not have run" for one that did; a failed Run posts as today |
+| Notice identity and correction | `im_feedback_targets`, keyed by the delivery row, unchanged | the notice is a SessionMessage whose id is a UUIDv5 over the delivery row id; a correction after a late receipt or report derives its id the same way, so nothing is stored | an `im_feedback_targets` row keyed by the delivery row, so occurrence A's notice survives occurrence B's claim and a late receipt or report for A edits A's message, as a late completion edits an IM expiry card today; `agent_schedules.last_dispatch` stays a projection and never holds a notice identity |
 | Old readers | unchanged | `session_messages.last_outcome`, `last_error_code`, `attempt_count` are written as a projection of the row in the same transaction | `agent_schedules.last_dispatch` is written as a projection of the row |
 | Cloud | the Cloud coordinator, unchanged | the coordinator sends `session:message:run` and takes custody on the Runner receipt; `runtime_durable_work` stays the Runner-side mirror | same as Session |
 
 What this removes: the scheduled preparation and receipt budgets (60, 90, 280, and 20 seconds), the
-`delivery_timeout` and `delivery_uncertain` outcomes, the "may not have run" notice and any need to correct it, the
-`unknown` outcome of a Local `session send`, and the separate held-delivery worker of
+`delivery_timeout` and `delivery_uncertain` outcomes, the "may not have run" notice on a timeout, the `unknown`
+outcome of a Local `session send`, and the separate held-delivery worker of
 [#1353](https://github.com/first-tree-ai/opentag/pull/1353): a row that was sent but not answered is retried with the
-same frame and settled by the late receipt, exactly as an IM delivery is today.
+same frame and settled by the late receipt, exactly as an IM delivery is today. "May not have run" remains only for a
+sent row that expires or is superseded unanswered, and it carries the per-row identity above so a late receipt
+corrects it.
 
 ## One-shot rollout
 
@@ -107,8 +116,7 @@ same frame and settled by the late receipt, exactly as an IM delivery is today.
   steering them.
 - Double execution on a resend is bounded as for IM today: the same frozen frame, Client deduplication by message id
   and hash, and a terminal Client answer recorded as `terminal_rejected` with the Client's reason.
-- A rollback silently expires pending Session and scheduled rows.
-- Single Server replica, as today.
+- A rollback silently expires pending Session and scheduled rows; the Server stays a single replica, as today.
 
 ## Decision points
 
@@ -117,10 +125,12 @@ would move IM rows; **D2** keep `session_messages.last_outcome` and `agent_sched
 written from the delivery row; **D3** the per-kind limits (24-hour hold, 256 per target, next trigger as the scheduled
 deadline); **D4** #1353: merge as an interim or close in favor of this design, which removes its held-delivery worker;
 **D5** Cloud Session and scheduled dispatch through the Cloud coordinator; **D6** the constraint validation approach
-and its measured cost.
+and its measured cost; **D7** `im_feedback_targets` rows for scheduled deliveries, which have no native input, so
+`message_id`, `input_external_id`, and `sender_external_id` need a nullable or placeholder form.
 
-Product and IM wording (Gandy): **G1** the sender's delivery-failure notice and the "didn't run" message on an expired
-or superseded occurrence; **G2** how the CLI and the Web describe a message the Server still holds.
+Product and IM wording (Gandy): **G1** the sender's "not delivered" and "may not have run" notices, the scheduled
+"didn't run" and "may not have run" messages, and how a correction reads; **G2** how the CLI and the Web describe a
+message the Server still holds.
 
 Agent configuration and security (刘超): **L1** the managed-instruction text for `accepted` and `--message-id`
 retries; **L2** whether Agents are told that a message is queued and may arrive late.

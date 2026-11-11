@@ -1,8 +1,9 @@
 import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
 import { WebClient } from "@slack/web-api";
 import type { runtimeApprovals } from "../db/schema/index.js";
-import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
+import { type ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { feishuDomainForWorkspaceBrand } from "../services/im-bindings/feishu/adapter.js";
+import { numericProviderCode } from "../services/im-bindings/feishu/setup-check.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 
 type Approval = typeof runtimeApprovals.$inferSelect;
@@ -39,11 +40,10 @@ export class ApprovalMessenger {
             }),
           { maxAttempts: 1 },
         );
-        if (result.ts) {
-          return { messageId: result.ts, channelId: authority.channelId };
-        }
-      } catch {
-        // Fall back to direct message when posting in the originating conversation fails.
+        if (!result.ts) throw new Error("APPROVAL_MESSAGE_MISSING");
+        return { messageId: result.ts, channelId: authority.channelId };
+      } catch (error) {
+        if (!isConfirmedSlackNonDelivery(error)) throw error;
       }
     }
     const opened = await this.policy.run(
@@ -72,27 +72,8 @@ export class ApprovalMessenger {
     if (!connection) throw new Error("APPROVAL_BINDING_STALE");
     const content = feishuCard(approval, connection.modelSettingsUrl);
     if (authority.externalMessageId) {
-      try {
-        const replyResult = await this.policy.run(
-          "feishu.approval.post",
-          () =>
-            connection.client.im.v1.message.reply({
-              path: { message_id: authority.externalMessageId },
-              data: {
-                msg_type: "interactive",
-                content,
-                reply_in_thread: Boolean(authority.threadKey),
-              },
-            }),
-          { maxAttempts: 1 },
-        );
-        const replyChannelId = replyResult.data?.chat_id ?? authority.channelId;
-        if (replyResult.code === 0 && replyResult.data?.message_id && replyChannelId) {
-          return { messageId: replyResult.data.message_id, channelId: replyChannelId };
-        }
-      } catch {
-        // Fall back to direct message when replying to the originating message fails.
-      }
+      const replied = await this.replyFeishu(connection.client, authority, content);
+      if (replied) return replied;
     }
     const result = await this.policy.run(
       "feishu.approval.post",
@@ -111,6 +92,42 @@ export class ApprovalMessenger {
       throw new Error("APPROVAL_MESSAGE_FAILED");
     }
     return { messageId: result.data.message_id, channelId: result.data.chat_id };
+  }
+
+  private async replyFeishu(
+    client: Client,
+    authority: Approval["authority"],
+    content: string,
+  ): Promise<{ messageId: string; channelId: string } | undefined> {
+    try {
+      const replyResult = await this.policy.run(
+        "feishu.approval.post",
+        () =>
+          client.im.v1.message.reply({
+            path: { message_id: authority.externalMessageId },
+            data: {
+              msg_type: "interactive",
+              content,
+              reply_in_thread: Boolean(authority.threadKey),
+            },
+          }),
+        { maxAttempts: 1 },
+      );
+      if (replyResult.code === 0) {
+        const replyChannelId = replyResult.data?.chat_id ?? authority.channelId;
+        if (!replyResult.data?.message_id || !replyChannelId) {
+          throw new Error("APPROVAL_MESSAGE_FAILED");
+        }
+        return { messageId: replyResult.data.message_id, channelId: replyChannelId };
+      }
+      if (!isConfirmedFeishuNonDelivery(replyResult)) {
+        throw new Error("APPROVAL_MESSAGE_FAILED");
+      }
+      return undefined;
+    } catch (error) {
+      if (!isConfirmedFeishuNonDelivery(error)) throw error;
+      return undefined;
+    }
   }
 
   async finish(approval: Approval): Promise<void> {
@@ -163,6 +180,60 @@ export class ApprovalMessenger {
       modelSettingsUrl: this.modelSettingsUrl(material.agentId),
     };
   }
+}
+
+const CONFIRMED_SLACK_NON_DELIVERY_CODES = new Set([
+  "cannot_reply_to_message",
+  "channel_not_found",
+  "ekm_access_denied",
+  "is_archived",
+  "message_not_found",
+  "missing_scope",
+  "no_permission",
+  "not_in_channel",
+  "posting_to_general_channel_denied",
+  "restricted_action",
+  "restricted_action_non_threadable_channel",
+  "restricted_action_read_only_channel",
+  "restricted_action_thread_locked",
+  "restricted_action_thread_only_channel",
+  "thread_not_found",
+]);
+
+const CONFIRMED_FEISHU_NON_DELIVERY_CODES = new Set([
+  230001, 230002, 230006, 230011, 230013, 230019, 230023, 230027, 230035,
+]);
+
+const CONFIRMED_FEISHU_NON_DELIVERY_MESSAGES = [
+  "bot is not in chat",
+  "chat disbanded",
+  "chat dissolved",
+  "message deleted",
+  "message not found",
+  "message recalled",
+  "not in chat",
+];
+
+function isConfirmedSlackNonDelivery(error: unknown): boolean {
+  if (error instanceof ExternalCallPolicyError) return false;
+  const dataError = (error as { data?: { error?: unknown } } | null)?.data?.error;
+  return typeof dataError === "string" && CONFIRMED_SLACK_NON_DELIVERY_CODES.has(dataError);
+}
+
+function isConfirmedFeishuNonDelivery(error: unknown): boolean {
+  if (error instanceof ExternalCallPolicyError) return false;
+  const code = numericProviderCode(error);
+  if (code !== undefined && CONFIRMED_FEISHU_NON_DELIVERY_CODES.has(code)) return true;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof (error as { msg?: unknown } | null)?.msg === "string"
+        ? (error as { msg: string }).msg
+        : undefined;
+  return (
+    message !== undefined &&
+    CONFIRMED_FEISHU_NON_DELIVERY_MESSAGES.some((pattern) => message.toLowerCase().includes(pattern))
+  );
 }
 
 function statusText(status: Approval["status"]): string | undefined {

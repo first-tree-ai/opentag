@@ -401,3 +401,21 @@ still shares the Run's retries and its outcome. Use Claude Code and Codex, and c
 2. Expected: each send returns `accepted`, or the schedule shows its latest run as unconfirmed, and neither reports an error.
 3. Start the daemon again.
 4. Expected: within about a minute the target runs "first" and then "second", once each, or the scheduled message runs once. The sender receives no notice.
+5. Hold limit (256 per target Session, 1024 per Computer, `SESSION_MESSAGE_HELD_LIMITS`). With the target daemon still stopped,
+   fill the target Session's hold: send 256 messages to it with `opentag session send` (a short shell loop is enough).
+   Expected: each returns `accepted`, and the Session's messages show `unknown / delivery_held`. To check the
+   per-Computer limit, spread 1024 messages over several Sessions on the stopped Computer; the boundary results below are the same.
+6. Direct response. Send one more message to the full Session. Expected: the CLI answers `unreachable` with
+   `delivery_held_full` right away, the message is not held, and no later delivery notice arrives for it.
+7. Previously accepted hand-off. Start the daemon, let the hold drain, then pause the daemon process with `kill -STOP`
+   so the Computer stays connected but does not answer. The Server reads it as offline after 90 seconds of silence, so
+   do the rest within that window. Send 255 messages to the target Session in parallel (for example with `xargs -P 64`);
+   each answers `accepted` after its 5-second wait and becomes `delivery_held` when its attempt times out (about 30
+   seconds). Then send two more at once. Expected: both answer `accepted`; the attempt that finishes first takes the last place, and the other ends
+   `unreachable / delivery_held_full`. Its sender receives exactly one delivery failure notice, and later redelivery
+   sweeps send no second one. Stop the paused daemon with `kill -CONT` then a normal stop before step 8.
+8. Scheduled occurrence. With the hold still full, let a schedule that targets the full Session reach its trigger.
+   Expected: the occurrence is a missed occurrence with `delivery_held_full`, the schedule's conversation receives exactly one
+   miss message for that cause, and a second full occurrence of the same schedule posts nothing more.
+9. Start the daemon again. Expected: the held messages run in order, once each, and none of the messages refused in
+   steps 6 to 8 runs.

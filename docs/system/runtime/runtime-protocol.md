@@ -221,9 +221,10 @@ replies through or its credential environment could not be prepared. On v1 to v3
 `runtime.turnReport` v5 adds an optional `retryAt` to a `provider_quota_exceeded` report: when the used-up quota is
 available again, as the model CLI reported it in structured output. It is rejected on any other reason. The Server
 keeps it only inside the Turn report the delivery already stores and passes it to the quota card; nothing else reads
-it. A report without `retryAt` keeps its v4 hash. Today only Claude Code supplies it: a `rate_limit_event` whose `rate_limit_info.status` is
-`rejected` names when that usage window resets (`resetsAt`, Unix seconds). A rate-limited or quota failure in the same
-Run is then reported as `provider_quota_exceeded` with that time. Codex, Pi and Cloud Turns send no `retryAt`.
+it. A report without `retryAt` keeps its v4 hash. Today only Claude Code supplies it: a `rate_limit_event` whose
+`rate_limit_info.status` is `rejected` names when that usage window resets (`resetsAt`, Unix seconds). A rate-limited
+or quota failure in the same Run is then reported as `provider_quota_exceeded` with that time. Codex, Pi and Cloud
+Turns send no `retryAt`.
 
 Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion: 1` contract.
 It retains the legacy failure vocabulary: new provider categories become `provider_failed`

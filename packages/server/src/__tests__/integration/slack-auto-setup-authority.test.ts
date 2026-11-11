@@ -314,6 +314,10 @@ it("keeps a current callback success", async () => {
 it("reads setup and preparation without discarded activity queries", async () => {
   const f = await fixture(),
     now = new Date("2026-11-03T00:00:00Z");
+  await f.client.database
+    .update(computers)
+    .set({ currentInstanceId: randomUUID(), lastSeenAt: now })
+    .where(eq(computers.id, f.computer.id));
   const messaging = new FeishuSetupService({
     database: f.client.database,
     cipher: f.cipher,

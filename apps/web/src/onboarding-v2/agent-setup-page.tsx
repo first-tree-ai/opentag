@@ -268,6 +268,9 @@ const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
 };
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
+  if (action.kind === "refresh") {
+    return m.onboarding_v2_setup_observation_failed();
+  }
   if (cause instanceof ApiError && cause.code === "IM_BINDING_UNBIND_REQUIRED" && cause.unbindRequired) {
     return spaceScriptBoundary(
       m.onboarding_v2_setup_messaging_switch_required({
@@ -1026,10 +1029,12 @@ function AgentSetupSnapshotView({
           </Text>
         </header>
       ) : null}
-      {observationFailed ? (
-        <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
-      ) : null}
-      {controller.refreshError ? <Banner variant="error" role="alert" description={controller.refreshError} /> : null}
+      <SetupSnapshotBanners
+        actionError={controller.actionError}
+        observationFailed={observationFailed}
+        refreshError={controller.refreshError}
+        showingPreparation={showingPreparation}
+      />
       <LocalPreparationSections
         agentId={agentId}
         computerAdapter={computerAdapter}
@@ -1067,6 +1072,28 @@ function AgentSetupSnapshotView({
           />
         </div>
       ) : null}
+    </>
+  );
+}
+
+function SetupSnapshotBanners({
+  actionError,
+  observationFailed,
+  refreshError,
+  showingPreparation,
+}: {
+  readonly actionError?: string;
+  readonly observationFailed: boolean;
+  readonly refreshError?: string;
+  readonly showingPreparation: boolean;
+}) {
+  return (
+    <>
+      {observationFailed ? (
+        <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
+      ) : null}
+      {refreshError ? <Banner variant="error" role="alert" description={refreshError} /> : null}
+      {showingPreparation && actionError ? <Banner variant="error" role="alert" description={actionError} /> : null}
     </>
   );
 }

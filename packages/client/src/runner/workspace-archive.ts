@@ -777,10 +777,13 @@ class RestoreState {
   }
 
   private async fingerprint(): Promise<string> {
-    // Restoring does not preserve tar mtimes. Scan the staged metadata in workspace order
-    // while directories are still traversable, using the modes about to be applied. Apply
-    // workspace limits to the resulting tree, where implicit directories also count.
-    const scan = await scanWorkspace(this.staging, resolveLimits(undefined));
+    // Scan the staged mtimes in workspace order while directories are still traversable.
+    // A smaller archive entry limit counts tar members; implicit parents still fit under
+    // the normal workspace ceiling. Larger overrides also apply to the staged tree.
+    const scan = await scanWorkspace(this.staging, {
+      ...this.limits,
+      maxEntries: Math.max(this.limits.maxEntries, WORKSPACE_MAX_ENTRIES),
+    });
     assertLinksContained(scan.namespace, "unsafe-entry");
     const hash = createHash("sha256");
     for (const record of scan.records) {

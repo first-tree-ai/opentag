@@ -899,7 +899,8 @@ describe("restoreWorkspaceArchive integrity", () => {
     ]);
     const archivePath = await writeArchive(root, archive);
     const destination = join(root, "restored");
-    await restoreWorkspaceArchive(archivePath, destination, infoOf(archive));
+    const fingerprint = await restoreWorkspaceArchive(archivePath, destination, infoOf(archive), { maxEntries: 3 });
+    expect(fingerprint).toBe(await fingerprintWorkspace(destination));
     expect(await readFile(join(destination, "a", "b", "c", "deep.txt"), "utf8")).toBe("deep");
     expect(await readFile(join(destination, "top.txt"), "utf8")).toBe("top");
     // The declared 0500 mode was applied in finalize, after the child was written.

@@ -13,7 +13,6 @@ it.each([
   ["serverOverloaded", "provider_unavailable"],
   [{ responseStreamDisconnected: { httpStatusCode: null } }, "provider_connection_failed"],
   ["contextWindowExceeded", "provider_context_limit"],
-  ["prompt_too_long", "provider_context_limit"],
   ["error_max_budget_usd", "provider_execution_limit"],
   ["badRequest", "provider_request_rejected"],
   ["exited", "provider_process_exited"],

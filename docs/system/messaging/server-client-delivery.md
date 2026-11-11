@@ -30,9 +30,10 @@ arrives. The pending map, the completed-result cache, and the IM late-result map
   for a timed-out request is ignored (`#completeSessionMessage` only matches `#pending`), so the message row keeps the
   outcome the timeout wrote.
 - Heartbeats run every 30 seconds. The Client terminates its socket after 90 seconds without a frame from the
-  Server; the Server reads a Computer as offline after 90 seconds of silence and sweeps the stale socket. A connection
-  that stalls for less than 90 seconds therefore delays frames and receipts without a reconnect; a longer stall ends
-  the socket on both sides.
+  Server; the Server reads a Computer as offline after 90 seconds of silence and sweeps the stale socket. Both
+  deadlines count from the last frame each side received, not from the start of a stall, so how much of the window a
+  stalled hand-off has left depends on when the previous frame arrived. While neither deadline fires, frames and
+  receipts are delayed and arrive together when the link recovers; once one fires, the socket ends on both sides.
 - Frames queued on a socket are never replayed on the next socket, and the Server registry refuses a send to a
   replaced instance or connection (`instance_replaced`, `unavailable`). After a reconnect only durable Server-side
   records bring work back: the IM delivery row is redispatched, a Session or scheduled message is not.
@@ -54,15 +55,15 @@ has no receipt wait at all, because custody is recorded whenever `delivery:recei
 | Local frames | `session:reconcile` (ready, with the runtime snapshot), then `im:deliver`, or `im:steer` into the running Turn. The whole attempt runs under a 30-second operation deadline; each request has its own 30 seconds. | `session:reconcile` carrying the message inline when the Client negotiated `runtime.sessionMessageReconcile`, otherwise reconcile then `session:message:deliver`. Each request has 30 seconds and the two run in sequence with no overall budget. | Reconcile, retried every 5 seconds on a transient failure within the 60-second preparation budget, then `session:message:deliver` v3 with `scheduledOrigin` and `sentAt`. The final admission holds the Agent, binding, Session, placement, Computer, and schedule row locks until the transport marks the send, at most 5 seconds (`dispatch_not_marked`). |
 | Cloud frames | Ensure the Sandbox and its allocation, then `delivery:run` with `deadlineAt` equal to the Run budget; `delivery:received` records custody and `delivery:verified` carries the model grant (`packages/server/src/runtime/im-delivery-cloud.ts`, `packages/server/src/services/sandboxes/cloud-delivery-owner.ts`). | Dispatches to one target Session are serialized. The owner ensures a ready Runner (20 seconds), sends `session:message:run`, and waits 30 seconds for `session:message:received`; an accepted receipt writes the durable work record and `accepted` before `session:message:verified` leaves. | The same frames with a 250-second readiness wait inside a 280-second budget; 20 seconds when the 75 shared extended slots are busy. |
 | Client receipt | `im:deliver:result` with `accepted` and a `turnId`, `absorbed` into a running Turn, or `rejected` with a reason. The Client records custody in the Session binding and writes the Turn's retry input before it answers (`packages/client/src/runtime/turn-custody-owner.ts`). | `session:message:deliver:result` with `accepted` or `rejected`. The inbox writes the record to `runtime/durability/session-message.json` before it answers (`packages/client/src/runtime/session-message-inbox.ts`). | The same frame. A connection that did not negotiate `runtime.sessionCollaboration` v3 refuses it with `configuration_unsupported`. |
-| Wait and timeout outcome | The 30-second operation deadline records `IM_DELIVERY_OPERATION_TIMEOUT` and releases the dispatch with its correlation kept, so the next claim resends the same frame. A late acceptance still records custody. | 30 seconds per request. A timeout after the frame left is `unknown / delivery_timeout`; a refusal before it left is `unreachable / runtime_unavailable`. A Client refusal with `client_busy`, `session_busy`, or `agent_busy` is `unreachable`; `stale_generation`, `session_not_ready`, `stale_configuration`, and `session_recovery_required` are `unreachable / runtime_not_ready`; every other reason is `rejected`. | Local: 60 seconds from dispatch entry through the send mark, then a 90-second receipt wait (`LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS`). A timeout after the send is `unknown / delivery_timeout`; before the send, `unreachable / delivery_timeout`. Cloud: the 280-second or 20-second budget; a failure after the send is `unknown / delivery_uncertain`, except an explicit `client_busy`. The budget also ends at the next trigger. |
-| Who retries before acceptance | The Server, until `expires_at`: 2, 4, 8, 16, then 30 seconds, raised by one second per 8 seconds of Computer silence up to 30 minutes; a reconnect makes parked retries due (`packages/server/src/runtime/im-delivery-retry.ts`). Eight consecutive operation timeouts end as `terminal_rejected / retry_exhausted`, or park a correlated dispatch. | Nobody. The caller decides whether to resend with the same `--message-id`; the row is fenced for a new attempt and the Client answers a replay from its durable record. | Nobody. A sent occurrence is never resent, and the next occurrence is the next chance. |
+| Wait and timeout outcome | The 30-second operation deadline records `IM_DELIVERY_OPERATION_TIMEOUT` and releases the dispatch with its correlation kept, so the next claim resends the same frame. A late acceptance still records custody. | 30 seconds per request. On the two-frame path a reconcile that times out ends the hand-off as `unreachable / runtime_not_ready` and the message frame never leaves; a timeout after the message frame left, or of an inline reconcile that carries the message, is `unknown / delivery_timeout`. A send refused before any frame left is `unreachable / runtime_unavailable`. A Client refusal with `client_busy`, `session_busy`, or `agent_busy` is `unreachable`; `stale_generation`, `session_not_ready`, `stale_configuration`, and `session_recovery_required` are `unreachable / runtime_not_ready`; every other reason is `rejected`. | Local: 60 seconds from dispatch entry through the send mark, then a 90-second receipt wait (`LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS`). A timeout after the send is `unknown / delivery_timeout`; before the send, `unreachable / delivery_timeout`. Cloud: the 280-second or 20-second budget; a failure after the send is `unknown / delivery_uncertain`, except an explicit `client_busy`. The budget also ends at the next trigger. |
+| Who retries before acceptance | The Server, until `expires_at`: 2, 4, 8, 16, then 30 seconds, raised by one second per 8 seconds of Computer silence up to 30 minutes; a reconnect makes parked retries due (`packages/server/src/runtime/im-delivery-retry.ts`). Eight consecutive operation timeouts end as `terminal_rejected / retry_exhausted`, or park a correlated dispatch. | Nobody. The caller decides whether to resend with the same `--message-id`. The row is fenced for a new attempt and the Client answers the replay from its record: `accepted` while the message is queued, running, retrying, or succeeded; `rejected` with `provider_unavailable` once its Run has failed for good. A rejected replay therefore does not prove that the first attempt was never accepted. | Nobody. A sent occurrence is never resent, and the next occurrence is the next chance. |
 
 ## After the Client accepts
 
 | | IM message | Session message | Scheduled message |
 | --- | --- | --- | --- |
 | Owner | The Client daemon or Runner. The Server never dispatches accepted input again; see [Delivery and execution responsibility](../server-client-boundary.md#delivery-and-execution-responsibility). | The same. `accepted` means the inbox holds the message, not that the task ran. | The same. |
-| Client deduplication | `TurnCustodyOwner` remembers 512 request ids. A repeated delivery id with the same input hash gets the earlier decision; a different hash is `input_conflict`. Custody lives in the Session binding store and the retry input under `data/runtime/turn-retries/`. | The inbox keys records by `targetSessionId:messageId` with a semantic hash, remembers 512 answers, and never prunes finished `session-message` records, so a replay of any age answers `accepted` without a second Run. Capacity is 64 queued per Session and 256 in total; overflow is `client_busy`. | The same inbox; the hash covers the schedule, instant, timezone, and name instead of a source Session. |
+| Client deduplication | `TurnCustodyOwner` remembers 512 request ids. A repeated delivery id with the same input hash gets the earlier decision; a different hash is `input_conflict`. Custody lives in the Session binding store and the retry input under `data/runtime/turn-retries/`. | The inbox keys records by `targetSessionId:messageId` with a semantic hash, remembers 512 answers, and never prunes finished `session-message` records, so a replay of any age is answered from the record and never starts a second Run: `accepted` for a succeeded or still-open record, `rejected` with `provider_unavailable` for one that failed terminally (`failed`, `dead-letter`), and `input_conflict` for a different hash. The same answers hold after a restart (`#rememberedFromRecord`). Capacity is 64 queued per Session and 256 in total; overflow is `client_busy`. | The same inbox and the same replay answers; the hash covers the schedule, instant, timezone, and name instead of a source Session. |
 | Restart recovery | The daemon reads the retry input and binding, counts the interruption, and sends `session:recover`; the Server moves report ownership and sends a ready reconcile. At most 2 automatic retries, as in [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). Accepted custody that no longer reports is settled `unknown` once the maximum runtime plus one hour has passed. Cloud: the Runner re-announces its journal; a lost allocation settles `unknown`. | A `running` record becomes `retryable` with its interruption and waits for the Server to prepare the Session: `session:recover` is answered within 30 seconds or resent after 10 seconds, a `scheduled` answer must produce the reconcile within 60 seconds, and 30 attempts end in failure with a notice (`packages/client/src/runtime/interrupted-work-recovery.ts`). Cloud: re-announced custody is re-verified; a record whose allocation is gone is settled `failed / allocation_retired`. | The same as a Session message. |
 | Failure notice and correction | A working reaction on acceptance; an offline card after 60 seconds on an offline Local Computer, once per outage; a queued card behind a parked dispatch; a failure card on the terminal report; an expiry card at the ingress deadline. A later completion updates or suppresses the expiry card. See [IM task feedback](im-feedback.md). | The sender gets a Run outcome notice only after a terminal non-completed Run: Local through the durable `session:message:outcome` reporter (resent for 24 hours, 5 seconds to 5 minutes between attempts, 120-second acknowledgement timer); Cloud through 3 attempts 30 seconds apart before the settlement is acknowledged. An `unreachable` or `unknown` hand-off produces no notice; the command's answer is the only signal. | The conversation hears one message per cause, compared with the previous occurrence: `unknown` with a code reads "may not have run", `unreachable`, `rejected`, or `skipped` reads "didn't run", and a disabled schedule says so. The send gets 3 in-process attempts; an internal target gets nothing. A failed Run posts its own failure message. No message is edited or followed up when the occurrence is accepted or completes later. |
 
@@ -92,22 +93,25 @@ has no receipt wait at all, because custody is recorded whenever `delivery:recei
 
 ## A stalled link
 
-When the Server-to-Client direction stalls while the socket stays open, the outcome depends only on how long the
-stall lasts, because every wait above is a fixed timer rather than a transport fact:
+When the Server-to-Client direction stalls while the socket stays open, every wait above keeps running from its own
+start: a request timer from the moment its frame was sent (30 seconds, or 90 for the scheduled message frame), the
+scheduled preparation budget from dispatch entry (60 seconds, cut at the next trigger), the IM operation deadline from
+the claim (30 seconds), and both heartbeat deadlines from the last frame each side received. The outcome therefore
+follows the stage the hand-off is in when the stall begins and the budget that stage has left, not the stall's
+length. A 70-second stall that catches a scheduled hand-off at its first reconcile ends as a miss although the link
+recovers inside the heartbeat window; the same stall after the message frame left ends as `accepted`.
 
-- Under 30 seconds: every receipt arrives inside its request timer; nothing is recorded.
-- Between 30 and 90 seconds: no heartbeat deadline fires, so neither side reconnects and the queued frames arrive when
-  the link recovers. An IM delivery records an operation timeout and later applies the late acceptance. A Session
-  message is recorded `unknown / delivery_timeout` while the Client goes on to run it, and the row never changes. A
-  scheduled message waits out its 90-second receipt window and is recorded `accepted` when the receipt arrives inside
-  it; a receipt after the window is ignored and the conversation hears "may not have run".
-- 90 seconds or more: both sides end the socket; queued frames are lost. The IM delivery is redispatched on the new
-  connection. A Session or scheduled message recorded `unknown` was indeed never received, and nothing resends it.
+| Stage the stall catches | IM message | Session message | Scheduled message |
+| --- | --- | --- | --- |
+| The reconcile, before the message frame leaves | The reconcile and the operation deadline both expire at 30 seconds: `IM_DELIVERY_OPERATION_TIMEOUT`, bounded retry, and the next claim reconciles again and sends the frame once the link answers. Nothing is lost. | Two-frame path: the reconcile times out at 30 seconds and the hand-off ends `unreachable / runtime_not_ready`; the message frame never leaves, and only the caller can resend. Inline path: the message rides inside the reconcile, so the same timeout is `unknown / delivery_timeout`, and the Client runs the message when the frame arrives. | The reconcile times out at 30 seconds (`runtime_reconcile_timeout`) and is retried every 5 seconds, but the 60-second budget ends before the message frame can leave (`#prepareScheduledLocal`, `#deliverScheduledLocal`): `unreachable / delivery_timeout`, the conversation hears "didn't run", and the occurrence is never sent. |
+| The message frame, after it left | The 30-second request timer records a timeout and releases the dispatch with its correlation kept. A late `accepted` is still applied; otherwise the next claim resends the same frame. | `unknown / delivery_timeout` at 30 seconds. A later receipt is ignored, so the row never changes while the Client runs the message. | The 90-second receipt wait runs from the send mark. A receipt inside it is `accepted` and silent; one after it is ignored, and the conversation hears "may not have run". |
+| A heartbeat deadline, at any stage | Both sides end the socket and drop queued frames. The pending row is redispatched on the new connection. | A frame that never arrived is lost; a row already recorded `unknown` stays so, and nothing resends it. A frame that did arrive keeps running on the Client, whatever the row says. | The same as a Session message; the next occurrence is the next chance. |
 
-To tell which band an incident was in, read the schedule dispatch log `schedule.dispatched` (`scheduleId`,
-`messageId`, `scheduledFor`, `outcome`, `code`), the `Runtime domain request failed` warning with its `code`, the
-`runtime.reconcile` and `runtime.delivery` spans, and on the Client the inbox record's `sentAt` against its
-`acceptedAt` plus the connection module's disconnect entries.
+To place an incident, read the schedule dispatch log `schedule.dispatched` (`scheduleId`, `messageId`,
+`scheduledFor`, `outcome`, `code`), the `Runtime domain request failed` warning with its `code`, and the
+`runtime.reconcile` and `runtime.delivery` spans, whose request ids say which frame timed out. On the Client, compare
+the inbox record's `sentAt` with its `acceptedAt`, the `Session reconcile received` entries, and the connection
+module's disconnect entries.
 
 ## Known gaps
 
@@ -118,8 +122,8 @@ false alarms, or silence.
    pending requests, unlike `#completeDelivery`, which keeps timed-out IM requests in `#expiredDeliveries`. The row
    stays `unknown` and a schedule's summary stays unconfirmed although the Client accepted and ran the message.
 2. The ordinary Session message request timer (30 seconds) is shorter than the heartbeat window (90 seconds). Only
-   the scheduled branch of `requestSessionMessageDelivery` uses the longer wait, so a stall between 30 and 90 seconds
-   turns a delivered `session send` into `unknown / delivery_timeout`.
+   the scheduled branch of `requestSessionMessageDelivery` uses the longer wait, so a stall that outlasts the request
+   timer but not the heartbeat window turns a delivered `session send` into `unknown / delivery_timeout`.
 3. A `session send` can outlive its caller. `#deliverLocal` runs a 30-second reconcile and a 30-second delivery in
    sequence with no overall budget, while the CLI gives up after 30 seconds (`OPEN_TAG_API_REQUEST_TIMEOUT_MS`) and
    reports `unknown / transport_error`. The Server may then record `accepted` for a message whose sender already
@@ -131,9 +135,9 @@ false alarms, or silence.
 5. A scheduled hand-off is not durable across a Server restart or crash. `ScheduleScheduler.stop` aborts in-flight
    dispatches, and a claim committed just before the stop is never dispatched: the row keeps the claim's code-less
    `unknown`, which produces no notice and no retry.
-6. Frames queued on a socket do not survive a reconnect, so a Session or scheduled frame sent just before a stall of
-   90 seconds or more is lost even though the Server recorded it as sent. IM deliveries survive only because the
-   worker redispatches the persisted row.
+6. Frames queued on a socket do not survive a reconnect, so a Session or scheduled frame still queued when a heartbeat
+   deadline fires is lost even though the Server recorded it as sent. IM deliveries survive only because the worker
+   redispatches the persisted row.
 7. Notices are best effort in memory. `notifyMissed` makes 3 attempts and a Server stop or IM outage loses the
    message; the scheduled Run failure path remembers its send results in `#results` with a 1,024-entry cap, so a
    forgotten result or a restart can post the failure twice where the provider does not deduplicate by request id.

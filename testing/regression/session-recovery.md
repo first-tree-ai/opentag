@@ -289,14 +289,18 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 1. Save a workspace containing Git state, Pi history and unpublished Context Tree drafts. Stop
    and replace its Instance through the normal release path. Expected: the replacement verifies
    and restores all saved content before readiness, advances the storage metadata fence and does
-   not repack or upload the restored archive. The first empty workspace still saves a valid archive.
-2. Let the restored workspace become idle without a Turn, then release it. Expected: after
+   not repack or upload the restored archive. The restore reports `extractMs` with the fingerprint
+   included. The first empty workspace still saves a valid archive.
+2. Run an ordinary checkpoint after a file change, then another without a change. Verify that each
+   checkpoint conditionally commits an archive generation and reports `packMs` with the fingerprint
+   included, and that both archives restore the expected contents.
+3. Let the restored workspace become idle without a Turn, then release it. Expected: after
    quiescing writers, the Runner checks actual file contents and seals the same archive generation
    by a conditional metadata update. Restart and verify the unpublished files and history again.
-3. Make a real file change through a controlled tool or background writer between checkpoint and
+4. Make a real file change through a controlled tool or background writer between checkpoint and
    idle release, including a same-length change with a restored mtime. Expected: release saves and
    restores the changed bytes instead of treating absence of Turns as proof of cleanliness.
-4. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
+5. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
    and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
    data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
    Make identical metadata PATCHes leave metageneration unchanged in the transport harness. Expected:
@@ -306,16 +310,16 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    is rejected or never commits before response loss. The successor can still seal, while an old
    upload with original pins is rejected. Restart a real Runner while the allocation
    is releasing and retry stop: it restores the same-owner object and completes the final seal.
-5. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
+6. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
    Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
    can still finish the authenticated claim and restore or save the initial empty archive.
-6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
+7. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
-7. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
+8. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
    Keep the same UID visible through 60 seconds, then return 404 on a later due sweep. Expected:
    each due sweep makes one confirmation GET and can process other candidates. After 404, the
    old binding clears, the capacity slot is free, and a synthetic Session input can reserve the

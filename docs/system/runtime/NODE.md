@@ -18,5 +18,7 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   rules, and IM approval requests.
 - **[Agent self-configuration](agent-self-configuration.md)** — what an Agent
   may change about itself through the CLI.
+- **[Quota auto-resume](quota-auto-resume.md)** — proposal: resume work about
+  two minutes after a used-up model quota resets.
 - **[Agent status pipeline](computer-status-pipeline.md)** — single-replica registry,
   independent heartbeats, bounded validation and foreground batch status reads.

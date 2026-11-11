@@ -535,7 +535,7 @@ describe("Local scheduled delivery receipts", () => {
     }
   });
 
-  it("reports a provably unsent occurrence as missed and accepts the next occurrence after reconnect", async () => {
+  it("holds a provably unsent occurrence instead of reporting it and accepts the next occurrence after reconnect", async () => {
     const seed = await seedStack();
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 600, anchorAt: T0.toISOString() },
@@ -549,15 +549,11 @@ describe("Local scheduled delivery receipts", () => {
       const missedId = scheduledMessageId(row.id, currentTime);
       await vi.waitFor(async () => expect((await messageRow(missedId))?.attemptCount).toBe(1));
       await vi.advanceTimersByTimeAsync(60_000);
-      await vi.waitFor(() => expect(notifyMissed).toHaveBeenCalledOnce());
-      expect(notifyMissed).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "missed", requestId: missedId }),
-        expect.any(AbortSignal),
+      // An offline Local Client is held for (#1353): the occurrence waits for recovery and is not a miss.
+      await vi.waitFor(async () =>
+        expect(await messageRow(missedId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_held" }),
       );
-      expect(await messageRow(missedId)).toMatchObject({
-        lastOutcome: "unreachable",
-        lastErrorCode: "runtime_unavailable",
-      });
+      expect(notifyMissed).not.toHaveBeenCalled();
       expect(deliveryFrames).toHaveLength(0);
 
       const { context } = await connect();
@@ -571,7 +567,7 @@ describe("Local scheduled delivery receipts", () => {
         messageId: scheduledMessageId(row.id, currentTime),
         outcome: "accepted",
       });
-      expect(notifyMissed).toHaveBeenCalledOnce();
+      expect(notifyMissed).not.toHaveBeenCalled();
     } finally {
       await scheduler.stop();
       await domain.close();

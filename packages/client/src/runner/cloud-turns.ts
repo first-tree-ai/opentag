@@ -1591,17 +1591,9 @@ export class CloudTurnRunner {
     next: QueuedDeliveryVerified,
     steering: NonNullable<ActiveTurn["steering"]>,
   ): Promise<boolean> {
-    if (active.kind !== "session-message" || !this.#options.steeringEnabled?.()) return false;
-    const root = await this.#options.journal.read(active.entryKey);
-    if (root?.kind !== "session-message" || root.sessionKind !== "visible") return false;
-    const entry = await this.#options.journal.read(next.deliveryId);
-    if (entry?.kind !== "delivery" || entry.phase !== "received" || entry.requestId !== next.frame.requestId) {
-      this.#queue.delete(next.frame.requestId);
-      return true;
-    }
-    this.#assertCurrentScope(entry);
-    if (entry.steer || this.#admit(entry.delivery, next.frame)) return false;
-    if (active.steering !== steering || this.#cancelRequested.has(entry.deliveryId)) return false;
+    const entry = await this.#joinableDelivery(active, next, steering);
+    if (entry === "dropped") return true;
+    if (!entry) return false;
     const request: CloudImJoinRequest = { type: "im:join", expectedTurnId: steering.turnId, delivery: entry.delivery };
     if (Buffer.byteLength(JSON.stringify(request)) > RUNTIME_MAX_FRAME_BYTES) return false;
     // Reconnect and process loss must see a potentially started input before it can reach Pi.
@@ -1621,6 +1613,36 @@ export class CloudTurnRunner {
     }
     await this.#options.journal.requeueUnstartedJoin(started);
     active.imJoins.delete(entry.deliveryId);
+    this.#afterRefusedJoin(active, steering, next, result);
+    return false;
+  }
+
+  /** The received delivery that may join the active Turn, `dropped` for a stale queue slot, or nothing. */
+  async #joinableDelivery(
+    active: ActiveTurn,
+    next: QueuedDeliveryVerified,
+    steering: NonNullable<ActiveTurn["steering"]>,
+  ): Promise<CloudJournalDeliveryEntry | "dropped" | undefined> {
+    if (active.kind !== "session-message" || !this.#options.steeringEnabled?.()) return undefined;
+    const root = await this.#options.journal.read(active.entryKey);
+    if (root?.kind !== "session-message" || root.sessionKind !== "visible") return undefined;
+    const entry = await this.#options.journal.read(next.deliveryId);
+    if (entry?.kind !== "delivery" || entry.phase !== "received" || entry.requestId !== next.frame.requestId) {
+      this.#queue.delete(next.frame.requestId);
+      return "dropped";
+    }
+    this.#assertCurrentScope(entry);
+    if (entry.steer || this.#admit(entry.delivery, next.frame)) return undefined;
+    if (active.steering !== steering || this.#cancelRequested.has(entry.deliveryId)) return undefined;
+    return entry;
+  }
+
+  #afterRefusedJoin(
+    active: ActiveTurn,
+    steering: NonNullable<ActiveTurn["steering"]>,
+    next: QueuedDeliveryVerified,
+    result: CloudSessionSteerResult,
+  ): void {
     if (result === "retry" && active.steering === steering && next.generation === this.#channelGeneration) {
       active.sessionSteerRetry = setTimeout(() => {
         active.sessionSteerRetry = undefined;
@@ -1629,7 +1651,6 @@ export class CloudTurnRunner {
     } else {
       active.sessionSteeringBlocked = true;
     }
-    return false;
   }
 
   /** Report each joined IM delivery with the outcome of the Turn it joined; an unstarted one waits again. */

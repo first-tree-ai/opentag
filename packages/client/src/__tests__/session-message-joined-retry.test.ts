@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
+  RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
@@ -1009,9 +1010,8 @@ describe("a Turn whose joined messages meet other paths", () => {
       s.runEnded("processed");
       return {
         runId: TURN_ID,
-        status: "failed",
-        output: [],
-        error: { code: "provider_error", message: "provider failed after processing" },
+        status: "completed",
+        output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }],
       };
     });
     await s.startTurn();

@@ -112,6 +112,8 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     [{ rate_limit_info: "rejected" }],
     [{ rate_limit_info: { status: "rejected", resetsAt: "soon" } }],
     [{ rate_limit_info: { status: "rejected", resetsAt: 1e13 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 253_402_300_800 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 1_794_382_200_000 } }],
   ])("ignores a rate-limit event that names no usable reset: %j", async (event) => {
     const process = new ManualClaudeCodeProcess([
       { type: "rate_limit_event", uuid: "44444444-4444-4444-8444-444444444444", session_id: "session", ...event },

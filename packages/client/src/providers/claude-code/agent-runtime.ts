@@ -1417,13 +1417,17 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
  * Claude Code reports each subscription usage window in a `rate_limit_event` (2.1.319): `rate_limit_info` holds its
  * `status` and `resetsAt` in Unix seconds. A `rejected` window is a used-up quota, and its reset is when to try again.
  */
+/** 10000-01-01T00:00:00Z: the first Unix second whose ISO form needs an extended year. */
+const MAX_ISO_UNIX_SECONDS = 253_402_300_800;
+
 function rejectedUsageWindowReset(message: Readonly<Record<string, unknown>>): string | undefined {
   const info = message.rate_limit_info;
   if (!info || typeof info !== "object") return undefined;
   const status = Reflect.get(info, "status");
   const resetsAt = Reflect.get(info, "resetsAt");
-  // Unix seconds within the range a Date can hold; anything else is not a time.
-  if (status !== "rejected" || typeof resetsAt !== "number" || !(resetsAt > 0 && resetsAt < 8.64e12)) return undefined;
+  // Unix seconds before year 10000, which a Turn report's ISO time can hold; anything else is not a usable reset.
+  if (status !== "rejected" || typeof resetsAt !== "number" || !(resetsAt > 0 && resetsAt < MAX_ISO_UNIX_SECONDS))
+    return undefined;
   return new Date(resetsAt * 1000).toISOString();
 }
 

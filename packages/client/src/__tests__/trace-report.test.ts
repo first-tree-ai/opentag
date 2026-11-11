@@ -95,6 +95,22 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it("still creates the failure report when the reset time is not a usable time", () => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = 5;
+    const owner = new TurnReportOwner({ connection });
+    const report = owner.create(
+      reportInput({
+        outcome: "failed",
+        errorReason: "provider_quota_exceeded",
+        retryAt: "+010000-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(report).toMatchObject({ errorReason: "provider_quota_exceeded" });
+    expect(report.retryAt).toBeUndefined();
+    owner.stop();
+  });
+
   it.each([4, 5])("sends a quota reset time only on report capability 5 (%s)", (version) => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = version;

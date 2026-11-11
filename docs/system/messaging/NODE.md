@@ -17,8 +17,8 @@ provider CLIs.
   scheduled hand-offs compared: records, frames, receipts, waits, timeouts,
   retries, Client deduplication, restart recovery, and failure notices.
 - **[Unified delivery model](unified-delivery.md)** — proposal under review:
-  one envelope, state machine, receipt window, retry ownership, deduplication
-  contract, and notifier for the three hand-offs, with a phased plan.
+  one delivery record for IM, Session, and scheduled messages, its states and
+  writers, the per-kind mapping, and a one-shot rollout.
 - **[IM Channel and Thread Sessions](thread-sessions.md)** — lazy Thread
   Sessions, direct continuity, observer copies, and thread history.
 - **[IM task feedback and safe recovery](im-feedback.md)** — system-owned reactions, offline notices, failure messages,

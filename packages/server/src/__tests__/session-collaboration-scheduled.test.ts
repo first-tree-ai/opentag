@@ -72,6 +72,7 @@ interface Fixture {
   service: SessionCollaborationService;
   sessions: {
     beginScheduledMessageAttempt: ReturnType<typeof vi.fn>;
+    heldHasRoom: ReturnType<typeof vi.fn>;
     resolveScheduledMessageRoute: ReturnType<typeof vi.fn>;
     disableScheduleForInvalidTarget: ReturnType<typeof vi.fn>;
     recordMessageOutcome: ReturnType<typeof vi.fn>;
@@ -117,6 +118,7 @@ function makeFixture(
   let admissionCalls = 0;
   const sessions = {
     beginScheduledMessageAttempt: vi.fn(async () => ({ id: "fenced" })),
+    heldHasRoom: vi.fn(async () => true),
     resolveScheduledMessageRoute: vi.fn(async () => ({ kind: "route" as const, route })),
     disableScheduleForInvalidTarget: vi.fn(async () => undefined),
     recordMessageOutcome: vi.fn(async () => true),
@@ -193,7 +195,9 @@ function makeFixture(
       if (capability === "runtime.imCredentialGrant") return 2;
       return undefined;
     }),
-    supportsCapability: vi.fn(() => true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const cloud = { deliver: vi.fn(async () => ({ status: "accepted" as const })) };
   const logger = { error: vi.fn() };
@@ -385,8 +389,9 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     const offline = fixture.service.dispatchScheduledMessage(snapshot, stop.signal);
     await vi.advanceTimersByTimeAsync(0);
     await expect(fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() })).resolves.toEqual({
-      outcome: "unreachable",
-      code: "runtime_unavailable",
+      // No slot to retry in, so it settles at once; a Client that can be held for gets it held.
+      outcome: "unknown",
+      code: "delivery_held",
     });
 
     fixture.registry.currentInstanceId.mockReturnValue("ready-instance");
@@ -405,7 +410,8 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     await expect(cloud).resolves.toEqual({ outcome: "unreachable", code: "delivery_timeout" });
 
     stop.abort();
-    await expect(offline).resolves.toEqual({ outcome: "unreachable", code: "runtime_unavailable" });
+    // Still offline when the retry ends, so the occurrence is held rather than missed.
+    await expect(offline).resolves.toEqual({ outcome: "unknown", code: "delivery_held" });
     const recovered = fixture.service.dispatchScheduledMessage({ ...snapshot, messageId: randomUUID() });
     await vi.advanceTimersByTimeAsync(0);
     fixture.registry.currentInstanceId.mockReturnValue("new-instance");
@@ -507,6 +513,21 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     );
     const outcome = await fixture.service.dispatchScheduledMessage(snapshot);
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_timeout" });
+  });
+
+  it("misses an occurrence instead of holding it once the hold is full", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const fixture = makeFixture(route);
+    fixture.registry.supportsCapability.mockReturnValue(true);
+    fixture.registry.currentInstanceId.mockReturnValue(undefined);
+    fixture.sessions.heldHasRoom.mockResolvedValue(false);
+
+    const outcome = fixture.service.dispatchScheduledMessage(snapshot);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(outcome).resolves.toEqual({
+      outcome: "unreachable",
+      code: "delivery_held_full",
+    });
   });
 
   it("records a refused reconcile frame as unreachable: the message provably never left", async () => {

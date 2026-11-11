@@ -36,6 +36,7 @@ import {
 import type { ScheduledMissNotices } from "../services/schedules/scheduled-failure-notifier.js";
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
+import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
 import { stubScheduleScope } from "./support/schedule-scope.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -49,6 +50,11 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
  */
 
 const T0 = new Date("2026-09-28T01:00:00.000Z");
+const EVERY_MINUTE = {
+  kind: "every",
+  intervalSeconds: 60,
+  anchorAt: new Date(T0.getTime() - 60_000).toISOString(),
+} as const;
 const PUBLIC_URL = "https://opentag.example.com";
 
 let db: UnitDatabase;
@@ -282,7 +288,9 @@ function makeStack(
       if (capability === RUNTIME_CAPABILITY.imCredentialGrant) return 2;
       return undefined;
     }),
-    supportsCapability: vi.fn(() => true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn(async () => runtimeSnapshot(seed.agentId)) };
   const cloud = { deliver: vi.fn(async () => ({ status: "unreachable" as const, code: "runtime_unavailable" })) };
@@ -294,6 +302,7 @@ function makeStack(
     cloud: cloud as never,
     logger: { error: vi.fn() },
     scheduledBudgets: options.scheduledBudgets,
+    scheduleDetailUrl: (agentId, scheduleId) => `${PUBLIC_URL}/agents/${agentId}?schedule=${scheduleId}`,
   });
   const scheduler = new ScheduleScheduler({
     database: db.database,
@@ -526,7 +535,7 @@ describe("Local scheduled delivery receipts", () => {
     }
   });
 
-  it("reports a provably unsent occurrence as missed and accepts the next occurrence after reconnect", async () => {
+  it("holds a provably unsent occurrence instead of reporting it and accepts the next occurrence after reconnect", async () => {
     const seed = await seedStack();
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 600, anchorAt: T0.toISOString() },
@@ -540,15 +549,11 @@ describe("Local scheduled delivery receipts", () => {
       const missedId = scheduledMessageId(row.id, currentTime);
       await vi.waitFor(async () => expect((await messageRow(missedId))?.attemptCount).toBe(1));
       await vi.advanceTimersByTimeAsync(60_000);
-      await vi.waitFor(() => expect(notifyMissed).toHaveBeenCalledOnce());
-      expect(notifyMissed).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "missed", requestId: missedId }),
-        expect.any(AbortSignal),
+      // An offline Local Client is held for (#1353): the occurrence waits for recovery and is not a miss.
+      await vi.waitFor(async () =>
+        expect(await messageRow(missedId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_held" }),
       );
-      expect(await messageRow(missedId)).toMatchObject({
-        lastOutcome: "unreachable",
-        lastErrorCode: "runtime_unavailable",
-      });
+      expect(notifyMissed).not.toHaveBeenCalled();
       expect(deliveryFrames).toHaveLength(0);
 
       const { context } = await connect();
@@ -562,7 +567,7 @@ describe("Local scheduled delivery receipts", () => {
         messageId: scheduledMessageId(row.id, currentTime),
         outcome: "accepted",
       });
-      expect(notifyMissed).toHaveBeenCalledOnce();
+      expect(notifyMissed).not.toHaveBeenCalled();
     } finally {
       await scheduler.stop();
       await domain.close();
@@ -1081,17 +1086,252 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       new Date(T0.getTime() + 180_000).toISOString(),
     );
 
-    // No runtime connection at all: provably zero frames, unreachable.
+    // No runtime connection at all: provably zero frames, so the occurrence is held for the Client.
     stack.registry.currentInstanceId.mockReturnValue(undefined);
     currentTime = new Date(T0.getTime() + 180_000);
     const third = await claimOf(stack, row.id);
     if (third.kind !== "claimed") throw new Error("expected a claim");
     const framesBefore = stack.deliveryFrames.length;
     await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
-      outcome: "unreachable",
-      code: "runtime_unavailable",
+      outcome: "unknown",
+      code: "delivery_held",
     });
     expect(stack.deliveryFrames).toHaveLength(framesBefore);
+  });
+
+  it("holds an occurrence a recovering Client refused and delivers it once on redelivery", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const refuse = (reason: "client_busy" | undefined) =>
+      stack.domain.requestSessionMessageDelivery.mockImplementation(
+        async (
+          _c: string,
+          _i: string,
+          request: SessionMessageDeliveryRequestV3,
+          onDispatched?: () => void,
+          admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+        ) =>
+          dispatchWithAdmission(
+            async () => {
+              stack.deliveryFrames.push(request);
+              return {
+                type: "session:message:deliver:result",
+                requestId: request.requestId,
+                messageId: request.messageId,
+                targetSessionId: request.targetSessionId,
+                placementGeneration: request.placementGeneration,
+                ...(reason ? { status: "rejected", reason } : { status: "accepted" }),
+              } as SessionMessageDeliveryResult;
+            },
+            admission,
+            onDispatched,
+          ),
+      );
+    refuse("client_busy");
+    const claim = await claimOf(stack, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(stack.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+    await expect(messageRow(claim.snapshot.messageId)).resolves.toMatchObject({ lastErrorCode: "delivery_held" });
+
+    refuse(undefined);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([claim.snapshot.messageId]);
+    const redelivered = held[0];
+    if (!redelivered) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(redelivered)).resolves.toBe("settled");
+
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastOutcome: "accepted", lastErrorCode: null });
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ outcome: "accepted", code: null });
+    expect(stack.deliveryFrames.at(-1)).toMatchObject({
+      messageId: claim.snapshot.messageId,
+      scheduledOrigin: claim.snapshot.origin,
+    });
+    await expect(stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10)).resolves.toEqual([]);
+  });
+
+  it("drops a held occurrence once the next one has been claimed", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+    stack.registry.supportsCapability.mockReturnValue(true);
+    stack.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const first = await claimOf(stack, row.id);
+    if (first.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(first.snapshot);
+
+    currentTime = new Date(T0.getTime() + 60_000);
+    const second = await claimOf(stack, row.id);
+    if (second.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(second.snapshot);
+
+    stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([first.snapshot.messageId, second.snapshot.messageId]);
+    const [older] = held;
+    if (!older) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(older)).resolves.toBe("settled");
+    expect(await messageRow(first.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unreachable",
+      lastErrorCode: "delivery_superseded",
+    });
+    expect(stack.deliveryFrames.map(({ messageId }) => messageId)).not.toContain(first.snapshot.messageId);
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
+  });
+
+  it("leaves a held occurrence to the worker instead of retrying inside a redelivery", async () => {
+    const seed = await seedStack();
+    const dispatcher = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+    dispatcher.registry.supportsCapability.mockReturnValue(true);
+    dispatcher.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const claim = await claimOf(dispatcher, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(dispatcher.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+
+    // The default budget would allow five-second preparation retries; a redelivery must not use them.
+    const redeliverer = makeStack(seed);
+    redeliverer.registry.supportsCapability.mockReturnValue(true);
+    redeliverer.registry.currentInstanceId.mockReturnValue(undefined);
+    const [held] = await redeliverer.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!held) throw new Error("expected a held message");
+    const started = performance.now();
+    await expect(redeliverer.collaboration.redeliverHeld(held)).resolves.toBe("held");
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unknown",
+      lastErrorCode: "delivery_held",
+    });
+  });
+
+  describe("IM notices for a held occurrence", () => {
+    async function offlineStack() {
+      const seed = await seedStack();
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+      const notifyMissed = vi.fn(async () => undefined);
+      const scheduler = new ScheduleScheduler({
+        database: db.database,
+        dispatch: stack.collaboration,
+        sessions: stack.sessions,
+        publicUrl: PUBLIC_URL,
+        clock: testClock,
+        missNotices: { notifyMissed },
+      });
+      stack.collaboration.setHeldScheduledMissListener((miss) => scheduler.reportHeldMiss(miss));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      const claimHeld = async (minute: number) => {
+        currentTime = new Date(T0.getTime() + minute * 60_000);
+        const claim = await claimOf(stack, row.id);
+        if (claim.kind !== "claimed") throw new Error("expected a claim");
+        await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+        return claim.snapshot;
+      };
+      const worker = new SessionHeldDeliveryWorker({
+        collaboration: stack.collaboration,
+        sessions: stack.sessions,
+        registry: stack.registry as never,
+        now: () => currentTime.getTime() + 3 * 60_000,
+      });
+      const missed = () =>
+        (notifyMissed.mock.calls as unknown as [{ kind: string; requestId: string }][]).map(([input]) => input);
+      return { claimHeld, missed, row, stack, worker };
+    }
+
+    it("posts once while the Computer is offline, however many occurrences are replaced", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      const second = await claimHeld(1);
+      const third = await claimHeld(2);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(second.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(third.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
+    });
+
+    it("posts when a held occurrence expires", async () => {
+      const { claimHeld, missed, stack } = await offlineStack();
+      const first = await claimHeld(0);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(first.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.expireHeld(held);
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_expired" });
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
+    });
+
+    it("posts nothing when someone paused the schedule", async () => {
+      const { claimHeld, missed, row, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      await db.database
+        .update(agentSchedules)
+        .set({ enabled: false, nextTriggerAt: null })
+        .where(eq(agentSchedules.id, row.id));
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "schedule_disabled" });
+      expect(missed()).toEqual([]);
+    });
+
+    it("carries the creator when a held occurrence is redelivered to an internal Session", async () => {
+      const seed = await seedStack();
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+      const creatorId = randomUUID();
+      await db.database.insert(sessions).values({
+        id: creatorId,
+        imBindingId: seed.bindingId,
+        channelId: "oc_creator",
+        conversationKind: "dm",
+        kind: "channel",
+      });
+      await db.database
+        .update(sessions)
+        .set({ kind: "internal", createdBySessionId: creatorId })
+        .where(eq(sessions.id, seed.targetSessionId));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      currentTime = T0;
+      const claim = await claimOf(stack, row.id);
+      if (claim.kind !== "claimed") throw new Error("expected a claim");
+      await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+      stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.redeliverHeld(held);
+
+      expect(stack.domain.requestReconcile.mock.calls.at(-1)?.[2]).toMatchObject({
+        sessionKind: "internal",
+        creatorSessionId: creatorId,
+      });
+    });
+
+    it("posts nothing while the occurrence is still held", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([]);
+    });
   });
 
   it("refuses to send a scheduled origin to a v2-only peer with zero frames", async () => {

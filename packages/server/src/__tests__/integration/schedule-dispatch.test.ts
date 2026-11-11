@@ -514,8 +514,8 @@ describe("scheduled reconcile with real Session CLI proof preparation", () => {
         ...(stage === "preparation" ? { afterPreparation: disconnect } : { beforeReconcileResult: disconnect }),
       });
       await expect(stack.collaboration.dispatchScheduledMessage(stack.snapshot)).resolves.toEqual({
-        outcome: "unreachable",
-        code: stage === "preparation" ? "runtime_reconcile_failed" : "runtime_reconcile_timeout",
+        outcome: "unknown",
+        code: "delivery_held",
       });
       await Promise.all(stack.responses);
       expect(stack.preparationErrors).toEqual([]);

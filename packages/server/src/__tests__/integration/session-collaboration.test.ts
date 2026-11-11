@@ -388,6 +388,23 @@ describe("Session collaboration authority", () => {
     }
   }, 15_000);
 
+  it("reads held messages through the partial index", async () => {
+    const fixture = await createFixture();
+    try {
+      const plan = await fixture.sql.begin(async (transaction) => {
+        await transaction`set local enable_seqscan = off`;
+        return transaction`
+          explain select id from session_messages
+          where last_outcome = 'unknown' and last_error_code = 'delivery_held'
+          order by created_at, id limit 100
+        `;
+      });
+      expect(JSON.stringify(plan)).toContain("session_messages_held_idx");
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
   it("retries only explicit unknown or unreachable attempts and fences stale outcome writers", async () => {
     const fixture = await createFixture();
     try {

@@ -630,6 +630,7 @@ export {
   renderPlatformInstructions,
   requiredTurnReportVersion,
   runtimeUsageTotalTokens,
+  SESSION_DELIVERY_FAILURE_NOTICE_HEADER,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,

@@ -232,10 +232,13 @@ seconds until it is ready, the next trigger arrives, or 60 seconds have elapsed 
 message ID and dispatch slot, and tries the business send at most once. A pause, edit, or deletion still wins at send
 admission. The final result distinguishes runtime assembly failure, reconcile timeout, other reconcile failures, and
 an explicit not-ready reply. Local retries and extended Cloud hand-offs share 75 slots per Server. If those slots
-are all taken, a Local preparation failure settles immediately. After the Local send is marked, the Server keeps the
-dispatch slot and waits up to 90 seconds for its receipt, even if the next occurrence is due. A matching acceptance
-within that window settles the hand-off silently. A receipt timeout after send is unconfirmed. A newer claim can
-advance the schedule during the wait, and an older receipt updates only its own message once that happens.
+are all taken, a Local preparation failure settles immediately. A Local occurrence still unreachable at that point is
+[held](internal-session-collaboration.md#held-delivery) when its Client supports it, rather than missed. After the Local
+send is marked, the Server keeps the dispatch slot and waits up to 90 seconds for its receipt, even if the next
+occurrence is due. A held redelivery gets the same wait. A matching acceptance within that window settles the hand-off
+silently. A receipt timeout after send is unconfirmed and is never held, because the frame may already have arrived. A
+newer claim can advance the schedule during the wait, and an older receipt updates only its own message once that
+happens. A miss is reported only after the hand-off settles.
 
 A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
 workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
@@ -249,13 +252,15 @@ an unfinished scheduled hand-off.
 | --- | --- | --- |
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
 | The Client rejected the message | `configuration_unsupported` | The first time per cause |
-| It never started | `runtime_unavailable`, `client_busy`, `late` | The first time per cause |
+| It never started | `runtime_unavailable`, `client_busy`, `late`, `delivery_superseded`, `delivery_expired`, `delivery_held_full` | The first time per cause |
 | The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain`, `dispatch_failed` | The first time per cause, worded as "may not have run" |
 | The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
 | Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |
 
 "The first time per cause" compares the occurrence with the schedule's previous summary, so a Computer that stays offline
-posts one message, not one per occurrence. A delivered occurrence or a different code starts over. A Run failure that
+posts one message, not one per occurrence. A Local occurrence the Server held has no result yet, so it posts nothing until
+[held delivery](internal-session-collaboration.md#held-delivery) gives it up, usually within 5 minutes of the next occurrence,
+and is then compared with the occurrence before it. A delivered occurrence or a different code starts over. A Run failure that
 keeps recurring posts every time, as it would for repeated human messages.
 
 Delivery is best effort:

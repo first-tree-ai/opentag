@@ -45,6 +45,28 @@ describe("IM failure copy", () => {
     expect(failureCopy(code, "zh")).toEqual({ cause, next });
   });
 
+  it("keeps a failed batch's next step and adds the message count, without a retry warning", () => {
+    expect(failureCopy("provider_unavailable", "zh", { batchRetryBlocked: true, batchSize: 3 }).next).toBe(
+      "稍后再发一次。（共 3 条消息）",
+    );
+    expect(failureCopy("provider_unavailable", "en", { batchRetryBlocked: true, batchSize: 2 }).next).toBe(
+      "Send it again later. (2 messages)",
+    );
+    const workspace = failureCopy("workspace_failed", "zh", {
+      workspaceBlocked: true,
+      batchRetryBlocked: true,
+      batchSize: 4,
+    }).next;
+    expect(workspace.endsWith("（共 4 条消息）")).toBe(true);
+    for (const language of ["zh", "en"] as const)
+      expect(failureCopy("provider_failed", language, { batchRetryBlocked: true }).next).toBe(
+        failureCopy("provider_failed", language).next,
+      );
+    expect(failureCopy("provider_failed", "zh", { batchRetryBlocked: true, batchSize: 2 }).next).not.toContain(
+      "这批消息",
+    );
+  });
+
   it("only claims nothing ran on authoritative not-started evidence", () => {
     expect(effectsCopy("not_started", "zh")).toBe("任务没有开始，没有执行任何操作。");
     for (const effects of ["may_have_occurred", "completed", null])

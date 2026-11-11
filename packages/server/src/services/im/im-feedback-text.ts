@@ -1,10 +1,4 @@
-import {
-  effectsCopy,
-  FEEDBACK_LABELS,
-  type FeedbackLanguage,
-  failureCopy,
-  offlineNoticeCopy,
-} from "./im-feedback-copy.js";
+import { effectsCopy, FEEDBACK_LABELS, type FeedbackLanguage, failureCopy } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget } from "./im-feedback-store.js";
 
 function actionResult(language: FeedbackLanguage, action?: FeedbackAction): string | undefined {
@@ -32,6 +26,7 @@ export function feedbackContent(target: FeedbackTarget, action?: FeedbackAction,
   const failure = failureCopy(target.errorCode, language, {
     workspaceBlocked: target.state === "workspace_blocked",
     batchRetryBlocked: target.batchRetryBlocked,
+    ...(target.batchSize ? { batchSize: target.batchSize } : {}),
   });
   const title = result ? `${resolved ? "✅" : checking ? "⏳" : "⚠️"} ${result}${attribution}` : failure.cause;
   return {
@@ -60,16 +55,6 @@ export function plainText(text: string): string {
 /** The link stays in the text so readback can match the exact details URL on both providers. */
 export function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
-}
-
-export function renderOfflineNotice(
-  target: Pick<FeedbackTarget, "provider" | "agentId">,
-  publicUrl: string,
-  language: FeedbackLanguage,
-): string {
-  const { before, label, after } = offlineNoticeCopy(language);
-  const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
-  return `${before} ${textLink(target.provider, url, label)}\n${after}`;
 }
 
 export function renderFeedbackText(

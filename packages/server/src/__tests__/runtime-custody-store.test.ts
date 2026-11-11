@@ -19,6 +19,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { STEER_TARGET_ENDED_ERROR_CODE } from "../runtime/im-delivery-recovery.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -233,6 +234,17 @@ describe("PostgresRuntimeCustodyStore", () => {
       .set({ dispatchRequestId: null, dispatchInputHash: null, dispatchPayload: null, steerTargetDeliveryId: null })
       .where(eq(imMessageDeliveries.id, fixture.releaseDeliveryId));
     await expect(store.releaseSteerDispatch(releaseRequest, releaseHash, "retry")).resolves.toBe("already_released");
+    await expect(store.releaseSteerDispatch(releaseRequest, releaseHash, "turn_not_running")).resolves.toBe("conflict");
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: STEER_TARGET_ENDED_ERROR_CODE })
+      .where(eq(imMessageDeliveries.id, fixture.releaseDeliveryId));
+    await expect(store.releaseSteerDispatch(releaseRequest, releaseHash, "turn_not_running")).resolves.toBe(
+      "already_released",
+    );
+    await expect(
+      store.releaseSteerDispatch({ ...releaseRequest, placementGeneration: 2 }, releaseHash, "turn_not_running"),
+    ).resolves.toBe("conflict");
     await expect(
       store.releaseSteerDispatch(
         { ...releaseRequest, rootDeliveryId: fixture.rootDeliveryId },
@@ -249,6 +261,9 @@ describe("PostgresRuntimeCustodyStore", () => {
         steerTargetDeliveryId: fixture.rootDeliveryId,
       })
       .where(eq(imMessageDeliveries.id, fixture.releaseDeliveryId));
+    await expect(
+      store.releaseSteerDispatch({ ...releaseRequest, requestId: randomUUID() }, releaseHash, "turn_not_running"),
+    ).resolves.toBe("conflict");
     await expect(store.releaseSteerDispatch(releaseRequest, releaseHash, "retry")).resolves.toBe("released");
 
     const absorbedRequest = {

@@ -24,7 +24,12 @@ import { lockImAgentCustody, readInboundPendingAgents } from "../services/im/inb
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
-import { lockSteeredRecoverySessions, requeueSteeredDeliveries, type SessionEnsurer } from "./im-delivery-recovery.js";
+import {
+  lockSteeredRecoverySessions,
+  requeueSteeredDeliveries,
+  type SessionEnsurer,
+  STEER_TARGET_ENDED_ERROR_CODE,
+} from "./im-delivery-recovery.js";
 import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
@@ -60,6 +65,7 @@ export type SteerDispatchStatus = DeliveryDispatchStatus | "target_ended";
 export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
+export type SteerReleaseDisposition = "retry" | "deferred" | "uncertain" | "turn_not_running";
 
 export interface DeliveryDispatchContext {
   computerId: string;
@@ -105,7 +111,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
   releaseSteerDispatch(
     request: RuntimeImSteerRequest,
     inputHash: string,
-    disposition: "retry" | "deferred" | "uncertain",
+    disposition: SteerReleaseDisposition,
   ): Promise<SteerReleaseStatus>;
   claimRetainedReports(
     request: SessionReconcileRequest,
@@ -520,7 +526,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   async releaseSteerDispatch(
     request: RuntimeImSteerRequest,
     inputHash: string,
-    disposition: "retry" | "deferred" | "uncertain",
+    disposition: SteerReleaseDisposition,
   ): Promise<SteerReleaseStatus> {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
@@ -1016,13 +1022,22 @@ function steerReleaseCorrelationMatches(
 }
 
 function releasedSteerTargetMatches(
-  delivery: { steerTargetDeliveryId: string | null },
+  { delivery, placement }: DeliveryScope,
   request: RuntimeImSteerRequest,
-  disposition: "retry" | "deferred" | "uncertain",
+  disposition: SteerReleaseDisposition,
 ): boolean {
-  return disposition === "retry"
-    ? delivery.steerTargetDeliveryId === null
-    : delivery.steerTargetDeliveryId === request.rootDeliveryId;
+  if (disposition === "retry") return delivery.steerTargetDeliveryId === null;
+  if (delivery.steerTargetDeliveryId === request.rootDeliveryId) return true;
+  return (
+    disposition === "turn_not_running" &&
+    delivery.state === "pending" &&
+    delivery.steerTargetDeliveryId === null &&
+    delivery.dispatchInputHash === null &&
+    delivery.dispatchPayload === null &&
+    delivery.lastErrorCode === STEER_TARGET_ENDED_ERROR_CODE &&
+    delivery.placementGeneration === request.placementGeneration &&
+    placement.generation === request.placementGeneration
+  );
 }
 
 /** Accepted re-receipt classification: only the SAME allocation may replay as already accepted. */
@@ -1199,13 +1214,11 @@ function steerReleaseStatus(
   scope: DeliveryScope,
   request: RuntimeImSteerRequest,
   hash: string,
-  disposition: "retry" | "deferred" | "uncertain",
+  disposition: SteerReleaseDisposition,
 ): SteerReleaseStatus | undefined {
   if (!steerRequestMatches(scope, request) || !["pending", "expired"].includes(scope.delivery.state)) return "conflict";
   if (scope.delivery.dispatchRequestId === null)
-    return releasedSteerTargetMatches(scope.delivery, request, disposition === "uncertain" ? "deferred" : disposition)
-      ? "already_released"
-      : "conflict";
+    return releasedSteerTargetMatches(scope, request, disposition) ? "already_released" : "conflict";
   if (!steerReleaseCorrelationMatches(scope.delivery, request.requestId, hash, request.rootDeliveryId))
     return "conflict";
   return undefined;

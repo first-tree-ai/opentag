@@ -17,7 +17,6 @@ import {
   type AttachMCPServerRequest,
   accountApiEndpoints,
   agentSkillBundlePath,
-  agentSkillPath,
   agentSkillsPath,
   type ComputerConnectCodeExchangeRequest,
   type ComputerConnectCodeExchangeResponse,
@@ -109,10 +108,9 @@ import {
   SKILL_REPLACE_HEADER,
   SKILL_SHA256_HEADER,
   SKILL_UPLOAD_CONTENT_TYPE,
-  type Skill,
   type SkillArchiveFormat,
   type SkillDetail,
-  SkillSchema,
+  SkillDetailSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
   StartMCPOAuthResponseSchema,
@@ -127,6 +125,7 @@ import {
   type UpdateMCPServerRequest,
   type UpdateSelfAgentRequest,
   type UpdateSelfMCPBindingRequest,
+  type UpdateSkillRequest,
   type ValidationIssue,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "./observability/logger.js";
@@ -697,10 +696,10 @@ export class OpenTagApi {
     agentId: string,
     input: SkillUploadInput,
     options?: RequestOptions,
-  ): Promise<Skill> {
+  ): Promise<SkillDetail> {
     return this.#request(
       agentSkillsPath(agentId),
-      SkillSchema,
+      SkillDetailSchema,
       {
         method: "POST",
         body: input.archive,
@@ -720,19 +719,10 @@ export class OpenTagApi {
     accessToken: string,
     agentId: string,
     skillId: string,
-    input: { enabled: boolean },
+    input: UpdateSkillRequest,
     options?: RequestOptions,
-  ): Promise<Skill> {
-    return this.#request(
-      agentSkillPath(agentId, skillId),
-      SkillSchema,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+  ): Promise<SkillDetail> {
+    return this.#requestAccount(accessToken, accountApiEndpoints.updateAgentSkill(agentId, skillId, input), options);
   }
 
   removeAgentSkill(accessToken: string, agentId: string, skillId: string, options?: RequestOptions): Promise<void> {
@@ -782,10 +772,10 @@ export class OpenTagApi {
     );
   }
 
-  pushRuntimeSkill(proof: string, input: SkillUploadInput, options?: RequestOptions): Promise<Skill> {
+  pushRuntimeSkill(proof: string, input: SkillUploadInput, options?: RequestOptions): Promise<SkillDetail> {
     return this.#request(
       RUNTIME_SKILLS_PATH,
-      SkillSchema,
+      SkillDetailSchema,
       {
         method: "POST",
         body: input.archive,

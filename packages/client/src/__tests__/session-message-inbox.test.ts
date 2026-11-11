@@ -800,6 +800,184 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("retries a Run whose model CLI failed to start once after a short delay; a second failure is reported (R3)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: { code: "provider_start_failed", message: "spawn ENOENT" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([5_000]);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(retries).toHaveLength(1);
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_start_failed" }),
+    );
+    inbox.stop();
+  });
+
+  it.each([
+    { name: "before any output", output: [], usage: undefined, retried: true },
+    { name: "after text", output: [{ type: "text", text: "half" }], usage: undefined, retried: false },
+    { name: "after output tokens", output: [], usage: { outputTokens: 3 }, retried: false },
+  ])("retries an unavailable model only $name (R2)", async ({ output, usage, retried }) => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output,
+      ...(usage ? { usage } : {}),
+      error: { code: "provider_unavailable", message: "503" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual(retried ? [15_000] : []);
+    expect(inbox.getState(request.messageId)?.status).toBe(retried ? "retryable" : "failed");
+    inbox.stop();
+  });
+
+  it("retries a Session message over the context limit once, compacting first (R8)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const prompt = vi.fn(async (_request: { compactContext?: boolean }) =>
+      prompt.mock.calls.length > 1
+        ? { runId: "run", status: "completed" as const, output: [] }
+        : {
+            runId: "run",
+            status: "failed" as const,
+            output: [],
+            error: { code: "provider_context_limit", message: "Prompt is too long" },
+          },
+    );
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([0]);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(prompt.mock.calls[0]?.[0]).not.toHaveProperty("compactContext");
+    expect(prompt.mock.calls[1]?.[0]).toMatchObject({ compactContext: true });
+    expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+    inbox.stop();
+  });
+
+  it("starts a new conversation when compacting was not enough, telling the Agent to ask the sender (R8)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const prompt = vi.fn(async (_request: { input: { items: Array<{ text?: string }> } }) =>
+      prompt.mock.calls.length > 2
+        ? { runId: "run", status: "completed" as const, output: [] }
+        : {
+            runId: "run",
+            status: "failed" as const,
+            output: [],
+            error: { code: "provider_context_limit", message: "Prompt is too long" },
+          },
+    );
+    const startNewConversation = vi.fn(async (_sessionId: string) => undefined);
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+        startNewConversation,
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    retries[0]?.task();
+    await vi.waitFor(() => expect(retries).toHaveLength(2));
+    expect(startNewConversation).not.toHaveBeenCalled();
+    retries[1]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(3));
+    await inbox.settled();
+    expect(startNewConversation).toHaveBeenCalledExactlyOnceWith(request.targetSessionId);
+    const notice = prompt.mock.calls[2]?.[0].input.items[0]?.text ?? "";
+    expect(notice).toContain("ask the sender");
+    expect(notice).not.toContain("lark-cli");
+    expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+    inbox.stop();
+  });
+
   it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
     const BUDGET = 600_000;
     let now = 1_000;
@@ -1389,6 +1567,66 @@ describe("SessionMessageInbox", () => {
     expect(inputs[0]?.at(-1)?.text).toBe("long child work");
     expect(restartedOutcomes).not.toHaveBeenCalled();
     restarted.stop();
+  });
+
+  it("still deduplicates a replay of a message finished more than a week earlier, after a restart (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-old-replay-"));
+    try {
+      let now = Date.now();
+      const store = new FileRuntimeDurabilityStore(home, { now: () => now });
+      const prompts: string[] = [];
+      const inbox = () =>
+        new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          sessionCollaborationVersion: () => 4,
+          persistence: store,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(
+              async () =>
+                ({
+                  waitForIdle: vi.fn(async () => undefined),
+                  prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                    prompts.push(input.input.items.at(-1)?.text ?? "");
+                    return { runId: input.runId, status: "completed", output: [] };
+                  }),
+                }) as never,
+            ),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+        });
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const original = delivery({ text: "A", targetSessionId, agentId });
+      const first = inbox();
+      await first.ready();
+      // The acceptance reply is lost on the way back: the Server row stays unknown and may be replayed.
+      await first.accept(original);
+      await vi.waitFor(() => expect(prompts).toEqual(["A"]));
+      await first.settled();
+      first.stop();
+
+      now += 8 * 24 * 60 * 60 * 1_000;
+      await store.write({
+        acceptedAt: now,
+        attempts: 0,
+        key: "unrelated",
+        kind: "session-message",
+        payload: {},
+        status: "dead-letter",
+        updatedAt: now,
+      });
+      const restarted = inbox();
+      await restarted.ready();
+      await expect(restarted.accept(original)).resolves.toMatchObject({ status: "accepted" });
+      await restarted.settled();
+      restarted.stop();
+      expect(prompts).toEqual(["A"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {

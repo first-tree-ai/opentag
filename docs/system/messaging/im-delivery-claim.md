@@ -298,7 +298,10 @@ These settlements cover the shapes described above. They are not a total bound o
 A correlated dispatch whose operation never settles is neither retried forever nor rejected. Once the
 same consecutive-timeout run reaches the cap, the worker **parks** the row: it records
 `lastErrorCode = IM_DELIVERY_PARKED`, sets `next_attempt_at` to the ingress deadline, and emits one
-`IM_DELIVERY_DISPATCH_PARKED` diagnostic with the delivery identity. Parking keeps everything that
+`IM_DELIVERY_DISPATCH_PARKED` diagnostic with the delivery identity. The diagnostic is logged at `error`, so it
+raises the production "New error type" alert (see [Server observability](../../operations/observability.md)). Later
+input that waits behind the parked row gets one [parked-dispatch notice](im-feedback.md#parked-dispatch-notice) in its
+conversation. Parking keeps everything that
 records what may have happened — the pending state, `reason`, the dispatch correlation
 (`dispatch_request_id`, `dispatch_input_hash`, `dispatch_payload`), the execution origin, and the
 unreported custody — and writes no `turn_report`, no `result_hash`, and no `reported_at`. The claim

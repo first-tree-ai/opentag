@@ -259,7 +259,9 @@ Distinct waiting codes ensure that a later fault is diagnosed even after repeate
 Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
-the execution and its lifetime is bounded by the runtime deadline. In E4,
+the execution and its lifetime is bounded by the runtime deadline: it expires thirty seconds after it and is never
+issued past it. Admission therefore checks the deadline before the grant, so a Turn that waited past its deadline
+reports `turn_timeout`, not `credential_unavailable`. In E4,
 credential and model grants are revoked when the Runner connection is lost (fail-closed,
 connection-scoped authority). Journal recovery still preserves the actual Turn outcome and never
 replays `started` work, but a transient Server or control-channel outage may fail an active
@@ -277,6 +279,24 @@ message-count cap. These bounds are not an aggregate spend quota.
 Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasoning_text` echoes,
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
+
+### Cloud Session message custody
+
+Ordinary Session messages use the existing Session collaboration frames. The Runner fsyncs a received journal
+entry, and the Server verifies durable custody and current target authority before execution. The Runner tries the
+FIFO head against the active worker using the same authenticated in-Sandbox control socket as IM steering. It
+checks the active Turn, Session, Agent, placement, and visible outbox context. The input uses the active Turn's
+model, tools, deadline, and credential execution.
+
+Before the relay can inject input, the Runner journals the message as started under its own settlement identity.
+A live reconnect re-announces that identity without injecting again. A lost worker or ambiguous relay with no
+worker receipt leaves an unknown settlement. Only explicit no-effect evidence returns a started steer to the FIFO.
+Worker receipts are bound to the message ID and settled after the joined Turn's checkpoint. The Runner retains each
+terminal settlement until the exact Server ack.
+
+The private parent-to-worker document is paired within the pinned Runner image. Steering uses the existing
+Session collaboration wire versions 1 through 3, journal file layout, and database schema. Older Runners
+receive the same frames and wait for the active Turn to finish.
 
 ### Model retry ownership
 
@@ -312,6 +332,14 @@ bounded recovery with changed context; partial tool calls from a failed response
 executed. This differs from replaying an identical failed call. No model failure triggers a
 whole-Turn, delivery or scheduled-occurrence replay. `CLOUD_MODEL_RATE_LIMIT` records the attempt,
 planned wait and ownership declaration without logging upstream content or credentials.
+
+A reply that stops at the output-token limit (Pi stop reason `length`) is not a failed call to replay: the
+truncated reply stays in the conversation. The worker sends the Agent a follow-up in the same conversation, telling
+it to continue exactly where it stopped; if that also hits the limit, a second follow-up tells it to finish in several
+shorter replies and file writes. Only when that one is cut off too does the Turn fail with
+`provider_execution_limit`. Each follow-up is a new Run (`<runId>-continue-<n>`) with its own model calls under the
+same proxy budget rules; usage adds up across them, and a steer that arrives during a follow-up is deferred to the
+Server (Gandy 11-10, R7). Other execution limits, such as max turns, are unchanged.
 
 The Router can report a definite pre-output Provider rate limit inside HTTP 200 SSE. The model
 proxy inspects at most 8 KiB before the first complete data event, including heartbeat comments,
@@ -575,7 +603,10 @@ proxy host allowlist remains unchanged.
 
 Deploy this Server before the updated Runner image: workspace Runners now opt into
 `renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
-bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.
+bounded reconnect backoff. A persistent Runner gives each connection attempt one 45-second
+authentication budget spanning connection establishment, WebSocket upgrade, and the Server's
+response, including Cloud API checks. An expired budget ends the attempt and triggers reconnect
+backoff.
 
 ## E7: idle reclamation and same-account physical reuse
 
@@ -628,11 +659,13 @@ so workspace controls keep their existing pending-release behavior.
 Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
 most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
 15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
-release; a different UID or a failed read is an incomplete release. A still-present UID at a due
-read after the original 60-second confirmation window also becomes incomplete and returns to
-the ten-minute failure cooldown. The start of this window
-survives restarts and is never extended by a confirmation read. Explicit Account stop retains
-its bounded synchronous verification. No schema change or additional worker is needed.
+release and frees the capacity slot. A different UID or a failed read retains the binding
+and records an incomplete release. If the same UID is still present at 60 seconds, the
+automatic sweep keeps confirming at the same cadence for up to five more minutes. The
+six-minute budget starts at DELETE acceptance and survives restarts. Each due sweep gets one
+read, including the final confirmation at or after the deadline. If the same UID is still
+present at that point, the release becomes incomplete and returns to the ten-minute failure
+cooldown. Explicit Account stop retains its original bounded synchronous verification.
 
 The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
 each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,

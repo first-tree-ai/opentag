@@ -27,7 +27,6 @@ const codes = new Map<string, ProviderFailureReason>([
   ["flexUnavailable", "provider_unavailable"],
   ["context_length_exceeded", "provider_context_limit"],
   ["contextWindowExceeded", "provider_context_limit"],
-  ["prompt_too_long", "provider_context_limit"],
   ["sessionBudgetExceeded", "provider_execution_limit"],
   ["error_max_turns", "provider_execution_limit"],
   ["error_max_budget_usd", "provider_execution_limit"],

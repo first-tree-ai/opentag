@@ -1138,7 +1138,6 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       error: {
         code: terminal.stopReason === "length" ? "provider_execution_limit" : piProviderFailureCode(terminal.error),
         message: terminal.error ?? piFailedStopMessage(terminal.stopReason),
-        ...(terminal.stopReason === "length" ? { outputLimit: true as const } : {}),
       },
       diagnostics,
     };

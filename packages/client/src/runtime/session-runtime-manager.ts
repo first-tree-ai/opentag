@@ -28,8 +28,6 @@ import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconcile
 const logger = createLogger("runtime-session-manager");
 
 interface ManagedSessionRuntime {
-  /** The next start creates a new provider conversation instead of resuming the bound one (R8). */
-  newConversation?: boolean;
   readonly agentId: string;
   readonly cwd: string;
   readonly effectiveSnapshotHash: string;
@@ -422,10 +420,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         const replaceBinding =
           runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, undefined) === true;
         runtime =
-          runtimeBinding && !replaceBinding && !managed.newConversation
-            ? await provider.factory.resume({ ...common, binding: runtimeBinding })
+          runtimeBinding && !replaceBinding
+            ? await provider.factory.resume(
+                withSystemPromptUpdated({ ...common, binding: runtimeBinding }, managed.binding.systemPromptUpdated),
+              )
             : await provider.factory.create(common);
-        managed.newConversation = false;
       } catch (error) {
         logger.debug(
           {
@@ -493,18 +492,6 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         await this.#cleanupProviderEnvironment?.(sessionId);
       }
     }
-  }
-
-  /**
-   * Closes the Session's provider conversation so the next `ensureRuntime` creates a new one, whose binding then
-   * replaces the old. Used when the conversation no longer fits the model even after compacting it (R8).
-   */
-  async startNewConversation(sessionId: string): Promise<void> {
-    this.#assertOpen();
-    const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new SessionRuntimeNotPreparedError();
-    await this.#closeManaged(managed);
-    managed.newConversation = true;
   }
 
   runtime(sessionId: string): AgentRuntime {
@@ -702,4 +689,11 @@ async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promis
 
 function fencedByUnresolvedTurn(prepared: SessionPreparationResult, options: SessionPreparationOptions): boolean {
   return prepared.unresolvedTurn !== undefined && prepared.unresolvedTurn.turnId !== options.resumeTurnId;
+}
+
+function withSystemPromptUpdated<T extends object>(
+  request: T,
+  systemPromptUpdated: boolean | undefined,
+): T & { systemPromptUpdated?: boolean } {
+  return systemPromptUpdated ? { ...request, systemPromptUpdated: true } : request;
 }

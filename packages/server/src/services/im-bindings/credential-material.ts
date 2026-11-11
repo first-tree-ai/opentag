@@ -76,6 +76,7 @@ export interface CredentialMaterialInput {
 }
 
 export interface CredentialDecodeOptions {
+  agentId?: string;
   bindingId?: string;
   slackInstallationId?: string;
   logger?: Pick<ServiceLogger, "warn">;
@@ -101,6 +102,7 @@ export function decodeFeishuCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
@@ -115,6 +117,7 @@ export function decodeFeishuCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID",
@@ -128,6 +131,7 @@ export function decodeFeishuCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID",
@@ -150,6 +154,7 @@ export function decodeSlackCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
@@ -164,6 +169,7 @@ export function decodeSlackCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID",
@@ -177,6 +183,7 @@ export function decodeSlackCredential(
   } catch {
     options.logger?.warn(
       {
+        ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
         bindingId: options.bindingId,
         slackInstallationId: options.slackInstallationId,
         code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID",
@@ -231,6 +238,89 @@ function capabilitiesMatch(left: readonly string[], right: readonly string[]): b
   return left.length === right.length && left.every((capability, index) => capability === right[index]);
 }
 
+function logCredentialInspectionWarning(
+  options: CredentialDecodeOptions,
+  slackInstallationId: string | undefined,
+  provider: "feishu" | "slack",
+  code: "IM_BINDING_CREDENTIAL_ENVELOPE_INVALID" | "IM_BINDING_CREDENTIAL_MISMATCH",
+  message: string,
+): void {
+  options.logger?.warn(
+    {
+      ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+      bindingId: options.bindingId,
+      slackInstallationId,
+      provider,
+      code,
+    },
+    message,
+  );
+}
+
+function inspectFeishuCredentialMaterial(
+  cipher: ApplicationCipher,
+  input: CredentialMaterialInput,
+  storedCapabilities: string[],
+  requiredCapabilities: string[],
+  decodeOptions: CredentialDecodeOptions,
+): CredentialInspection {
+  const credential = decodeFeishuCredential(cipher, input.encryptedCredential, decodeOptions);
+  if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
+  const credentialCapabilities = uniqueSorted(credential.grantedScopes);
+  if (credential.appId !== input.externalAppId || !capabilitiesMatch(credentialCapabilities, storedCapabilities)) {
+    logCredentialInspectionWarning(
+      decodeOptions,
+      decodeOptions.slackInstallationId,
+      input.provider,
+      "IM_BINDING_CREDENTIAL_MISMATCH",
+      "Feishu credential metadata mismatch",
+    );
+    return invalidInspection(storedCapabilities, requiredCapabilities, credentialCapabilities);
+  }
+  return {
+    // A scope-incomplete Feishu grant remains usable by the existing Channel while the
+    // replacement authorization is validated. Readiness still reports the missing scopes.
+    status: "valid",
+    grantedCapabilities: storedCapabilities,
+    requiredCapabilities,
+    missingCapabilities: requiredCapabilities.filter((capability) => !storedCapabilities.includes(capability)),
+  };
+}
+
+function inspectSlackCredentialMaterial(
+  cipher: ApplicationCipher,
+  input: CredentialMaterialInput,
+  storedCapabilities: string[],
+  requiredCapabilities: string[],
+  decodeOptions: CredentialDecodeOptions,
+): CredentialInspection {
+  const credential = decodeSlackCredential(cipher, input.encryptedCredential, decodeOptions);
+  if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
+  const credentialCapabilities = uniqueSorted(credential.grantedScopes);
+  const missingCapabilities = requiredCapabilities.filter(
+    (capability) => !storedCapabilities.includes(capability) || !credentialCapabilities.includes(capability),
+  );
+  const valid =
+    capabilitiesMatch(credentialCapabilities, storedCapabilities) &&
+    missingCapabilities.length === 0 &&
+    hasRequiredSlackBotScopes(credential.grantedScopes);
+  if (!valid && missingCapabilities.length === 0) {
+    logCredentialInspectionWarning(
+      decodeOptions,
+      decodeOptions.slackInstallationId,
+      input.provider,
+      "IM_BINDING_CREDENTIAL_MISMATCH",
+      "Slack credential metadata mismatch",
+    );
+  }
+  return {
+    status: valid ? "valid" : "invalid",
+    grantedCapabilities: storedCapabilities,
+    requiredCapabilities,
+    missingCapabilities,
+  };
+}
+
 export function inspectCredentialMaterial(
   cipher: ApplicationCipher,
   input: CredentialMaterialInput,
@@ -238,48 +328,26 @@ export function inspectCredentialMaterial(
 ): CredentialInspection {
   const requiredCapabilities = requiredCapabilitiesFor(input.provider);
   const storedCapabilities = uniqueSorted(input.grantedCapabilities);
-  if (!materialEnvelopeValid(input)) return invalidInspection(storedCapabilities, requiredCapabilities);
-  if (input.provider === "feishu") {
-    const credential = decodeFeishuCredential(cipher, input.encryptedCredential, {
-      bindingId: options.bindingId,
-      slackInstallationId: options.slackInstallationId ?? input.slackInstallationId ?? undefined,
-      logger: options.logger,
-    });
-    if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
-    const credentialCapabilities = uniqueSorted(credential.grantedScopes);
-    if (credential.appId !== input.externalAppId || !capabilitiesMatch(credentialCapabilities, storedCapabilities)) {
-      return invalidInspection(storedCapabilities, requiredCapabilities, credentialCapabilities);
-    }
-    return {
-      // A scope-incomplete Feishu grant remains usable by the existing Channel while the
-      // replacement authorization is validated. Readiness still reports the missing scopes.
-      status: "valid",
-      grantedCapabilities: storedCapabilities,
-      requiredCapabilities,
-      missingCapabilities: requiredCapabilities.filter((capability) => !storedCapabilities.includes(capability)),
-    };
-  }
-  const credential = decodeSlackCredential(cipher, input.encryptedCredential, {
+  const slackInstallationId = options.slackInstallationId ?? input.slackInstallationId ?? undefined;
+  const decodeOptions: CredentialDecodeOptions = {
+    ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
     bindingId: options.bindingId,
-    slackInstallationId: options.slackInstallationId ?? input.slackInstallationId ?? undefined,
+    slackInstallationId,
     logger: options.logger,
-  });
-  if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
-  const credentialCapabilities = uniqueSorted(credential.grantedScopes);
-  const missingCapabilities = requiredCapabilities.filter(
-    (capability) => !storedCapabilities.includes(capability) || !credentialCapabilities.includes(capability),
-  );
-  return {
-    status:
-      capabilitiesMatch(credentialCapabilities, storedCapabilities) &&
-      missingCapabilities.length === 0 &&
-      hasRequiredSlackBotScopes(credential.grantedScopes)
-        ? "valid"
-        : "invalid",
-    grantedCapabilities: storedCapabilities,
-    requiredCapabilities,
-    missingCapabilities,
   };
+  if (!materialEnvelopeValid(input)) {
+    logCredentialInspectionWarning(
+      decodeOptions,
+      slackInstallationId,
+      input.provider,
+      "IM_BINDING_CREDENTIAL_ENVELOPE_INVALID",
+      "IM binding credential envelope invalid",
+    );
+    return invalidInspection(storedCapabilities, requiredCapabilities);
+  }
+  return input.provider === "feishu"
+    ? inspectFeishuCredentialMaterial(cipher, input, storedCapabilities, requiredCapabilities, decodeOptions)
+    : inspectSlackCredentialMaterial(cipher, input, storedCapabilities, requiredCapabilities, decodeOptions);
 }
 
 export function inspectBindingCredentials(
@@ -291,6 +359,7 @@ export function inspectBindingCredentials(
   const bindingId = options.bindingId;
   if (binding.provider !== "slack") {
     return inspectCredentialMaterial(cipher, binding, {
+      ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       bindingId,
       slackInstallationId: options.slackInstallationId,
       logger: options.logger,
@@ -310,6 +379,11 @@ export function inspectBindingCredentials(
           credentialSchemaVersion: binding.credentialSchemaVersion,
           grantedCapabilities: binding.grantedCapabilities,
         },
-    { bindingId, slackInstallationId: options.slackInstallationId, logger: options.logger },
+    {
+      ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+      bindingId,
+      slackInstallationId: options.slackInstallationId,
+      logger: options.logger,
+    },
   );
 }

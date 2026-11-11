@@ -190,6 +190,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
+  readonly #systemPromptSnapshotOff: boolean;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
@@ -224,7 +225,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       eventSink: options.eventSink,
       binding: options.binding,
     });
-    this.#sessionId = parseClaudeCodeBinding(options.binding);
+    const parsedBinding = parseClaudeCodeBinding(options.binding);
+    this.#sessionId = parsedBinding.sessionId;
+    this.#systemPromptSnapshotOff = parsedBinding.systemPromptSnapshotOff;
     this.#cwd = options.cwd;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
@@ -502,8 +505,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
-      ...fallbackModelArguments(configuration?.model),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
+      ...(this.#systemPromptSnapshotOff ? ["--system-prompt-snapshot", "off"] : []),
       "--append-system-prompt",
       this.#systemPrompt,
       ...(provider.maxBudgetUsd !== undefined ? ["--max-budget-usd", String(provider.maxBudgetUsd)] : []),
@@ -934,7 +937,8 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
+          message:
+            "Claude Code requires stream-json, acceptEdits mode, stdio permission prompts, and --system-prompt-snapshot",
         });
       }
       if (result.credentialIssue) {
@@ -1036,12 +1040,18 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   ): Promise<ClaudeCodeAgentRuntime> {
     validateFactoryRequest(request);
     validateConfiguration(request.configuration);
-    const binding =
-      mode === "resume" && "binding" in request
-        ? request.binding
-        : claudeCodeBinding(requireUuid(this.#createSessionId(), "generated Claude Code session id"));
-    assertBinding(binding, this.manifest);
-    parseClaudeCodeBinding(binding);
+    let binding: AgentRuntimeBinding;
+    if (mode === "resume" && "binding" in request) {
+      assertBinding(request.binding, this.manifest);
+      const parsed = parseClaudeCodeBinding(request.binding);
+      binding = claudeCodeBinding(
+        parsed.sessionId,
+        parsed.systemPromptSnapshotOff || ("systemPromptUpdated" in request && request.systemPromptUpdated === true),
+      );
+    } else {
+      binding = claudeCodeBinding(requireUuid(this.#createSessionId(), "generated Claude Code session id"));
+      assertBinding(binding, this.manifest);
+    }
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
@@ -1104,7 +1114,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--allowedTools") &&
     /\bacceptEdits\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
-    helpResult.stdout.includes("--append-system-prompt");
+    helpResult.stdout.includes("--append-system-prompt") &&
+    helpResult.stdout.includes("--system-prompt-snapshot");
   const authentication = await probeClaudeCodeCredential(command, execution, signal);
   const credential = authentication?.loggedIn === true;
   // Managed gateway sign-in can override explicit environment credentials. Honor the CLI's
@@ -1213,26 +1224,6 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 
 const { validate: validateConfiguration, merge: mergeConfiguration } =
   providerConfiguration(parseProviderConfiguration);
-
-/**
- * The smaller model of the same family that Claude Code switches to when the configured one is overloaded or
- * unavailable; the CLI tries the configured model again at the start of every turn (R1). Only an explicit Opus
- * or Sonnet model gets one: an unset model resolves inside the CLI, and a fallback equal to the main model makes
- * the CLI refuse to start, so nothing is guessed. A model outside these families (another vendor behind a gateway,
- * Haiku) gets none.
- */
-export function claudeFallbackModel(model: string | undefined): string | undefined {
-  const name = model?.trim().toLowerCase();
-  if (!name) return undefined;
-  if (/(^|[^a-z])opus([^a-z]|$)/u.test(name)) return "sonnet";
-  if (/(^|[^a-z])sonnet([^a-z]|$)/u.test(name)) return "haiku";
-  return undefined;
-}
-
-function fallbackModelArguments(model: string | undefined): string[] {
-  const fallback = claudeFallbackModel(model);
-  return fallback ? ["--fallback-model", fallback] : [];
-}
 
 function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodeProviderConfiguration {
   if (value === undefined) return {};
@@ -1371,19 +1362,34 @@ function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCode
   };
 }
 
-function claudeCodeBinding(sessionId: string): AgentRuntimeBinding {
+function claudeCodeBinding(sessionId: string, systemPromptSnapshotOff = false): AgentRuntimeBinding {
   return {
     providerId: CLAUDE_CODE_PROVIDER_ID,
     schemaVersion: CLAUDE_CODE_BINDING_SCHEMA_VERSION,
-    payload: { sessionId },
+    payload: {
+      sessionId,
+      ...(systemPromptSnapshotOff ? { systemPromptSnapshotOff: true } : {}),
+    },
   };
 }
 
-function parseClaudeCodeBinding(binding: AgentRuntimeBinding): string {
+function parseClaudeCodeBinding(binding: AgentRuntimeBinding): {
+  readonly sessionId: string;
+  readonly systemPromptSnapshotOff: boolean;
+} {
   const payload = record(binding.payload);
   if (!payload) throw new AgentRuntimeError("binding_incompatible", "Claude Code binding payload is invalid");
+  if (payload.systemPromptSnapshotOff !== undefined && typeof payload.systemPromptSnapshotOff !== "boolean") {
+    throw new AgentRuntimeError(
+      "binding_incompatible",
+      "Claude Code binding systemPromptSnapshotOff must be a boolean",
+    );
+  }
   try {
-    return requireUuid(payload.sessionId, "Claude Code binding sessionId");
+    return {
+      sessionId: requireUuid(payload.sessionId, "Claude Code binding sessionId"),
+      systemPromptSnapshotOff: payload.systemPromptSnapshotOff === true,
+    };
   } catch (error) {
     logger.debug({ code: "binding_invalid", error: String(error) }, "Claude Code binding was rejected");
     throw new AgentRuntimeError("binding_incompatible", (error as Error).message, { cause: error });
@@ -1455,25 +1461,12 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: strin
       code:
         providerFailureCode(terminal.subtype) !== "provider_error"
           ? providerFailureCode(terminal.subtype)
-          : promptTooLong(terminal)
-            ? "provider_context_limit"
-            : providerFailureCode(assistantError, terminal.apiErrorStatus),
+          : providerFailureCode(assistantError, terminal.apiErrorStatus),
       message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
     },
     diagnostics,
   };
 }
-
-/**
- * Claude Code reports a request over the model's context as an API error whose text starts with its fixed
- * "Prompt is too long" message (2.1.319); the envelope code is only `invalid_request`. It is a context limit,
- * which compaction can fix, not a rejected request (R8).
- */
-function promptTooLong(terminal: ClaudeCodeTerminal): boolean {
-  return [terminal.result, ...terminal.errors].some((text) => text?.startsWith(CLAUDE_PROMPT_TOO_LONG) === true);
-}
-
-const CLAUDE_PROMPT_TOO_LONG = "Prompt is too long";
 
 function parseUsage(
   value: unknown,

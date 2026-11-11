@@ -240,23 +240,34 @@ describe("Cloud workspace transfer", () => {
     await second.client.save(true);
     expect(store.object()).toEqual({ ...saved, metageneration: "3", sealed: true });
     expect(pack).toHaveBeenCalledTimes(2);
-    expect(fingerprint).toHaveBeenCalledTimes(4);
+    expect(fingerprint).toHaveBeenCalledExactlyOnceWith(second.workspace);
+    expect(startupLogs.mock.calls.map(([record]) => record.fingerprintMs)).toEqual([
+      undefined,
+      undefined,
+      expect.any(Number),
+    ]);
     const third = await client(store, 2);
     await third.client.initialize();
     expect(await readFile(join(third.workspace, "unpublished-work"), "utf8")).toBe("keep unpublished bytes");
     expect(store.object().generation).toBe(saved.generation);
   });
 
-  it("lightly seals a clean checkpoint while preserving its exact durable archive", async () => {
+  it("conditionally uploads each checkpoint and seals the last archive without packing again", async () => {
     const store = storageFixture();
-    const runner = await client(store);
+    const logs = vi.fn();
+    const runner = await client(store, 1, { onPerformanceLog: logs });
     await runner.client.initialize();
     await writeFile(join(runner.workspace, "work"), "checkpoint");
     await runner.client.save();
+    const changed = store.object();
+    await runner.client.save();
     const saved = store.object();
+    expect(saved.generation).not.toBe(changed.generation);
+    expect(saved.sha256).toBe(changed.sha256);
+    expect(logs.mock.calls.slice(-2).map(([record]) => record.fingerprintMs)).toEqual([undefined, undefined]);
     await runner.client.save(true);
     expect(store.object()).toEqual({ ...saved, sealed: true, metageneration: "2" });
-    expect(store.uploads).toHaveLength(2);
+    expect(store.uploads).toHaveLength(3);
   });
 
   it("saves real non-Turn changes even when file length and mtime are unchanged", async () => {
@@ -585,6 +596,46 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.pendingSave).toBe(false);
   });
 
+  it("keeps the last committed fingerprint when a new checkpoint cannot be confirmed", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const file = join(runner.workspace, "progress");
+    const timestamp = new Date("2026-01-01T00:00:00Z");
+    await writeFile(file, "versionA");
+    await utimes(file, timestamp, timestamp);
+    await runner.client.save();
+    const committed = store.object();
+
+    await writeFile(file, "versionB");
+    await utimes(file, timestamp, timestamp);
+    store.fail("before");
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    expect(store.object()).toEqual(committed);
+
+    await writeFile(file, "versionA");
+    await utimes(file, timestamp, timestamp);
+    store.fail("none");
+    await runner.client.save(true);
+    expect(store.object()).toEqual({ ...committed, sealed: true, metageneration: "2" });
+    expect(store.uploads).toHaveLength(2);
+  });
+
+  it("uses the checkpoint fingerprint after readback confirms a lost upload response", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "progress"), "checkpoint committed with a lost response");
+    const start = store.requests.length;
+    store.failUploads("after");
+    await runner.client.save();
+    const committed = store.object();
+    expect(store.requests.slice(start).map((request) => request.method)).toEqual(["PUT", "POST"]);
+    await runner.client.save(true);
+    expect(store.object()).toEqual({ ...committed, sealed: true, metageneration: "2" });
+    expect(store.uploads).toHaveLength(2);
+  });
+
   it("accepts a committed upload with a lost response without uploading it again", async () => {
     const store = storageFixture();
     const runner = await client(store);
@@ -782,11 +833,15 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.terminalFailure).toBe(true);
     expect(runner.client.pendingSave).toBe(true);
 
+    const saved = store.object();
     await runner.client.rollback();
     expect(runner.client.terminalFailure).toBe(false);
     expect(runner.client.pendingSave).toBe(false);
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
+    await runner.client.save(true);
+    expect(store.object()).toEqual({ ...saved, sealed: true, metageneration: "2" });
+    expect(store.uploads).toHaveLength(2);
   });
 
   it("never wipes the workspace or overwrites the saved baseline when a pre-prompt rollback fails before recovery", async () => {

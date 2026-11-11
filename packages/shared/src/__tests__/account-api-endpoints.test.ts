@@ -103,5 +103,16 @@ describe("accountApiEndpoints", () => {
       },
       body: JSON.stringify({ expectedOAuthState: "state-1" }),
     });
+
+    const updateSkill = accountApiEndpoints.updateAgentSkill("agent-1", "skill-1", { enabled: false });
+    expect(updateSkill.path).toBe("/api/v1/agents/agent-1/skills/skill-1");
+    expect(toAccountApiRequestInit(updateSkill, { authorization: "Bearer tok" })).toEqual({
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok",
+      },
+      body: JSON.stringify({ enabled: false }),
+    });
   });
 });

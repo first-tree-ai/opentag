@@ -792,9 +792,18 @@ function collectProxyHandles(relay: RuntimeCredentialRelay): Map<RuntimeProxyPro
   return handles;
 }
 
-function toEnvironmentError(error: unknown): ImCredentialEnvironmentError {
+/** The Server refused the Feishu or Slack connection itself: it was disconnected or its credential went stale. */
+function imConnectionRefused(error: RuntimeCredentialRelayError): boolean {
+  return (
+    (error.provider === "feishu" || error.provider === "slack") &&
+    (error.serverCode === "binding_inactive" || error.serverCode === "credential_stale")
+  );
+}
+
+export function toEnvironmentError(error: unknown): ImCredentialEnvironmentError {
   if (error instanceof ImCredentialEnvironmentError) return error;
   if (error instanceof RuntimeCredentialRelayError) {
+    if (imConnectionRefused(error)) return new ImCredentialEnvironmentError("im_connection_unavailable");
     const code =
       error.code === "execution_rejected" || error.code === "acquire_failed" || error.code === "ticket_failed"
         ? "execution_rejected"

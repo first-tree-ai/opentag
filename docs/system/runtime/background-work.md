@@ -89,17 +89,10 @@ a row, reset once a retry actually ran for five minutes. It retries at once, wit
 gets the continuation notice and the ledger. A new process cannot take over the old process's work, so the Session starts
 it again if it still needs it. Cloud Turns do not use these automatic retries; their next Run reads the ledger.
 
-A model CLI that fails to start (`provider_start_failed`, `not_started`) and a model service that is unavailable or
-unreachable before it produced anything (`provider_unavailable`, `provider_connection_failed`) are retried the same way,
-after their short wait and counted when they fail. The ledger is unchanged unless a model turn started: the retry reads
-the same notice, and an entry leaves only once a model turn of the retried Run starts. The sender hears the outcome once,
-when the retry settles. A turn the Run started by itself after answering its input is a `followUpFailure`, not one of
-these, and is never retried.
-
-A context limit (`provider_context_limit`) retries after compacting, and one that still does not fit retries in a new
-provider conversation (`conversation_reset`). The ledger belongs to the OpenTag Session, not to a provider
-conversation, so the new conversation's first input carries the notice the ledger still holds; work the old conversation left running is
-reported as unknown, since closing the old runtime may have stopped it. The sender still hears the outcome once.
+A model CLI that fails to start (`provider_start_failed`, `not_started`) is retried once the same way, after its short
+wait and counted when it fails. Nothing ran, so the ledger is unchanged: the retry reads the same notice. The sender
+hears the outcome once, when the retry settles. A turn the Run started by itself after answering its input is a
+`followUpFailure`, not a start failure, and is never retried.
 
 ## What survives a stop
 

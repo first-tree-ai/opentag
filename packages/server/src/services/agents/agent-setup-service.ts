@@ -171,10 +171,10 @@ export class AgentSetupService {
       );
     }
     const computer = await this.#readSetupComputer(detail.computer.computerId);
-    if (computer.kind === "cloud") {
-      // A Cloud Agent has no local machine to prepare: the managed environment starts with the
-      // first real task. The refresh resolves as a pure re-read trigger so the surface's next
-      // snapshot picks up any configuration change; nothing is commanded and nothing is claimed.
+    if (computer.kind === "cloud" || !this.#isLocalComputerOnline(computer, this.#now())) {
+      // A Cloud Agent has no local machine to prepare, and an offline local Computer cannot accept
+      // a live preparation command. In both cases the refresh resolves as a pure re-read trigger so
+      // the surface's next snapshot picks up the authoritative Computer or configuration state.
       return;
     }
     if (!this.#prepareComputer) {
@@ -264,11 +264,9 @@ export class AgentSetupService {
       // and carries no heartbeat, presence window, or local CLI collection.
       return { kind: "cloud", ...identity, observedAt: observedAt.toISOString() };
     }
-    const connectionStatus =
-      computer.currentInstanceId !== null &&
-      (computer.lastSeenAt?.getTime() ?? 0) >= observedAt.getTime() - this.#presenceTimeoutMs
-        ? ("online" as const)
-        : ("offline" as const);
+    const connectionStatus = this.#isLocalComputerOnline(computer, observedAt)
+      ? ("online" as const)
+      : ("offline" as const);
     return {
       kind: "bound",
       ...identity,
@@ -282,6 +280,16 @@ export class AgentSetupService {
       lastSeenAt: computer.lastSeenAt?.toISOString() ?? null,
       observedAt: observedAt.toISOString(),
     };
+  }
+
+  #isLocalComputerOnline(
+    computer: { currentInstanceId: string | null; lastSeenAt: Date | null },
+    observedAt: Date,
+  ): boolean {
+    return (
+      computer.currentInstanceId !== null &&
+      (computer.lastSeenAt?.getTime() ?? 0) >= observedAt.getTime() - this.#presenceTimeoutMs
+    );
   }
 
   async #messagingState(callerUserId: string, agentId: string): Promise<AgentSetupMessagingState> {

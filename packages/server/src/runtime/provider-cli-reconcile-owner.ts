@@ -586,6 +586,7 @@ export class ProviderCliReconcileOwner {
       );
     const reusable =
       reuseCredential &&
+      !prior?.forceCredentialCheck &&
       this.#selfCheckingComputer(computerId) &&
       retained &&
       this.#now() - retained.observedAt < RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
@@ -600,6 +601,7 @@ export class ProviderCliReconcileOwner {
       grantConsumed: false,
       forceCredentialCheck: !reusable,
       nextCredentialCheckAt: (reusable ? retained.observedAt : this.#now()) + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+      hintNotBefore: existing?.hintNotBefore,
       cooldownUntil: existing?.cooldownUntil,
       grantRepairStopped: prior?.grantRepairStopped ?? false,
       grantRetryAttempt: prior?.grantRetryAttempt ?? 0,
@@ -917,19 +919,9 @@ export class ProviderCliReconcileOwner {
   ): Promise<undefined> {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
     if (frame.status === "retrying") {
-      if (this.#selfCheckingComputer(current.computerId)) {
-        if (frame.reason === "validation_busy") {
-          this.#resendBusyCheck(current);
-          return undefined;
-        }
-        this.#failCredential(
-          current,
-          frame.reason === "rate_limited" ? "rate_limited" : "provider_unreachable",
-          frame.reason === "validation_expired",
-        );
-        return undefined;
-      }
-      return this.#handleRetryingValidation(current, frame, context);
+      return this.#selfCheckingComputer(current.computerId)
+        ? this.#handleSelfCheckingRetryingValidation(current, frame)
+        : this.#handleRetryingValidation(current, frame, context);
     }
     current.forceCredentialCheck = false;
     current.credentialCheckDeadlineAt = undefined;
@@ -952,6 +944,26 @@ export class ProviderCliReconcileOwner {
     if (frame.status === "ready") this.#endFailureEpisode(current);
     if (frame.status === "needs_attention") current.grantRepairStopped = true;
     this.#armCredentialTimer();
+    return undefined;
+  }
+
+  async #handleSelfCheckingRetryingValidation(
+    current: CurrentRequest,
+    frame: ProviderCliValidationResultFrame,
+  ): Promise<undefined> {
+    if (frame.reason === "validation_busy") {
+      this.#resendBusyCheck(current);
+      return undefined;
+    }
+    if (frame.reason === "artifact_changed") {
+      await this.#scheduleInternalRetry(current, "artifact_changed");
+      return undefined;
+    }
+    this.#failCredential(
+      current,
+      frame.reason === "rate_limited" ? "rate_limited" : "provider_unreachable",
+      frame.reason === "validation_expired",
+    );
     return undefined;
   }
 
@@ -1008,6 +1020,7 @@ export class ProviderCliReconcileOwner {
     current.grantRequestId = undefined;
     current.grantConsumed = false;
     current.grantExpiresAt = undefined;
+    current.cooldownUntil = undefined;
   }
 
   async #issueGrant(current: CurrentRequest): Promise<void> {
@@ -1468,7 +1481,11 @@ export class ProviderCliReconcileOwner {
     if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     current.credentialCheckDeadlineAt = undefined;
     current.busyCheckDeadlineAt = undefined;
-    if (reason === "rate_limited") current.cooldownUntil = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
+    if (reason === "rate_limited") {
+      const cooldownUntil = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
+      current.cooldownUntil = cooldownUntil;
+      current.nextCredentialCheckAt = Math.max(current.nextCredentialCheckAt, cooldownUntil);
+    }
     current.grantConsumed = true;
     current.forceCredentialCheck = false;
     current.grantRepairStopped = true;
@@ -1507,11 +1524,16 @@ export class ProviderCliReconcileOwner {
   async #recheckCredential(current: CurrentRequest): Promise<void> {
     if (this.#closed || !this.#connectionMatches(current.computerId, current.instanceId, current.installationId))
       return;
-    if (current.grantIssue || (current.cooldownUntil ?? 0) > this.#now()) {
+    if (current.grantIssue) {
       current.nextCredentialCheckAt = Math.max(
         this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
         current.cooldownUntil ?? 0,
       );
+      return;
+    }
+    if ((current.cooldownUntil ?? 0) > this.#now()) {
+      current.nextCredentialCheckAt = Math.max(current.nextCredentialCheckAt, current.cooldownUntil ?? 0);
+      this.#armCredentialTimer();
       return;
     }
     if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return;

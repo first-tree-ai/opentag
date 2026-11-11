@@ -181,7 +181,12 @@ The sender is the target's `sender_external_id`: a Feishu card goes to that `ope
 availability or is a bot, Slack cannot open the conversation, or the call is rejected), the card goes to the group
 place above. A rate limit stays a rate limit, and an unknown outcome never falls back, which could post it twice. A
 Slack card in a direct message keeps its channel in its stored message ID as `<channel>/<ts>`, which edits use; Slack
-timestamps hold no slash. Every other card, including rate limits and workspace failures, stays in the group.
+timestamps hold no slash. A card sent to the sender opens with a plain-text line naming the group and the first twenty
+characters of the message: "你在「{group}」发的：{excerpt}…" (English: `Your message in "{group}": {excerpt}`). The group
+name is read from the provider when the card is sent (Feishu chat info, Slack `conversations.info`), within two
+seconds so the send keeps most of its deadline; when that read fails or runs out of time the line says "你在群里发的".
+A deadline that ends a send before any provider write started is known not to have sent anything, so a waiting
+notice is retried rather than lost. Later edits of the card, which only show its state, do not repeat the line. Every other card, including rate limits and workspace failures, stays in the group.
 
 Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Whether operations ran
 stays on the details page, which warns that they may have unless authoritative `not_started` evidence says otherwise.

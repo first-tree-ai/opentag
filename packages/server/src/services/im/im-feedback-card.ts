@@ -28,6 +28,8 @@ export interface FeedbackCard {
   title: string;
   /** Plain text: cards carry no links (Gandy 11-10). */
   body?: string;
+  /** Plain text above the body: which group and message a card sent to the sender's direct message is about. */
+  origin?: string;
 }
 
 export function feedbackDetailsUrl(target: Pick<FeedbackTarget, "id">, publicUrl: string): string {
@@ -132,6 +134,9 @@ export function slackCardMessage(card: FeedbackCard, feedbackId: string, languag
             block_id: slackCardIdentity(card.kind, feedbackId),
             text: { type: "plain_text" as const, text: card.title, emoji: true },
           },
+          ...(card.origin
+            ? [{ type: "section" as const, text: { type: "plain_text" as const, text: card.origin, emoji: false } }]
+            : []),
           ...(body ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: body } }] : []),
         ],
       },
@@ -152,6 +157,9 @@ export function feishuCardContent(card: FeedbackCard, detailsUrl: string, langua
   return JSON.stringify({
     config: { wide_screen_mode: true, update_multi: true },
     header: { title: { tag: "plain_text", content: card.title }, template: FEISHU_TEMPLATE[card.tone] },
-    elements: [{ tag: "div", text: { tag: "lark_md", content: markdown } }],
+    elements: [
+      ...(card.origin ? [{ tag: "div", text: { tag: "plain_text", content: card.origin } }] : []),
+      { tag: "div", text: { tag: "lark_md", content: markdown } },
+    ],
   });
 }

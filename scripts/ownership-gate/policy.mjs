@@ -315,7 +315,7 @@ export function selectReviewersToRemove({
   if (requestedEligible.length === 0) {
     return [];
   }
-  if (decision.state === STATE_SUCCESS && decision.approvals.length > 0) {
+  if (decision.state === STATE_SUCCESS && decision.approvals.some((login) => candidates.includes(login))) {
     return requestedEligible;
   }
   if (requestedEligible.length <= 1) {

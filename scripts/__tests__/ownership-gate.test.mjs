@@ -607,12 +607,69 @@ test("selectReviewersToRemove leaves a single eligible requested reviewer untouc
   );
 });
 
+test("selectReviewersToRemove requires an eligible owner approval before clearing owner requests", () => {
+  const territoryNonOwnerApproved = decide({
+    files: ["docs/releasing.md"],
+    author: "bestony",
+    approvals: ["external-observer"],
+  });
+  assert.equal(territoryNonOwnerApproved.state, STATE_SUCCESS);
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["external-observer"],
+      decision: territoryNonOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    [],
+  );
+
+  const exemptNonOwnerApproved = decide({
+    files: ["apps/web/src/app.tsx"],
+    author: "liuchao-001",
+    approvals: ["external-observer"],
+  });
+  assert.equal(exemptNonOwnerApproved.state, STATE_SUCCESS);
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }],
+      activeReviewers: ["external-observer"],
+      decision: exemptNonOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+
+  const territoryOwnerApproved = decide({
+    files: ["docs/releasing.md"],
+    author: "bestony",
+    approvals: ["yuezengwu"],
+  });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["yuezengwu"],
+      decision: territoryOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+});
+
 test("evaluate preserves a sole reassigned reviewer and unrelated specialists while deleting only redundant owners", async () => {
   const sha = "a".repeat(40);
   const silentLogger = createLogger({ level: "error", sink: { log: () => {}, warn: () => {}, error: () => {} } });
   const basePolicy = { ...policy(), owners: ["bestony", "yuezengwu"] };
 
-  async function runEvaluate({ requestedReviewers, reviews }) {
+  async function runEvaluate({
+    author = "liuchao-001",
+    file = "packages/server/src/app.ts",
+    requestedReviewers,
+    reviews,
+  }) {
     const deletes = [];
     const client = createGitHubClient({
       token: "test-token",
@@ -630,13 +687,13 @@ test("evaluate preserves a sole reassigned reviewer and unrelated specialists wh
             number: 10,
             state: "open",
             head: { sha, repo: { full_name: "first-tree-ai/opentag" } },
-            user: { login: "liuchao-001", type: "User" },
+            user: { login: author, type: "User" },
             changed_files: 1,
             base: { ref: "main" },
             requested_reviewers: requestedReviewers,
           };
         } else if (path.endsWith("/pulls/10/files")) {
-          payload = [{ filename: "packages/server/src/app.ts" }];
+          payload = [{ filename: file }];
         } else if (path.endsWith("/pulls/10/reviews")) {
           payload = reviews;
         } else if (path.includes("/commits/")) {
@@ -667,6 +724,27 @@ test("evaluate preserves a sole reassigned reviewer and unrelated specialists wh
   });
   assert.equal(withSpecialist.result.state, STATE_FAILURE);
   assert.deepEqual(withSpecialist.deletes, [
+    {
+      path: "/repos/first-tree-ai/opentag/pulls/10/requested_reviewers",
+      body: { reviewers: ["yuezengwu"] },
+    },
+  ]);
+
+  const nonOwnerApprovedDocs = await runEvaluate({
+    author: "bestony",
+    file: "docs/releasing.md",
+    requestedReviewers: [{ login: "yuezengwu" }],
+    reviews: [{ user: { login: "external-observer" }, state: "APPROVED", commit_id: sha }],
+  });
+  assert.equal(nonOwnerApprovedDocs.result.state, STATE_SUCCESS);
+  assert.deepEqual(nonOwnerApprovedDocs.deletes, []);
+
+  const ownerApprovedCode = await runEvaluate({
+    requestedReviewers: [{ login: "yuezengwu" }, { login: "security-specialist" }],
+    reviews: [{ user: { login: "bestony" }, state: "APPROVED", commit_id: sha }],
+  });
+  assert.equal(ownerApprovedCode.result.state, STATE_SUCCESS);
+  assert.deepEqual(ownerApprovedCode.deletes, [
     {
       path: "/repos/first-tree-ai/opentag/pulls/10/requested_reviewers",
       body: { reviewers: ["yuezengwu"] },

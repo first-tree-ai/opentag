@@ -1005,17 +1005,21 @@ describe("SessionRuntimeManager", () => {
     const upgraded = reconcile(computerId, snapshot(2));
     await expect(reconciler.reconcile(upgraded)).resolves.toMatchObject({ status: "ready" });
     await manager.ensureRuntime("session-1");
-    expect(factory.created).toHaveLength(2);
+    expect(factory.created).toHaveLength(1);
+    expect(factory.resumed).toEqual([binding("thread-1")]);
+    expect(factory.resumedRequests[0]?.systemPromptUpdated).toBeUndefined();
     expect(factory.runtimes[0]?.closed).toBe(true);
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
+    expect((await store.read("agent-1", "session-1"))?.systemPromptUpdated).toBeUndefined();
     await expect(
       factory.runtimes[0]?.emit({ type: "binding_changed", binding: binding("late-old-thread") }),
     ).rejects.toMatchObject({ name: "SessionBindingConflictError" });
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
     await factory.runtimes[1]?.close();
     await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
     await manager.ensureRuntime("session-1");
-    expect(factory.resumed).toEqual([binding("thread-2")]);
+    expect(factory.resumed).toEqual([binding("thread-1"), binding("thread-1")]);
+    expect(factory.resumedRequests[1]?.systemPromptUpdated).toBeUndefined();
 
     await manager.close();
     const restartedFactory = new FakeFactory();
@@ -1034,7 +1038,7 @@ describe("SessionRuntimeManager", () => {
       status: "ready",
     });
     await restartedManager.ensureRuntime("session-1");
-    expect(restartedFactory.resumed).toEqual([binding("thread-2")]);
+    expect(restartedFactory.resumed).toEqual([binding("thread-1")]);
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("slack api chat.postMessage --json");
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("messages-resources-download");
     expect(restartedFactory.resumedRequests[0]?.systemPrompt).toContain("GitHub MCP");
@@ -1101,7 +1105,7 @@ describe("SessionRuntimeManager", () => {
     },
   );
 
-  it("prepares a new native conversation when only the Agent revision advances in a warm Session", async () => {
+  it("resumes the native conversation when only the Agent revision advances with a Soul change in a warm Session", async () => {
     const f = await legacyRuntimeFixture("0.1.0", "codex", false);
     const factory = new FakeFactory();
     const manager = new SessionRuntimeManager({
@@ -1121,17 +1125,74 @@ describe("SessionRuntimeManager", () => {
       });
       await manager.ensureRuntime("session-1");
       expect(factory.resumed).toEqual([f.originalBinding]);
+      expect(factory.resumedRequests[0]?.systemPromptUpdated).toBeUndefined();
       const next = structuredClone(f.runtime);
       next.revision.agent = { sequence: 3, id: "agent-only-update" };
       next.instructions.agent = "Updated Soul without a Session revision change";
       await expect(reconciler.reconcile(reconcile(f.computerId, next))).resolves.toMatchObject({ status: "ready" });
       await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.created[0]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.created).toHaveLength(0);
+      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding]);
+      expect(factory.resumedRequests[1]?.systemPrompt).toContain(next.instructions.agent);
+      expect(factory.resumedRequests[1]?.systemPromptUpdated).toBe(true);
       expect(factory.runtimes[0]?.closed).toBe(true);
-      expect((await f.store.read("agent-1", "session-1"))?.lastEffectiveSnapshotHash).toBe(
-        computeRuntimeSnapshotHashes(next).effectiveSnapshotHash,
-      );
+      const afterSoulChange = await f.store.read("agent-1", "session-1");
+      expect(afterSoulChange?.lastEffectiveSnapshotHash).toBe(computeRuntimeSnapshotHashes(next).effectiveSnapshotHash);
+      expect(afterSoulChange?.runtimeBinding).toEqual(f.originalBinding);
+      expect(afterSoulChange?.systemPromptUpdated).toBeUndefined();
+      const modelUpdated = structuredClone(next);
+      modelUpdated.revision.session = { sequence: 3, id: "session-model-update" };
+      modelUpdated.model = "updated-model";
+      modelUpdated.reasoningEffort = "high";
+      modelUpdated.budget = { maxDurationMs: 120_000 };
+      await expect(reconciler.reconcile(reconcile(f.computerId, modelUpdated))).resolves.toMatchObject({
+        status: "ready",
+      });
+      await manager.ensureRuntime("session-1");
+      expect(factory.created).toHaveLength(0);
+      expect(factory.resumed).toEqual([f.originalBinding, f.originalBinding, afterSoulChange?.runtimeBinding]);
+      expect(factory.resumedRequests[2]?.systemPromptUpdated).toBeUndefined();
+      expect(factory.resumedRequests[2]?.configuration).toEqual({
+        model: "updated-model",
+        reasoningEffort: "high",
+      });
+      expect(factory.runtimes[1]?.closed).toBe(true);
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it("starts a new native conversation instead of resuming the bound one after a reset (R8)", async () => {
+    const f = await legacyRuntimeFixture("0.1.0", "codex", false);
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: f.store,
+      workspace: f.workspace,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+    });
+    const reconciler = new SessionReconciler({
+      installationId: f.computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    try {
+      await expect(reconciler.reconcile(reconcile(f.computerId, f.runtime))).resolves.toMatchObject({
+        status: "ready",
+      });
+      await manager.ensureRuntime("session-1");
+      expect(factory.resumed).toEqual([f.originalBinding]);
+      await manager.startNewConversation("session-1");
+      expect(factory.runtimes[0]?.closed).toBe(true);
+      await manager.ensureRuntime("session-1");
+      expect(factory.created).toHaveLength(1);
+      expect(factory.resumed).toHaveLength(1);
+      // Only that one start is new: the next start resumes the new conversation's binding.
+      await factory.runtimes[1]?.close();
+      await manager.ensureRuntime("session-1");
+      expect(factory.created).toHaveLength(1);
+      expect(factory.resumed).toHaveLength(2);
+      await expect(manager.startNewConversation("missing")).rejects.toThrow(SessionRuntimeNotPreparedError);
     } finally {
       await manager.close();
     }

@@ -17,6 +17,7 @@ import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-run
 import { InterruptedWorkRecovery, type InterruptedWorkRecoveryOptions } from "../runtime/interrupted-work-recovery.js";
 import {
   buildContinuationNotice,
+  escalatedRetryReason,
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
@@ -72,6 +73,8 @@ describe("interruption classification and continuation", () => {
       "provider_start_failed",
       "provider_unavailable",
       "provider_connection_failed",
+      "provider_context_limit",
+      "conversation_reset",
       "client_shutdown",
       "daemon_crash",
     ]) {
@@ -103,6 +106,21 @@ describe("interruption classification and continuation", () => {
     expect(buildContinuationNotice({ reason: "provider_start_failed", at: "T" })).toContain(
       "because the model CLI failed to start before doing any work (automatic retry).",
     );
+  });
+
+  it("escalates a second context limit to a new conversation, with a notice for its source (R8)", () => {
+    expect(escalatedRetryReason("provider_context_limit", undefined)).toBe("provider_context_limit");
+    expect(escalatedRetryReason("provider_context_limit", "provider_context_limit")).toBe("conversation_reset");
+    expect(escalatedRetryReason("provider_context_limit", "conversation_reset")).toBe("conversation_reset");
+    expect(escalatedRetryReason("provider_rate_limited", "provider_context_limit")).toBe("provider_rate_limited");
+    expect(escalatedRetryReason(undefined, "provider_context_limit")).toBeUndefined();
+    const im = buildContinuationNotice({ reason: "conversation_reset", at: "T" });
+    expect(im).toContain("this turn starts a new conversation without that history (automatic retry)");
+    expect(im).toContain("read this thread with lark-cli (Feishu) or the Slack tools");
+    const session = buildContinuationNotice({ reason: "conversation_reset", at: "T" }, "session");
+    expect(session).toContain("this message starts a new conversation");
+    expect(session).toContain("ask the sender");
+    expect(session).not.toContain("lark-cli");
   });
 
   it("allows a start failure one retry and every other reason the shared limit", () => {
@@ -440,6 +458,30 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.prompt).toHaveBeenCalledOnce();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ outcome: "failed", errorReason: "provider_unavailable" }),
+      3,
+    );
+  });
+
+  it("compacts first, then starts a new conversation, then reports a Turn over the context limit (R8)", async () => {
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt.mockImplementation(async () => ({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_context_limit", message: "Prompt is too long" },
+    }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(3);
+    expect(h.prompt.mock.calls[0]?.[0]).not.toHaveProperty("compactContext");
+    expect(h.prompt.mock.calls[1]?.[0]).toMatchObject({ compactContext: true });
+    expect(promptItems(h.prompt, 1)[0]?.text).toContain("no longer fit the model's context, so it was compacted");
+    expect(h.prompt.mock.calls[2]?.[0]).not.toHaveProperty("compactContext");
+    expect(h.startNewConversation).toHaveBeenCalledExactlyOnceWith(h.request.sessionId);
+    expect(promptItems(h.prompt, 2)[0]?.text).toContain("read this thread with lark-cli");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_context_limit" }),
       3,
     );
   });
@@ -1706,6 +1748,7 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
 function runnerHarness(options: { restartRetry?: boolean | (() => boolean); withoutRetries?: boolean } = {}) {
   const request = delivery();
   const records = new Map<string, TurnRetryRecord>();
+  const startNewConversation = vi.fn(async (_sessionId: string) => undefined);
   const retries = {
     update: async (sessionId: string, turnId: string, change: (record: TurnRetryRecord) => TurnRetryRecord) => {
       const current = records.get(sessionId);
@@ -1762,6 +1805,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean); with
       sessionKind: () => "internal",
       providerId: () => "codex",
       ensureRuntime: async () => runtime,
+      startNewConversation,
       observe: (_sessionId: string, next: (event: unknown) => Promise<void> | void) => {
         sink = next;
         return () => {
@@ -1780,6 +1824,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean); with
   });
   const emit = (event: unknown) => void sink?.(event);
   return {
+    startNewConversation,
     request,
     records,
     retries,

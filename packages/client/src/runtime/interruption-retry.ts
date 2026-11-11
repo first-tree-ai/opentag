@@ -29,6 +29,8 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
  * - `provider_unavailable`, `provider_connection_failed`: the model service was down or unreachable
  *   before the model produced anything (R2).
+ * - `provider_context_limit`: the conversation no longer fits the model; retried after compacting it (R8).
+ * - `conversation_reset`: it still did not fit after compacting, so the retry starts a new provider conversation (R8).
  */
 export type InterruptionReason =
   | "daemon_crash"
@@ -36,7 +38,9 @@ export type InterruptionReason =
   | "provider_rate_limited"
   | "provider_start_failed"
   | "provider_unavailable"
-  | "provider_connection_failed";
+  | "provider_connection_failed"
+  | "provider_context_limit"
+  | "conversation_reset";
 
 const REASONS = new Set<InterruptionReason>([
   "daemon_crash",
@@ -45,6 +49,8 @@ const REASONS = new Set<InterruptionReason>([
   "provider_start_failed",
   "provider_unavailable",
   "provider_connection_failed",
+  "provider_context_limit",
+  "conversation_reset",
 ]);
 
 /** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
@@ -53,6 +59,8 @@ const IN_PLACE = new Set<InterruptionReason>([
   "provider_start_failed",
   "provider_unavailable",
   "provider_connection_failed",
+  "provider_context_limit",
+  "conversation_reset",
 ]);
 
 /** Retried only when the failed attempt produced no model output (R2). */
@@ -81,6 +89,30 @@ export const UNAVAILABLE_RETRY_DELAY_MS = 15_000;
 /** At most this many retries in a row for a reason; a start failure is retried once. */
 export function retryLimit(reason: InterruptionReason): number {
   return reason === "provider_start_failed" ? 1 : MAX_AUTOMATIC_RETRIES;
+}
+
+/**
+ * A context limit right after the compacting retry escalates: the next retry starts a new conversation (R8). Any
+ * other failure keeps its own reason.
+ */
+export function escalatedRetryReason(
+  reason: InterruptionReason | undefined,
+  previous: InterruptionReason | undefined,
+): InterruptionReason | undefined {
+  return reason === "provider_context_limit" &&
+    (previous === "provider_context_limit" || previous === "conversation_reset")
+    ? "conversation_reset"
+    : reason;
+}
+
+/** Whether this retry starts a new provider conversation instead of resuming the current one. */
+export function startsNewConversation(interruption: { reason: string } | undefined): boolean {
+  return interruption?.reason === "conversation_reset";
+}
+
+/** Prompt options for a retry: after a context-limit failure it compacts the conversation first (R8). */
+export function retryPromptOptions(interruption: { reason: string } | undefined): { compactContext?: true } {
+  return interruption?.reason === "provider_context_limit" ? { compactContext: true } : {};
 }
 
 /** The wait before an in-place retry for this reason. */
@@ -188,6 +220,10 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model service was temporarily unavailable before answering";
     case "provider_connection_failed":
       return "the model service could not be reached before answering";
+    case "provider_context_limit":
+      return "the conversation no longer fit the model's context, so it was compacted";
+    case "conversation_reset":
+      return "the conversation no longer fit the model's context even after compacting it";
   }
 }
 
@@ -196,12 +232,28 @@ function describeInterruption(reason: InterruptionReason): string {
  * may or may not have persisted the interrupted turn, so the original input always follows and
  * may duplicate history.
  */
-export function buildContinuationNotice(interruption: Interruption): string {
+export function buildContinuationNotice(interruption: Interruption, source: "im" | "session" = "im"): string {
+  if (interruption.reason === "conversation_reset") return conversationResetNotice(source);
   const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
   return [
     `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry).`,
     "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
     "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+  ].join(" ");
+}
+
+/**
+ * A new conversation has none of the earlier history. An IM thread can be read back; a Session message has no thread,
+ * so only its sender knows the earlier context.
+ */
+function conversationResetNotice(source: "im" | "session"): string {
+  return [
+    `[OpenTag] Your previous conversation became too long for the model even after compacting it, so this ${source === "im" ? "turn" : "message"} starts a new conversation without that history (automatic retry).`,
+    source === "im"
+      ? "If you need earlier context, read this thread with lark-cli (Feishu) or the Slack tools before continuing."
+      : "If you need earlier context, ask the sender.",
+    "Check the work already done, including files and replies already sent, and do not repeat replies or side effects that already happened.",
+    `The original ${source === "im" ? "request" : "message"} follows.`,
   ].join(" ");
 }
 

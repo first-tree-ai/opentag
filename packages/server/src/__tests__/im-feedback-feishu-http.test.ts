@@ -37,7 +37,7 @@ function harness(rtt = 480) {
     {
       slackCooldownRemaining: async () => 0,
       deferSlackInstallation: async () => true,
-      messageLanguage: async () => "en" as const,
+      messageContext: async () => ({ language: "en" as const, direct: false }),
     },
   );
   const target = {

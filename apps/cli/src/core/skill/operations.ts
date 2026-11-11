@@ -14,7 +14,7 @@ import {
   SkillArchiveError,
   verifySkillBundle,
 } from "@opentag/client";
-import { type ListAgentSkillsResponse, SKILL_ERROR_CODES, type Skill } from "@opentag/shared";
+import { type ListAgentSkillsResponse, SKILL_ERROR_CODES, type Skill, type SkillDetail } from "@opentag/shared";
 import { CommandError } from "../command/policy.js";
 import { resolveSkillCommandContext, type SkillAuthority } from "./context.js";
 import type { SkillCommandDependencies } from "./shared.js";
@@ -66,7 +66,7 @@ export interface SkillPushOptions {
 }
 
 export interface SkillPushResult {
-  readonly skill: Skill;
+  readonly skill: SkillDetail;
   readonly adopted: boolean;
   /** Present exactly when `adopted` is false, so the CLI can always explain the outcome. */
   readonly adoptionReason?: string;
@@ -119,7 +119,7 @@ export async function runSkillPush(
     format: "tar.gz" as const,
     ...(options.replace === true ? { replace: true } : {}),
   };
-  let uploaded: Skill;
+  let uploaded: SkillDetail;
   try {
     uploaded =
       authority.mode === "account"
@@ -228,7 +228,7 @@ export async function runSkillSetEnabled(
   enabled: boolean,
   options: { agentId?: string },
   dependencies: SkillCommandDependencies = {},
-): Promise<Skill> {
+): Promise<SkillDetail> {
   const authority = await resolveSkillCommandContext(enabled ? "enable" : "disable", {
     ...dependencies,
     agentId: options.agentId,

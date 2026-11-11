@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { OpenTagApiError, packSkillDirectory, SkillArchiveError } from "@opentag/client";
-import { SKILL_ERROR_CODES, type Skill } from "@opentag/shared";
+import { OpenTagApi, OpenTagApiError, packSkillDirectory, SkillArchiveError } from "@opentag/client";
+import { SKILL_ERROR_CODES, type Skill, type SkillDetail } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandError } from "../core/command/policy.js";
 import { resolveSkillCommandContext } from "../core/skill/context.js";
@@ -57,15 +57,24 @@ function skillRecord(name: string, overrides: Partial<Skill> = {}): Skill {
   };
 }
 
+function skillDetailRecord(name: string, overrides: Partial<SkillDetail> = {}): SkillDetail {
+  return {
+    ...skillRecord(name, overrides),
+    files: [{ path: "SKILL.md", bytes: 32 }],
+    filesTruncated: false,
+    ...overrides,
+  };
+}
+
 function accountApi(overrides: Partial<SkillApiClient> = {}): SkillApiClient {
   return {
     listAgentSkills: vi.fn(async () => ({ skills: [], storage: "available" as const })),
-    uploadAgentSkill: vi.fn(async (_token, _agentId, _input) => skillRecord("my-skill")),
-    updateAgentSkill: vi.fn(async () => skillRecord("my-skill")),
+    uploadAgentSkill: vi.fn(async (_token, _agentId, _input) => skillDetailRecord("my-skill")),
+    updateAgentSkill: vi.fn(async () => skillDetailRecord("my-skill")),
     removeAgentSkill: vi.fn(async () => undefined),
     openAgentSkillBundle: vi.fn(async () => new Response()),
     listRuntimeSkills: vi.fn(async () => ({ skills: [], storage: "available" as const })),
-    pushRuntimeSkill: vi.fn(async () => skillRecord("my-skill")),
+    pushRuntimeSkill: vi.fn(async () => skillDetailRecord("my-skill")),
     openRuntimeSkillBundle: vi.fn(async () => new Response()),
     listSkillPresets: vi.fn(async () => presetCatalog()),
     installSkillPreset: vi.fn(async () => ({ action: "installed" as const, skill: skillRecord("mcp-onboarding") })),
@@ -228,7 +237,7 @@ describe("skill push", () => {
     const directory = await writeSkillDirectory(join(root, "workspace", ".claude", "skills"), "my-skill");
     await mkdir(join(root, "workspace", ".opentag", "skill-staging"), { recursive: true });
     const api = accountApi({
-      pushRuntimeSkill: vi.fn(async () => skillRecord("my-skill", { enabled: false })),
+      pushRuntimeSkill: vi.fn(async () => skillDetailRecord("my-skill", { enabled: false })),
     });
     const result = await runSkillPush(directory, { replace: true }, { api, proof: "p".repeat(32) });
     expect(result.skill.enabled).toBe(false);
@@ -265,6 +274,31 @@ describe("skill push", () => {
       adopted: false,
     });
     expect(api.pushRuntimeSkill).toHaveBeenCalledWith("p".repeat(32), expect.objectContaining({ format: "tar.gz" }));
+  });
+
+  it("parses the server SkillDetail response (including files and filesTruncated) on runtime and account push", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(root, "my-skill");
+    const detail = skillDetailRecord("my-skill");
+    const debugLog = vi.fn();
+    const api = new OpenTagApi("http://127.0.0.1:43123", {
+      fetchImpl: async () =>
+        new Response(JSON.stringify(detail), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+      logger: { debug: debugLog },
+    });
+
+    const runtimeResult = await runSkillPush(directory, {}, { api, proof: "p".repeat(32), environment: {} });
+    expect(runtimeResult.skill).toEqual(detail);
+    const accountResult = await runSkillPush(
+      directory,
+      { agentId: detail.agentId },
+      { accessToken: "fixture-account-access", api, environment: {} },
+    );
+    expect(accountResult.skill).toEqual(detail);
+    expect(debugLog).not.toHaveBeenCalledWith("Ignored response fields unknown to this client", expect.anything());
   });
 });
 
@@ -551,7 +585,7 @@ describe("skill lifecycle enable", () => {
     const record = skillRecord("my-skill", { enabled: false });
     const api = accountApi({
       listAgentSkills: vi.fn(async () => ({ skills: [record], storage: "available" as const })),
-      updateAgentSkill: vi.fn(async () => skillRecord("my-skill", { enabled: true })),
+      updateAgentSkill: vi.fn(async () => skillDetailRecord("my-skill", { enabled: true })),
     });
     await expect(
       runSkillSetEnabled("my-skill", true, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),

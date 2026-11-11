@@ -315,9 +315,13 @@ window or grant, and a disabled IM or Session steering capability keep the deliv
   Turn's outcome and without final text, which belongs to the Session message: a processed input completes with
   the Turn, a failed Turn passes its reason, and a missing receipt is `turn_state_unknown`. IM feedback cards apply
   as to any IM delivery.
-- **No effect.** An explicit `not_started` receipt, or a `retry` or `refused` relay answer, returns the delivery to
-  the FIFO head, where it runs as its own Turn with its own window after the active Turn; an uncertain relay
-  stops further joins in that Turn. A live reconnect re-announces the started receipt instead of reporting unknown.
+- **Effective outcome.** Joined deliveries share the outcome the Turn settled with after cleanup and the workspace
+  checkpoint: a failed checkpoint reports them as `workspace_failed`, never as completed.
+- **No effect.** An explicit `not_started` receipt, or a `retry` or `refused` relay answer, keeps the delivery in
+  its own FIFO slot, where it runs as its own Turn with its own window after the active Turn. Session steers and IM
+  joins that did not start keep their arrival order. After a channel change the slot's grant is gone, so the
+  Runner re-announces the received entry for a fresh grant in the same position. An uncertain relay stops further
+  joins in that Turn. A live reconnect re-announces the started receipt instead of reporting unknown.
 
 No Server, wire, journal format, or database change is involved; joins and Session steers share the limit of 16 per
 Turn.

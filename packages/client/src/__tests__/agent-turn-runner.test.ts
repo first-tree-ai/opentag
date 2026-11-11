@@ -657,25 +657,24 @@ describe("AgentTurnRunner", () => {
         undefined,
       ),
     ).toEqual({ outcome: "completed", executionEffects: "completed", finalText: "answer", usage: { outputTokens: 1 } });
-    // R4: an oversized last reply is cut to the report bound and marked; the finished work still completes.
-    for (const [text, marker] of [
-      ["x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1), "\n\n(The reply was too long; the rest was cut off.)"],
-      ["好".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES), "\n\n（回复过长，后面部分已截断）"],
-    ] as const) {
-      const completion = completionForResult(result("completed", { output: [{ type: "text", text }] }), undefined);
-      expect(completion).toMatchObject({ outcome: "completed", executionEffects: "completed" });
-      expect(completion.errorReason).toBeUndefined();
-      const finalText = completion.finalText ?? "";
-      expect(finalText.endsWith(marker)).toBe(true);
-      expect(Buffer.byteLength(finalText, "utf8")).toBeLessThanOrEqual(RUNTIME_FINAL_TEXT_MAX_BYTES);
-      expect(text.startsWith(finalText.slice(0, -marker.length))).toBe(true);
-      expect(finalText).not.toContain("\uFFFD");
-    }
-    const exact = "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES);
-    expect(completionForResult(result("completed", { output: [{ type: "text", text: exact }] }), undefined)).toEqual({
-      outcome: "completed",
-      executionEffects: "completed",
-      finalText: exact,
+    expect(
+      completionForResult(
+        result("completed", { output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }] }),
+        undefined,
+      ),
+    ).toMatchObject({ outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" });
+    expect(
+      completionForResult(
+        result("failed", {
+          error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+        }),
+        undefined,
+      ),
+    ).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "provider_quota_exceeded",
+      retryAt: "2026-11-11T07:30:00.000Z",
     });
     for (const status of ["aborted", "cancelled"] as const) {
       expect(completionForResult(result(status, { usage: { inputTokens: 1 } }), undefined)).toMatchObject({
@@ -719,7 +718,7 @@ describe("AgentTurnRunner", () => {
     expect(completionForError(new ImCredentialEnvironmentError("credential_stale"), undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     expect(
       completionForError(
@@ -729,7 +728,12 @@ describe("AgentTurnRunner", () => {
         }),
         undefined,
       ),
-    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" });
+    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "model_login_missing" });
+    expect(completionForError(new ImCredentialEnvironmentError("im_connection_unavailable"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "im_connection_unavailable",
+    });
     expect(
       completionForError(
         new AgentRuntimeProviderUnavailableError("claude-code", {
@@ -932,6 +936,40 @@ describe("AgentTurnRunner", () => {
     );
   });
 
+  it("passes a quota reset time to the report owner, which decides whether the Server can take it", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "d".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => ({
+          prompt: async (): Promise<AgentRunResult> => ({
+            runId: "turn-1",
+            status: "failed",
+            output: [],
+            error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+          }),
+        }),
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ errorReason: "provider_quota_exceeded", retryAt: "2026-11-11T07:30:00.000Z" }),
+      expect.any(Number),
+    );
+  });
+
   it("hands a failure the provider returned to the reporter, which is where provider_failed is declined", async () => {
     const runWith = async (result: AgentRunResult) => {
       const agentErrorReporter = vi.fn();
@@ -982,13 +1020,19 @@ describe("AgentTurnRunner", () => {
       }),
     );
 
-    // An oversized last reply is no longer a failure (R4), so nothing is reported.
+    // A result the runner itself refused carries no provider error and is described by its reason.
     const oversized = await runWith({
       runId: "turn-1",
       status: "completed",
       output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }],
     });
-    expect(oversized).not.toHaveBeenCalled();
+    expect(oversized).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        errorReason: "output_too_large",
+        outcome: "failed",
+        error: expect.objectContaining({ message: "Agent run completed was classified as output_too_large" }),
+      }),
+    );
 
     const completed = await runWith({ runId: "turn-1", status: "completed", output: [] });
     expect(completed).not.toHaveBeenCalled();
@@ -1298,7 +1342,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "model_login_missing",
       }),
       expect.any(Number),
     );
@@ -1336,7 +1380,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         level: "warn",
         message: "Turn failed",
-        fields: expect.objectContaining({ errorReason: "credential_unavailable", errorCode: "provider_cli_unready" }),
+        fields: expect.objectContaining({ errorReason: "tool_setup_failed", errorCode: "provider_cli_unready" }),
       }),
     );
   });
@@ -1533,7 +1577,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );
@@ -1574,7 +1618,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );

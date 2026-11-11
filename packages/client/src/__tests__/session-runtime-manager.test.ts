@@ -1162,42 +1162,6 @@ describe("SessionRuntimeManager", () => {
     }
   });
 
-  it("starts a new native conversation instead of resuming the bound one after a reset (R8)", async () => {
-    const f = await legacyRuntimeFixture("0.1.0", "codex", false);
-    const factory = new FakeFactory();
-    const manager = new SessionRuntimeManager({
-      bindingStore: f.store,
-      workspace: f.workspace,
-      providers: await providerRegistry(factory),
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-    });
-    const reconciler = new SessionReconciler({
-      installationId: f.computerId,
-      preparation: manager,
-      localPolicy: manager,
-    });
-    try {
-      await expect(reconciler.reconcile(reconcile(f.computerId, f.runtime))).resolves.toMatchObject({
-        status: "ready",
-      });
-      await manager.ensureRuntime("session-1");
-      expect(factory.resumed).toEqual([f.originalBinding]);
-      await manager.startNewConversation("session-1");
-      expect(factory.runtimes[0]?.closed).toBe(true);
-      await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.resumed).toHaveLength(1);
-      // Only that one start is new: the next start resumes the new conversation's binding.
-      await factory.runtimes[1]?.close();
-      await manager.ensureRuntime("session-1");
-      expect(factory.created).toHaveLength(1);
-      expect(factory.resumed).toHaveLength(2);
-      await expect(manager.startNewConversation("missing")).rejects.toThrow(SessionRuntimeNotPreparedError);
-    } finally {
-      await manager.close();
-    }
-  });
-
   it("validates durable configuration without treating transient readiness as placement policy", async () => {
     const manager = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,

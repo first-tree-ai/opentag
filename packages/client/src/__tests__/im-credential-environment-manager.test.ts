@@ -474,7 +474,7 @@ describe("ImCredentialEnvironmentManager", () => {
     expect(completionForError(failure, undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     await manager.close();
   });
@@ -505,7 +505,7 @@ describe("ImCredentialEnvironmentManager", () => {
     expect(completionForError(failure, undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     expect(manager.activeSlackConfigDirForSession(request.sessionId)).toBeUndefined();
     await manager.close();
@@ -535,7 +535,7 @@ describe("ImCredentialEnvironmentManager", () => {
     expect(completionForError(failure, undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     await manager.close();
   });

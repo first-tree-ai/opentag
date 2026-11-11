@@ -14,7 +14,6 @@ import type {
 import {
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
-  claudeFallbackModel,
 } from "../providers/claude-code/agent-runtime.js";
 import {
   type ClaudeCodeProcessClient,
@@ -63,27 +62,6 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
   });
 
   it.each([
-    [{ result: "Prompt is too long" }],
-    [{ errors: ["Prompt is too long · automatic compaction failed: overloaded"] }],
-  ])("reports Claude Code's prompt-too-long API error as a context limit (R8): %j", async (override) => {
-    const process = new ManualClaudeCodeProcess([
-      {
-        type: "assistant",
-        uuid: "22222222-2222-4222-8222-222222222222",
-        message: { id: "message-1", content: [] },
-        error: "invalid_request",
-      },
-      successResult({ subtype: "success", is_error: true, api_error_status: 400, ...override }),
-    ]);
-    const runtime = await factory(process).create(createRequest(() => undefined));
-    await expect(runtime.prompt({ runId: "run-1", input: input("fail") })).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "provider_context_limit" },
-    });
-    await runtime.close();
-  });
-
-  it.each([
     [401, "provider_authentication_failed"],
     [402, "provider_quota_exceeded"],
     [403, "provider_access_denied"],
@@ -97,6 +75,54 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       status: "failed",
       error: { code },
     });
+    await runtime.close();
+  });
+
+  it.each([
+    [429, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
+    [402, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
+    [429, "allowed_warning", "provider_rate_limited", undefined],
+    [503, "rejected", "provider_unavailable", undefined],
+  ])(
+    "turns a rejected usage window into a quota with its reset time (status %s, window %s)",
+    async (apiErrorStatus, status, code, retryAt) => {
+      const process = new ManualClaudeCodeProcess([
+        {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status,
+            resetsAt: Date.parse("2026-11-11T07:30:00.000Z") / 1000,
+            rateLimitType: "five_hour",
+          },
+          uuid: "33333333-3333-4333-8333-333333333333",
+          session_id: "session",
+        },
+        successResult({ is_error: true, api_error_status: apiErrorStatus }),
+      ]);
+      const runtime = await factory(process).create(createRequest(() => undefined));
+      const result = await runtime.prompt({ runId: "run-1", input: input("fail") });
+      expect(result).toMatchObject({ status: "failed", error: { code } });
+      expect(result.error?.retryAt).toBe(retryAt);
+      await runtime.close();
+    },
+  );
+
+  it.each([
+    [{}],
+    [{ rate_limit_info: "rejected" }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: "soon" } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 1e13 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 253_402_300_800 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 1_794_382_200_000 } }],
+  ])("ignores a rate-limit event that names no usable reset: %j", async (event) => {
+    const process = new ManualClaudeCodeProcess([
+      { type: "rate_limit_event", uuid: "44444444-4444-4444-8444-444444444444", session_id: "session", ...event },
+      successResult({ is_error: true, api_error_status: 429 }),
+    ]);
+    const runtime = await factory(process).create(createRequest(() => undefined));
+    const result = await runtime.prompt({ runId: "run-1", input: input("fail") });
+    expect(result).toMatchObject({ status: "failed", error: { code: "provider_rate_limited" } });
+    expect(result.error?.retryAt).toBeUndefined();
     await runtime.close();
   });
 
@@ -650,26 +676,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
           expect(argumentAfter(args, "--model")).toBe("override");
           expect(argumentAfter(args, "--max-turns")).toBe("2");
           expect(args).not.toContain("--effort");
-          expect(args).not.toContain("--fallback-model");
         },
       },
       {
         request: { ...createRequest(() => undefined), configuration: undefined },
         expected: (args) => {
           expect(args).not.toContain("--model");
-          expect(args).not.toContain("--fallback-model");
           expect(args).not.toContain("--effort");
           expect(argumentAfter(args, "--append-system-prompt")).toBe("OpenTag managed system prompt");
           expect(args).not.toContain("--max-budget-usd");
           expect(args).not.toContain("--max-turns");
-        },
-      },
-      {
-        request: { ...createRequest(() => undefined), configuration: undefined },
-        promptConfiguration: { model: "claude-opus-5-5" },
-        expected: (args) => {
-          expect(argumentAfter(args, "--model")).toBe("claude-opus-5-5");
-          expect(argumentAfter(args, "--fallback-model")).toBe("sonnet");
         },
       },
       {
@@ -696,26 +712,6 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       });
       item.expected(process.args);
       await runtime.close();
-    }
-  });
-
-  it("picks the same family's smaller model as the fallback, and nothing it cannot be sure of (R1)", () => {
-    for (const model of ["opus", "claude-opus-5-5", "Claude-Opus-4-8[1m]", "us.anthropic.claude-opus-5-5-v1:0"]) {
-      expect(claudeFallbackModel(model)).toBe("sonnet");
-    }
-    for (const model of ["sonnet", "claude-sonnet-5-5", "sonnet[1m]"]) expect(claudeFallbackModel(model)).toBe("haiku");
-    for (const model of [
-      undefined,
-      "",
-      "  ",
-      "haiku",
-      "claude-haiku-5-5",
-      "claude-fable-5-1",
-      "gpt-5",
-      "opusx",
-      "default",
-    ]) {
-      expect(claudeFallbackModel(model)).toBeUndefined();
     }
   });
 

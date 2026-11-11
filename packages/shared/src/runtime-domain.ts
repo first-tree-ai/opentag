@@ -229,6 +229,10 @@ export const TurnFailureReasonSchema = z.enum([
   "workspace_failed",
   "configuration_conflict",
   "credential_unavailable",
+  // Turn report v4: causes split out of `credential_unavailable`.
+  "im_connection_unavailable",
+  "model_login_missing",
+  "tool_setup_failed",
   "sandbox_unavailable",
   "provider_start_failed",
   "session_resume_failed",
@@ -242,8 +246,18 @@ export const TurnFailureReasonSchema = z.enum([
   "client_shutdown",
 ]);
 
+/** Reasons that need Turn report v4; an older Server receives `credential_unavailable` instead. */
+export const CREDENTIAL_DETAIL_FAILURE_REASONS: readonly string[] = [
+  "im_connection_unavailable",
+  "model_login_missing",
+  "tool_setup_failed",
+];
+
 /** Minimum negotiated capability needed to send this immutable report. */
-export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
+export function requiredTurnReportVersion(report: object): 1 | 2 | 3 | 4 | 5 {
+  // v5: when a used-up model quota becomes available again.
+  if ("retryAt" in report && report.retryAt !== undefined) return 5;
+  if ("errorReason" in report && CREDENTIAL_DETAIL_FAILURE_REASONS.includes(String(report.errorReason))) return 4;
   if ("errorReason" in report && ProviderFailureReasonSchema.safeParse(report.errorReason).success) return 3;
   if ("outgoingReplies" in report && report.outgoingReplies !== undefined) return 2;
   return 1;
@@ -830,6 +844,9 @@ export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "ca
  * Managed instructions describe notices by this exact header, so both sides share one constant.
  */
 export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+
+/** The first line of the Server's notice that an accepted Session message could not be delivered. */
+export const SESSION_DELIVERY_FAILURE_NOTICE_HEADER = "[openTag notice] Session message was not delivered";
 /** Stable machine-readable reason, e.g. `turn_timeout`; never free text or provider output. */
 export const SessionMessageRunOutcomeReasonSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 
@@ -977,10 +994,18 @@ export const TurnReportRequestSchema = z
       })
       .strict(),
     outgoingReplies: TurnOutgoingReplySnapshotSchema.optional(),
+    /**
+     * Turn report v5: when the used-up model quota becomes available again, as the model CLI reported it.
+     * The Server only passes it to the failure card.
+     */
+    retryAt: z.string().datetime({ offset: true }).optional(),
     resultHash: RuntimeSha256Schema,
   })
   .strict()
   .superRefine((frame, context) => {
+    if (frame.retryAt !== undefined && frame.errorReason !== "provider_quota_exceeded") {
+      context.addIssue({ code: "custom", path: ["retryAt"], message: "Only a quota failure can say when to retry" });
+    }
     if (frame.outcome === "completed" && frame.errorReason) {
       context.addIssue({ code: "custom", path: ["errorReason"], message: "Completed reports cannot include an error" });
     }
@@ -1699,6 +1724,8 @@ export function computeTurnResultHash(input: TurnReportHashInput): string {
       }),
     );
   }
+  // Tagged so it can never be read as the replies above; reports without it keep their hash.
+  if (input.retryAt !== undefined) tuple.push(["retryAt", input.retryAt]);
   return hashTuple(tuple);
 }
 

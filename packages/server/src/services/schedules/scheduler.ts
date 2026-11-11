@@ -5,7 +5,11 @@ import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSchedules, sessionMessages } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ScheduleDispatch, ScheduledMessageSnapshot } from "../sessions/session-collaboration-service.js";
+import type {
+  HeldScheduledMiss,
+  ScheduleDispatch,
+  ScheduledMessageSnapshot,
+} from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import { nextScheduleOccurrence, normalizeAndValidateRule } from "./calculator.js";
 import {
@@ -31,7 +35,8 @@ import { type ScheduleClock, scheduleDatabaseClock, scheduleDetailUrl } from "./
  * loop, so a Cloud cold start never blocks the next scan. When no slot is free the scan does not
  * claim deliverable rows (they are neither locked nor advanced early), but still skips rows that
  * are already expired. One accepted hand-off releases its slot immediately; the scheduler never
- * waits for business completion and never replays after a restart.
+ * waits for business completion. A dispatch itself never replays after a restart; a Local occurrence
+ * the Client provably never got is held and redelivered by SessionHeldDeliveryWorker.
  */
 
 /** The RFC 9562 URL namespace: the schedule message id derives from the occurrence identity. */
@@ -288,7 +293,10 @@ export class ScheduleScheduler {
       this.#noticeMiss(occurrence, {
         outcome: outcome.outcome,
         code: outcome.code,
-        previous,
+        previous:
+          outcome.outcome === "unknown" && outcome.code === "delivery_timeout"
+            ? await this.#settledPreviousDispatch(previous)
+            : previous,
         // The only rejection left after the self-inflicted codes that also turned the schedule off.
         disabled: outcome.outcome === "rejected" && outcome.code === "target_invalid",
       });
@@ -306,6 +314,27 @@ export class ScheduleScheduler {
       this.#noticeMiss(occurrence, { outcome: "unknown", code: DISPATCH_FAILED_CODE, previous });
     } finally {
       this.#inFlight.delete(entry);
+    }
+  }
+
+  /** The next occurrence can be claimed while the previous Local receipt is still pending. */
+  async #settledPreviousDispatch(
+    previous: AgentScheduleLastDispatch | null,
+  ): Promise<AgentScheduleLastDispatch | null> {
+    if (!previous?.messageId || previous.outcome !== "unknown" || previous.code !== null) return previous;
+    try {
+      const [message] = await this.#database
+        .select({ outcome: sessionMessages.lastOutcome, code: sessionMessages.lastErrorCode })
+        .from(sessionMessages)
+        .where(eq(sessionMessages.id, previous.messageId))
+        .limit(1);
+      return message ? { ...previous, ...message } : previous;
+    } catch {
+      this.#options.logger?.error(
+        { event: "schedule.previous_dispatch_read_failed", messageId: previous.messageId },
+        "Previous scheduled dispatch could not be read",
+      );
+      return previous;
     }
   }
 
@@ -334,6 +363,11 @@ export class ScheduleScheduler {
         "Scheduled dispatch failure could not be recorded",
       );
     }
+  }
+
+  /** A held occurrence the Session delivery worker gave up; it ended outside this scheduler. */
+  reportHeldMiss(miss: HeldScheduledMiss): void {
+    this.#noticeMiss(miss.occurrence, { outcome: miss.outcome, code: miss.code, previous: miss.previous });
   }
 
   /**

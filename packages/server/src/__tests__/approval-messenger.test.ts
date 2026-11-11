@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApprovalMessenger } from "../runtime/approval-messenger.js";
 import type { PendingApproval } from "../runtime/approval-store.js";
+import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 
 const publicUrl = "https://opentag.example.com";
 const agentId = randomUUID();
@@ -11,7 +12,7 @@ const slackFooter = {
   elements: [
     {
       type: "mrkdwn",
-      text: `Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
+      text: `Requested by <@sender> · Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
     },
   ],
 };
@@ -20,7 +21,7 @@ const feishuFooter = {
   elements: [
     {
       tag: "lark_md",
-      content: `Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
+      content: `Requested by <at id=sender></at> · Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
     },
   ],
 };
@@ -30,6 +31,7 @@ const sdk = vi.hoisted(() => ({
   update: vi.fn(async (_input: unknown) => ({ ok: true })),
   open: vi.fn(async (_input: unknown) => ({ channel: { id: "sender-dm" } })),
   create: vi.fn(async (_input: unknown) => ({ code: 0, data: { message_id: "card", chat_id: "sender-dm" } })),
+  reply: vi.fn(async (_input: unknown) => ({ code: 0, data: { message_id: "card", chat_id: "channel" } })),
   patch: vi.fn(async (_input: unknown) => ({ code: 0 })),
 }));
 vi.mock("@slack/web-api", () => ({
@@ -40,7 +42,7 @@ vi.mock("@slack/web-api", () => ({
 }));
 vi.mock("@larksuiteoapi/node-sdk", () => ({
   Client: class {
-    im = { v1: { message: { create: sdk.create, patch: sdk.patch } } };
+    im = { v1: { message: { create: sdk.create, reply: sdk.reply, patch: sdk.patch } } };
   },
   LoggerLevel: { error: "error" },
   Domain: { Feishu: "https://open.feishu.cn", Lark: "https://open.larksuite.com" },
@@ -84,6 +86,7 @@ function approvalFor(provider: "feishu" | "slack"): PendingApproval {
 
 describe("ApprovalMessenger", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
   it.each(["feishu", "slack"] as const)(
     "shows a concise %s approval with working decision buttons",
     async (provider) => {
@@ -103,15 +106,17 @@ describe("ApprovalMessenger", () => {
         publicUrl,
       );
       const posted = await messenger.post(approval);
-      expect(posted).toEqual({ messageId: "card", channelId: "sender-dm" });
+      expect(posted).toEqual({ messageId: "card", channelId: "channel" });
       if (provider === "feishu") {
-        const input = sdk.create.mock.calls.at(-1)?.[0] as {
-          params: { receive_id_type: string };
-          data: { receive_id: string; content: string };
+        const input = sdk.reply.mock.calls.at(-1)?.[0] as {
+          path: { message_id: string };
+          data: { msg_type: string; content: string; reply_in_thread: boolean };
         };
         const card = JSON.parse(input.data.content);
-        expect(input.params.receive_id_type).toBe("open_id");
-        expect(input.data.receive_id).toBe("sender");
+        expect(input.path.message_id).toBe("source-message");
+        expect(input.data.msg_type).toBe("interactive");
+        expect(input.data.reply_in_thread).toBe(true);
+        expect(sdk.create).not.toHaveBeenCalled();
         expect(card.config.update_multi).toBe(true);
         expect(card.header.title.content).toBe("Approve command");
         expect(card.elements[0].text.content).toBe(approval.request.description);
@@ -128,11 +133,13 @@ describe("ApprovalMessenger", () => {
         const input = sdk.post.mock.calls.at(-1)?.[0] as {
           text: string;
           channel: string;
+          thread_ts?: string;
           blocks: { elements: unknown[] }[];
         };
         expect(input.text).toBe("Approve command\n\nPublish the changes?\n\ngit push");
-        expect(input.channel).toBe("sender-dm");
-        expect(sdk.open).toHaveBeenCalledWith({ users: "sender" });
+        expect(input.channel).toBe("channel");
+        expect(input.thread_ts).toBe("thread");
+        expect(sdk.open).not.toHaveBeenCalled();
         expect(input.blocks.at(-2)?.elements).toMatchObject([
           { action_id: "opentag_approval_accept", text: { text: "Approve" }, value: approval.id },
           { action_id: "opentag_approval_decline", text: { text: "Deny" }, value: approval.id },
@@ -177,7 +184,7 @@ describe("ApprovalMessenger", () => {
             text: string;
             blocks: { type: string; text: { type: string; text: string } }[];
           };
-          expect(input.channel).toBe("sender-dm");
+          expect(input.channel).toBe("channel");
           expect(input.ts).toBe("card");
           expect(input.text).toBe(`Approve command\n\nPublish the changes?\n\ngit push\n\n${text}`);
           expect(input.blocks.at(-2)?.text).toEqual({
@@ -188,6 +195,168 @@ describe("ApprovalMessenger", () => {
           expect(input.blocks.some((block) => block.type === "actions")).toBe(false);
         }
       }
+    },
+  );
+
+  it("posts approval cards in conversations or falls back to direct messages when posting in the conversation fails", async () => {
+    const messenger = new ApprovalMessenger(
+      {
+        getFeishuConnectionMaterial: async () => ({
+          agentId,
+          generation: 1,
+          appId: "app",
+          appSecret: "secret",
+          teamBrand: "feishu",
+        }),
+        getSlackConnectionMaterial: async () => ({ agentId, generation: 1, botAccessToken: "token" }),
+      } as never,
+      { run: async (_operation: string, action: () => unknown) => action() } as never,
+      publicUrl,
+    );
+
+    const feishuChannelReply = approvalFor("feishu");
+    feishuChannelReply.authority.threadKey = null;
+    sdk.reply.mockResolvedValueOnce({ code: 0, data: { message_id: "card-reply" } as never });
+    await expect(messenger.post(feishuChannelReply)).resolves.toEqual({
+      messageId: "card-reply",
+      channelId: "channel",
+    });
+    expect(sdk.reply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        path: { message_id: "source-message" },
+        data: expect.objectContaining({ reply_in_thread: false }),
+      }),
+    );
+
+    const feishuReplyFailedFallback = approvalFor("feishu");
+    sdk.reply.mockRejectedValueOnce(new Error("message recalled"));
+    sdk.create.mockResolvedValueOnce({ code: 0, data: { message_id: "card-dm", chat_id: "sender-dm" } });
+    await expect(messenger.post(feishuReplyFailedFallback)).resolves.toEqual({
+      messageId: "card-dm",
+      channelId: "sender-dm",
+    });
+    expect(sdk.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        params: { receive_id_type: "open_id" },
+        data: expect.objectContaining({ receive_id: "sender" }),
+      }),
+    );
+
+    const feishuReplyCodeFallback = approvalFor("feishu");
+    sdk.reply.mockResolvedValueOnce({ code: 230011, msg: "message recalled" } as never);
+    sdk.create.mockResolvedValueOnce({ code: 0, data: { message_id: "card-dm-2", chat_id: "sender-dm" } });
+    await expect(messenger.post(feishuReplyCodeFallback)).resolves.toEqual({
+      messageId: "card-dm-2",
+      channelId: "sender-dm",
+    });
+
+    const feishuReplyAmbiguousCode = approvalFor("feishu");
+    sdk.reply.mockResolvedValueOnce({ code: 500000, msg: "internal error" } as never);
+    await expect(messenger.post(feishuReplyAmbiguousCode)).rejects.toThrow("APPROVAL_MESSAGE_FAILED");
+
+    const feishuReplyMissingId = approvalFor("feishu");
+    sdk.reply.mockResolvedValueOnce({ code: 0, data: {} } as never);
+    await expect(messenger.post(feishuReplyMissingId)).rejects.toThrow("APPROVAL_MESSAGE_FAILED");
+
+    const slackMessageReply = approvalFor("slack");
+    slackMessageReply.authority.threadKey = null;
+    await expect(messenger.post(slackMessageReply)).resolves.toEqual({
+      messageId: "card",
+      channelId: "channel",
+    });
+    expect(sdk.post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "channel",
+        thread_ts: "source-message",
+      }),
+    );
+    expect(sdk.open).not.toHaveBeenCalled();
+
+    const slackChannelFailedFallback = approvalFor("slack");
+    sdk.post.mockRejectedValueOnce(
+      Object.assign(new Error("An API error occurred: is_archived"), {
+        code: "slack_webapi_platform_error",
+        data: { ok: false, error: "is_archived" },
+      }),
+    );
+    await expect(messenger.post(slackChannelFailedFallback)).resolves.toEqual({
+      messageId: "card",
+      channelId: "sender-dm",
+    });
+    expect(sdk.open).toHaveBeenCalledWith({ users: "sender" });
+    const dmCall = sdk.post.mock.calls.at(-1)?.[0] as { channel: string; thread_ts?: string };
+    expect(dmCall.channel).toBe("sender-dm");
+    expect(dmCall.thread_ts).toBeUndefined();
+  });
+
+  it.each(["feishu", "slack"] as const)(
+    "propagates timeouts and ambiguous write failures on %s without sending a duplicate DM card",
+    async (provider) => {
+      vi.useFakeTimers();
+      const policy = new ExternalCallPolicy({ defaultTimeoutMs: 50, maxAttempts: 1 });
+      const messenger = new ApprovalMessenger(
+        {
+          getFeishuConnectionMaterial: async () => ({
+            agentId,
+            generation: 1,
+            appId: "app",
+            appSecret: "secret",
+            teamBrand: "feishu",
+          }),
+          getSlackConnectionMaterial: async () => ({ agentId, generation: 1, botAccessToken: "token" }),
+        } as never,
+        policy,
+        publicUrl,
+      );
+
+      // Delivered-but-response-lost/late: source card send is accepted by the provider,
+      // but the response arrives after ExternalCallPolicy's deadline.
+      let resolveLateSourceSend!: () => void;
+      if (provider === "feishu") {
+        sdk.reply.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveLateSourceSend = () =>
+                resolve({ code: 0, data: { message_id: "card-source", chat_id: "channel" } });
+            }),
+        );
+      } else {
+        sdk.post.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveLateSourceSend = () => resolve({ ts: "card-source" });
+            }),
+        );
+      }
+
+      const lateApproval = approvalFor(provider);
+      const pendingPost = messenger.post(lateApproval);
+      const rejection = expect(pendingPost).rejects.toMatchObject({
+        code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+      });
+      await vi.advanceTimersByTimeAsync(60);
+      await rejection;
+      resolveLateSourceSend();
+      await Promise.resolve();
+
+      expect(sdk.create).not.toHaveBeenCalled();
+      expect(sdk.open).not.toHaveBeenCalled();
+      if (provider === "feishu") {
+        expect(sdk.reply).toHaveBeenCalledTimes(1);
+      } else {
+        expect(sdk.post).toHaveBeenCalledTimes(1);
+      }
+
+      // Ambiguous transport/provider error: propagate without falling back to DM.
+      const ambiguousApproval = approvalFor(provider);
+      if (provider === "feishu") {
+        sdk.reply.mockRejectedValueOnce(new Error("socket hang up"));
+      } else {
+        sdk.post.mockRejectedValueOnce(new Error("socket hang up"));
+      }
+      await expect(messenger.post(ambiguousApproval)).rejects.toThrow("socket hang up");
+      expect(sdk.create).not.toHaveBeenCalled();
+      expect(sdk.open).not.toHaveBeenCalled();
     },
   );
 

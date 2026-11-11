@@ -44,22 +44,17 @@ import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
   acknowledgedSteers,
   buildContinuationNotice,
-  escalatedRetryReason,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
   recoverableFailure,
-  retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
-  retryPromptOptions,
-  startsNewConversation,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
 } from "./interruption-retry.js";
-import { truncateUtf8 } from "./provider-cli/outgoing-reply-process.js";
 import {
   budgetTurnReportHashInput,
   emptyCompleteOutgoingReplies,
@@ -209,8 +204,6 @@ interface RunningTurn {
   finalized: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
-  /** The current attempt saw model text or a tool call; an unavailable model is then not retried. */
-  producedOutput?: boolean;
   /** Messages an earlier attempt held, replayed in the current attempt's input unless its conversation has them. */
   steers: readonly SteeredInput[];
   /** Which provider conversation durably holds each IM steer, by delivery. */
@@ -223,6 +216,8 @@ export interface TurnCompletion {
   readonly finalText?: string;
   readonly outcome: "completed" | "failed" | "cancelled" | "unknown";
   readonly usage?: TurnReportHashInput["usage"];
+  /** When a used-up model quota is available again; sent only on Turn report v5. */
+  readonly retryAt?: string;
 }
 
 interface TurnPhaseTimings {
@@ -502,8 +497,6 @@ export class AgentTurnRunner {
     const owner = turn.owner;
     return this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
       trace.record(event);
-      if (event.type === "message_started" || event.type === "message_delta" || event.type === "tool_started")
-        turn.producedOutput = true;
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
       if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -610,6 +603,8 @@ export class AgentTurnRunner {
       executionEffects: completion.executionEffects,
       ...(completion.finalText ? { finalText: completion.finalText } : {}),
       ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
+      // The report owner drops it below Turn report v5 or on any other reason.
+      ...(completion.retryAt ? { retryAt: completion.retryAt } : {}),
       ...(completion.usage ? { usage: completion.usage } : {}),
       traceSummary,
       ...(outgoingReplies ? { outgoingReplies } : {}),
@@ -651,10 +646,9 @@ export class AgentTurnRunner {
     // Outgoing-reply receipts of every attempt share the Turn's run id; collect them once at the end.
     let planInput: ProviderCliTurnPlanPrepareInput | undefined;
     for (;;) {
-      turn.producedOutput = false;
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
-      const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal, interruption);
+      const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
       // An in-place retry follows a model failure and waits first; false when an orderly stop interrupts it.
       const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
       if (next === "deferred" || ready === false) {
@@ -722,7 +716,7 @@ export class AgentTurnRunner {
       const runSignal = started.runSignal;
       runSignal.throwIfAborted();
       const ensureStartedAt = this.#now();
-      const runtime = await this.#ensureRuntime(owner.request.sessionId, runSignal, interruption);
+      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       phaseTimings.runtimeEnsureMs = Math.max(0, this.#now() - ensureStartedAt);
       turn.runtime = runtime;
       releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
@@ -736,7 +730,6 @@ export class AgentTurnRunner {
           { ...channelTurn, retry: interruption !== undefined },
           this.#now(),
         )),
-        ...retryPromptOptions(interruption),
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential
@@ -811,12 +804,6 @@ export class AgentTurnRunner {
     return { completion, ...(turnPlanInput ? { turnPlanInput } : {}) };
   }
 
-  /** The Session's runtime for an attempt; a retry after a conversation reset starts a new conversation first (R8). */
-  async #ensureRuntime(sessionId: string, signal: AbortSignal, interruption?: Interruption): Promise<AgentRuntime> {
-    if (startsNewConversation(interruption)) await this.#runtimeManager.startNewConversation(sessionId);
-    return this.#runtimeManager.ensureRuntime(sessionId, signal);
-  }
-
   /**
    * Decide what follows a finished attempt. Returns the recorded
    * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
@@ -826,16 +813,13 @@ export class AgentTurnRunner {
     turn: RunningTurn,
     completion: TurnCompletion,
     shutdownSignal: AbortSignal,
-    previous?: Interruption,
   ): Promise<Interruption | "deferred" | undefined> {
     if (completion.outcome === "completed") return undefined;
-    const reason = escalatedRetryReason(recoverableFailure(completion.errorReason), previous?.reason);
+    const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
     // A start failure is retried only when it provably ran nothing.
     /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
     if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
-    // An unavailable or unreachable model is retried only before it produced anything (R2).
-    if (retriedOnlyBeforeOutput(reason) && turn.producedOutput) return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
@@ -1302,21 +1286,6 @@ function runtimeResourceContext(request: DirectImMessageDeliveryRequest | Runtim
   return text;
 }
 
-const FINAL_TEXT_TRUNCATED = {
-  zh: "\n\n（回复过长，后面部分已截断）",
-  en: "\n\n(The reply was too long; the rest was cut off.)",
-};
-
-/**
- * The work is done even when its last reply is over the report bound, so the reply is cut to fit and
- * marked, and the Turn still completes (R4). Local and cloud Turns both pass through here.
- */
-export function boundFinalText(text: string | undefined): string | undefined {
-  if (!text || Buffer.byteLength(text, "utf8") <= RUNTIME_FINAL_TEXT_MAX_BYTES) return text;
-  const marker = /\p{Script=Han}/u.test(text) ? FINAL_TEXT_TRUNCATED.zh : FINAL_TEXT_TRUNCATED.en;
-  return truncateUtf8(text, RUNTIME_FINAL_TEXT_MAX_BYTES - Buffer.byteLength(marker, "utf8")).text + marker;
-}
-
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
@@ -1325,7 +1294,10 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
   }
   if (result.status === "completed") {
-    const finalText = boundFinalText(result.output.filter((item) => item.type === "text").at(-1)?.text);
+    const finalText = result.output.filter((item) => item.type === "text").at(-1)?.text;
+    if (finalText && Buffer.byteLength(finalText, "utf8") > RUNTIME_FINAL_TEXT_MAX_BYTES) {
+      return { outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" };
+    }
     return {
       outcome: "completed",
       executionEffects: "completed",
@@ -1348,6 +1320,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
     errorReason: providerTurnFailureReason(result.error?.code),
+    ...(result.error?.retryAt ? { retryAt: result.error.retryAt } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
   };
 }
@@ -1390,15 +1363,18 @@ export function completionForError(error: unknown, abortReason: unknown, expired
       errorReason: "turn_timeout",
     };
   }
+  if (error instanceof ImCredentialEnvironmentError && error.code === "im_connection_unavailable") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "im_connection_unavailable" };
+  }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
-    return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "tool_setup_failed" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {
     return {
       outcome: "failed",
       executionEffects: "not_started",
       errorReason: error.result.issues.some((issue) => issue.code === "credential_missing")
-        ? "credential_unavailable"
+        ? "model_login_missing"
         : "provider_start_failed",
     };
   }

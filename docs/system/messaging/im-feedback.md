@@ -50,7 +50,7 @@ working reaction like any successful Turn.
 ## Offline notice
 
 A direct message parked on an offline Local Computer otherwise shows nothing, because the working reaction waits for
-custody. After sixty seconds the Bot sends one orange [card](#cards), placed like a failure card:
+custody. After sixty seconds the Bot sends one red [card](#cards), placed like a failure card:
 
 | Title | Body |
 | --- | --- |
@@ -84,7 +84,7 @@ the recovery page, not in the conversation. It follows the same language rule as
 
 A dispatch whose operation never settles is [parked](im-delivery-claim.md#parking-a-correlated-dispatch). It keeps
 custody until its ingress deadline, so later input of the same Session waits up to seven days with nothing to show
-for it. A queued input in that position gets one orange [card](#cards), placed like the offline notice:
+for it. A queued input in that position gets one red [card](#cards), placed like the offline notice:
 
 | Title | Body |
 | --- | --- |
@@ -117,8 +117,8 @@ a failure from taking more of the conversation than the work did.
 
 | Provider | Shape | Colors |
 | --- | --- | --- |
-| Feishu | `interactive` card with `update_multi`, title in `header`, body as `lark_md` | `red` failure, `orange` offline, `green` done, `grey` in progress |
-| Slack | One attachment `{color, fallback, blocks}`, title as a `header` block | `#E01E5A` failure, `#F2952F` offline, `#2EB67D` done, `#9E9EA6` in progress |
+| Feishu | `interactive` card with `update_multi`, title in `header`, body as `lark_md` | `red` failure and waiting notices, `green` done, `grey` in progress |
+| Slack | One attachment `{color, fallback, blocks}`, title as a `header` block | `#E01E5A` failure and waiting notices, `#2EB67D` done, `#9E9EA6` in progress |
 
 Slack paints the attachment bar only from a hex color: the `danger` and `good` keywords show a grey bar when the
 attachment holds blocks. The message has no top-level `text`, because Slack would show it above the card as a second
@@ -132,12 +132,15 @@ the invisible readback identity described under [Message format compatibility](#
 | --- | --- | --- |
 | Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later |
 | Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 |
-| Quota | 模型额度已用完 / Model quota used up | 额度恢复后请重试 / Try again after the quota resets |
+| Quota | 模型额度已用完 / Model quota used up | 将于 15:30 恢复 (a later day adds the date, 将于 11月12日 09:05 恢复), in China time, when the report carries a future `retryAt`; otherwise 额度恢复后请重试 / Try again after the quota resets |
 | Authentication | 模型未登录或登录已失效 / The model isn't signed in, or the sign-in expired | 请在 Agent 所在电脑登录模型账号 / Sign in to the model on the Agent's computer |
 | Access denied | 没有该模型的使用权限 / No permission to use this model | 请在 OpenTag 更换模型 / Choose another model in OpenTag |
 | Request rejected | 模型拒绝了这次请求 / The model rejected this request | 请换个说法，或去掉图片和附件后重试 |
-| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 请在 OpenTag 更新凭据 / Update the credentials in OpenTag |
-| Timeout | 任务超时 / Task timed out | 回复“继续”，Agent 会接着做 / Reply "continue" and the Agent will pick it up |
+| Feishu or Slack connection lost | 飞书连接已失效 / Slack 连接已失效 (The Feishu/Slack connection is no longer valid) | 请在 OpenTag 重新连接 / Reconnect it in OpenTag |
+| Model account not signed in on the Computer (`model_login_missing`) | The authentication card above | |
+| The Feishu or Slack command line, or its connection, could not be prepared (`tool_setup_failed`) | Agent 运行出错 | 飞书命令行没能准备好，请重试 / Slack 命令行没能准备好，请重试 |
+| Other credential failures (a missing Cloud model grant, or a Computer too old to name the cause) | Agent 运行出错 | 请重试 |
+| Timeout | 任务超时未完成 / The task timed out before it finished | 回复“继续”，Agent 会接着做 / Reply "continue" and the Agent will pick it up |
 | Context limit | Agent 运行出错 / The Agent ran into an error | 对话太长，请重试 |
 | Execution limit (cut-off reply) | Agent 运行出错 | 内容太长没写完，请重试 |
 | Result too large | Agent 运行出错 | 回复太长，请重试 |
@@ -151,7 +154,14 @@ the invisible readback identity described under [Message format compatibility](#
 | A frozen batch that cannot be retried, including a workspace failure | The reason's own title | The reason's own body, then （共 N 条消息） / (N messages); a legacy plain-text message edited later keeps the reason's next step with the same count |
 
 The context-limit, cut-off, too-large, outcome-unknown and workspace bodies are interim: each changes or disappears when
-its automatic recovery ships. Cards that will name the Agent's tool or model say "模型" until they can.
+its automatic recovery ships.
+
+Sign-in, access, process-exit, start-up and protocol cards name the Agent's tool and model from its settings when the
+card is rendered: `agents.runtime_provider` (Claude Code, Codex or Pi; 云端模型 / "The cloud model" for an Agent on
+the Cloud Computer) and `agent_runtime_configs.model`. Sign-in reads "{tool} 未登录或登录已失效 / 请在 Agent 所在电脑登录
+{tool}", access "没有 {model} 的使用权限", and the Agent error body "{tool} 意外退出", "{tool} 没能启动，请检查 Agent
+所在电脑上的 {tool} 是否已安装" or "{tool} 返回了无法识别的结果". Without a chosen model, and for sign-in and start-up on
+the Cloud Computer, which happen on no computer the owner controls, the card keeps the generic copy above.
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the
@@ -169,6 +179,21 @@ proof of the save reads 操作失败, never 已保存.
 
 The offline and queued notices follow the same rules. A direct message is the Session's `conversation_kind = 'dm'`; a Slack
 multi-person direct message counts as a group.
+
+In a group, including its threads, five cards go to the sender's direct message with the Bot instead, because they
+concern only that person: the offline and queued notices, and the failure cards for an expired message
+(`input_expired`), an undelivered message (`input_rejected` or `input_unsupported`), and used-up model quota (`provider_quota_exceeded`).
+The sender is the target's `sender_external_id`: a Feishu card goes to that `open_id`, and a Slack card to the channel
+`conversations.open` returns. When the provider refuses that message (the Feishu sender is outside the app's
+availability or is a bot, Slack cannot open the conversation, or the call is rejected), the card goes to the group
+place above. A rate limit stays a rate limit, and an unknown outcome never falls back, which could post it twice. A
+Slack card in a direct message keeps its channel in its stored message ID as `<channel>/<ts>`, which edits use; Slack
+timestamps hold no slash. A card sent to the sender opens with a plain-text line naming the group and the first twenty
+characters of the message: "你在「{group}」发的：{excerpt}…" (English: `Your message in "{group}": {excerpt}`). The group
+name is read from the provider when the card is sent (Feishu chat info, Slack `conversations.info`), within two
+seconds so the send keeps most of its deadline; when that read fails or runs out of time the line says "你在群里发的".
+A deadline that ends a send before any provider write started is known not to have sent anything, so a waiting
+notice is retried rather than lost. Later edits of the card, which only show its state, do not repeat the line. Every other card, including rate limits and workspace failures, stays in the group.
 
 Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Whether operations ran
 stays on the details page, which warns that they may have unless authoritative `not_started` evidence says otherwise.
@@ -207,27 +232,35 @@ seconds until it is ready, the next trigger arrives, or 60 seconds have elapsed 
 message ID and dispatch slot, and tries the business send at most once. A pause, edit, or deletion still wins at send
 admission. The final result distinguishes runtime assembly failure, reconcile timeout, other reconcile failures, and
 an explicit not-ready reply. Local retries and extended Cloud hand-offs share 75 slots per Server. If those slots
-are all taken, a Local preparation failure settles immediately. A miss is reported only after the hand-off settles.
+are all taken, a Local preparation failure settles immediately. A Local occurrence still unreachable at that point is
+[held](internal-session-collaboration.md#held-delivery) when its Client supports it, rather than missed. After the Local
+send is marked, the Server keeps the dispatch slot and waits up to 90 seconds for its receipt, even if the next
+occurrence is due. A held redelivery gets the same wait. A matching acceptance within that window settles the hand-off
+silently. A receipt timeout after send is unconfirmed and is never held, because the frame may already have arrived. A
+newer claim can advance the schedule during the wait, and an older receipt updates only its own message once that
+happens. A miss is reported only after the hand-off settles.
 
 A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
 workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
 280 seconds of dispatch entry or at the next trigger, whichever comes first. When the shared slots are full, Cloud
 hand-offs have up to 20 seconds so they free scheduler slots
-within the 30-second claim window. A pause, edit, or deletion still
-wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
-restart does not recover an unfinished scheduled hand-off.
+within the 30-second claim window. A pause, edit, or deletion still wins at final send admission. For both Local and
+Cloud, once sent, the occurrence is never resent, even if the receipt is lost. A Server restart does not recover
+an unfinished scheduled hand-off.
 
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
 | The Client rejected the message | `configuration_unsupported` | The first time per cause |
-| It never started | `runtime_unavailable`, `client_busy`, `late` | The first time per cause |
+| It never started | `runtime_unavailable`, `client_busy`, `late`, `delivery_superseded`, `delivery_expired`, `delivery_held_full` | The first time per cause |
 | The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain`, `dispatch_failed` | The first time per cause, worded as "may not have run" |
 | The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
 | Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |
 
 "The first time per cause" compares the occurrence with the schedule's previous summary, so a Computer that stays offline
-posts one message, not one per occurrence. A delivered occurrence or a different code starts over. A Run failure that
+posts one message, not one per occurrence. A Local occurrence the Server held has no result yet, so it posts nothing until
+[held delivery](internal-session-collaboration.md#held-delivery) gives it up, usually within 5 minutes of the next occurrence,
+and is then compared with the occurrence before it. A delivered occurrence or a different code starts over. A Run failure that
 keeps recurring posts every time, as it would for repeated human messages.
 
 Delivery is best effort:
@@ -332,10 +365,10 @@ settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
 Before a new message request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
-abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
-identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
+abandoned send becomes `send_unknown`. Bounded readback searches the conversation the card was sent to for this Bot
+and feedback identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
-another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
+another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). An unknown send keeps the reconciliation cursor of the leg whose provider write started, recorded outside the call deadline so a timeout keeps it too: `sender:` for the sender's direct message and `conversation:` for a card that fell back to the conversation. Without a cursor, after a crash or a lost acknowledgement, a group card that goes to the sender is looked for in the conversation first, read-only, and then in the sender's direct message (`either:` and `either-sender:`); an exhausted search starts over from the conversation. A plain-text message from before cards went to the sender is read back in the conversation only. A deadline that ends a send before any provider write started is known not to have sent anything, so it retries instead of reading back. Slack reads the direct message's history; Feishu, which cannot name the chat before a send, repeats the send under the same request `uuid` within fifty minutes of the first attempt, and Feishu answers a repeated `uuid` within an hour with the original message instead of sending another. Past that window Feishu readback sends nothing. A failed Slack `conversations.open` posts nothing, so it is a known-not-sent failure that retries normally. Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
 same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new message, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
 

@@ -105,7 +105,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.sessionRecovery]: { min: 1, max: 1 },
   // v1: the Client compares Agent configuration per Session, so the Server may run its Sessions concurrently.
   [RUNTIME_CAPABILITY.sessionConfiguration]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 3 },
+  // v5 adds `retryAt` to a quota failure.
+  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 5 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },

@@ -119,6 +119,62 @@ describe("credential material decoding", () => {
     });
     expect(payload.bindingId).toBeUndefined();
   });
+
+  it("logs envelope and identity mismatch failures with agentId and bindingId without leaking secrets", () => {
+    const logger = { warn: vi.fn() };
+    const grantedScopes = ["im:message"];
+    expect(
+      inspectCredentialMaterial(
+        { decrypt: () => JSON.stringify({ appId: "app-id", appSecret: credentialSecret, grantedScopes }) } as never,
+        {
+          credentialGeneration: 0,
+          credentialSchemaVersion: 1,
+          encryptedCredential: ciphertext,
+          externalAppId: "app-id",
+          externalBotId: "bot-id",
+          externalTeamId: "team-id",
+          grantedCapabilities: grantedScopes,
+          provider: "feishu",
+        },
+        { agentId: "agent-1", bindingId, logger },
+      ),
+    ).toMatchObject({ status: "invalid" });
+
+    expect(
+      inspectCredentialMaterial(
+        {
+          decrypt: () => JSON.stringify({ appId: "different-app-id", appSecret: credentialSecret, grantedScopes }),
+        } as never,
+        {
+          credentialGeneration: 1,
+          credentialSchemaVersion: 1,
+          encryptedCredential: ciphertext,
+          externalAppId: "app-id",
+          externalBotId: "bot-id",
+          externalTeamId: "team-id",
+          grantedCapabilities: grantedScopes,
+          provider: "feishu",
+        },
+        { agentId: "agent-1", bindingId, logger },
+      ),
+    ).toMatchObject({ status: "invalid" });
+
+    expect(logger.warn.mock.calls.map(([payload]) => payload)).toMatchObject([
+      {
+        agentId: "agent-1",
+        bindingId,
+        code: "IM_BINDING_CREDENTIAL_ENVELOPE_INVALID",
+        provider: "feishu",
+      },
+      {
+        agentId: "agent-1",
+        bindingId,
+        code: "IM_BINDING_CREDENTIAL_MISMATCH",
+        provider: "feishu",
+      },
+    ]);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(credentialSecret);
+  });
 });
 
 describe("credential material AAD binding", () => {

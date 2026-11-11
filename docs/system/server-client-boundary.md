@@ -63,6 +63,9 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
    restart, without starting a second Turn. Placement generation and
    connection-instance checks fence every acceptance and report.
 
+[Server-to-Client delivery](messaging/server-client-delivery.md) compares the
+IM, Session message, and scheduled message hand-offs stage by stage.
+
 What the Client does with accepted work that does not complete on a Local
 Computer is described next. Without the retry, or once it is spent, the
 outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
@@ -110,25 +113,6 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   (`executionEffects: not_started`) gets one automatic retry, in place, after about
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
-- A model service that is unavailable (`provider_unavailable`, e.g. 5xx or overloaded)
-  or unreachable (`provider_connection_failed`) is retried in place after about 15
-  seconds, within the same count, but only when the failed attempt produced nothing:
-  no model text and no tool call for an IM Turn, no output items or output tokens for
-  a Session message (Gandy 11-10, R2). Once the model produced something the failure
-  is reported, so a half-done answer is never silently restarted.
-- A conversation that no longer fits the model (`provider_context_limit`, including
-  Claude Code's "Prompt is too long" API error) gets one immediate retry, within the
-  same count, that first compacts the native conversation (`compactContext`) and
-  then resends the input with the continuation notice. If the compacted
-  conversation still does not fit, the next retry (the second of the 2) closes the
-  provider conversation and starts a new one instead of resuming it; its new
-  binding replaces the old. That retry carries only the original input and a reset
-  notice: an IM Turn tells the Agent to read the thread with lark-cli or the Slack
-  tools if it needs earlier context; a Session message, which has no thread, tells
-  it to ask the sender. No other history is sent, so the Server-Client protocol is
-  unchanged. If that fails too, the failure is reported (Gandy 11-10, R8). A Session
-  message keeps the reason it continues from in memory only, so after a daemon
-  restart it compacts again instead of resetting.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.
@@ -150,7 +134,7 @@ original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
 - A 429 retries in place, in the same daemon, after about 30 seconds; a start
-  failure after about 5 seconds; an unavailable model after about 15 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
+  failure after about 5 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
   the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
   `cancelled / client_shutdown`; it records the interruption durably and leaves

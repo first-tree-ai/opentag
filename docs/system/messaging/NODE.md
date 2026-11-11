@@ -13,6 +13,9 @@ provider CLIs.
 
 - **[Message domains and routing](message-domains.md)** — IM messages versus
   Session messages, attention, and the human-visible send path.
+- **[Server-to-Client delivery](server-client-delivery.md)** — IM, Session, and
+  scheduled hand-offs compared: records, frames, receipts, waits, timeouts,
+  retries, Client deduplication, restart recovery, and failure notices.
 - **[IM Channel and Thread Sessions](thread-sessions.md)** — lazy Thread
   Sessions, direct continuity, observer copies, and thread history.
 - **[IM task feedback and safe recovery](im-feedback.md)** — system-owned reactions, offline notices, failure messages,

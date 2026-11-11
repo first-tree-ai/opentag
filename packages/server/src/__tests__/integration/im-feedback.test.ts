@@ -53,7 +53,7 @@ beforeEach(async () => {
   await fixtureDb.reset();
   clock = new Date();
 });
-async function failed() {
+async function failed(reported: Partial<TurnReportRequest> = {}) {
   const h = await createSlackWorkingFixture(client.database, new ApplicationCipher(Buffer.alloc(32, 11)), () => clock);
   const { frame } = await h.delivery();
   await client.database.transaction((tx) => startImFeedback(tx, frame.deliveryId, clock));
@@ -70,6 +70,7 @@ async function failed() {
     errorReason: "provider_start_failed",
     traceSummary: { lastSequence: 1, droppedEvents: 0 },
     resultHash: "0".repeat(64),
+    ...reported,
   };
   report.resultHash = computeTurnResultHash(report);
   expect(
@@ -104,6 +105,14 @@ async function failed() {
   };
 }
 describe("PostgreSQL feedback operations", () => {
+  it("passes a quota failure's reset time from the stored Turn report to the claimed card", async () => {
+    const retryAt = new Date(clock.getTime() + 3_600_000).toISOString();
+    await failed({ errorReason: "provider_quota_exceeded", retryAt });
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const claimed = await store.claim();
+    expect(claimed).toMatchObject({ errorCode: "provider_quota_exceeded", retryAt });
+  });
+
   it("excludes an active native input without blocking another input or reordering its attempts", async () => {
     const h = await failed();
     const [retry] = await client.database

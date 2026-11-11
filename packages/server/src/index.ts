@@ -140,8 +140,14 @@ import {
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduledFailureNotifier, ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
+import {
+  ScheduledFailureNotifier,
+  ScheduleScheduler,
+  ScheduleService,
+  scheduleDetailUrl,
+} from "./services/schedules/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { SessionHeldDeliveryWorker } from "./services/sessions/session-held-delivery-worker.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
@@ -965,6 +971,7 @@ export async function startServer(): Promise<void> {
     const slackWorkingStore = new SlackWorkingStore(database);
     // Bound after the collaboration service exists; the service itself depends on this owner.
     let runOutcomeNotifier: ScheduledFailureNotifier | undefined;
+    let sessionHeldDeliveryWorker: SessionHeldDeliveryWorker | undefined;
     // Late-bound like the notifier: recovery schedules its reconcile through this same owner.
     let recoveryDomain: RuntimeDomainOwner | undefined;
     const sessionRecovery = new SessionRecoveryService({
@@ -1229,7 +1236,17 @@ export async function startServer(): Promise<void> {
           revokeProof: (sessionId) => sessionCliProofService.revokeForSession(sessionId),
         }),
       logger: serviceLogger("session-collaboration"),
+      scheduleDetailUrl: (agentId, scheduleId) => scheduleDetailUrl(config.publicUrl, agentId, scheduleId),
     });
+    sessionHeldDeliveryWorker = new SessionHeldDeliveryWorker({
+      collaboration: sessionCollaborationService,
+      sessions: sessionService,
+      registry,
+      logger: serviceLogger("session-collaboration"),
+    });
+    sessionCollaborationService.setHeldListener((computerId, options) =>
+      sessionHeldDeliveryWorker?.markHeld(computerId, options),
+    );
     const scheduledFailures = new ScheduledFailureNotifier({
       database,
       logger: serviceLogger("scheduled-failures"),
@@ -1303,11 +1320,13 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       sessions: sessionService,
     });
+    sessionCollaborationService.setHeldScheduledMissListener((miss) => scheduleScheduler.reportHeldMiss(miss));
     let stopping: Promise<void> | undefined;
     const beginShutdown = () => {
       shutdown.abort();
       stopping ??= startClosingServerResources([
         ["schedule scheduler", () => scheduleScheduler.stop()],
+        ["Session held delivery worker", () => sessionHeldDeliveryWorker?.stop()],
         ["Session outcome notices", () => sessionCollaborationService.close()],
         ["scheduled failure notices", () => scheduledFailures.close()],
         ["channel target poller", () => channelTargetPoller.stop()],
@@ -1388,6 +1407,7 @@ export async function startServer(): Promise<void> {
       cloudAvailability: () => cloudAvailability(config),
       agentStatusService: new AgentStatusService(database, registry, applicationCipher, {
         cloudAvailability: (now) => cloudAvailability(config, now),
+        logger: serviceLogger("agent-status"),
         refreshLegacy: (computerId) => {
           void providerCliReconcileOwner?.ensureLegacyReadinessForComputer(computerId).catch(() => {
             app?.log.warn({ computerId, code: "LEGACY_STATUS_REFRESH_FAILED" }, "Legacy runtime status refresh failed");
@@ -1478,6 +1498,7 @@ export async function startServer(): Promise<void> {
               .catch(() => reportDiagnostic("SESSION_STOP_REDELIVERY_FAILED")),
             imDeliveryWorker?.notifyComputerReady(computerId),
           ]);
+          sessionHeldDeliveryWorker?.notifyComputerReady(computerId);
         },
         channelTarget: () => channelTargetPoller.get(),
       },
@@ -1560,6 +1581,7 @@ export async function startServer(): Promise<void> {
     slackWorkingWorker.start();
     imFeedbackWorker.start();
     scheduleScheduler.start();
+    sessionHeldDeliveryWorker.start();
     sandboxIdleReclaimer?.start();
     mcpRefreshWorker.start();
     skillRuntime.gc?.start();

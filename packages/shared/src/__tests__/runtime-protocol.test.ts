@@ -262,9 +262,9 @@ describe("runtime protocol", () => {
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
-    expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(3);
+    expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(5);
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.turnReport]).toEqual({ min: 1, max: 3 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.turnReport]).toEqual({ min: 1, max: 5 });
     expect(
       negotiateRuntimeCapabilities(
         { [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 } },

@@ -1,5 +1,6 @@
 import type { TurnFailureReason } from "@opentag/shared";
 import { batchSuffix, type FeedbackLanguage } from "./im-feedback-copy.js";
+import type { FeedbackRuntime } from "./im-feedback-store.js";
 
 type Localized = Record<FeedbackLanguage, string>;
 
@@ -51,9 +52,23 @@ const FAILURE_CARDS = {
       en: "Rephrase it, or remove images and attachments, and try again",
     },
   },
-  credential_unavailable: {
-    title: { zh: "执行凭据不可用", en: "Execution credentials unavailable" },
-    body: { zh: "请在 OpenTag 更新凭据", en: "Update the credentials in OpenTag" },
+  // A Computer too old to report which cause it was, or a missing Cloud model grant.
+  credential_unavailable: ENVIRONMENT,
+  // The Feishu or Slack command line the Agent replies through, or its connection, could not be prepared.
+  // Named by the conversation's provider in `failureCardCopy`.
+  tool_setup_failed: agentError(
+    "飞书命令行没能准备好，请重试",
+    "The Feishu command line couldn't be prepared. Try again",
+  ),
+  // Titled by the conversation's provider in `failureCardCopy`.
+  im_connection_unavailable: {
+    title: { zh: "飞书连接已失效", en: "The Feishu connection is no longer valid" },
+    body: { zh: "请在 OpenTag 重新连接", en: "Reconnect it in OpenTag" },
+  },
+  // Shown as the sign-in card; `failureCardCopy` maps it there.
+  model_login_missing: {
+    title: { zh: "模型未登录或登录已失效", en: "The model isn't signed in, or the sign-in expired" },
+    body: { zh: "请在 Agent 所在电脑登录模型账号", en: "Sign in to the model on the Agent's computer" },
   },
   // Interim until the conversation is compacted automatically.
   provider_context_limit: agentError("对话太长，请重试", "The conversation is too long. Try again"),
@@ -61,9 +76,9 @@ const FAILURE_CARDS = {
   provider_execution_limit: agentError("内容太长没写完，请重试", "The reply was too long to finish. Try again"),
   // Interim until an oversized reply is sent truncated.
   output_too_large: agentError("回复太长，请重试", "The reply is too long. Try again"),
-  // The final title names the actual limit once it is 60 minutes.
+  // The limit is per Agent, so the card does not name a duration.
   turn_timeout: {
-    title: { zh: "任务超时", en: "Task timed out" },
+    title: { zh: "任务超时未完成", en: "The task timed out before it finished" },
     body: { zh: "回复“继续”，Agent 会接着做", en: 'Reply "continue" and the Agent will pick it up' },
   },
   sandbox_unavailable: agentError("云端运行环境断开，请重试", "The cloud environment disconnected. Try again"),
@@ -100,22 +115,145 @@ const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
   input_rejected: { title: { zh: "消息没能送达", en: "Message not delivered" }, body: BODY.retry },
 };
 
-export function failureCardCopy(
-  code: string | null,
-  options: { batchRetryBlocked?: boolean; batchSize?: number; workspaceBlocked?: boolean } = {},
-): CardCopy {
-  const failure =
-    code && Object.hasOwn(FAILURE_CARDS, code)
-      ? FAILURE_CARDS[code as TurnFailureReason]
-      : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
-        ? (INPUT_FAILURE_CARDS[code] as CardCopy)
-        : ENVIRONMENT;
-  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : failure;
+const SLACK_CONNECTION_TITLE: Localized = {
+  zh: "Slack 连接已失效",
+  en: "The Slack connection is no longer valid",
+};
+
+const SLACK_TOOL_SETUP: CardCopy = agentError(
+  "Slack 命令行没能准备好，请重试",
+  "The Slack command line couldn't be prepared. Try again",
+);
+
+/** The tool as the Agent's settings name it; an Agent on the Cloud Computer runs the platform's model. */
+const TOOL_NAMES: Record<FeedbackRuntime["tool"], Localized> = {
+  "claude-code": { zh: "Claude Code", en: "Claude Code" },
+  codex: { zh: "Codex", en: "Codex" },
+  pi: { zh: "Pi", en: "Pi" },
+  cloud: { zh: "云端模型", en: "The cloud model" },
+};
+
+/** Chinese copy puts a space between a Latin name and the Chinese around it, and none between Chinese. */
+function zh(...parts: string[]): string {
+  return parts.reduce((text, part) =>
+    /[A-Za-z0-9]$/u.test(text) || /^[A-Za-z0-9]/u.test(part) ? `${text} ${part}` : text + part,
+  );
+}
+
+/**
+ * Cards that tell someone what to fix name the Agent's tool and model. Sign-in and start-up happen on the Agent's
+ * own computer, so a Cloud Agent keeps the generic card for those.
+ */
+function runtimeCardCopy(code: string | null, runtime: FeedbackRuntime | undefined): CardCopy | undefined {
+  if (!runtime) return;
+  const tool = TOOL_NAMES[runtime.tool];
+  const local = runtime.tool !== "cloud";
+  switch (code) {
+    case "provider_authentication_failed":
+      return local
+        ? {
+            title: { zh: zh(tool.zh, "未登录或登录已失效"), en: `${tool.en} isn't signed in, or the sign-in expired` },
+            body: { zh: zh("请在 Agent 所在电脑登录", tool.zh), en: `Sign in to ${tool.en} on the Agent's computer` },
+          }
+        : undefined;
+    case "provider_access_denied":
+      return runtime.model
+        ? {
+            title: { zh: zh("没有", runtime.model, "的使用权限"), en: `No permission to use ${runtime.model}` },
+            body: { zh: "请在 OpenTag 更换模型", en: "Choose another model in OpenTag" },
+          }
+        : undefined;
+    case "provider_process_exited":
+      return agentError(zh(tool.zh, "意外退出，请重试"), `${tool.en} exited unexpectedly. Try again`);
+    case "provider_start_failed":
+      return local
+        ? agentError(
+            zh(tool.zh, "没能启动，请检查 Agent 所在电脑上的", tool.zh, "是否已安装"),
+            `${tool.en} didn't start. Check that ${tool.en} is installed on the Agent's computer`,
+          )
+        : undefined;
+    case "provider_protocol_error":
+      return agentError(
+        zh(tool.zh, "返回了无法识别的结果，请重试"),
+        `${tool.en} returned a result it couldn't read. Try again`,
+      );
+  }
+}
+
+type FailureCardOptions = {
+  batchRetryBlocked?: boolean;
+  batchSize?: number;
+  workspaceBlocked?: boolean;
+  provider?: "slack" | "feishu";
+  runtime?: FeedbackRuntime;
+  /** When a used-up quota is available again, as the Agent's model CLI reported it. */
+  retryAt?: string;
+  now?: Date;
+};
+
+export function failureCardCopy(reportedCode: string | null, options: FailureCardOptions = {}): CardCopy {
+  // A Computer with no signed-in model account gets the sign-in card, including its tool name.
+  const code = reportedCode === "model_login_missing" ? "provider_authentication_failed" : reportedCode;
+  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : reasonCard(code, options);
   // A failed batch keeps its card and says how many messages it held.
   if (!batchSuffix(options, "zh")) return card;
   return {
     title: card.title,
     body: { zh: card.body.zh + batchSuffix(options, "zh"), en: card.body.en + batchSuffix(options, "en") },
+  };
+}
+
+/** The card for one reason: the tool- or model-named card, the quota reset time, or the conversation's provider. */
+function reasonCard(code: string | null, options: FailureCardOptions): CardCopy {
+  if (code === "provider_quota_exceeded") return quotaCard(options.retryAt, options.now ?? new Date());
+  const reason =
+    runtimeCardCopy(code, options.runtime) ??
+    (code && Object.hasOwn(FAILURE_CARDS, code)
+      ? FAILURE_CARDS[code as TurnFailureReason]
+      : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
+        ? (INPUT_FAILURE_CARDS[code] as CardCopy)
+        : ENVIRONMENT);
+  return options.provider === "slack" ? slackCard(code, reason) : reason;
+}
+
+function slackCard(code: string | null, reason: CardCopy): CardCopy {
+  if (code === "im_connection_unavailable") return { ...reason, title: SLACK_CONNECTION_TITLE };
+  return code === "tool_setup_failed" ? SLACK_TOOL_SETUP : reason;
+}
+
+/** Quota resets are shown in China time, the time zone of the people using OpenTag today. */
+const RESET_TIME_ZONE = "Asia/Shanghai";
+
+/** The quota card names the time it is available again when the model CLI said so, and keeps its plain copy otherwise. */
+function quotaCard(retryAt: string | undefined, now: Date): CardCopy {
+  const at = retryAt === undefined ? Number.NaN : Date.parse(retryAt);
+  if (!Number.isFinite(at) || at <= now.getTime()) return FAILURE_CARDS.provider_quota_exceeded;
+  const parts = (date: Date) =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: RESET_TIME_ZONE,
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(date)
+        .map((part) => [part.type, part.value]),
+    );
+  const reset = parts(new Date(at));
+  const today = parts(now);
+  const time = `${reset.hour}:${reset.minute}`;
+  const sameDay = reset.month === today.month && reset.day === today.day;
+  const month = new Intl.DateTimeFormat("en-US", { timeZone: RESET_TIME_ZONE, month: "short" }).format(new Date(at));
+  return {
+    title: FAILURE_CARDS.provider_quota_exceeded.title,
+    body: sameDay
+      ? { zh: `将于 ${time} 恢复`, en: `Available again at ${time} (UTC+8)` }
+      : {
+          zh: `将于 ${reset.month}月${reset.day}日 ${time} 恢复`,
+          en: `Available again on ${month} ${reset.day} at ${time} (UTC+8)`,
+        },
   };
 }
 

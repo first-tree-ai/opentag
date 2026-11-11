@@ -22,6 +22,7 @@ import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "../services/im/im-feedback-messenger.js";
 import {
   createImFeedbackTarget,
@@ -550,6 +551,9 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     const target = await h.target();
     expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
+    expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
+    expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);
     expect(await h.store.messageContext({ messageId: randomUUID(), sessionId: randomUUID() })).toEqual({
       language: "en",
       direct: false,
@@ -722,6 +726,19 @@ describe("durable IM feedback", () => {
     await h.worker.runOnce();
     expect(await h.target()).toMatchObject({ cardMessageId: "provider-confirmed-card", cardState: "sent" });
     expect(h.transport.post).toHaveBeenCalledOnce();
+  });
+  it("reads back an unknown direct-message send there, and starts there again when exhausted", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.post.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK),
+    );
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({ cardState: "send_unknown", reconciliationCursor: SENDER_READBACK });
+    clock = new Date(clock.getTime() + 31_000);
+    await h.worker.runOnce();
+    expect(h.transport.find).toHaveBeenCalledWith(expect.anything(), SENDER_READBACK);
+    expect((await h.target()).reconciliationCursor).toBe(SENDER_READBACK);
   });
   it("recovers after a provider accepted the card but its DB acknowledgement failed", async () => {
     const h = await fixture();

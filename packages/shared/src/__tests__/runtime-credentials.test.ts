@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   decodeProviderProxyDataFrame,
   encodeProviderProxyDataFrame,
+  FEISHU_CREDENTIAL_REJECTED_CODES,
+  FEISHU_RATE_LIMIT_CODE,
   FEISHU_TENANT_TOKEN_LOCAL_SENTINEL,
+  isFeishuCredentialRejectedCode,
+  isFeishuRateLimitCode,
   PROVIDER_PROXY_CHUNK_MAX_BYTES,
   PROVIDER_PROXY_INITIAL_CREDIT_BYTES,
   PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION,
@@ -59,6 +63,20 @@ describe("runtime credential control frames", () => {
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.runtimeCredential]).toEqual({ min: 1, max: 1 });
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerProxy]).toEqual({ min: 1, max: 1 });
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
+    expect(FEISHU_RATE_LIMIT_CODE).toBe(99991400);
+    expect(isFeishuRateLimitCode(99991400)).toBe(true);
+    expect(isFeishuRateLimitCode("99991400")).toBe(true);
+    expect(isFeishuRateLimitCode(99992402)).toBe(false);
+    expect(isFeishuRateLimitCode(null)).toBe(false);
+    for (const code of [10003, 10005, 10014, 20002, 99991401, 99991543, 99991662, 99991673]) {
+      expect(FEISHU_CREDENTIAL_REJECTED_CODES.has(code)).toBe(true);
+      expect(isFeishuCredentialRejectedCode(code)).toBe(true);
+      expect(isFeishuCredentialRejectedCode(String(code))).toBe(true);
+    }
+    expect(isFeishuCredentialRejectedCode(99992402)).toBe(false);
+    expect(isFeishuCredentialRejectedCode("99992402")).toBe(false);
+    expect(isFeishuCredentialRejectedCode("not-a-number")).toBe(false);
+    expect(isFeishuCredentialRejectedCode(undefined)).toBe(false);
   });
 
   it("bounds provider-discriminated non-secret CLI metadata", () => {

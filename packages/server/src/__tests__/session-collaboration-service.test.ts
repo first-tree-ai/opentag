@@ -360,6 +360,55 @@ describe("SessionCollaborationService", () => {
     );
   });
 
+  describe("with a message inside the reconcile frame on a Client that can be held for", () => {
+    function inlineFixture() {
+      const fixture = serviceFixture();
+      fixture.registry.supportsCapability.mockReturnValue(true);
+      fixture.registry.capabilityVersion.mockImplementation((_c: string, _i: string, capability: string) =>
+        capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? 1 : 2,
+      );
+      return fixture;
+    }
+    const held = expect.objectContaining({ outcome: "unknown", errorCode: "delivery_held" });
+
+    it("holds a client_busy refusal from the combined frame", async () => {
+      const fixture = inlineFixture();
+      fixture.domain.requestReconcile.mockResolvedValue({
+        type: "session:reconcile:result",
+        requestId: randomUUID(),
+        sessionId: fixture.targetSessionId,
+        placementGeneration: 1,
+        status: "ready",
+        sessionMessage: {
+          type: "session:message:deliver:result",
+          requestId: randomUUID(),
+          messageId: fixture.messageId,
+          targetSessionId: fixture.targetSessionId,
+          placementGeneration: 1,
+          status: "rejected",
+          reason: "client_busy",
+        },
+      });
+
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(held);
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    });
+
+    it("holds a combined frame whose answer is unconfirmed instead of leaving it unknown", async () => {
+      const fixture = inlineFixture();
+      fixture.domain.requestReconcile.mockRejectedValue(new RuntimeDomainRequestError("timeout", "No answer"));
+
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(held);
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["session_busy", "agent_busy", "client_busy"] as const)(
     "records a %s refusal as unreachable with that cause",
     async (reason) => {
@@ -397,6 +446,7 @@ describe("SessionCollaborationService", () => {
         alreadyStopped: false,
         descendantCount: 2,
         stoppedDescendantCount: 2,
+        heldNoticeComputerIds: [],
       });
       return childSessionId;
     }
@@ -1008,6 +1058,8 @@ function serviceFixture(
         placement: { sessionId: targetSessionId },
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
+    heldHasRoom: vi.fn().mockResolvedValue(true),
+    hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
     stopInternalSession: vi.fn(),
@@ -1041,7 +1093,9 @@ function serviceFixture(
       capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
     ),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
-    supportsCapability: vi.fn().mockReturnValue(true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
   const stopEnded = vi.fn(

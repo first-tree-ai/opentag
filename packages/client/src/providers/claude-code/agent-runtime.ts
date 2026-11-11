@@ -32,6 +32,7 @@ import {
   type AgentProviderRunResult,
   type AgentProviderSteerCustody,
   type AgentRunConfiguration,
+  type AgentRunError,
   type AgentRuntimeBinding,
   type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
@@ -204,6 +205,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #processReady?: ProcessReady;
   #providerFailure?: Error;
   #assistantError?: string;
+  /** When Claude Code said a usage window that rejected this Run opens again (`rate_limit_event`). */
+  #quotaResetAt?: string;
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
@@ -243,6 +246,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#continuedTerminals.length = 0;
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
+    this.#quotaResetAt = undefined;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
     this.#resumedRun = false;
@@ -303,7 +307,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
       return {
-        ...claudeCodeRunResult(this.#terminal, this.#assistantError),
+        ...claudeCodeRunResult(this.#terminal, this.#assistantError, this.#quotaResetAt),
         ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
       };
     } catch (error) {
@@ -357,6 +361,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#resumedRun = false;
     this.#terminal = undefined;
     this.#assistantError = undefined;
+    this.#quotaResetAt = undefined;
     this.#continuedTerminals.length = 0;
     // An abort that arrived while the first process was exiting interrupted nothing that is still running.
     context.signal.throwIfAborted();
@@ -496,7 +501,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
-      ...fallbackModelArguments(configuration?.model),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       ...(this.#systemPromptSnapshotOff ? ["--system-prompt-snapshot", "off"] : []),
       "--append-system-prompt",
@@ -574,6 +578,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "assistant") {
       await this.#handleAssistant(message);
+      return;
+    }
+    if (type === "rate_limit_event") {
+      this.#quotaResetAt = rejectedUsageWindowReset(message) ?? this.#quotaResetAt;
+      await this.#emitProviderEvent(message);
       return;
     }
     if (type === "user") {
@@ -1206,26 +1215,6 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 const { validate: validateConfiguration, merge: mergeConfiguration } =
   providerConfiguration(parseProviderConfiguration);
 
-/**
- * The smaller model of the same family that Claude Code switches to when the configured one is overloaded or
- * unavailable; the CLI tries the configured model again at the start of every turn (R1). Only an explicit Opus
- * or Sonnet model gets one: an unset model resolves inside the CLI, and a fallback equal to the main model makes
- * the CLI refuse to start, so nothing is guessed. A model outside these families (another vendor behind a gateway,
- * Haiku) gets none.
- */
-export function claudeFallbackModel(model: string | undefined): string | undefined {
-  const name = model?.trim().toLowerCase();
-  if (!name) return undefined;
-  if (/(^|[^a-z])opus([^a-z]|$)/u.test(name)) return "sonnet";
-  if (/(^|[^a-z])sonnet([^a-z]|$)/u.test(name)) return "haiku";
-  return undefined;
-}
-
-function fallbackModelArguments(model: string | undefined): string[] {
-  const fallback = claudeFallbackModel(model);
-  return fallback ? ["--fallback-model", fallback] : [];
-}
-
 function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodeProviderConfiguration {
   if (value === undefined) return {};
   assertJsonValue(value, "configuration.provider");
@@ -1424,7 +1413,29 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
   };
 }
 
-function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {
+/**
+ * Claude Code reports each subscription usage window in a `rate_limit_event` (2.1.319): `rate_limit_info` holds its
+ * `status` and `resetsAt` in Unix seconds. A `rejected` window is a used-up quota, and its reset is when to try again.
+ */
+/** 10000-01-01T00:00:00Z: the first Unix second whose ISO form needs an extended year. */
+const MAX_ISO_UNIX_SECONDS = 253_402_300_800;
+
+function rejectedUsageWindowReset(message: Readonly<Record<string, unknown>>): string | undefined {
+  const info = message.rate_limit_info;
+  if (!info || typeof info !== "object") return undefined;
+  const status = Reflect.get(info, "status");
+  const resetsAt = Reflect.get(info, "resetsAt");
+  // Unix seconds before year 10000, which a Turn report's ISO time can hold; anything else is not a usable reset.
+  if (status !== "rejected" || typeof resetsAt !== "number" || !(resetsAt > 0 && resetsAt < MAX_ISO_UNIX_SECONDS))
+    return undefined;
+  return new Date(resetsAt * 1000).toISOString();
+}
+
+function claudeCodeRunResult(
+  terminal: ClaudeCodeTerminal,
+  assistantError: string | undefined,
+  quotaResetAt?: string,
+): AgentProviderRunResult {
   const output = [...(terminal.earlierResults ?? []), ...(terminal.result === undefined ? [] : [terminal.result])].map(
     (text) => ({ type: "text" as const, text }),
   );
@@ -1448,29 +1459,26 @@ function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: strin
     status: "failed",
     output,
     ...(terminal.usage ? { usage: terminal.usage } : {}),
-    error: {
-      code:
-        providerFailureCode(terminal.subtype) !== "provider_error"
-          ? providerFailureCode(terminal.subtype)
-          : promptTooLong(terminal)
-            ? "provider_context_limit"
+    error: withQuotaReset(
+      {
+        code:
+          providerFailureCode(terminal.subtype) !== "provider_error"
+            ? providerFailureCode(terminal.subtype)
             : providerFailureCode(assistantError, terminal.apiErrorStatus),
-      message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
-    },
+        message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
+      },
+      quotaResetAt,
+    ),
     diagnostics,
   };
 }
 
-/**
- * Claude Code reports a request over the model's context as an API error whose text starts with its fixed
- * "Prompt is too long" message (2.1.319); the envelope code is only `invalid_request`. It is a context limit,
- * which compaction can fix, not a rejected request (R8).
- */
-function promptTooLong(terminal: ClaudeCodeTerminal): boolean {
-  return [terminal.result, ...terminal.errors].some((text) => text?.startsWith(CLAUDE_PROMPT_TOO_LONG) === true);
+/** A rate-limited or quota failure after a rejected usage window is that used-up quota, with its reset. */
+function withQuotaReset(error: AgentRunError, quotaResetAt: string | undefined): AgentRunError {
+  if (!quotaResetAt || (error.code !== "provider_rate_limited" && error.code !== "provider_quota_exceeded"))
+    return error;
+  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt };
 }
-
-const CLAUDE_PROMPT_TOO_LONG = "Prompt is too long";
 
 function parseUsage(
   value: unknown,

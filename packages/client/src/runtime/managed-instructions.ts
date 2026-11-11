@@ -3,6 +3,7 @@ import {
   AGENT_SLUG_CHARACTERS,
   contextTreeName,
   contextTreeSelector,
+  SESSION_DELIVERY_FAILURE_NOTICE_HEADER,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
 } from "@opentag/shared";
 import type { ContextTreeResult, ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
@@ -177,6 +178,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSchedules(context),
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
@@ -232,7 +234,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     `- ${context.cliCommand} session send <target-session-id> --message <text>`,
     `- ${context.cliCommand} session stop <internal-session-id>`,
     `- ${context.cliCommand} session list`,
-    "A result of `unreachable` with code `client_busy` means the target Client is briefly not admitting new work, for example during an upgrade. The message was not delivered and nothing retries it for you: send it again shortly with `--message-id` set to the returned message ID.",
+    `A result of \`accepted\` from \`session send\` or \`session create\` means openTag has the message. If the target's Client is briefly unavailable, for example during an upgrade, openTag keeps the message and delivers it in order when the Client is back, so do not send it again. If it can never be delivered, you get a message that begins with "${SESSION_DELIVERY_FAILURE_NOTICE_HEADER}".`,
     `Each Run of an internal Session is stopped when its time budget runs out; the child keeps its conversation, but the interrupted work does not finish on its own. When you create one, estimate how long the task needs and pass \`--max-duration-ms\` with headroom: for example 4 hours (14400000) for coding, debugging, or test runs, up to the 24-hour maximum (86400000) for very long work. Without it, the Session gets the larger of 2 hours and this Agent's configured budget.`,
     context.environment === "cloud"
       ? "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof."
@@ -251,6 +253,21 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
         ]
       : []),
+  ];
+}
+
+function renderSchedules(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) return [];
+  const cli = context.cliCommand;
+  return [
+    "",
+    "## Schedules",
+    "",
+    `Manage schedules pinned to this Session with \`${cli} self schedule\`:`,
+    `- \`${cli} self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]\``,
+    `- \`${cli} self schedule <list|show|update|pause|resume|delete|preview> ...\` (pass \`--help\` for flags).`,
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first. If a required command needs approval under Ask for approval, or if an MCP Server or credential is unauthorized, guide the user to complete authorization or add the required command rules in the Agent's Model settings first.",
   ];
 }
 

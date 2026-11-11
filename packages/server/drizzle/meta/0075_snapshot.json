@@ -1,5 +1,5 @@
 {
-  "id": "b044275f-6e4d-4ab5-bff4-abfc2e587be6",
+  "id": "74d70e48-aa1b-4c58-a968-b47f33ed9ad7",
   "prevId": "f2026f00-cb88-4f41-85c4-355aa7b35cf0",
   "version": "7",
   "dialect": "postgresql",
@@ -4247,15 +4247,9 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_session_unreported_accepted_idx": {
-          "name": "im_message_deliveries_session_unreported_accepted_idx",
+        "im_message_deliveries_unreported_accepted_idx": {
+          "name": "im_message_deliveries_unreported_accepted_idx",
           "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
             {
               "expression": "accepted_at",
               "isExpression": false,
@@ -4264,6 +4258,12 @@
             },
             {
               "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6463,6 +6463,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_messages_held_idx": {
+          "name": "session_messages_held_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"last_outcome\" = 'unknown' and \"session_messages\".\"last_error_code\" = 'delivery_held'",
           "concurrently": false,
           "method": "btree",
           "with": {}

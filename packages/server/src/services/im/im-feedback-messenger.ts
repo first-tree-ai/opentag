@@ -14,7 +14,7 @@ import {
   slackCardMessage,
   waitingCard,
 } from "./im-feedback-card.js";
-import type { FeedbackLanguage, WaitingNoticeReason } from "./im-feedback-copy.js";
+import { type FeedbackLanguage, originLine, type WaitingNoticeReason } from "./im-feedback-copy.js";
 import type {
   FeedbackAction,
   FeedbackMessageContext,
@@ -30,9 +30,67 @@ export class FeedbackProviderError extends Error {
     readonly knownNotApplied: boolean,
     readonly permanent = false,
     readonly retryAfterMs?: number,
+    /** Where readback must start when the outcome is unknown; absent means the conversation. */
+    readonly readbackCursor?: string,
   ) {
     super(code);
   }
+}
+
+/** The provider refused a direct message to the sender, so nothing was sent and the card goes to the conversation. */
+class SenderUnreachable extends Error {}
+
+/** The readback cursor of a card whose direct message to the sender has an unknown outcome. */
+export const SENDER_READBACK = "sender:";
+/** The readback cursor of a card that fell back to the conversation after the sender's direct message was refused. */
+export const CONVERSATION_READBACK = "conversation:";
+
+/**
+ * The readback of a group card meant for the sender whose leg was never recorded (a crash or a lost acknowledgement):
+ * the conversation first, read-only, then the sender's direct message (`either-sender:`).
+ */
+export const EITHER_READBACK = "either:";
+const EITHER_SENDER_READBACK = "either-sender:";
+
+/** Where a send's provider write actually started, so an unknown outcome is read back there. */
+interface DeliveryLeg {
+  to?: "sender" | "conversation";
+}
+
+function withReadback(failure: FeedbackProviderError, leg: DeliveryLeg): FeedbackProviderError {
+  if (failure.knownNotApplied) return failure;
+  // No provider write started, so nothing can have been sent: retry instead of reading back.
+  if (!leg.to) return new FeedbackProviderError("IM_FEEDBACK_SEND_NOT_STARTED", true, false, failure.retryAfterMs);
+  const cursor = leg.to === "sender" ? SENDER_READBACK : CONVERSATION_READBACK;
+  return new FeedbackProviderError(failure.code, false, failure.permanent, failure.retryAfterMs, cursor);
+}
+const GROUP_NAME_TIMEOUT_MS = 2_000;
+/** Feishu deduplicates a request `uuid` for an hour; readback repeats the send only well inside that window. */
+const FEISHU_REQUEST_DEDUP_MS = 50 * 60_000;
+
+/**
+ * Failure cards that, in a group, go to the sender's direct message with the Bot (Gandy 11-10). Both waiting
+ * notices go there too. Every other card stays in the conversation.
+ */
+const SENDER_FAILURE_CODES = new Set([
+  "input_expired",
+  "input_rejected",
+  "input_unsupported",
+  "provider_quota_exceeded",
+]);
+export function failureGoesToSender(target: Pick<FeedbackTarget, "errorCode" | "state">): boolean {
+  return target.state !== "workspace_blocked" && SENDER_FAILURE_CODES.has(target.errorCode ?? "");
+}
+
+/**
+ * A Slack card in the sender's direct message keeps that channel in its message ID (`<channel>/<ts>`), because
+ * editing it needs the channel. Slack timestamps never hold a slash; a conversation card keeps the plain timestamp.
+ */
+export function slackCardLocation(target: Pick<FeedbackTarget, "channelId">, messageId: string) {
+  const slash = messageId.indexOf("/");
+  return slash < 0
+    ? { channel: target.channelId, ts: messageId }
+    : { channel: messageId.slice(0, slash), ts: messageId.slice(slash + 1) };
 }
 
 export class FeedbackCooldownStorageError extends FeedbackProviderError {
@@ -260,23 +318,175 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     return r.data.message_id;
   }
 
+  /**
+   * Sends a card to the sender's direct message with the Bot when `toSender` and the conversation is a group.
+   * When the provider refuses that message (the sender is outside the app's availability, is a bot, or the call is
+   * rejected), it goes where the conversation expects it. An unknown direct-message outcome never falls back,
+   * which could post the card twice; readback then starts in the direct message.
+   */
+  async #deliver(
+    target: FeedbackTarget,
+    card: FeedbackCard,
+    context: FeedbackMessageContext,
+    signal: AbortSignal,
+    toSender: boolean,
+    leg: DeliveryLeg,
+    requestId?: string,
+  ): Promise<string> {
+    if (toSender && !context.direct) {
+      try {
+        return await this.#sendToSender(target, card, context, signal, leg, requestId);
+      } catch (error) {
+        // The outer boundary adds the readback cursor of the leg that started, even after its own deadline.
+        if (!(error instanceof SenderUnreachable)) throw error;
+      }
+    }
+    leg.to = "conversation";
+    return this.#sendCard(target, card, context, signal, requestId);
+  }
+
+  async #sendToSender(
+    target: FeedbackTarget,
+    card: FeedbackCard,
+    context: FeedbackMessageContext,
+    signal: AbortSignal,
+    leg: DeliveryLeg,
+    requestId?: string,
+  ): Promise<string> {
+    card = await this.#withOrigin(target, card, context, signal);
+    if (target.provider === "slack") {
+      const { api } = await this.#slack(target, signal);
+      const channel = await this.#slackSenderChannel(target, api);
+      leg.to = "sender";
+      const r = await this.#slackCall(target, () =>
+        api.chat
+          .postMessage({ channel, ...slackCardMessage(card, target.id, context.language) })
+          .catch(rejectedAsUnreachable),
+      );
+      if (!r.ok || !r.ts)
+        throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK);
+      return `${channel}/${r.ts}`;
+    }
+    const sent = await this.#feishuSenderCreate(target, card, context, signal, requestId, leg);
+    if (sent === "rejected") throw new SenderUnreachable();
+    return sent;
+  }
+
+  /** Names the group and message a card is about, since the sender reads it away from that group. */
+  async #withOrigin(
+    target: FeedbackTarget,
+    card: FeedbackCard,
+    context: FeedbackMessageContext,
+    signal: AbortSignal,
+  ): Promise<FeedbackCard> {
+    if (context.excerpt === undefined) return card;
+    const groupName = await this.#groupNameWithin(target, signal);
+    return { ...card, origin: originLine(context.language, context.excerpt, groupName) };
+  }
+
+  /**
+   * The name is a courtesy: a slow, hung or failed lookup gives up after two seconds, leaving the send most of its
+   * deadline, and the card says "in the group" instead.
+   */
+  async #groupNameWithin(target: FeedbackTarget, signal: AbortSignal): Promise<string | undefined> {
+    const limit = new AbortController();
+    const timer = setTimeout(() => limit.abort(), GROUP_NAME_TIMEOUT_MS);
+    try {
+      return await this.#groupName(target, AbortSignal.any([signal, limit.signal]), limit.signal);
+    } catch (error) {
+      // A cooldown that could not be stored must stop the worker like any other feedback call.
+      if (error instanceof FeedbackCooldownStorageError) throw error;
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+      limit.abort();
+    }
+  }
+
+  /**
+   * Only the provider read races the courtesy limit. Once Slack answers with a rate limit, the cooldown it records
+   * is awaited to the end, so a failure to store it still reaches the worker.
+   */
+  async #groupName(target: FeedbackTarget, signal: AbortSignal, limit: AbortSignal): Promise<string | undefined> {
+    const within = <T>(read: Promise<T>) => Promise.race([read, untilAborted(limit)]);
+    if (target.provider === "slack") {
+      const { api } = await this.#slack(target, signal);
+      const r = await this.#slackCall(target, () => within(api.conversations.info({ channel: target.channelId })));
+      return r?.channel?.name || undefined;
+    }
+    const { api } = await this.#feishu(target, signal);
+    const r = await within(api.im.v1.chat.get({ path: { chat_id: target.channelId } }));
+    return r?.code === 0 ? r.data?.name || undefined : undefined;
+  }
+
+  /** Opening the conversation posts nothing, so any failure here is known not to have sent the card. */
+  async #slackSenderChannel(target: FeedbackTarget, api: WebClient): Promise<string> {
+    let opened: Awaited<ReturnType<WebClient["conversations"]["open"]>>;
+    try {
+      opened = await this.#slackCall(target, () =>
+        api.conversations.open({ users: target.senderExternalId }).catch(rejectedAsUnreachable),
+      );
+    } catch (error) {
+      if (error instanceof SenderUnreachable || error instanceof FeedbackProviderError) throw error;
+      throw new FeedbackProviderError("IM_FEEDBACK_SENDER_OPEN_FAILED", true);
+    }
+    if (!opened.channel?.id) throw new SenderUnreachable();
+    return opened.channel.id;
+  }
+
+  /** A Feishu card to the sender's open_id, or `rejected` when Feishu refused it. Bots have no open_id. */
+  async #feishuSenderCreate(
+    target: FeedbackTarget,
+    card: FeedbackCard,
+    context: FeedbackMessageContext,
+    signal: AbortSignal,
+    requestId?: string,
+    leg?: DeliveryLeg,
+  ): Promise<string | "rejected"> {
+    if (!target.senderExternalId.startsWith("ou_")) return "rejected";
+    const { api } = await this.#feishu(target, signal);
+    let r: Awaited<ReturnType<typeof api.im.v1.message.create>>;
+    if (leg) leg.to = "sender";
+    try {
+      r = await api.im.v1.message.create({
+        params: { receive_id_type: "open_id" },
+        data: {
+          receive_id: target.senderExternalId,
+          msg_type: "interactive",
+          content: feishuCardContent(card, feedbackDetailsUrl(target, this.publicUrl), context.language),
+          ...(requestId ? { uuid: requestId } : {}),
+        },
+      });
+    } catch (error) {
+      if (feishuErrorCode(error) !== undefined) return "rejected";
+      throw error;
+    }
+    if (r.code !== 0) return "rejected";
+    if (!r.data?.message_id)
+      throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK);
+    return r.data.message_id;
+  }
+
   async post(target: FeedbackTarget, action?: FeedbackAction): Promise<string> {
+    const leg: DeliveryLeg = {};
     try {
       const context = await this.#context(target);
       return await this.#run(
         `${target.provider}.feedback.post`,
         (signal) =>
-          this.#sendCard(
+          this.#deliver(
             target,
-            feedbackCard(target, action, context.language),
+            feedbackCard(target, action, context.language, context.runtime),
             context,
             signal,
+            failureGoesToSender(target),
+            leg,
             target.providerRequestId,
           ),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      throw postFailure(error);
+      throw withReadback(postFailure(error), leg);
     }
   }
 
@@ -285,15 +495,16 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * message, and Feishu would swallow that later message as a duplicate of this one.
    */
   async postOfflineNotice(target: FeedbackTarget, reason: WaitingNoticeReason = "offline"): Promise<void> {
+    const leg: DeliveryLeg = {};
     try {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#sendCard(target, waitingCard(context.language, reason), context, signal),
+        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, leg),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      throw postFailure(error);
+      throw withReadback(postFailure(error), leg);
     }
   }
 
@@ -350,18 +561,17 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const messageId = target.cardMessageId;
     if (!messageId) return;
-    const { language } = await this.#context(target);
+    const { language, runtime } = await this.#context(target);
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         if (target.messageFormat === "text_v1") return this.#updateText(target, messageId, action, language, signal);
-        const card = feedbackCard(target, action, language);
+        const card = feedbackCard(target, action, language, runtime);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>
             api.chat.update({
-              channel: target.channelId,
-              ts: messageId,
+              ...slackCardLocation(target, messageId),
               // Clears the text of a card sent before the card moved into an attachment.
               text: "",
               blocks: [],
@@ -405,15 +615,101 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
   }
 
+  /**
+   * Bounded readback. Without a cursor (a crash or a lost acknowledgement left no record of the leg), a group card
+   * that goes to the sender is looked for in their direct message first.
+   */
   async find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }> {
+    const start = cursor ?? ((await this.#mayBeWithSender(target)) ? EITHER_READBACK : undefined);
     return this.#run(
       `${target.provider}.feedback.find`,
-      (signal) =>
-        target.provider === "slack"
-          ? this.#findSlack(target, signal, cursor)
-          : this.#findFeishu(target, signal, cursor),
+      (signal) => {
+        const after = (prefix: string) => start?.slice(prefix.length) || undefined;
+        if (start?.startsWith(SENDER_READBACK)) return this.#findSender(target, signal, after(SENDER_READBACK));
+        if (start?.startsWith(EITHER_SENDER_READBACK))
+          return this.#findSender(target, signal, after(EITHER_SENDER_READBACK), EITHER_SENDER_READBACK);
+        if (start?.startsWith(EITHER_READBACK)) return this.#findEither(target, signal, after(EITHER_READBACK));
+        if (start?.startsWith(CONVERSATION_READBACK))
+          return this.#findFallback(target, signal, after(CONVERSATION_READBACK));
+        return this.#findConversation(target, signal, start);
+      },
       { maxAttempts: 1, timeoutMs: 8_000 },
     );
+  }
+  /** A card sent before cards went to the sender (plain text) stays in the conversation. */
+  async #mayBeWithSender(target: FeedbackTarget): Promise<boolean> {
+    if (target.messageFormat === "text_v1" || !failureGoesToSender(target)) return false;
+    return !(await this.#context(target)).direct;
+  }
+  /** The conversation pages of an unrecorded leg, then the sender's direct message. */
+  async #findEither(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    const result = await this.#findConversation(target, signal, cursor);
+    if (result.ids.length > 0) return result;
+    return { ids: [], cursor: result.cursor ? `${EITHER_READBACK}${result.cursor}` : EITHER_SENDER_READBACK };
+  }
+  #findConversation(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    return target.provider === "slack"
+      ? this.#findSlack(target, signal, cursor)
+      : this.#findFeishu(target, signal, cursor);
+  }
+  /** The conversation, for a card that fell back there; its pages keep the fallback marker. */
+  async #findFallback(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    const result = await this.#findConversation(target, signal, cursor);
+    return { ids: result.ids, ...(result.cursor ? { cursor: `${CONVERSATION_READBACK}${result.cursor}` } : {}) };
+  }
+  /**
+   * Readback in the sender's direct message. Slack reads its history for this Bot's card identity. Feishu cannot
+   * name that chat before a send, so it repeats the send under the same request `uuid`, which Feishu answers with
+   * the original message when there was one; past its deduplication window nothing is repeated.
+   */
+  async #findSender(target: FeedbackTarget, signal: AbortSignal, page?: string, prefix = SENDER_READBACK) {
+    // After the conversation was already read, an unreachable direct message has nothing left to find.
+    const fallback = () => (prefix === SENDER_READBACK ? this.#findFallback(target, signal) : { ids: [] });
+    if (target.provider === "feishu") {
+      const startedAt = (target.sendStartedAt ?? target.createdAt).getTime();
+      if (Date.now() - startedAt > FEISHU_REQUEST_DEDUP_MS) return { ids: [] };
+      const context = await this.#context(target);
+      const sent = await this.#feishuSenderCreate(
+        target,
+        await this.#withOrigin(target, feedbackCard(target, undefined, context.language), context, signal),
+        context,
+        signal,
+        target.providerRequestId,
+      ).catch((error) => {
+        if (error instanceof FeedbackProviderError && error.knownNotApplied) return "unknown" as const;
+        throw error;
+      });
+      // A refused direct message means the card fell back to the conversation.
+      if (sent === "rejected") return fallback();
+      return { ids: sent === "unknown" ? [] : [sent] };
+    }
+    const { api, material } = await this.#slack(target, signal);
+    let channel: string;
+    try {
+      channel = await this.#slackSenderChannel(target, api);
+    } catch (error) {
+      if (error instanceof SenderUnreachable) return fallback();
+      throw error;
+    }
+    const identity = slackCardIdentity("failure", target.id);
+    const r = await this.#slackCall(target, () =>
+      api.conversations.history({
+        channel,
+        oldest: String(Math.floor((target.sendStartedAt ?? target.createdAt).getTime() / 1000) - 60),
+        limit: 100,
+        ...(page ? { cursor: page } : {}),
+      }),
+    );
+    if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_READBACK_FAILED", false);
+    const ids = (r.messages ?? [])
+      .filter(
+        (m) =>
+          m.user === material.botUserId &&
+          (m.attachments ?? []).flatMap((a) => a.blocks ?? []).some((b) => b.block_id === identity),
+      )
+      .flatMap((m) => (m.ts ? [`${channel}/${m.ts}`] : []));
+    const next = r.response_metadata?.next_cursor;
+    return { ids, ...(next ? { cursor: `${prefix}${next}` } : {}) };
   }
   async #findSlack(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
     const { api, material } = await this.#slack(target, signal);
@@ -497,6 +793,27 @@ function feedbackRateLimit(error: unknown): FeedbackProviderError | undefined {
   if (error instanceof FeedbackProviderError && error.code === "IM_FEEDBACK_RATE_LIMITED") return error;
   if (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
     return new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, slackRetryAfter(error));
+}
+
+/** A Slack platform rejection of a direct-message call: nothing was sent. Rate limits stay rate limits. */
+function rejectedAsUnreachable(error: unknown): never {
+  if (slackErrorCode(error) !== undefined && slackErrorCode(error) !== "ratelimited") throw new SenderUnreachable();
+  throw error;
+}
+
+/** The Feishu error code of an HTTP error response, which means Feishu answered and refused the call. */
+/** Resolves with nothing once the signal aborts: the end of an optional read's time. */
+function untilAborted(signal: AbortSignal): Promise<undefined> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve(undefined);
+    else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
+}
+
+function feishuErrorCode(error: unknown): number | undefined {
+  if (!error || typeof error !== "object" || !("response" in error)) return;
+  const data = (error as { response?: { data?: { code?: unknown } } }).response?.data;
+  return typeof data?.code === "number" && data.code !== 0 ? data.code : undefined;
 }
 
 function slackErrorCode(error: unknown): string | undefined {

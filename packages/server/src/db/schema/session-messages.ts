@@ -38,6 +38,9 @@ export const sessionMessages = pgTable(
   (table) => [
     index("session_messages_target_created_idx").on(table.targetSessionId, table.createdAt, table.id),
     index("session_messages_source_created_idx").on(table.sourceSessionId, table.createdAt, table.id),
+    index("session_messages_held_idx")
+      .on(table.createdAt, table.id)
+      .where(sql`${table.lastOutcome} = 'unknown' and ${table.lastErrorCode} = 'delivery_held'`),
     check("session_messages_content_hash_shape", sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`),
     check("session_messages_content_bounds", sql`octet_length(${table.content}) between 1 and 16384`),
     check(

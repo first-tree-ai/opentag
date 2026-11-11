@@ -14,6 +14,25 @@ export function feedbackLanguage(content: ImContentV1): FeedbackLanguage {
   return textLanguage(written || content.fallbackText);
 }
 
+/** The first twenty characters of what the sender wrote, for a card sent away from the conversation. */
+export function messageExcerpt(content: ImContentV1): string {
+  const written = content.blocks
+    .flatMap((block) => (block.type === "text" || block.type === "quote" || block.type === "code" ? [block.text] : []))
+    .join(" ");
+  const text = (written || content.fallbackText).replace(/\s+/gu, " ").trim();
+  const chars = [...text];
+  return chars.length > 20 ? `${chars.slice(0, 20).join("")}…` : text;
+}
+
+/**
+ * The line above a card sent to the sender's direct message, naming the group and the message it is about. Shown
+ * as plain text, so a group name or message cannot carry markup.
+ */
+export function originLine(language: FeedbackLanguage, excerpt: string, groupName?: string): string {
+  if (language === "zh") return groupName ? `你在「${groupName}」发的：${excerpt}` : `你在群里发的：${excerpt}`;
+  return groupName ? `Your message in "${groupName}": ${excerpt}` : `Your message in the group: ${excerpt}`;
+}
+
 /** Chinese when the text contains Chinese, otherwise English. */
 export function textLanguage(text: string): FeedbackLanguage {
   return /\p{Script=Han}/u.test(text) ? "zh" : "en";
@@ -35,10 +54,6 @@ const NEXT = {
   workspace: {
     zh: "这个 Session 的工作已暂停，新消息会继续排队。可以在详情页重试保存或放弃改动，但这不会撤销已经发生的外部操作。",
     en: "Work in this Session is paused; new input for this Session remains queued. You can retry the save or discard the changes from the details page; neither undoes external operations.",
-  },
-  batch: {
-    zh: "这批消息不能在这里重试。先打开原任务，逐条看过后再开始新工作。",
-    en: "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
   },
 } satisfies Record<string, Localized>;
 
@@ -72,6 +87,27 @@ const FAILURES = {
     cause: {
       zh: "执行凭据不可用，任务没有完成。",
       en: "Execution credentials are unavailable, so the task didn't finish.",
+    },
+    next: NEXT.owner,
+  },
+  im_connection_unavailable: {
+    cause: {
+      zh: "飞书或 Slack 连接已失效，任务没有完成。",
+      en: "The Feishu or Slack connection is no longer valid, so the task didn't finish.",
+    },
+    next: NEXT.owner,
+  },
+  tool_setup_failed: {
+    cause: {
+      zh: "回复用的飞书或 Slack 命令行没能准备好，任务没有完成。",
+      en: "The Feishu or Slack command line used to reply couldn't be prepared, so the task didn't finish.",
+    },
+    next: NEXT.environment,
+  },
+  model_login_missing: {
+    cause: {
+      zh: "Agent 所在电脑没有登录模型账号，任务没有完成。",
+      en: "The Agent's computer isn't signed in to the model account, so the task didn't finish.",
     },
     next: NEXT.owner,
   },
@@ -132,7 +168,7 @@ const INPUT_FAILURES: Record<string, { cause: Localized; next: Localized }> = {
 export function failureCopy(
   code: string | null,
   language: FeedbackLanguage,
-  options: { batchRetryBlocked?: boolean; workspaceBlocked?: boolean } = {},
+  options: { batchRetryBlocked?: boolean; batchSize?: number; workspaceBlocked?: boolean } = {},
 ): { cause: string; next: string } {
   const failure =
     code && Object.hasOwn(FAILURES, code)
@@ -140,8 +176,18 @@ export function failureCopy(
       : code && Object.hasOwn(INPUT_FAILURES, code)
         ? (INPUT_FAILURES[code] as { cause: Localized; next: Localized })
         : { cause: ENVIRONMENT, next: NEXT.environment };
-  const next = options.workspaceBlocked ? NEXT.workspace : options.batchRetryBlocked ? NEXT.batch : failure.next;
-  return { cause: failure.cause[language], next: next[language] };
+  const next = (options.workspaceBlocked ? NEXT.workspace : failure.next)[language];
+  // A failed batch keeps its reason's next step and says how many messages it held.
+  return { cause: failure.cause[language], next: next + batchSuffix(options, language) };
+}
+
+/** "（共 N 条消息）" after the body of a failed batch of more than one message. */
+export function batchSuffix(
+  options: { batchRetryBlocked?: boolean; batchSize?: number },
+  language: FeedbackLanguage,
+): string {
+  if (!options.batchRetryBlocked || !options.batchSize || options.batchSize < 2) return "";
+  return language === "zh" ? `（共 ${options.batchSize} 条消息）` : ` (${options.batchSize} messages)`;
 }
 
 export function effectsCopy(effects: string | null, language: FeedbackLanguage): string {
@@ -155,23 +201,8 @@ export function effectsCopy(effects: string | null, language: FeedbackLanguage):
   return copy[language];
 }
 
-/** Tells people how to recover, not only to wait. Names no Computer or administrator: everyone in the group reads it. */
-export function offlineNoticeCopy(language: FeedbackLanguage): { before: string; label: string; after: string } {
-  return language === "zh"
-    ? {
-        before:
-          "运行这个 Agent 的电脑离线了，暂时处理不了这条消息。\n请确认电脑已开机、已联网，再到 Agent 页面恢复连接。",
-        label: "恢复连接",
-        after: "如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，恢复后会自动处理；7 天内没恢复会过期。",
-      }
-    : {
-        before:
-          "The computer running this Agent is offline, so this message can't be handled yet.\nCheck that the computer is on and connected, then restore the connection on the Agent page.",
-        label: "Restore connection",
-        after:
-          "If you don't manage this Agent, contact its administrator.\nYour message is saved and will be handled after it reconnects. It expires after 7 days.",
-      };
-}
+/** Why a queued input gets its one waiting notice. */
+export type WaitingNoticeReason = "offline" | "parked";
 
 export const FEEDBACK_LABELS = {
   details: { zh: "查看详情", en: "View details" },

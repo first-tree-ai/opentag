@@ -244,6 +244,53 @@ describe("AgentSetupPage action failures", () => {
     expect(screen.getByRole("alert").textContent).toBe(message);
   });
 
+  it("maps a refused Check again refresh action onto the setup observation error instead of a Lark failure", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      runtimeStatus: "install",
+    });
+    const refresh = vi.fn(async () => {
+      throw new ApiError(
+        503,
+        "The Computer preparation operation could not be started",
+        "SERVICE_UNAVAILABLE",
+        "transient",
+      );
+    });
+    renderSetup(failingAdapter(memory, { refreshPreparation: refresh }));
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+
+    expect(refresh).toHaveBeenCalledWith(SETUP_AGENT_ID);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "We couldn't read the latest state from the server. Check again.",
+    );
+    expect(screen.queryByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeNull();
+  });
+
+  it("re-reads and transitions to the offline computer state when Check again runs after the computer disconnects", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      runtimeStatus: "install",
+    });
+    const refresh = vi.fn(async () => {
+      memory.controls.setComputerOnline(false);
+    });
+    renderSetup(failingAdapter(memory, { refreshPreparation: refresh }), {
+      computerAdapter: memory.computerAdapter,
+    });
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+
+    expect(refresh).toHaveBeenCalledWith(SETUP_AGENT_ID);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
+  });
+
   it("drops the outcome of an action that finishes after the page is gone", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),

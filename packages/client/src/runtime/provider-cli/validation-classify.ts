@@ -1,9 +1,13 @@
 import {
+  isFeishuCredentialRejectedCode,
+  isFeishuRateLimitCode,
   type ProviderCliExpectedIdentity,
   type ProviderCliValidationResultReason,
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
+
+export { isFeishuCredentialRejectedCode, isFeishuRateLimitCode };
 
 type ValidationDiagnosticLogger = Pick<ClientLogger, "debug">;
 const defaultValidationLogger = createLogger("provider-cli-validation");
@@ -99,6 +103,9 @@ export function classifyLarkAuthStatus(
   const normalizedSuccess = payload.ok === true;
   if (!rawSuccess && !normalizedSuccess) {
     logDiagnostic(logger, "lark_success_field_invalid");
+    if (isUnknownFeishuFailure(payload)) {
+      return { status: "retrying", reason: "provider_unreachable" };
+    }
     return { status: "needs_attention" };
   }
   if (normalizedSuccess && payload.identity !== "bot") {
@@ -134,7 +141,7 @@ function classifyLarkFailure(
   if (isRateLimitFailure(type, subtype, code)) {
     return { status: "retrying", reason: "rate_limited" };
   }
-  if (type === "authentication") {
+  if (type === "authentication" || subtype === "invalid_client" || isFeishuCredentialRejectedCode(code)) {
     return { status: "needs_attention", reason: "credential_rejected" };
   }
   if (type === "validation" && isCliCompatibilityFailure(subtype)) {
@@ -171,17 +178,36 @@ function slackIdentity(
   return { botId: payload.bot_id, teamId: payload.team_id, userId: payload.user_id };
 }
 
-export function classifySpawnFailure(error: unknown): ProviderCliValidationClassification {
+const LOCAL_VALIDATION_ERROR_CODES = new Set([
+  "EACCES",
+  "EBADF",
+  "EEXIST",
+  "EISDIR",
+  "ENOENT",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
+
+export function isLocalValidationError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return typeof error.code === "string" && LOCAL_VALIDATION_ERROR_CODES.has(error.code);
+}
+
+export function classifySpawnFailure(
+  error: unknown,
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
+): ProviderCliValidationClassification {
   if (isAbortError(error)) throw error;
-  const code = errorCode(error);
-  if (code === "ETIMEDOUT" || code === "TIMEOUT") return { status: "retrying", reason: "provider_unreachable" };
-  if (code === "ENETUNREACH" || code === "EAI_AGAIN" || code === "ENOTFOUND" || code === "ECONNRESET") {
-    return { status: "retrying", reason: "provider_unreachable" };
-  }
   const status = httpStatus(error);
   if (status === 429) return { status: "retrying", reason: "rate_limited" };
-  if (status !== undefined && status >= 500) return { status: "retrying", reason: "provider_unreachable" };
-  return { status: "needs_attention" };
+  if (isLocalValidationError(error)) {
+    logger.debug(
+      { code: "local_validation_error", errno: (error as { code?: string }).code },
+      "Provider CLI local setup or spawn failed",
+    );
+  }
+  return { status: "retrying", reason: "provider_unreachable" };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,9 +243,13 @@ function isRateLimitFailure(type: string | undefined, subtype: string | undefine
   );
 }
 
-/** Feishu's application rate limit, which it can answer with any HTTP status. */
-export function isFeishuRateLimitCode(code: unknown): boolean {
-  return String(code) === "99991400";
+function isUnknownFeishuFailure(payload: Record<string, unknown>): boolean {
+  const error = isRecord(payload.error) ? payload.error : undefined;
+  const code = error?.code ?? payload.code;
+  if (typeof code === "number" && Number.isInteger(code) && code !== 0) return true;
+  if (typeof code === "string" && /^-?\d+$/.test(code) && code !== "0") return true;
+  const type = normalizedField(error?.type);
+  return type === "api" || type === "internal" || type === "server";
 }
 
 function isProviderFailure(
@@ -291,12 +321,6 @@ function stringifyUnknown(value: unknown, logger: ValidationDiagnosticLogger): s
     logDiagnostic(logger, "error_value_not_serializable");
     return undefined;
   }
-}
-
-function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined;
 }
 
 function httpStatus(error: unknown): number | undefined {

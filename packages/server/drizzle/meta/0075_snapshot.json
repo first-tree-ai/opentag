@@ -1,5 +1,5 @@
 {
-  "id": "4d778d8b-562e-4aa8-86df-1437e3fe7ce1",
+  "id": "74d70e48-aa1b-4c58-a968-b47f33ed9ad7",
   "prevId": "f2026f00-cb88-4f41-85c4-355aa7b35cf0",
   "version": "7",
   "dialect": "postgresql",
@@ -6346,26 +6346,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "initiator_session_id": {
-          "name": "initiator_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "forward_count": {
-          "name": "forward_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "legacy_local_send": {
-          "name": "legacy_local_send",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "scheduled_origin": {
           "name": "scheduled_origin",
           "type": "jsonb",
@@ -6483,6 +6463,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_messages_held_idx": {
+          "name": "session_messages_held_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"last_outcome\" = 'unknown' and \"session_messages\".\"last_error_code\" = 'delivery_held'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -7028,34 +7030,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "sessions_im_binding_live_created_idx": {
-          "name": "sessions_im_binding_live_created_idx",
-          "columns": [
-            {
-              "expression": "im_binding_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"sessions\".\"ended_at\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}

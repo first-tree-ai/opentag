@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -17,17 +17,31 @@ import {
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
+import { feedbackCard } from "../services/im/im-feedback-card.js";
 import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "../services/im/im-feedback-messenger.js";
-import { createImFeedbackTarget, ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
-import { feedbackContent, renderFeedbackText } from "../services/im/im-feedback-text.js";
+import {
+  createImFeedbackTarget,
+  type FeedbackAction,
+  type FeedbackTarget,
+  ImFeedbackStore,
+  startImFeedback,
+} from "../services/im/im-feedback-store.js";
+
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
 import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
+
+/** Everything a card shows, as one string. */
+function cardText(target: FeedbackTarget, action?: FeedbackAction): string {
+  const card = feedbackCard(target, action, "en");
+  return [card.title, card.body].filter(Boolean).join("\n");
+}
 
 let db: UnitDatabase;
 let clock: Date;
@@ -339,58 +353,211 @@ describe("IM offline notice", () => {
   });
 });
 
-describe("durable IM feedback", () => {
-  it("creates plain text targets", async () => {
+describe("IM parked-dispatch notice", () => {
+  const online = async (h: Awaited<ReturnType<typeof fixture>>) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID(), disconnectedAt: null })
+      .where(eq(computers.id, placement?.computerId ?? ""));
+    return placement?.computerId ?? "";
+  };
+  const receivedAgo = async (deliveryId: string, ms: number) => {
+    const [delivery] = await db.database
+      .select({ messageId: imMessageDeliveries.messageId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await db.database
+      .update(imMessages)
+      .set({ receivedAt: new Date(clock.getTime() - ms) })
+      .where(eq(imMessages.id, delivery?.messageId ?? ""));
+  };
+  /** The fixture's input, queued and received five minutes ago, behind an earlier input of its Session. */
+  async function behindEarlier() {
     const h = await fixture();
-    expect((await h.target()).messageFormat).toBe("text_v1");
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    const computerId = await online(h);
+    const earlier = await h.delivery();
+    await receivedAgo(earlier.frame.deliveryId, 3_600_000);
+    const park = (lastErrorCode: string | null) =>
+      db.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "pending",
+          lastErrorCode,
+          acceptedAt: null,
+          inputHash: null,
+          turnId: null,
+          reportOwnerInstanceId: null,
+        })
+        .where(eq(imMessageDeliveries.id, earlier.frame.deliveryId));
+    return { ...h, computerId, earlier, park };
+  }
+
+  it("tells a queued input once that it waits behind a parked dispatch, with its Computer online", async () => {
+    const h = await behindEarlier();
+    // An earlier dispatch still in flight is ordinary waiting.
+    await h.park(null);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
   });
 
-  it("keeps a workspace failure in plain text and links to the save and discard page", async () => {
+  it("waits sixty seconds after receipt, and leaves an offline Computer to the offline notice", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await receivedAgo(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 300_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends no offline notice for a later outage while the same parked input still blocks the Session", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+
+    // The Computer heartbeats after that notice, then goes offline with the dispatch still parked.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    // Once the parked input settles, a later outage is an ordinary new offline period again.
+    await h.park(null);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends one waiting notice in total across worker passes that include the parked input's own target", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.earlier.frame.deliveryId, clock));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.earlier.frame.deliveryId));
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(inArray(imFeedbackTargets.deliveryId, [h.frame.deliveryId, h.earlier.frame.deliveryId]));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice.mock.calls.map((call) => call[1])).toEqual(["parked"]);
+
+    // A heartbeat after that notice, then an outage, with the dispatch still parked: neither target sends again.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts the parked notice through the worker", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+    expect(h.transport.postOfflineNotice.mock.calls[0]?.[1]).toBe("parked");
+    expect((await h.target()).sendStartedAt).toEqual(clock);
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("durable IM feedback", () => {
+  it("creates card targets", async () => {
+    const h = await fixture();
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
+  });
+
+  it("shows a workspace failure with the OpenTag step, and no link or button", async () => {
     const h = await workspaceFixture();
     const target = await h.target();
-    expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).toContain("retry the save or discard the changes from the details page");
-    expect(text).toContain(`<https://example.test/im-feedback/${target.id}|View details>`);
+    expect(target.messageFormat).toBe("interactive_v1");
+    expect(feedbackCard(target, undefined, "zh")).toEqual({
+      kind: "failure",
+      tone: "failure",
+      title: "工作区改动没能保存",
+      body: "请在 OpenTag 重试保存或放弃改动",
+    });
   });
 
-  it("sends a legacy card target that never sent as text", async () => {
+  it("sends a plain-text target that never sent as a card", async () => {
     const h = await fixture();
     await h.finish();
     await db.database
       .update(imFeedbackTargets)
-      .set({ messageFormat: "interactive_v1" })
+      .set({ messageFormat: "text_v1" })
       .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
     const claimed = await h.store.claim();
     if (!claimed) throw new Error("Missing claim");
     expect(await h.store.markSending(claimed)).toBe(true);
-    expect((await h.target()).messageFormat).toBe("text_v1");
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
   it("does not change the format of a message already sent", async () => {
     const sent = await fixture();
     await db.database
       .update(imFeedbackTargets)
-      .set({ cardState: "sent", cardMessageId: "text-message" })
+      .set({ cardState: "sent", cardMessageId: "text-message", messageFormat: "text_v1" })
       .where(eq(imFeedbackTargets.deliveryId, sent.frame.deliveryId));
     await sent.finish("failed", "completed", "workspace_failed");
     expect(await sent.target()).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
   });
 
-  it("keeps an ordinary failure in plain text and leaves code to the details page", async () => {
+  it("sends an ordinary failure as a red card and leaves the code to the details page", async () => {
     const h = await fixture();
     await h.finish();
     const target = await h.target();
-    expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).not.toContain("provider_failed");
-    expect(text.split("\n\n")).toHaveLength(3);
+    const card = feedbackCard(target, undefined, "en");
+    expect(card).toEqual({
+      kind: "failure",
+      tone: "failure",
+      title: "The Agent ran into an error",
+      body: "The model call failed. Try again",
+    });
   });
 
-  it("reads the language of the input the target was created for", async () => {
+  it("reads the language and conversation kind of the input the target was created for", async () => {
     const h = await fixture();
-    expect(await h.store.messageLanguage((await h.target()).messageId)).toBe("en");
-    expect(await h.store.messageLanguage(randomUUID())).toBe("en");
+    const target = await h.target();
+    expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
+    expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
+    expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);
+    expect(await h.store.messageContext({ messageId: randomUUID(), sessionId: randomUUID() })).toEqual({
+      language: "en",
+      direct: false,
+    });
   });
 
   it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
@@ -424,7 +591,7 @@ describe("durable IM feedback", () => {
       expect((await h.target()).state).toBe("completed");
       if (bound) {
         expect(h.transport.update).toHaveBeenCalledOnce();
-        expect(renderFeedbackText(await h.target(), "https://app.test")).toContain("Task completed");
+        expect(cardText(await h.target())).toBe("Done");
       } else expect(h.transport.post).not.toHaveBeenCalled();
     },
   );
@@ -560,6 +727,19 @@ describe("durable IM feedback", () => {
     expect(await h.target()).toMatchObject({ cardMessageId: "provider-confirmed-card", cardState: "sent" });
     expect(h.transport.post).toHaveBeenCalledOnce();
   });
+  it("reads back an unknown direct-message send there, and starts there again when exhausted", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.post.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK),
+    );
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({ cardState: "send_unknown", reconciliationCursor: SENDER_READBACK });
+    clock = new Date(clock.getTime() + 31_000);
+    await h.worker.runOnce();
+    expect(h.transport.find).toHaveBeenCalledWith(expect.anything(), SENDER_READBACK);
+    expect((await h.target()).reconciliationCursor).toBe(SENDER_READBACK);
+  });
   it("recovers after a provider accepted the card but its DB acknowledgement failed", async () => {
     const h = await fixture();
     await h.finish();
@@ -658,21 +838,14 @@ describe("durable IM feedback", () => {
     await h.store.retain();
     expect(await db.database.select().from(imFeedbackTargets)).toHaveLength(0);
   });
-  it("renders external-effect uncertainty identically and never copies arbitrary runtime output", async () => {
+  it("never copies a code or arbitrary runtime output into a card", async () => {
     const h = await fixture();
     await h.finish();
     const t = await h.target();
-    for (const provider of ["slack", "feishu"] as const) {
-      const text = renderFeedbackText({ ...t, provider }, "https://example.test");
-      expect(text).toContain("may already have run");
-      expect(text).not.toContain("no operations were run");
-      expect(text).not.toContain("provider_failed");
-    }
-    expect(feedbackContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
-      "The execution environment had a problem, so the task didn't finish.",
-    );
-    expect(renderFeedbackText({ ...t, effects: "not_started" }, "https://example.test")).toContain(
-      "no operations were run",
+    for (const provider of ["slack", "feishu"] as const)
+      expect(cardText({ ...t, provider })).not.toContain("provider_failed");
+    expect(cardText({ ...t, errorCode: "<@everyone> private raw details" })).toBe(
+      "The Agent ran into an error\nTry again",
     );
   });
 });
@@ -807,13 +980,9 @@ describe("safe feedback actions", () => {
         state: "succeeded",
         resultCode: kind === "discard" ? "discarded" : "saved_released",
       });
-      const content = renderFeedbackText(
-        await h.target(),
-        "https://app.test",
-        (await db.database.select().from(imFeedbackActions))[0],
-      );
-      expect(content).toContain(kind === "discard" ? "Unsaved changes discarded" : "Saved and environment released");
-      expect(content).not.toContain("Task completed");
+      const content = cardText(await h.target(), (await db.database.select().from(imFeedbackActions))[0]);
+      expect(content).toBe(kind === "discard" ? "Changes discarded" : "Saved");
+      expect(content).not.toContain("Done");
       expect(h.transport.post).toHaveBeenCalledOnce();
       expect(h.transport.update).toHaveBeenCalledOnce();
       expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
@@ -1037,7 +1206,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    expect(renderFeedbackText(posted, "https://example.test")).toContain("frozen batch cannot be retried");
+    expect(cardText(posted)).toBe("The Agent ran into an error\nTry again (2 messages)");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -1069,13 +1238,13 @@ describe("feedback review regressions", () => {
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
   for (const provider of ["slack", "feishu"] as const) {
-    const rendered = renderFeedbackText(
-      { ...(await h.target()), provider, batchRetryBlocked: true },
-      "https://example.test",
+    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
+    expect(rendered).toBe("Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag");
+    expect(rendered).not.toContain("Review the original task");
+    // A batch of several messages says how many.
+    expect(cardText({ ...(await h.target()), provider, batchRetryBlocked: true, batchSize: 3 })).toBe(
+      "Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag (3 messages)",
     );
-    expect(rendered).toContain("retry the save or discard the changes from the details page");
-    expect(rendered).toContain("Work in this Session is paused; new input for this Session remains queued.");
-    expect(rendered).not.toContain("frozen batch cannot be retried");
   }
 });
 

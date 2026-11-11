@@ -7,6 +7,7 @@ import {
   fetchAuthorAccess,
   fetchChangedFiles,
   postCommitStatus,
+  removeRequestedReviewers,
   TruncatedFileListError,
 } from "../ownership-gate/pull-request.mjs";
 import { listOpenHeadShas } from "../ownership-gate.mjs";
@@ -484,4 +485,44 @@ test("an unsupported state is rejected before any request is made", async () => 
 
   await assert.rejects(result, TypeError);
   assert.equal(requests.length, 0);
+});
+
+test("activeReviewers tracks non-dismissed submitted reviewers in chronological order", async () => {
+  const { result } = approvals([
+    [
+      review("alice", "COMMENTED"),
+      review("bob", "CHANGES_REQUESTED"),
+      review("carol", "PENDING"),
+      review("alice", "DISMISSED"),
+      review("dave", "APPROVED"),
+    ],
+  ]);
+  assert.deepEqual((await result).activeReviewers, ["bob", "dave"]);
+});
+
+test("removeRequestedReviewers deletes redundant reviewers and skips empty lists", async () => {
+  const { client, requests } = clientFor(() => fakeResponse({}));
+  assert.equal(
+    await removeRequestedReviewers(client, {
+      owner: "first-tree-ai",
+      name: "opentag",
+      number: 7,
+      reviewers: [],
+      logger: silentLogger,
+    }),
+    null,
+  );
+  assert.equal(requests.length, 0);
+
+  await removeRequestedReviewers(client, {
+    owner: "first-tree-ai",
+    name: "opentag",
+    number: 7,
+    reviewers: ["yuezengwu"],
+    logger: silentLogger,
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].method, "DELETE");
+  assert.equal(new URL(requests[0].url).pathname, "/repos/first-tree-ai/opentag/pulls/7/requested_reviewers");
+  assert.deepEqual(requests[0].body, { reviewers: ["yuezengwu"] });
 });

@@ -63,6 +63,9 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
    restart, without starting a second Turn. Placement generation and
    connection-instance checks fence every acceptance and report.
 
+[Server-to-Client delivery](messaging/server-client-delivery.md) compares the
+IM, Session message, and scheduled message hand-offs stage by stage.
+
 What the Client does with accepted work that does not complete on a Local
 Computer is described next. Without the retry, or once it is spent, the
 outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
@@ -106,6 +109,10 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   resets the count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`); downtime,
   waiting and backoff do not count. This does not stop work that crashes the
   daemon only after running longer than that.
+- A model CLI that fails to start (`provider_start_failed`) before running anything
+  (`executionEffects: not_started`) gets one automatic retry, in place, after about
+  5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
+  beyond the limit of 2. A start failure that may have run something is not retried.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.
@@ -126,15 +133,15 @@ the original input and, for an IM Turn, the messages steered into it, in their
 original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
-- A 429 retries in place, in the same daemon, after about 30 seconds. Its count
-  is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
+- A 429 retries in place, in the same daemon, after about 30 seconds; a start
+  failure after about 5 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
   the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
   `cancelled / client_shutdown`; it records the interruption durably and leaves
   the Turn unresolved for the restarted daemon to count. A crash leaves no
   record of its own: an unresolved Turn found on restart is a crash.
 - On startup the daemon counts the retry durably before anything runs, unless a
-  429 or an earlier start already counted it and that retry has not begun. So a
+  429, a start failure, or an earlier start already counted it and that retry has not begun. So a
   restart while a counted retry waits does not count it again, and the retry keeps
   the reason it continues from. The daemon records that the retry began before it
   starts the Turn, so a Turn that crashes the daemon right away still counts. If

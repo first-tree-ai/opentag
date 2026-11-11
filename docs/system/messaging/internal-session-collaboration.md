@@ -43,8 +43,9 @@ unended Session of the same Agent, in any conversation; see
 [Messages between conversations](#messages-between-conversations). Both accept an optional `--message-id` for an explicit retry;
 reuse the same ID and identical semantic input after an uncertain result. A new message can use any UUID except version 5, which
 is reserved for the messages the Server writes itself and is rejected with `message_id_reserved`. A retry of a message already
-recorded under a version 5 ID still works. `accepted` means the target accepted the
-message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
+recorded under a version 5 ID still works. `accepted` means openTag has the message: the
+target took it into its bounded FIFO, or the Server is holding it for a Local Client (see
+[Held delivery](#held-delivery)). It does not mean the task completed. On a Local Computer, a message whose target Session is
 running on a steer-capable runtime is steered into the running Run instead of waiting for it to end, whether that Run is an
 IM Turn or another Session message. Runtime acceptance is not delivery: the durable record stays `running` until that Turn ends. It becomes `succeeded` when the Turn completed;
 returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`), so the
@@ -56,7 +57,7 @@ Each target Session has one serial inbox drain. The drain does not wait for a Se
 the Session's admission, so the next message tries to steer into it. A message waits in the FIFO, re-checking about once
 per second, while the busy runtime is not yet `running` with an active Run, cannot steer or refuses the steer, the Run
 already carries 16 Session messages, or (for a visible Session) there is no IM outbox context. It starts as its own Run,
-in order, once admission is released. The Cloud Runner path never steers a Session message: it queues behind the active Turn.
+in order, once admission is released. For Cloud delivery, see [Cloud Session message steering](#cloud-session-message-steering).
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
@@ -71,13 +72,12 @@ checks current authority under the dispatch locks. A Client with the matching Se
 validates the reconcile and uses its usual inbox, including the durable write before acceptance. If the target needs
 preparation or there are retained Turn Reports, the Client reconciles and explicitly defers the message. The Server
 rechecks dispatch authority before the separate delivery. Older peers and requests that exceed the combined frame
-limit use the two-frame path. An unconfirmed combined response leaves the message outcome `unknown`. The Server records that outcome without
-sending the message again.
+limit use the two-frame path. An unconfirmed combined response is [held](#held-delivery) and offered again, and the Client deduplicates it by message ID.
+For a Client that cannot be held for, it stays `unknown` and is not sent again.
 
-A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
-work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
-code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
-recorded before this split keep `capacity`.
+A Cloud target has no held delivery, so a temporary refusal returns `unreachable` with its cause as the code:
+`client_busy` when the Runner cannot queue more work, for example. A Local Client older than `runtime.sessionRecovery`
+answers the same way. Messages recorded before the code was split keep `capacity`.
 
 Create/send admission refusals for source authority, target availability, collaboration scope, message ID conflicts,
 or an unavailable model keep their existing `rejected` response and code without an ERROR `Server diagnostic`.
@@ -86,13 +86,6 @@ An unexpected exception still returns `unreachable` with `runtime_unavailable` a
 `SESSION_COLLABORATION_RUNTIME_UNAVAILABLE` diagnostic without exception details or message content. HTTP responses
 remain 200 for these command outcomes. Runtime assembly, Cloud dispatch, and outcome-persistence failures retain
 their separate internal-error logs.
-
-The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
-[#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
-can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
-from memory, so the message runs once admission reopens. A permanent rejection stays rejected on replay. A scheduled
-message has no sender to retry it, so one refused in that window stays `unreachable` and the next occurrence is the next
-chance; this is an accepted cost. The Client logs every refused Session message with its reason.
 
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
@@ -212,8 +205,8 @@ The Server checks each input is really addressed to the source Session, then:
   or else at the Session it runs in.
 - A Run working for more than one initiator, because something from elsewhere was steered into it, has no initiator: it cannot
   say on whose behalf a send is.
-- A Run outcome notice continues the message it reports on, whatever its Session took on since. A stop notice follows the
-  stopping Session's Run, like any send.
+- A Run outcome notice, and a [held delivery](#held-delivery) failure notice, continue the message they report on, whatever
+  its Session took on since. A stop notice follows the stopping Session's Run, like any send.
 - Anything else has no known initiator: no list, an input that does not check out, or a chain with an unknown link. The target
   treats that as non-owner, and also an initiator from an earlier binding.
 
@@ -241,7 +234,9 @@ sender and only climbs the creation tree, so a failure cannot bounce between two
 into a Run that fails gets its one notice like any other, which applies across conversations too.
 
 **Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
-Session-collaboration version 4 on a Cloud target. A message delivered inside a reconcile frame carries it the same way. A same-conversation message reaches an older peer without it, on the frozen
+Session-collaboration version 4 on a Cloud target. A message delivered inside a reconcile frame carries it the same way, and so does a held message on each redelivery: it is
+read from the stored row, so a redelivery says exactly what the first attempt said, and the old-peer refusal below applies to it
+too. A same-conversation message reaches an older peer without it, on the frozen
 frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
 leaves, since that peer would present it as its own conversation's work. A message with no known initiator is treated the same, as it may have come from elsewhere, unless it was recorded as provably
 local (`session_messages.legacy_local_send`). That is set when the message is recorded, from the connection that sent it: a same-conversation
@@ -254,6 +249,76 @@ The Server logs each attempted dispatch that is cross-conversation or has no kno
 each send refused for another Agent with `session.message.other_agent`; see
 [Server observability](../../operations/observability.md#cross-conversation-session-messages).
 
+## Held delivery
+
+Direction from the 2026-11-06 team meeting
+([#1327](https://github.com/first-tree-ai/opentag/issues/1327)). A sender should not have to retry because a Local
+Client is upgrading, restarting or full.
+
+- **Who retries.** Once the Client accepts a message, the Client owns its retries and reports a failure to the Server,
+  which tells the sender. Before that, the Server keeps the message; it does not retry without limit.
+- **Held state.** A Local `session send` or `session create` tries the Client once and waits at most 5 seconds, so a Client
+  that does not answer cannot run into the CLI's request timeout. Past that, the attempt continues in the background under the target's authority only, because the sender may now
+  disconnect, and a final failure it finds reaches the sender as a notice. A redelivery waits until that attempt ends. On a failure a redelivery can overcome
+  (`client_busy`, `session_busy`, `agent_busy`, no connection, a Session that is not ready, a lost or timed-out request) the
+  message row becomes `last_outcome = unknown`, `last_error_code = delivery_held`, and the sender gets `accepted`.
+  A failed final admission (the sender's connection was replaced, the Agent suspended, or the binding disabled) is an
+  authority fence, not a Client outage, so it still answers `unreachable`. There is no separate "pending" status, and no
+  schema change. The row is never written as `accepted` while held,
+  because execution authority reads that value as custody. A permanent rejection on the first attempt is still answered
+  directly as `rejected`.
+- **Recovery.** A Client registering triggers delivery, again 5 and 20 seconds later because its own
+  `session:recover` work finishes after it registers. Every 60 seconds the Server also visits connected Computers that hold
+  messages, which covers recovery without a reconnect, such as a failed upgrade reopening admission. A redelivery
+  re-assembles the runtime, sends a ready reconcile, and proves the target's current authority. It does not check the
+  sender's connection, which may have restarted.
+- **Order.** Each target's held messages go oldest first, one at a time, and stop at the first refusal. That refusal
+  blocks only its own target; others on the Computer keep going. A new message to a target with an older held message
+  joins the queue without a frame.
+- **Duplicates.** A redelivery bumps `attempt_count` and keeps the held code until a final answer is written, so a Server
+  that stops midway delivers again. The Client deduplicates by message ID, and answers a replay of a refused message
+  by evaluating it again. A Client older than that fix answered with a false `accepted`, so a refusal from a connected
+  Client is held only once it has negotiated `runtime.sessionRecovery`, which shipped just before the fix.
+- **Expiry and notices.** A held message older than 24 hours (`SESSION_MESSAGE_HELD_TTL_MS`, the IM ambient delivery TTL)
+  ends as `unreachable / delivery_expired`. A sweep at Server startup and every 5 minutes applies this and finds held Computers after a Server restart,
+  reading the partial index `session_messages_held_idx`, which covers only held rows. The 24 hours is a minimum, not an exact time: a
+  message attempted in the last 2 minutes waits for the next sweep, because that attempt may still get an answer, so a
+  dead hand-off can stay held a few minutes longer. The write applies only while the row is still held, as one conditional
+  update, so a committed `accepted` is never replaced. A held message
+  that ends in failure produces one notice to its sender, from the target, starting with
+  `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
+  The notice is held like any message. A failed notice of either kind sends no further delivery notice and is only logged,
+  and a Run that fails on this notice follows the rule for a failed notice in [Run outcome notices](#run-outcome-notices),
+  so two Sessions never exchange notices. A sender
+  that ended or is not on a Local Computer gets no notice, and that is logged.
+- **Run outcome notices.** A Local report's background notice can be held like any message. The reporter keeps its report
+  and retries until the notice is accepted, so a report answers `notified` only after delivery. A background attempt
+  has no waiting sender, so it has no 5-second budget, and shutdown drains it.
+- **Stopped targets.** `session stop` ends the held messages of the target and of every descendant it stops, in the same
+  commit, as `rejected / target_stopped`, and a hand-off still in flight loses its write. The Session that asked for the stop
+  and any Session stopped with it get no notice. Any other sender was told `accepted`, so it gets one, which says not to
+  send again. The sweep settles a held message whose target ended some other
+  way, or that became held just after the stop, the same way; there, every sender gets a notice.
+- **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
+  to the one-shot hand-off. It is held only after the in-slot
+  [preparation retries](im-feedback.md#scheduled-tasks) end, so a short disconnect is still delivered by the original dispatch.
+  An `unknown` hand-off is not retried. Once the next occurrence is claimed the held one ends as
+  `unreachable / delivery_superseded`, and it can also end as `delivery_expired`; the sweep applies both while the Computer
+  is offline, and it is never delivered late. Both post the [scheduled task message](im-feedback.md#scheduled-tasks) once per
+  cause. A pause, edit or delete ends it as `schedule_disabled`, `schedule_changed` or `schedule_deleted`, which post nothing.
+  The schedule's latest summary shows `unknown / delivery_held` meanwhile, and that posts nothing either.
+- **Limit.** The Server holds at most 256 messages per target Session and 1024 per Computer
+  (`SESSION_MESSAGE_HELD_LIMITS`), the same as the Client's inbox FIFO, which could not take more on recovery anyway
+  (decided 2026-11-09). A message past either limit is not held. A `session send` answers `unreachable /
+  delivery_held_full` directly, because its sender has not been told `accepted` yet. A hand-off that already answered
+  `accepted` ends the same way and its sender gets the delivery notice. A scheduled occurrence ends as a missed
+  occurrence, which the conversation hears once per cause. Each limit is counted before the message is held, so sends
+  in flight at the same moment can pass it slightly. Delivery notices are not limited.
+- **Client queue.** The inbox FIFO is 256 per Session and 1024 in total, so a Client rarely refuses for a full queue. When
+  it does, the refusal is an ordinary `client_busy` and the Server holds the message.
+- **Not covered.** Cloud targets keep their own Runner queue and retry contract. IM delivery already persists each
+  message and makes it due on registration; it keeps its 30-second retry while a connected Client refuses.
+
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. A Session message has the same goal as an IM message: once accepted, the
@@ -263,7 +328,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
 (`created_by_session_id`), and a visible target produces none:
 
 - Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
-  automatic retries, as described in
+  automatic retries; one whose model CLI failed to start gets one. As described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
   without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).
@@ -301,7 +366,10 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
   notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
-  see [Cloud context](../cloud/cloud-context.md).
+  see [Cloud context](../cloud/cloud-context.md). Once a finished outcome report or Turn Report is older than 7 days, a later write removes it from its local durable
+file, unless its outcome report is still pending. Finished inbox (`session-message`) records are never pruned. They are
+the inbox's deduplication evidence: if a message's acceptance reply is lost, the Server keeps its row `unknown` and can
+send it again under the same ID at any age.
 
 - Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
   shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and
@@ -343,6 +411,10 @@ Safety rules:
   must have sent it. The ID is public and `session_messages.id` is global, so ordinary create/send cannot record a new row under a
   version 5 UUID: no Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one
   notice, which is then ignored and logged.
+- A recipient that has ended is replaced by the nearest active Session up its own creation chain
+  (`created_by_session_id`). If the sender and its creator have both ended, the notice goes to the creator's creator,
+  and so on up to the visible root. The search stops without a notice when the chain reaches the reporting Session
+  itself, when it reaches an ended Session with no creator, or past 32 levels.
 
 Notices reuse `session_messages` and the existing closure activity projection.
 
@@ -368,17 +440,26 @@ source/target SessionMessage Runtime delivery use that replica's transport owner
 load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
 horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.
 
-## Steering parent messages into a running child on Cloud
+## Cloud Session message steering
 
-> **Planned — not yet implemented.** Tracking: #1303
+A parent can redirect a child's running Turn with `session send`. The same path handles ordinary Session messages
+to an authorized visible Session with a matching IM outbox context. Pi steers the FIFO head into the active Turn,
+including a Turn started by another Session message. Each Turn carries at most 16 steered Session messages. The worker
+waits for Pi to accept its prompt before admitting a steer. During startup, the Runner rechecks about once per second. A known refusal, missing matching outbox, or the steer limit
+leaves the message at the head of the FIFO. It runs on its own after the active Turn. Scheduled occurrences keep their own
+execution context and wait in the FIFO.
 
-A parent Session may send a message to its child at any time, and the message is steered into the child's running Turn
-instead of waiting for that Turn to end. A Local Computer does this today; see
-[Session messages steered into a Session message Run](#session-messages-steered-into-a-session-message-run). On Cloud, no
-Session message is steered yet; it waits for the active Turn to end.
+The Server verifies custody before the Runner offers the message to Pi. `processed` succeeds with the joined Turn
+after its workspace checkpoint, `not_started` returns to the original FIFO position, and `interrupted` settles
+with the failed or cancelled Turn. Pi provides no per-input start evidence after acknowledging a steer, so its
+acknowledgement counts as possibly started. An uncertain injection or loss of the running worker without a receipt
+settles as unknown. Those messages take the existing Cloud Run outcome notice path as terminal work.
+Cloud model retries remain inside the model proxy and the current Turn.
 
-The existing steer outcome rules (`processed`, `not_started`, `interrupted`) apply unchanged. The child still reports
-completion, failure, or timeout to the parent, and the parent decides what to do next.
+An open Turn survives a control-channel disconnect when its worker stays alive. It reports the same outcomes after
+reconnecting. A steer that returns to the FIFO after a disconnect needs a fresh verification before it can run on
+its own. Older Runners keep the original FIFO behavior. See [Cloud Runner execution](../cloud/cloud-runner-execution.md#cloud-session-message-custody)
+for the custody and compatibility boundary.
 
 ## Stopping an internal Session
 
@@ -456,6 +537,10 @@ tabs drop the unknown key and still read the whole list, following
 [Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
 such a schedule as that channel or thread.
 
+An occurrence for a Local internal Session can be [held](#held-delivery) like any other. If it is given up, it is a missed
+occurrence, so nobody is messaged and only the schedule's summary shows it. `session stop` turns off the schedules of the Sessions it
+stops and settles their held occurrences as `target_stopped` in one commit, including their summary.
+
 ## Automatic retry before a notice
 
 Session messages running on their own on a Local Computer follow
@@ -498,7 +583,7 @@ its messages, and work that runs at least 5 minutes between crashes is never sto
 steered message in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
 repeat. A message the conversation is confirmed to hold is not delivered again; see
 [Messages the conversation already holds](#messages-the-conversation-already-holds). A message steered just before a crash, whose
-`running` state was not yet written, is delivered again without the notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
+`running` state was not yet written, is delivered again without the notice. Cloud follows its [own Runner custody and model retry rules](#cloud-session-message-steering).
 
 ### Session messages steered into a Session message Run
 

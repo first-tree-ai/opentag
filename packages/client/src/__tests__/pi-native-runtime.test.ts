@@ -204,6 +204,7 @@ describe("Local Pi prompt ownership", () => {
     const runtime = await open(client, events);
     const run = runtime.prompt({ runId: "requested", input: input(owned ? "hello" : "/consumed") });
     await client.promptCalled.promise;
+    expect(runtime.steerReady).toBe(false);
     let steerSettled = false;
     const steer = runtime
       .steer({ expectedRunId: "requested", input: input("follow-up") })
@@ -219,12 +220,15 @@ describe("Local Pi prompt ownership", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(steerSettled).toBe(false);
+    expect(runtime.steerReady).toBe(false);
     expect(client.commands.some((command) => command.type === "steer")).toBe(false);
     client.fence.resolve();
     if (owned) {
       await expect(steer).resolves.toEqual({ ok: true });
       expect(events.some((event) => event.type === "input_accepted")).toBe(true);
+      expect(runtime.steerReady).toBe(true);
       client.complete();
+      expect(runtime.steerReady).toBe(false);
       await expect(run).resolves.toMatchObject({ status: "completed" });
     } else {
       await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_request_rejected" } });

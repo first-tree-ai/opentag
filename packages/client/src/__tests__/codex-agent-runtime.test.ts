@@ -67,6 +67,40 @@ describe("CodexAgentRuntime", () => {
     await runtime.close();
   });
 
+  it("injects a superseding developer message on resume when systemPromptUpdated is true", async () => {
+    const unchangedClient = new ScriptedCodexClient("complete");
+    const unchangedRuntime = await codexFactory(unchangedClient).resume({
+      ...createRequest(() => undefined),
+      binding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
+    });
+    expect(unchangedClient.call("thread/inject_items")).toBeUndefined();
+    await unchangedRuntime.close();
+
+    const updatedClient = new ScriptedCodexClient("complete");
+    const updatedRuntime = await codexFactory(updatedClient).resume({
+      ...createRequest(() => undefined),
+      systemPrompt: "Updated OpenTag managed system prompt",
+      systemPromptUpdated: true,
+      binding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
+    });
+    expect(updatedClient.call("thread/inject_items")?.params).toEqual({
+      threadId: "thread-1",
+      items: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "Updated instructions (supersede all earlier developer instructions):\n\nUpdated OpenTag managed system prompt",
+            },
+          ],
+        },
+      ],
+    });
+    await updatedRuntime.close();
+  });
+
   it("writes the exact managed CLI prefix even without user command allowances", async () => {
     const root = await mkdtemp(join(tmpdir(), "opentag-codex-managed-cli-"));
     const invocation = ["/opt/current node/bin/node", "/opt/owner's app/cli/index.mjs"];
@@ -434,6 +468,7 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
       const requested = (params as { threadId?: string }).threadId;
       return { thread: { id: this.#resumeThreadId ?? requested } };
     }
+    if (method === "thread/inject_items") return {};
     if (method === "turn/steer") return { turnId: "turn-1" };
     if (method === "thread/compact/start") {
       if (this.compaction === "refused") throw new Error("compaction refused");
@@ -450,7 +485,10 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
       return {};
     }
     if (method !== "turn/start") throw new Error(`unexpected Codex request: ${method}`);
+    return this.#startTurn();
+  }
 
+  #startTurn(): { turn: ReturnType<typeof activeTurn> } {
     this.#emit({ method: "turn/started", params: { turn: activeTurn() } });
     if (this.#scenario === "complete") this.#emitCompleteMessages();
     if (this.#scenario === "failure") {

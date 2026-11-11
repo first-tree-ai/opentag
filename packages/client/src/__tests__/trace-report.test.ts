@@ -83,6 +83,45 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it.each([undefined, 3, 4])("sends a credential detail only on report capability 4 (%s)", (version) => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = version;
+    const owner = new TurnReportOwner({ connection });
+    for (const reason of ["im_connection_unavailable", "model_login_missing", "tool_setup_failed"] as const) {
+      const report = owner.create(reportInput({ outcome: "failed", errorReason: reason }));
+      expect(report.errorReason).toBe(version === 4 ? reason : "credential_unavailable");
+      expect(report.resultHash).toBe(computeTurnResultHash(report));
+    }
+    owner.stop();
+  });
+
+  it("still creates the failure report when the reset time is not a usable time", () => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = 5;
+    const owner = new TurnReportOwner({ connection });
+    const report = owner.create(
+      reportInput({
+        outcome: "failed",
+        errorReason: "provider_quota_exceeded",
+        retryAt: "+010000-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(report).toMatchObject({ errorReason: "provider_quota_exceeded" });
+    expect(report.retryAt).toBeUndefined();
+    owner.stop();
+  });
+
+  it.each([4, 5])("sends a quota reset time only on report capability 5 (%s)", (version) => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = version;
+    const owner = new TurnReportOwner({ connection });
+    const retryAt = "2026-11-11T07:30:00.000Z";
+    const report = owner.create(reportInput({ outcome: "failed", errorReason: "provider_quota_exceeded", retryAt }));
+    expect(report.retryAt).toBe(version === 5 ? retryAt : undefined);
+    expect(report.resultHash).toBe(computeTurnResultHash(report));
+    owner.stop();
+  });
+
   it("keeps a durable v3 failure unchanged while reconnecting through an older Server", async () => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = 3;

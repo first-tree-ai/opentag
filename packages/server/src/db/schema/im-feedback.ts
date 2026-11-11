@@ -37,7 +37,8 @@ export const imFeedbackTargets = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     appliedRevision: bigint("applied_revision", { mode: "number" }).notNull().default(0),
     cardRevision: bigint("card_revision", { mode: "number" }).notNull().default(0),
-    // New rows are always text_v1. interactive_v1 marks a legacy card, which is never refreshed.
+    // Every new send is a card (interactive_v1). text_v1 marks a plain-text message from before cards came back,
+    // which keeps being edited as text.
     messageFormat: text("message_format").$type<"interactive_v1" | "text_v1">().notNull().default("interactive_v1"),
     cardState: text("card_state")
       .$type<"none" | "pending" | "sending" | "sent" | "send_unknown" | "blocked">()

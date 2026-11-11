@@ -6,7 +6,8 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import {
   agentSchedules,
   agents,
@@ -17,7 +18,13 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import {
+  type RuntimeDispatchAdmission,
+  RuntimeDomainOwner,
+  RuntimeDomainRequestError,
+} from "../runtime/runtime-domain-owner.js";
 import { DatabaseAgentOwnerResolver } from "../services/agents/index.js";
 import { disableImBindingInTransaction } from "../services/im-bindings/disable-im-binding.js";
 import {
@@ -26,8 +33,10 @@ import {
   ScheduleService,
   scheduledMessageId,
 } from "../services/schedules/index.js";
+import type { ScheduledMissNotices } from "../services/schedules/scheduled-failure-notifier.js";
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
+import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
 import { stubScheduleScope } from "./support/schedule-scope.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -41,6 +50,11 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
  */
 
 const T0 = new Date("2026-09-28T01:00:00.000Z");
+const EVERY_MINUTE = {
+  kind: "every",
+  intervalSeconds: 60,
+  anchorAt: new Date(T0.getTime() - 60_000).toISOString(),
+} as const;
 const PUBLIC_URL = "https://opentag.example.com";
 
 let db: UnitDatabase;
@@ -52,7 +66,11 @@ afterAll(async () => db.close());
 beforeEach(async () => {
   await db.reset();
   currentTime = T0;
+  // The claim clock uses a fixed test date. Keep dispatch on the same date with real budget timers.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(T0);
 });
+afterEach(() => vi.useRealTimers());
 
 let currentTime = T0;
 const testClock: ScheduleClock = { now: async () => currentTime };
@@ -206,6 +224,8 @@ function makeStack(
       afterRowLock?: (id: string) => Promise<void>;
     };
     scheduledBudgets?: { localMs?: number; cloudMs?: number };
+    runtime?: { domain: RuntimeDomainOwner; registry: ConnectionRegistry };
+    missNotices?: ScheduledMissNotices;
   } = {},
 ): Stack {
   const sessionsService = new SessionService(db.database, { now: () => currentTime });
@@ -268,18 +288,21 @@ function makeStack(
       if (capability === RUNTIME_CAPABILITY.imCredentialGrant) return 2;
       return undefined;
     }),
-    supportsCapability: vi.fn(() => true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn(async () => runtimeSnapshot(seed.agentId)) };
   const cloud = { deliver: vi.fn(async () => ({ status: "unreachable" as const, code: "runtime_unavailable" })) };
   const collaboration = new SessionCollaborationService({
     assembler,
-    domain: domain as never,
-    registry,
+    domain: options.runtime?.domain ?? (domain as never),
+    registry: options.runtime?.registry ?? registry,
     sessions: sessionsService,
     cloud: cloud as never,
     logger: { error: vi.fn() },
     scheduledBudgets: options.scheduledBudgets,
+    scheduleDetailUrl: (agentId, scheduleId) => `${PUBLIC_URL}/agents/${agentId}?schedule=${scheduleId}`,
   });
   const scheduler = new ScheduleScheduler({
     database: db.database,
@@ -287,6 +310,7 @@ function makeStack(
     sessions: sessionsService,
     publicUrl: PUBLIC_URL,
     clock: testClock,
+    missNotices: options.missNotices,
     afterMessageInsert: options.schedulerHooks?.afterMessageInsert,
     afterRowLock: options.schedulerHooks?.afterRowLock,
   });
@@ -337,6 +361,246 @@ async function messageRow(messageId: string) {
   const [row] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId));
   return row;
 }
+
+async function localScheduleTransport(seed: Seed) {
+  const registry = new ConnectionRegistry();
+  const domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(db.database));
+  const notifyMissed = vi.fn<ScheduledMissNotices["notifyMissed"]>(async () => undefined);
+  const { scheduler } = makeStack(seed, { runtime: { registry, domain }, missNotices: { notifyMissed } });
+  const deliveryFrames: SessionMessageDeliveryRequestV3[] = [];
+
+  async function connect(instanceId = seed.instanceId) {
+    const context = {
+      computerId: seed.computerId,
+      instanceId,
+      installationId: seed.installationId,
+      connectionId: randomUUID(),
+      signal: new AbortController().signal,
+    };
+    const socket = {
+      readyState: WebSocket.OPEN,
+      close: vi.fn(),
+      send(serialized: string, callback: () => void) {
+        const frame = JSON.parse(serialized);
+        callback();
+        if (frame.type === "session:message:deliver") {
+          deliveryFrames.push(frame);
+        } else if (frame.type === "session:reconcile") {
+          void domain.handle(
+            {
+              type: "session:reconcile:result",
+              requestId: frame.requestId,
+              sessionId: frame.sessionId,
+              placementGeneration: frame.placementGeneration,
+              status: "ready",
+            },
+            context,
+          );
+        }
+      },
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        ...context,
+        clientVersion: "0.1.1",
+        lastHeartbeatAt: Date.now(),
+        negotiatedCapabilities: {
+          [RUNTIME_CAPABILITY.sessionReconcile]: 1,
+          [RUNTIME_CAPABILITY.sessionCollaboration]: 3,
+          [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+        },
+        socket,
+      },
+      async () => undefined,
+    );
+    return {
+      context,
+      disconnect: () => registry.remove(seed.computerId, instanceId, socket),
+    };
+  }
+
+  return { connect, deliveryFrames, domain, notifyMissed, scheduler };
+}
+
+function acceptScheduledFrame(frame: SessionMessageDeliveryRequestV3 | undefined): SessionMessageDeliveryResult {
+  if (!frame) throw new Error("expected a scheduled delivery frame");
+  return {
+    type: "session:message:deliver:result",
+    requestId: frame.requestId,
+    messageId: frame.messageId,
+    targetSessionId: frame.targetSessionId,
+    placementGeneration: frame.placementGeneration,
+    status: "accepted",
+  };
+}
+
+describe("Local scheduled delivery receipts", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(T0);
+  });
+
+  it("waits for a matching receipt at 89 seconds without sending a miss or a second frame", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    const connection = await connect();
+    try {
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+      const result = acceptScheduledFrame(deliveryFrames[0]);
+      await vi.advanceTimersByTimeAsync(89_000);
+      expect(notifyMissed).not.toHaveBeenCalled();
+      expect(scheduler.inFlightCount).toBe(1);
+
+      connection.disconnect();
+      const replacement = await connect(randomUUID());
+      await domain.handle(result, replacement.context);
+      replacement.disconnect();
+      const reconnected = await connect();
+      await domain.handle({ ...result, requestId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, messageId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, targetSessionId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, placementGeneration: 2 }, reconnected.context);
+      expect(scheduler.inFlightCount).toBe(1);
+      expect((await messageRow(result.messageId))?.lastOutcome).toBe("unknown");
+
+      await domain.handle(result, reconnected.context);
+      await domain.handle(result, reconnected.context);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect(await messageRow(result.messageId)).toMatchObject({ lastOutcome: "accepted", attemptCount: 1 });
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: result.messageId,
+        outcome: "accepted",
+        code: null,
+      });
+      expect(deliveryFrames).toHaveLength(1);
+      expect(notifyMissed).not.toHaveBeenCalled();
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("notifies for the first unconfirmed send even when the next occurrence was claimed while waiting", async () => {
+    const seed = await seedStack();
+    const firstDue = new Date(T0.getTime() + 60_000);
+    const row = await insertSchedule(seed, {
+      schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
+      nextTriggerAt: firstDue,
+    });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    await connect();
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      currentTime = firstDue;
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      currentTime = new Date(T0.getTime() + 120_000);
+      expect(notifyMissed).not.toHaveBeenCalled();
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(2));
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(notifyMissed).toHaveBeenCalledOnce());
+      expect(notifyMissed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "unconfirmed",
+          occurrence: expect.objectContaining({ scheduledFor: firstDue.toISOString() }),
+          requestId: scheduledMessageId(row.id, firstDue),
+        }),
+        expect.any(AbortSignal),
+      );
+      const firstId = scheduledMessageId(row.id, firstDue);
+      expect(await messageRow(firstId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_timeout" });
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: scheduledMessageId(row.id, currentTime),
+        outcome: "unknown",
+        code: null,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect(notifyMissed).toHaveBeenCalledOnce();
+      expect(deliveryFrames.map((frame) => frame.messageId)).toEqual([
+        firstId,
+        scheduledMessageId(row.id, currentTime),
+      ]);
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("holds a provably unsent occurrence instead of reporting it and accepts the next occurrence after reconnect", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, {
+      schedule: { kind: "every", intervalSeconds: 600, anchorAt: T0.toISOString() },
+      nextTriggerAt: new Date(T0.getTime() + 600_000),
+    });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    try {
+      await vi.advanceTimersByTimeAsync(600_000);
+      currentTime = new Date(T0.getTime() + 600_000);
+      await scheduler.scanNow();
+      const missedId = scheduledMessageId(row.id, currentTime);
+      await vi.waitFor(async () => expect((await messageRow(missedId))?.attemptCount).toBe(1));
+      await vi.advanceTimersByTimeAsync(60_000);
+      // An offline Local Client is held for (#1353): the occurrence waits for recovery and is not a miss.
+      await vi.waitFor(async () =>
+        expect(await messageRow(missedId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_held" }),
+      );
+      expect(notifyMissed).not.toHaveBeenCalled();
+      expect(deliveryFrames).toHaveLength(0);
+
+      const { context } = await connect();
+      await vi.advanceTimersByTimeAsync(540_000);
+      currentTime = new Date(T0.getTime() + 1_200_000);
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+      await domain.handle(acceptScheduledFrame(deliveryFrames[0]), context);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: scheduledMessageId(row.id, currentTime),
+        outcome: "accepted",
+      });
+      expect(notifyMissed).not.toHaveBeenCalled();
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("does not replay a sent occurrence or accept its stale receipt after Server restart", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const first = await localScheduleTransport(seed);
+    await first.connect();
+    await first.scheduler.scanNow();
+    await vi.waitFor(() => expect(first.deliveryFrames).toHaveLength(1));
+    const result = acceptScheduledFrame(first.deliveryFrames[0]);
+    await first.scheduler.stop();
+    await first.domain.close();
+    expect(first.notifyMissed).not.toHaveBeenCalled();
+
+    const restarted = await localScheduleTransport(seed);
+    const { context } = await restarted.connect();
+    try {
+      await restarted.domain.handle(result, context);
+      await restarted.scheduler.scanNow();
+      expect(restarted.deliveryFrames).toHaveLength(0);
+      expect(restarted.notifyMissed).not.toHaveBeenCalled();
+      expect(await messageRow(result.messageId)).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+      expect((await scheduleRow(row.id))?.nextTriggerAt).toBeNull();
+    } finally {
+      await restarted.scheduler.stop();
+      await restarted.domain.close();
+    }
+  });
+});
 
 describe("schedule claim window and clock (D02, D04)", () => {
   it("claims exactly inside the inclusive 30s window and skips past it", async () => {
@@ -742,7 +1006,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
 
   it("maps accepted, rejected, and unreachable honestly (D10)", async () => {
     const seed = await seedStack();
-    const stack = makeStack(seed);
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 1_000 } });
     const row = await insertSchedule(seed, {
       schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
       nextTriggerAt: new Date(T0.getTime() + 60_000),
@@ -822,17 +1086,252 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       new Date(T0.getTime() + 180_000).toISOString(),
     );
 
-    // No runtime connection at all: provably zero frames, unreachable.
+    // No runtime connection at all: provably zero frames, so the occurrence is held for the Client.
     stack.registry.currentInstanceId.mockReturnValue(undefined);
     currentTime = new Date(T0.getTime() + 180_000);
     const third = await claimOf(stack, row.id);
     if (third.kind !== "claimed") throw new Error("expected a claim");
-    await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
-      outcome: "unreachable",
-      code: "runtime_unavailable",
-    });
     const framesBefore = stack.deliveryFrames.length;
+    await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
     expect(stack.deliveryFrames).toHaveLength(framesBefore);
+  });
+
+  it("holds an occurrence a recovering Client refused and delivers it once on redelivery", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const refuse = (reason: "client_busy" | undefined) =>
+      stack.domain.requestSessionMessageDelivery.mockImplementation(
+        async (
+          _c: string,
+          _i: string,
+          request: SessionMessageDeliveryRequestV3,
+          onDispatched?: () => void,
+          admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+        ) =>
+          dispatchWithAdmission(
+            async () => {
+              stack.deliveryFrames.push(request);
+              return {
+                type: "session:message:deliver:result",
+                requestId: request.requestId,
+                messageId: request.messageId,
+                targetSessionId: request.targetSessionId,
+                placementGeneration: request.placementGeneration,
+                ...(reason ? { status: "rejected", reason } : { status: "accepted" }),
+              } as SessionMessageDeliveryResult;
+            },
+            admission,
+            onDispatched,
+          ),
+      );
+    refuse("client_busy");
+    const claim = await claimOf(stack, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(stack.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+    await expect(messageRow(claim.snapshot.messageId)).resolves.toMatchObject({ lastErrorCode: "delivery_held" });
+
+    refuse(undefined);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([claim.snapshot.messageId]);
+    const redelivered = held[0];
+    if (!redelivered) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(redelivered)).resolves.toBe("settled");
+
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastOutcome: "accepted", lastErrorCode: null });
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ outcome: "accepted", code: null });
+    expect(stack.deliveryFrames.at(-1)).toMatchObject({
+      messageId: claim.snapshot.messageId,
+      scheduledOrigin: claim.snapshot.origin,
+    });
+    await expect(stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10)).resolves.toEqual([]);
+  });
+
+  it("drops a held occurrence once the next one has been claimed", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+    stack.registry.supportsCapability.mockReturnValue(true);
+    stack.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const first = await claimOf(stack, row.id);
+    if (first.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(first.snapshot);
+
+    currentTime = new Date(T0.getTime() + 60_000);
+    const second = await claimOf(stack, row.id);
+    if (second.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(second.snapshot);
+
+    stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([first.snapshot.messageId, second.snapshot.messageId]);
+    const [older] = held;
+    if (!older) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(older)).resolves.toBe("settled");
+    expect(await messageRow(first.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unreachable",
+      lastErrorCode: "delivery_superseded",
+    });
+    expect(stack.deliveryFrames.map(({ messageId }) => messageId)).not.toContain(first.snapshot.messageId);
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
+  });
+
+  it("leaves a held occurrence to the worker instead of retrying inside a redelivery", async () => {
+    const seed = await seedStack();
+    const dispatcher = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+    dispatcher.registry.supportsCapability.mockReturnValue(true);
+    dispatcher.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const claim = await claimOf(dispatcher, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(dispatcher.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+
+    // The default budget would allow five-second preparation retries; a redelivery must not use them.
+    const redeliverer = makeStack(seed);
+    redeliverer.registry.supportsCapability.mockReturnValue(true);
+    redeliverer.registry.currentInstanceId.mockReturnValue(undefined);
+    const [held] = await redeliverer.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+    if (!held) throw new Error("expected a held message");
+    const started = performance.now();
+    await expect(redeliverer.collaboration.redeliverHeld(held)).resolves.toBe("held");
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unknown",
+      lastErrorCode: "delivery_held",
+    });
+  });
+
+  describe("IM notices for a held occurrence", () => {
+    async function offlineStack() {
+      const seed = await seedStack();
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+      const notifyMissed = vi.fn(async () => undefined);
+      const scheduler = new ScheduleScheduler({
+        database: db.database,
+        dispatch: stack.collaboration,
+        sessions: stack.sessions,
+        publicUrl: PUBLIC_URL,
+        clock: testClock,
+        missNotices: { notifyMissed },
+      });
+      stack.collaboration.setHeldScheduledMissListener((miss) => scheduler.reportHeldMiss(miss));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      const claimHeld = async (minute: number) => {
+        currentTime = new Date(T0.getTime() + minute * 60_000);
+        const claim = await claimOf(stack, row.id);
+        if (claim.kind !== "claimed") throw new Error("expected a claim");
+        await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+        return claim.snapshot;
+      };
+      const worker = new SessionHeldDeliveryWorker({
+        collaboration: stack.collaboration,
+        sessions: stack.sessions,
+        registry: stack.registry as never,
+        now: () => currentTime.getTime() + 3 * 60_000,
+      });
+      const missed = () =>
+        (notifyMissed.mock.calls as unknown as [{ kind: string; requestId: string }][]).map(([input]) => input);
+      return { claimHeld, missed, row, stack, worker };
+    }
+
+    it("posts once while the Computer is offline, however many occurrences are replaced", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      const second = await claimHeld(1);
+      const third = await claimHeld(2);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(second.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(third.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
+    });
+
+    it("posts when a held occurrence expires", async () => {
+      const { claimHeld, missed, stack } = await offlineStack();
+      const first = await claimHeld(0);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(first.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.expireHeld(held);
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_expired" });
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
+    });
+
+    it("posts nothing when someone paused the schedule", async () => {
+      const { claimHeld, missed, row, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      await db.database
+        .update(agentSchedules)
+        .set({ enabled: false, nextTriggerAt: null })
+        .where(eq(agentSchedules.id, row.id));
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "schedule_disabled" });
+      expect(missed()).toEqual([]);
+    });
+
+    it("carries the creator when a held occurrence is redelivered to an internal Session", async () => {
+      const seed = await seedStack();
+      const stack = makeStack(seed, { scheduledBudgets: { localMs: 200 } });
+      const creatorId = randomUUID();
+      await db.database.insert(sessions).values({
+        id: creatorId,
+        imBindingId: seed.bindingId,
+        channelId: "oc_creator",
+        conversationKind: "dm",
+        kind: "channel",
+      });
+      await db.database
+        .update(sessions)
+        .set({ kind: "internal", createdBySessionId: creatorId })
+        .where(eq(sessions.id, seed.targetSessionId));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      currentTime = T0;
+      const claim = await claimOf(stack, row.id);
+      if (claim.kind !== "claimed") throw new Error("expected a claim");
+      await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+      stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.redeliverHeld(held);
+
+      expect(stack.domain.requestReconcile.mock.calls.at(-1)?.[2]).toMatchObject({
+        sessionKind: "internal",
+        creatorSessionId: creatorId,
+      });
+    });
+
+    it("posts nothing while the occurrence is still held", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([]);
+    });
   });
 
   it("refuses to send a scheduled origin to a v2-only peer with zero frames", async () => {

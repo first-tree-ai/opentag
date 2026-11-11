@@ -1,8 +1,10 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
+  CONVERSATION_READBACK,
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
@@ -23,6 +25,7 @@ export class ImFeedbackWorker {
         | "latestAction"
         | "desiredReaction"
         | "reserveOfflineNotice"
+        | "reserveParkedNotice"
         | "releaseOfflineNotice"
       >;
       transport: FeedbackTransport;
@@ -115,13 +118,21 @@ export class ImFeedbackWorker {
       await this.#failure(target, error, retryAfterMs);
     }
   }
-  /** Queued targets are revisited every fifteen seconds, which bounds how late past sixty seconds this runs. */
+  /**
+   * The one waiting notice of a queued input: its Computer is offline, or, with the Computer online, it
+   * waits behind a parked dispatch. Queued targets are revisited every fifteen seconds, which bounds how
+   * late past sixty seconds this runs.
+   */
   async #offlineNotice(target: FeedbackTarget, halt: () => void): Promise<void> {
     if (target.state !== "queued" || target.cardState !== "none") return;
     let reservedAt: Date | undefined;
     try {
       reservedAt = await this.options.store.reserveOfflineNotice(target);
       if (reservedAt) await this.options.transport.postOfflineNotice(target);
+      else {
+        reservedAt = await this.options.store.reserveParkedNotice(target);
+        if (reservedAt) await this.options.transport.postOfflineNotice(target, "parked");
+      }
     } catch (error) {
       const cooldown = error instanceof FeedbackCooldownStorageError;
       if (cooldown) halt();
@@ -225,7 +236,8 @@ export class ImFeedbackWorker {
       reaction: reaction.value,
       errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
-      reconciliationCursor: cursor ?? null,
+      // An exhausted direct-message readback starts over there, not in the conversation.
+      reconciliationCursor: cursor ?? readbackLeg(target.reconciliationCursor),
     });
   }
   async #readback(target: FeedbackTarget): Promise<{ matches: Set<string>; cursor?: string } | undefined> {
@@ -289,14 +301,31 @@ function reactionRetry(target: FeedbackTarget, result: ReactionResult) {
 function sendFailure(
   error: unknown,
   target: FeedbackTarget,
-): { cardState: FeedbackTarget["cardState"]; errorCode: string; delayMs: number } {
+): {
+  cardState: FeedbackTarget["cardState"];
+  errorCode: string;
+  delayMs: number;
+  reconciliationCursor?: string | null;
+} {
   if (!(error instanceof FeedbackProviderError) || !error.knownNotApplied)
-    return { cardState: "send_unknown", errorCode: "IM_FEEDBACK_SEND_UNKNOWN", delayMs: 30_000 };
+    return {
+      cardState: "send_unknown",
+      errorCode: "IM_FEEDBACK_SEND_UNKNOWN",
+      delayMs: 30_000,
+      reconciliationCursor: error instanceof FeedbackProviderError ? (error.readbackCursor ?? null) : null,
+    };
   return {
     cardState: error.permanent ? "blocked" : "pending",
     errorCode: error.code,
     delayMs: error.retryAfterMs ?? (error.permanent ? 300_000 : feedbackRetryDelay(target.attemptCount)),
   };
+}
+
+/** An exhausted readback starts over on the same leg: the sender's direct message or the fallback conversation. */
+function readbackLeg(cursor: string | null): string | null {
+  // An unrecorded leg (no cursor, or `either:` phases) starts over from the conversation.
+  if (cursor?.startsWith(SENDER_READBACK)) return SENDER_READBACK;
+  return cursor?.startsWith(CONVERSATION_READBACK) ? CONVERSATION_READBACK : null;
 }
 
 function feedbackRetryDelay(attempt: number): number {

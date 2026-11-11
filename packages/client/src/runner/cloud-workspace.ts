@@ -23,6 +23,7 @@ import {
 
 const CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS = 3;
 const CLOUD_WORKSPACE_RETRY_DELAY_MS = 1000;
+const WORKSPACE_WARMUP_TIMEOUT_MS = 5000;
 
 export class CloudWorkspaceError extends Error {
   readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
@@ -112,6 +113,26 @@ async function boundedJson(response: Response): Promise<unknown> {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch (error) {
     throw new CloudWorkspaceError("save_failed", false, { cause: error });
+  }
+}
+
+export async function warmWorkspaceConnection(
+  config: { backendUrl: string; workspacePersistence?: boolean },
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!config.workspacePersistence) return;
+  try {
+    const url = new URL("/healthz", workspaceOrigin(config.backendUrl));
+    const response = await fetchImpl(url, {
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(WORKSPACE_WARMUP_TIMEOUT_MS)]),
+    });
+    // Read the small response to completion so the workspace requests can reuse the connection.
+    await boundedJson(response);
+  } catch {
+    // A slow, unavailable, or unsupported probe must never gate startup or the authenticated claim.
   }
 }
 
@@ -217,14 +238,9 @@ export class CloudWorkspace {
       this.#options.onPerformanceLog,
       "runner.workspace.restore",
       async (addMetrics) => {
-        await this.#restoreFromObject(object, replaceExisting, addMetrics);
+        this.#fingerprint = await this.#restoreFromObject(object, replaceExisting, addMetrics);
         this.#rollbackPending = false;
         this.#restored = true;
-        if (object.saved) {
-          this.#fingerprint = await measureWorkspaceStep("fingerprintMs", addMetrics, () =>
-            fingerprintWorkspace(this.#options.workspace),
-          );
-        }
       },
       {
         environmentGeneration: this.#options.environmentGeneration(),
@@ -240,14 +256,11 @@ export class CloudWorkspace {
     object: RunnerWorkspaceObject,
     replaceExisting: boolean,
     addMetrics: (metrics: RunnerPerformanceMetrics) => void,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     if (!replaceExisting) {
       await mkdir(this.#options.workspace, { recursive: true, mode: 0o700 });
       if ((await readdir(this.#options.workspace)).length !== 0) throw new CloudWorkspaceError("restore_failed");
-      if (object.saved) {
-        await this.#restoreArchive(object, this.#options.workspace, addMetrics);
-      }
-      return;
+      return object.saved ? this.#restoreArchive(object, this.#options.workspace, addMetrics) : undefined;
     }
     if (!object.saved) {
       await rm(this.#options.workspace, { recursive: true, force: true });
@@ -259,9 +272,10 @@ export class CloudWorkspace {
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(join(parent, `.${basename(workspacePath)}.rollback-`));
     try {
-      await this.#restoreArchive(object, staging, addMetrics);
+      const fingerprint = await this.#restoreArchive(object, staging, addMetrics);
       await rm(workspacePath, { recursive: true, force: true });
       await rename(staging, workspacePath);
+      return fingerprint;
     } catch (error) {
       await rm(staging, { recursive: true, force: true });
       throw error;
@@ -272,10 +286,10 @@ export class CloudWorkspace {
     object: RunnerWorkspaceObject,
     target: string,
     addMetrics: (metrics: RunnerPerformanceMetrics) => void,
-  ): Promise<void> {
-    await this.#temporaryArchive(async (path) => {
+  ): Promise<string> {
+    return this.#temporaryArchive(async (path) => {
       await measureWorkspaceStep("downloadMs", addMetrics, () => this.#download(object, path));
-      await measureWorkspaceStep("extractMs", addMetrics, () =>
+      return measureWorkspaceStep("extractMs", addMetrics, () =>
         restoreWorkspaceArchive(path, target, object, {
           onStats: addMetrics,
         }),
@@ -301,24 +315,25 @@ export class CloudWorkspace {
       sealed ? "runner.workspace.seal" : "runner.workspace.save",
       async (addMetrics) => {
         try {
-          const fingerprint = await measureWorkspaceStep("fingerprintMs", addMetrics, () =>
-            fingerprintWorkspace(this.#options.workspace),
-          );
-          const object =
-            sealed && previous.saved && fingerprint === this.#fingerprint
-              ? await this.#seal(previous)
-              : await this.#temporaryArchive(async (path) => {
-                  const info = await measureWorkspaceStep("packMs", addMetrics, () =>
-                    createWorkspaceArchive(this.#options.workspace, path, { onStats: addMetrics }),
-                  );
-                  const uploaded = await this.#upload(path, previous, info, sealed, addMetrics);
-                  // Keep the confirmed version and its baseline together if local cleanup fails.
-                  this.#object = uploaded;
-                  this.#fingerprint = fingerprint;
-                  return uploaded;
-                });
+          const unchanged =
+            sealed &&
+            previous.saved &&
+            (await measureWorkspaceStep("fingerprintMs", addMetrics, () =>
+              fingerprintWorkspace(this.#options.workspace),
+            )) === this.#fingerprint;
+          const object = unchanged
+            ? await this.#seal(previous)
+            : await this.#temporaryArchive(async (path) => {
+                const info = await measureWorkspaceStep("packMs", addMetrics, () =>
+                  createWorkspaceArchive(this.#options.workspace, path, { onStats: addMetrics }),
+                );
+                const uploaded = await this.#upload(path, previous, info, sealed, addMetrics);
+                // Keep the confirmed version and its baseline together if local cleanup fails.
+                this.#object = uploaded;
+                this.#fingerprint = info.fingerprint;
+                return uploaded;
+              });
           this.#object = object;
-          this.#fingerprint = fingerprint;
           addMetrics({
             workspaceGeneration: object.generation,
             saved: object.saved,

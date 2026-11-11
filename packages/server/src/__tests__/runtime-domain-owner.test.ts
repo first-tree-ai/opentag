@@ -644,7 +644,7 @@ describe("RuntimeDomainOwner", () => {
     { status: "deferred", reason: "steer_state_unknown", disposition: "uncertain" },
     { status: "rejected", reason: "input_conflict", disposition: "deferred" },
     { status: "retry", reason: "turn_starting", disposition: "retry" },
-    { status: "deferred", reason: "turn_not_running", disposition: "deferred" },
+    { status: "deferred", reason: "turn_not_running", disposition: "turn_not_running" },
   ] as const)("records $status/$reason with $disposition steer custody", async ({ status, reason, disposition }) => {
     const fixture = await ownerFixture();
     const custody = new MemoryRuntimeCustodyStore();

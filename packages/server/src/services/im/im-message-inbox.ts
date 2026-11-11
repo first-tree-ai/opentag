@@ -230,386 +230,70 @@ export class ImMessageInbox {
         const feedbackDeliveryIds = new Set<string>();
         try {
           const result = await this.#database.transaction(async (transaction) => {
-            const finish = (result: IngestResult, outcome: string): IngestResult => {
-              setActiveSpanAttributes({
-                ...imAttrs({
-                  messageId: result.messageId,
-                  deliveryCount: result.deliveryIds.length,
-                  duplicate: result.duplicate,
-                }),
-                ...outcomeAttrs(outcome),
-              });
-              return result;
-            };
             const now = this.#now();
             const receivedAt = telemetry?.receivedAt ?? now;
-            const [candidate] = await transaction
-              .select({ agentId: imBindings.agentId })
-              .from(imBindings)
-              .where(eq(imBindings.id, imBindingId))
-              .limit(1);
-            if (!candidate) {
-              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
-            }
-            await transaction.execute(
-              sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${candidate.agentId}`}, 0))`,
+            const { agent, agentComputerId, agentCanExecute, scope } = await this.#acquireAndVerifyBindingScope(
+              transaction,
+              imBindingId,
+              credentialGeneration,
+              event,
+              admissionFence,
+              now,
             );
-            const [agent] = await transaction
-              .select({
-                computerId: agents.computerId,
-                createdByUserId: agents.createdByUserId,
-                status: agents.status,
-              })
-              .from(agents)
-              .where(and(eq(agents.id, candidate.agentId), ne(agents.status, "deleted")))
-              .limit(1)
-              .for("update");
-            if (!agent) {
-              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+            if (isSelfAuthor(event, scope.imBinding.externalBotId)) {
+              return finishIngestResult({ duplicate: false, deliveryIds: [] }, "self_message");
             }
-            const agentComputerId = agent.computerId;
-            const [computer] = agentComputerId
-              ? await transaction
-                  .select({ ownerAccountId: computers.ownerAccountId })
-                  .from(computers)
-                  .where(eq(computers.id, agentComputerId))
-                  .limit(1)
-                  .for("update")
-              : [];
-            const agentCanExecute = computer?.ownerAccountId === agent.createdByUserId;
-            await transaction
-              .update(imBindings)
-              .set({ externalTeamId: event.externalTeamId, updatedAt: now })
-              .where(
-                and(
-                  eq(imBindings.id, imBindingId),
-                  eq(imBindings.provider, "feishu"),
-                  eq(imBindings.status, "active"),
-                  eq(imBindings.credentialGeneration, credentialGeneration),
-                  eq(imBindings.externalAppId, event.externalAppId),
-                  isNull(imBindings.externalTeamId),
-                ),
-              );
-            const [scope] = await transaction
-              .select({
-                imBinding: imBindings,
-                agent: {
-                  computerId: agents.computerId,
-                  receiveMode: agents.receiveMode,
-                },
-              })
-              .from(imBindings)
-              .innerJoin(agents, eq(agents.id, imBindings.agentId))
-              .where(
-                and(
-                  eq(imBindings.id, imBindingId),
-                  eq(imBindings.status, "active"),
-                  eq(imBindings.credentialGeneration, credentialGeneration),
-                  eq(agents.id, candidate.agentId),
-                  ne(agents.status, "deleted"),
-                ),
-              )
-              .limit(1)
-              .for("update", { of: imBindings });
-            if (!scope) {
-              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
-            }
-            if (admissionFence) {
-              if (
-                scope.imBinding.provider !== "feishu" ||
-                scope.imBinding.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
-                scope.imBinding.connectionFencingEpoch !== admissionFence.fencingEpoch ||
-                !scope.imBinding.connectionLeaseExpiresAt ||
-                scope.imBinding.connectionLeaseExpiresAt <= now
-              ) {
-                throw new ImInboundPersistenceError("IM_INBOUND_FENCE_STALE", "FEISHU_CONNECTION_LEASE_STALE");
-              }
-              await this.#afterAdmissionFence?.();
-            }
-            if (scope.imBinding.externalAppId !== event.externalAppId) {
-              throw new ImInboundPersistenceError(
-                "IM_INBOUND_IDENTITY_MISMATCH",
-                "IM_BINDING_BINDING_IDENTITY_MISMATCH",
-              );
-            }
-            if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
-              throw new ImInboundPersistenceError(
-                "IM_INBOUND_IDENTITY_MISMATCH",
-                "IM_BINDING_WORKSPACE_IDENTITY_MISMATCH",
-              );
-            }
-            const isSelf =
-              event.message.author.isSelf === true ||
-              (event.message.author.kind === "bot" &&
-                event.message.author.externalId === scope.imBinding.externalBotId);
-            if (isSelf) return finish({ duplicate: false, deliveryIds: [] }, "self_message");
             await transaction.execute(
               sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${imBindingId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
             );
             await this.#afterMessageAuthority?.();
-            const [previousCurrent] = await transaction
-              .select({
-                id: imMessages.id,
-                threadKey: imMessages.threadKey,
-                receivedAt: imMessages.receivedAt,
-              })
-              .from(imMessages)
-              .where(
-                and(
-                  eq(imMessages.imBindingId, imBindingId),
-                  eq(imMessages.channelId, event.conversation.externalId),
-                  eq(imMessages.externalMessageId, event.message.externalId),
-                ),
-              )
-              .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-              .limit(1);
-            const previousConversationKind = previousCurrent
-              ? await this.#findConversationKind(transaction, imBindingId, event.conversation.externalId)
-              : undefined;
-            const inheritedDeliveries =
-              previousCurrent && event.conversation.kind === "unknown"
-                ? await transaction
-                    .select({
-                      sessionId: imMessageDeliveries.sessionId,
-                      attention: imMessageDeliveries.attention,
-                      generation: sessionPlacements.generation,
-                      conversationKind: sessions.conversationKind,
-                      expiresAt: imMessageDeliveries.expiresAt,
-                    })
-                    .from(imMessageDeliveries)
-                    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-                    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-                    .where(
-                      and(
-                        eq(imMessageDeliveries.messageId, previousCurrent.id),
-                        eq(imMessageDeliveries.attemptOrdinal, 0),
-                        eq(sessions.imBindingId, imBindingId),
-                        eq(sessions.channelId, event.conversation.externalId),
-                        isNull(sessions.endedAt),
-                      ),
-                    )
-                : [];
-            const conversationKind =
-              event.conversation.kind === "unknown"
-                ? (inheritedDeliveries[0]?.conversationKind ?? previousConversationKind ?? null)
-                : event.conversation.kind;
-            const threadKey =
-              event.conversation.kind === "unknown"
-                ? (previousCurrent?.threadKey ?? null)
-                : (event.message.threadKey ?? null);
-            const content = ImContentV1Schema.parse({
-              ...event.message.content,
-              resources: event.message.resources.map((resource, ordinal) => ({
-                ...resource,
-                ordinal,
-                availability: resourceAvailability(resource),
-              })),
+            const messageResolution = await this.#insertOrDeduplicateMessage(
+              transaction,
+              imBindingId,
+              event,
+              receivedAt,
+            );
+            if (messageResolution.kind !== "current") {
+              return finishIngestResult(
+                {
+                  duplicate: messageResolution.kind === "duplicate",
+                  messageId: messageResolution.messageId,
+                  deliveryIds: [],
+                },
+                messageResolution.kind,
+              );
+            }
+            const { created, previousCurrent, inheritedDeliveries, conversationKind, threadKey } = messageResolution;
+            const deliverableTarget = resolveDeliverableTarget(
+              conversationKind,
+              agent.status,
+              agentComputerId,
+              agentCanExecute,
+            );
+            if (!deliverableTarget.ok) {
+              return finishIngestResult(
+                { duplicate: false, messageId: created.id, deliveryIds: [] },
+                deliverableTarget.outcome,
+              );
+            }
+            const direct = isDirectMessageOrMention(
+              deliverableTarget.conversationKind,
+              event,
+              scope.imBinding.externalBotId,
+            );
+            const deliveries = await this.#resolveSessionDeliveries(transaction, {
+              imBindingId,
+              event,
+              conversationKind: deliverableTarget.conversationKind,
+              threadKey,
+              direct,
+              receiveMode: scope.agent.receiveMode,
+              agentComputerId: deliverableTarget.agentComputerId,
+              previousReceivedAt: previousCurrent?.receivedAt,
+              inheritedDeliveries,
+              createdTasks,
+              now,
             });
-            const [created] = await transaction
-              .insert(imMessages)
-              .values({
-                imBindingId,
-                providerEventId: event.providerEventId,
-                channelId: event.conversation.externalId,
-                externalMessageId: event.message.externalId,
-                providerRevisionKey: event.message.revisionKey,
-                operation: event.message.operation,
-                direction: "inbound",
-                threadKey,
-                replyToExternalId: event.message.replyToExternalId ?? null,
-                authorKind: event.message.author.kind,
-                authorExternalId: event.message.author.externalId,
-                authorDisplayName: event.message.author.displayName ?? null,
-                content,
-                providerContext: event.providerContext,
-                occurredAt: event.message.occurredAt,
-                receivedAt,
-              })
-              .onConflictDoNothing()
-              .returning();
-            if (!created) {
-              const [existing] = await transaction
-                .select({ id: imMessages.id })
-                .from(imMessages)
-                .where(
-                  and(
-                    eq(imMessages.imBindingId, imBindingId),
-                    or(
-                      eq(imMessages.providerEventId, event.providerEventId),
-                      and(
-                        eq(imMessages.channelId, event.conversation.externalId),
-                        eq(imMessages.externalMessageId, event.message.externalId),
-                        eq(imMessages.providerRevisionKey, event.message.revisionKey),
-                      ),
-                    ),
-                  ),
-                )
-                .limit(1);
-              return finish({ duplicate: true, messageId: existing?.id, deliveryIds: [] }, "duplicate");
-            }
-
-            const [currentRevision] = await transaction
-              .select({ id: imMessages.id })
-              .from(imMessages)
-              .where(
-                and(
-                  eq(imMessages.imBindingId, imBindingId),
-                  eq(imMessages.channelId, event.conversation.externalId),
-                  eq(imMessages.externalMessageId, event.message.externalId),
-                ),
-              )
-              .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-              .limit(1);
-            if (currentRevision?.id !== created.id) {
-              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "stale_revision");
-            }
-            await this.#beforeSupersedeDeliveries?.();
-            const supersededMessageIds = transaction
-              .select({ id: imMessages.id })
-              .from(imMessages)
-              .where(
-                and(
-                  eq(imMessages.imBindingId, imBindingId),
-                  eq(imMessages.channelId, event.conversation.externalId),
-                  eq(imMessages.externalMessageId, event.message.externalId),
-                  ne(imMessages.id, created.id),
-                ),
-              );
-            await transaction
-              .update(imMessageDeliveries)
-              .set({ state: "expired", reason: "superseded_revision" })
-              .where(
-                and(
-                  eq(imMessageDeliveries.state, "pending"),
-                  inArray(imMessageDeliveries.messageId, supersededMessageIds),
-                ),
-              );
-
-            if (conversationKind === null) {
-              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "no_delivery");
-            }
-            if (agent.status !== "active") {
-              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_inactive");
-            }
-            // A Session is placed on the Agent's Computer, so an Agent that has none has nowhere to
-            // run. The message is still recorded; only the delivery it cannot receive is withheld.
-            if (agentComputerId === null) {
-              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_computer_not_bound");
-            }
-            if (!agentCanExecute) {
-              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_rebind_required");
-            }
-            const direct =
-              conversationKind === "dm" ||
-              event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
-            /*
-             * Attention states whether this message itself addresses the Agent (a DM or an @-mention).
-             * Thread continuity only decides delivery and retention: an unaddressed follow-up in a
-             * Thread the Agent was brought into stays ambient, so the Agent judges whether it is meant
-             * for it instead of being told it was addressed.
-             */
-            const deliveries: Array<{
-              sessionId: string;
-              attention: "direct" | "ambient";
-              generation: number;
-              continuity?: boolean;
-            }> = [];
-            if (event.conversation.kind === "unknown") {
-              deliveries.push(
-                ...inheritedDeliveries.map(({ sessionId, attention, generation, expiresAt }) => ({
-                  sessionId,
-                  attention,
-                  generation,
-                  continuity: hadDirectRetention(expiresAt, previousCurrent?.receivedAt),
-                })),
-              );
-            } else {
-              if (threadKey) {
-                const existingThread = await this.#findChatSession(
-                  transaction,
-                  imBindingId,
-                  event.conversation.externalId,
-                  "thread",
-                  threadKey,
-                );
-                const endedThreadExists = existingThread
-                  ? false
-                  : await this.#hasEndedThreadSession(
-                      transaction,
-                      imBindingId,
-                      event.conversation.externalId,
-                      threadKey,
-                    );
-                const rootExternalId = await this.#reliableThreadRootExternalId(
-                  transaction,
-                  imBindingId,
-                  event.conversation.externalId,
-                  threadKey,
-                  event.providerContext,
-                );
-                const rootWasDirect = rootExternalId
-                  ? await this.#rootWasDirectToChannelSession(
-                      transaction,
-                      imBindingId,
-                      event.conversation.externalId,
-                      rootExternalId,
-                    )
-                  : false;
-                const threadWasDirect = existingThread
-                  ? await this.#threadSessionWasDirect(transaction, existingThread.id)
-                  : false;
-                const directContinuity = direct || threadWasDirect || rootWasDirect;
-                const shouldDeliverThread = existingThread
-                  ? directContinuity || scope.agent.receiveMode === "all_message"
-                  : direct || (!endedThreadExists && (rootWasDirect || scope.agent.receiveMode === "all_message"));
-                if (shouldDeliverThread) {
-                  const thread = await this.#ensureOrReuseChatSession(transaction, existingThread, {
-                    imBindingId,
-                    channelId: event.conversation.externalId,
-                    conversationKind,
-                    kind: "thread",
-                    threadKey,
-                    computerId: agentComputerId,
-                    now,
-                  });
-                  recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
-                  deliveries.push({
-                    sessionId: thread.id,
-                    attention: direct ? "direct" : "ambient",
-                    generation: thread.generation,
-                    continuity: directContinuity,
-                  });
-                }
-                if (scope.agent.receiveMode === "all_message") {
-                  const channel = await this.#ensureChatSession(transaction, {
-                    imBindingId,
-                    channelId: event.conversation.externalId,
-                    conversationKind,
-                    kind: "channel",
-                    computerId: agentComputerId,
-                    now,
-                  });
-                  recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
-                  deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
-                }
-              } else if (direct || scope.agent.receiveMode === "all_message") {
-                const channel = await this.#ensureChatSession(transaction, {
-                  imBindingId,
-                  channelId: event.conversation.externalId,
-                  conversationKind,
-                  kind: "channel",
-                  computerId: agentComputerId,
-                  now,
-                });
-                recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
-                deliveries.push({
-                  sessionId: channel.id,
-                  attention: direct ? "direct" : "ambient",
-                  generation: channel.generation,
-                });
-              }
-            }
-
             const deliveryIds = await this.#persistDeliveries(
               transaction,
               created,
@@ -620,85 +304,21 @@ export class ImMessageInbox {
               now,
             );
             if (direct && threadKey === null) {
-              const rootExternalId = sql<
-                string | null
-              >`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
-                then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
-              const newestFirst = sql`${imMessages.occurredAt} desc, ${imMessages.providerRevisionKey} desc, ${imMessages.id} desc`;
-              const rankedMessages = transaction
-                .select({
-                  id: imMessages.id,
-                  threadKey: imMessages.threadKey,
-                  revisionRank: sql<number>`row_number() over (
-                    partition by ${imMessages.externalMessageId} order by ${newestFirst})`.as("revision_rank"),
-                  rootExternalId: sql<string | null>`first_value(${rootExternalId}) over (
-                    partition by ${imMessages.threadKey} order by (${rootExternalId} is null), ${newestFirst})`.as(
-                    "root_external_id",
-                  ),
-                })
-                .from(imMessages)
-                .where(
-                  and(
-                    eq(imMessages.imBindingId, imBindingId),
-                    eq(imMessages.channelId, event.conversation.externalId),
-                    eq(imMessages.direction, "inbound"),
-                    isNotNull(imMessages.threadKey),
-                    gte(imMessages.occurredAt, created.occurredAt),
-                  ),
-                )
-                .as("ranked_thread_messages");
-              const pendingThreadMessages = await transaction
-                .select()
-                .from(imMessages)
-                .where(
-                  inArray(
-                    imMessages.id,
-                    transaction
-                      .select({ id: rankedMessages.id })
-                      .from(rankedMessages)
-                      .where(
-                        and(
-                          eq(rankedMessages.revisionRank, 1),
-                          eq(rankedMessages.rootExternalId, event.message.externalId),
-                          ne(rankedMessages.threadKey, ""),
-                        ),
-                      ),
-                  ),
-                )
-                .orderBy(asc(imMessages.occurredAt), asc(imMessages.providerRevisionKey), asc(imMessages.id));
-              for (const pending of pendingThreadMessages) {
-                if (
-                  !pending.threadKey ||
-                  (await this.#hasEndedThreadSession(
-                    transaction,
-                    imBindingId,
-                    event.conversation.externalId,
-                    pending.threadKey,
-                  ))
-                ) {
-                  continue;
-                }
-                const thread = await this.#ensureChatSession(transaction, {
-                  imBindingId,
-                  channelId: event.conversation.externalId,
-                  conversationKind,
-                  kind: "thread",
-                  threadKey: pending.threadKey,
-                  computerId: agentComputerId,
-                  now,
-                });
-                recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
-                const backfilled = await this.#backfillThreadDelivery(transaction, pending, thread, receivedAt, now);
-                for (const id of backfilled) feedbackDeliveryIds.add(id);
-                const candidate = { sessionId: thread.id, attention: "ambient" as const };
-                overflowCandidates.set(candidate.sessionId, candidate);
-              }
+              await this.#backfillDirectRootThreadDeliveries(transaction, {
+                imBindingId,
+                event,
+                created,
+                conversationKind: deliverableTarget.conversationKind,
+                agentComputerId: deliverableTarget.agentComputerId,
+                createdTasks,
+                feedbackDeliveryIds,
+                overflowCandidates,
+                receivedAt,
+                now,
+              });
             }
             await this.#retainOverflowCandidates(transaction, overflowCandidates);
-            return finish(
-              { duplicate: false, messageId: created.id, deliveryIds },
-              deliveryIds.length > 0 ? "persisted" : "no_delivery",
-            );
+            return finishPersistedIngestResult(created.id, deliveryIds);
           });
           for (const deliveryId of feedbackDeliveryIds) this.#notifyDeliveryChanged(deliveryId);
           for (const candidate of overflowCandidates.values()) {
@@ -712,6 +332,568 @@ export class ImMessageInbox {
         }
       },
     );
+  }
+
+  async #acquireAndVerifyBindingScope(
+    transaction: DatabaseTransaction,
+    imBindingId: string,
+    credentialGeneration: number,
+    event: NormalizedInboundImEvent,
+    admissionFence: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number } | undefined,
+    now: Date,
+  ) {
+    const [candidate] = await transaction
+      .select({ agentId: imBindings.agentId })
+      .from(imBindings)
+      .where(eq(imBindings.id, imBindingId))
+      .limit(1);
+    if (!candidate) {
+      throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+    }
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${candidate.agentId}`}, 0))`,
+    );
+    const [agent] = await transaction
+      .select({
+        computerId: agents.computerId,
+        createdByUserId: agents.createdByUserId,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, candidate.agentId), ne(agents.status, "deleted")))
+      .limit(1)
+      .for("update");
+    if (!agent) {
+      throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+    }
+    const agentComputerId = agent.computerId;
+    const [computer] = agentComputerId
+      ? await transaction
+          .select({ ownerAccountId: computers.ownerAccountId })
+          .from(computers)
+          .where(eq(computers.id, agentComputerId))
+          .limit(1)
+          .for("update")
+      : [];
+    const agentCanExecute = computer?.ownerAccountId === agent.createdByUserId;
+    await transaction
+      .update(imBindings)
+      .set({ externalTeamId: event.externalTeamId, updatedAt: now })
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.provider, "feishu"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, credentialGeneration),
+          eq(imBindings.externalAppId, event.externalAppId),
+          isNull(imBindings.externalTeamId),
+        ),
+      );
+    const [scope] = await transaction
+      .select({
+        imBinding: imBindings,
+        agent: {
+          computerId: agents.computerId,
+          receiveMode: agents.receiveMode,
+        },
+      })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, credentialGeneration),
+          eq(agents.id, candidate.agentId),
+          ne(agents.status, "deleted"),
+        ),
+      )
+      .limit(1)
+      .for("update", { of: imBindings });
+    if (!scope) {
+      throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+    }
+    if (admissionFence) {
+      if (
+        scope.imBinding.provider !== "feishu" ||
+        scope.imBinding.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
+        scope.imBinding.connectionFencingEpoch !== admissionFence.fencingEpoch ||
+        !scope.imBinding.connectionLeaseExpiresAt ||
+        scope.imBinding.connectionLeaseExpiresAt <= now
+      ) {
+        throw new ImInboundPersistenceError("IM_INBOUND_FENCE_STALE", "FEISHU_CONNECTION_LEASE_STALE");
+      }
+      await this.#afterAdmissionFence?.();
+    }
+    if (scope.imBinding.externalAppId !== event.externalAppId) {
+      throw new ImInboundPersistenceError("IM_INBOUND_IDENTITY_MISMATCH", "IM_BINDING_BINDING_IDENTITY_MISMATCH");
+    }
+    if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
+      throw new ImInboundPersistenceError("IM_INBOUND_IDENTITY_MISMATCH", "IM_BINDING_WORKSPACE_IDENTITY_MISMATCH");
+    }
+    return { agent, agentComputerId, agentCanExecute, scope };
+  }
+
+  async #insertOrDeduplicateMessage(
+    transaction: DatabaseTransaction,
+    imBindingId: string,
+    event: NormalizedInboundImEvent,
+    receivedAt: Date,
+  ): Promise<
+    | { kind: "duplicate"; messageId: string | undefined }
+    | { kind: "stale_revision"; messageId: string }
+    | {
+        kind: "current";
+        created: typeof imMessages.$inferSelect;
+        previousCurrent: { id: string; threadKey: string | null; receivedAt: Date } | undefined;
+        inheritedDeliveries: Array<{
+          sessionId: string;
+          attention: DeliveryAttention;
+          generation: number;
+          conversationKind: "channel" | "dm" | "group_dm" | null;
+          expiresAt: Date;
+        }>;
+        conversationKind: "channel" | "dm" | "group_dm" | null;
+        threadKey: string | null;
+      }
+  > {
+    const [previousCurrent] = await transaction
+      .select({
+        id: imMessages.id,
+        threadKey: imMessages.threadKey,
+        receivedAt: imMessages.receivedAt,
+      })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, event.conversation.externalId),
+          eq(imMessages.externalMessageId, event.message.externalId),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    const previousConversationKind = previousCurrent
+      ? await this.#findConversationKind(transaction, imBindingId, event.conversation.externalId)
+      : undefined;
+    const inheritedDeliveries =
+      previousCurrent && event.conversation.kind === "unknown"
+        ? await transaction
+            .select({
+              sessionId: imMessageDeliveries.sessionId,
+              attention: imMessageDeliveries.attention,
+              generation: sessionPlacements.generation,
+              conversationKind: sessions.conversationKind,
+              expiresAt: imMessageDeliveries.expiresAt,
+            })
+            .from(imMessageDeliveries)
+            .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+            .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+            .where(
+              and(
+                eq(imMessageDeliveries.messageId, previousCurrent.id),
+                eq(imMessageDeliveries.attemptOrdinal, 0),
+                eq(sessions.imBindingId, imBindingId),
+                eq(sessions.channelId, event.conversation.externalId),
+                isNull(sessions.endedAt),
+              ),
+            )
+        : [];
+    const conversationKind =
+      event.conversation.kind === "unknown"
+        ? (inheritedDeliveries[0]?.conversationKind ?? previousConversationKind ?? null)
+        : event.conversation.kind;
+    const threadKey =
+      event.conversation.kind === "unknown" ? (previousCurrent?.threadKey ?? null) : (event.message.threadKey ?? null);
+    const content = ImContentV1Schema.parse({
+      ...event.message.content,
+      resources: event.message.resources.map((resource, ordinal) => ({
+        ...resource,
+        ordinal,
+        availability: resourceAvailability(resource),
+      })),
+    });
+    const [created] = await transaction
+      .insert(imMessages)
+      .values({
+        imBindingId,
+        providerEventId: event.providerEventId,
+        channelId: event.conversation.externalId,
+        externalMessageId: event.message.externalId,
+        providerRevisionKey: event.message.revisionKey,
+        operation: event.message.operation,
+        direction: "inbound",
+        threadKey,
+        replyToExternalId: event.message.replyToExternalId ?? null,
+        authorKind: event.message.author.kind,
+        authorExternalId: event.message.author.externalId,
+        authorDisplayName: event.message.author.displayName ?? null,
+        content,
+        providerContext: event.providerContext,
+        occurredAt: event.message.occurredAt,
+        receivedAt,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (!created) {
+      const [existing] = await transaction
+        .select({ id: imMessages.id })
+        .from(imMessages)
+        .where(
+          and(
+            eq(imMessages.imBindingId, imBindingId),
+            or(
+              eq(imMessages.providerEventId, event.providerEventId),
+              and(
+                eq(imMessages.channelId, event.conversation.externalId),
+                eq(imMessages.externalMessageId, event.message.externalId),
+                eq(imMessages.providerRevisionKey, event.message.revisionKey),
+              ),
+            ),
+          ),
+        )
+        .limit(1);
+      return { kind: "duplicate", messageId: existing?.id };
+    }
+
+    const [currentRevision] = await transaction
+      .select({ id: imMessages.id })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, event.conversation.externalId),
+          eq(imMessages.externalMessageId, event.message.externalId),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    if (currentRevision?.id !== created.id) {
+      return { kind: "stale_revision", messageId: created.id };
+    }
+    await this.#beforeSupersedeDeliveries?.();
+    const supersededMessageIds = transaction
+      .select({ id: imMessages.id })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, event.conversation.externalId),
+          eq(imMessages.externalMessageId, event.message.externalId),
+          ne(imMessages.id, created.id),
+        ),
+      );
+    await transaction
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "superseded_revision" })
+      .where(
+        and(eq(imMessageDeliveries.state, "pending"), inArray(imMessageDeliveries.messageId, supersededMessageIds)),
+      );
+    return { kind: "current", created, previousCurrent, inheritedDeliveries, conversationKind, threadKey };
+  }
+
+  async #resolveSessionDeliveries(
+    transaction: DatabaseTransaction,
+    input: {
+      imBindingId: string;
+      event: NormalizedInboundImEvent;
+      conversationKind: "channel" | "dm" | "group_dm";
+      threadKey: string | null;
+      direct: boolean;
+      receiveMode: "mention_only" | "all_message";
+      agentComputerId: string;
+      previousReceivedAt: Date | undefined;
+      inheritedDeliveries: Array<{
+        sessionId: string;
+        attention: DeliveryAttention;
+        generation: number;
+        expiresAt: Date;
+      }>;
+      createdTasks: Map<string, TaskTitleGenerationRequest>;
+      now: Date;
+    },
+  ): Promise<
+    Array<{
+      sessionId: string;
+      attention: DeliveryAttention;
+      generation: number;
+      continuity?: boolean;
+    }>
+  > {
+    const {
+      imBindingId,
+      event,
+      conversationKind,
+      threadKey,
+      direct,
+      receiveMode,
+      agentComputerId,
+      previousReceivedAt,
+      inheritedDeliveries,
+      createdTasks,
+      now,
+    } = input;
+    /*
+     * Attention states whether this message itself addresses the Agent (a DM or an @-mention).
+     * Thread continuity only decides delivery and retention: an unaddressed follow-up in a
+     * Thread the Agent was brought into stays ambient, so the Agent judges whether it is meant
+     * for it instead of being told it was addressed.
+     */
+    const deliveries: Array<{
+      sessionId: string;
+      attention: DeliveryAttention;
+      generation: number;
+      continuity?: boolean;
+    }> = [];
+    if (event.conversation.kind === "unknown") {
+      deliveries.push(
+        ...inheritedDeliveries.map(({ sessionId, attention, generation, expiresAt }) => ({
+          sessionId,
+          attention,
+          generation,
+          continuity: hadDirectRetention(expiresAt, previousReceivedAt),
+        })),
+      );
+      return deliveries;
+    }
+    if (threadKey) {
+      return this.#resolveThreadSessionDeliveries(transaction, {
+        imBindingId,
+        event,
+        conversationKind,
+        threadKey,
+        direct,
+        receiveMode,
+        agentComputerId,
+        createdTasks,
+        now,
+      });
+    }
+    if (direct || receiveMode === "all_message") {
+      const channel = await this.#ensureChatSession(transaction, {
+        imBindingId,
+        channelId: event.conversation.externalId,
+        conversationKind,
+        kind: "channel",
+        computerId: agentComputerId,
+        now,
+      });
+      recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
+      deliveries.push({
+        sessionId: channel.id,
+        attention: direct ? "direct" : "ambient",
+        generation: channel.generation,
+      });
+    }
+    return deliveries;
+  }
+
+  async #resolveThreadSessionDeliveries(
+    transaction: DatabaseTransaction,
+    input: {
+      imBindingId: string;
+      event: NormalizedInboundImEvent;
+      conversationKind: "channel" | "dm" | "group_dm";
+      threadKey: string;
+      direct: boolean;
+      receiveMode: "mention_only" | "all_message";
+      agentComputerId: string;
+      createdTasks: Map<string, TaskTitleGenerationRequest>;
+      now: Date;
+    },
+  ): Promise<
+    Array<{
+      sessionId: string;
+      attention: DeliveryAttention;
+      generation: number;
+      continuity?: boolean;
+    }>
+  > {
+    const { imBindingId, event, conversationKind, threadKey, direct, receiveMode, agentComputerId, createdTasks, now } =
+      input;
+    const deliveries: Array<{
+      sessionId: string;
+      attention: DeliveryAttention;
+      generation: number;
+      continuity?: boolean;
+    }> = [];
+    const existingThread = await this.#findChatSession(
+      transaction,
+      imBindingId,
+      event.conversation.externalId,
+      "thread",
+      threadKey,
+    );
+    const { directContinuity, shouldDeliverThread } = await this.#evaluateThreadDeliveryEligibility(
+      transaction,
+      imBindingId,
+      event,
+      threadKey,
+      existingThread,
+      direct,
+      receiveMode,
+    );
+    if (shouldDeliverThread) {
+      const thread = await this.#ensureOrReuseChatSession(transaction, existingThread, {
+        imBindingId,
+        channelId: event.conversation.externalId,
+        conversationKind,
+        kind: "thread",
+        threadKey,
+        computerId: agentComputerId,
+        now,
+      });
+      recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
+      deliveries.push({
+        sessionId: thread.id,
+        attention: direct ? "direct" : "ambient",
+        generation: thread.generation,
+        continuity: directContinuity,
+      });
+    }
+    if (receiveMode === "all_message") {
+      const channel = await this.#ensureChatSession(transaction, {
+        imBindingId,
+        channelId: event.conversation.externalId,
+        conversationKind,
+        kind: "channel",
+        computerId: agentComputerId,
+        now,
+      });
+      recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
+      deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
+    }
+    return deliveries;
+  }
+
+  async #evaluateThreadDeliveryEligibility(
+    transaction: DatabaseTransaction,
+    imBindingId: string,
+    event: NormalizedInboundImEvent,
+    threadKey: string,
+    existingThread: { id: string; generation: number } | undefined,
+    direct: boolean,
+    receiveMode: "mention_only" | "all_message",
+  ): Promise<{ directContinuity: boolean; shouldDeliverThread: boolean }> {
+    const endedThreadExists = existingThread
+      ? false
+      : await this.#hasEndedThreadSession(transaction, imBindingId, event.conversation.externalId, threadKey);
+    const rootExternalId = await this.#reliableThreadRootExternalId(
+      transaction,
+      imBindingId,
+      event.conversation.externalId,
+      threadKey,
+      event.providerContext,
+    );
+    const rootWasDirect = rootExternalId
+      ? await this.#rootWasDirectToChannelSession(
+          transaction,
+          imBindingId,
+          event.conversation.externalId,
+          rootExternalId,
+        )
+      : false;
+    const threadWasDirect = existingThread ? await this.#threadSessionWasDirect(transaction, existingThread.id) : false;
+    const directContinuity = direct || threadWasDirect || rootWasDirect;
+    const shouldDeliverThread = existingThread
+      ? directContinuity || receiveMode === "all_message"
+      : direct || (!endedThreadExists && (rootWasDirect || receiveMode === "all_message"));
+    return { directContinuity, shouldDeliverThread };
+  }
+
+  async #backfillDirectRootThreadDeliveries(
+    transaction: DatabaseTransaction,
+    input: {
+      imBindingId: string;
+      event: NormalizedInboundImEvent;
+      created: typeof imMessages.$inferSelect;
+      conversationKind: "channel" | "dm" | "group_dm";
+      agentComputerId: string;
+      createdTasks: Map<string, TaskTitleGenerationRequest>;
+      feedbackDeliveryIds: Set<string>;
+      overflowCandidates: Map<string, OverflowCandidate>;
+      receivedAt: Date;
+      now: Date;
+    },
+  ): Promise<void> {
+    const {
+      imBindingId,
+      event,
+      created,
+      conversationKind,
+      agentComputerId,
+      createdTasks,
+      feedbackDeliveryIds,
+      overflowCandidates,
+      receivedAt,
+      now,
+    } = input;
+    const rootExternalId = sql<string | null>`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
+      then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
+    const newestFirst = sql`${imMessages.occurredAt} desc, ${imMessages.providerRevisionKey} desc, ${imMessages.id} desc`;
+    const rankedMessages = transaction
+      .select({
+        id: imMessages.id,
+        threadKey: imMessages.threadKey,
+        revisionRank: sql<number>`row_number() over (
+          partition by ${imMessages.externalMessageId} order by ${newestFirst})`.as("revision_rank"),
+        rootExternalId: sql<string | null>`first_value(${rootExternalId}) over (
+          partition by ${imMessages.threadKey} order by (${rootExternalId} is null), ${newestFirst})`.as(
+          "root_external_id",
+        ),
+      })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, event.conversation.externalId),
+          eq(imMessages.direction, "inbound"),
+          isNotNull(imMessages.threadKey),
+          gte(imMessages.occurredAt, created.occurredAt),
+        ),
+      )
+      .as("ranked_thread_messages");
+    const pendingThreadMessages = await transaction
+      .select()
+      .from(imMessages)
+      .where(
+        inArray(
+          imMessages.id,
+          transaction
+            .select({ id: rankedMessages.id })
+            .from(rankedMessages)
+            .where(
+              and(
+                eq(rankedMessages.revisionRank, 1),
+                eq(rankedMessages.rootExternalId, event.message.externalId),
+                ne(rankedMessages.threadKey, ""),
+              ),
+            ),
+        ),
+      )
+      .orderBy(asc(imMessages.occurredAt), asc(imMessages.providerRevisionKey), asc(imMessages.id));
+    for (const pending of pendingThreadMessages) {
+      if (
+        !pending.threadKey ||
+        (await this.#hasEndedThreadSession(transaction, imBindingId, event.conversation.externalId, pending.threadKey))
+      ) {
+        continue;
+      }
+      const thread = await this.#ensureChatSession(transaction, {
+        imBindingId,
+        channelId: event.conversation.externalId,
+        conversationKind,
+        kind: "thread",
+        threadKey: pending.threadKey,
+        computerId: agentComputerId,
+        now,
+      });
+      recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
+      const backfilled = await this.#backfillThreadDelivery(transaction, pending, thread, receivedAt, now);
+      for (const id of backfilled) feedbackDeliveryIds.add(id);
+      const candidate = { sessionId: thread.id, attention: "ambient" as const };
+      overflowCandidates.set(candidate.sessionId, candidate);
+    }
   }
 
   async #backfillThreadDelivery(
@@ -1073,6 +1255,57 @@ export class ImMessageInbox {
       .limit(1);
     return context?.rootExternalId ?? undefined;
   }
+}
+
+function finishIngestResult(result: IngestResult, outcome: string): IngestResult {
+  setActiveSpanAttributes({
+    ...imAttrs({
+      messageId: result.messageId,
+      deliveryCount: result.deliveryIds.length,
+      duplicate: result.duplicate,
+    }),
+    ...outcomeAttrs(outcome),
+  });
+  return result;
+}
+
+function finishPersistedIngestResult(messageId: string, deliveryIds: string[]): IngestResult {
+  return finishIngestResult(
+    { duplicate: false, messageId, deliveryIds },
+    deliveryIds.length > 0 ? "persisted" : "no_delivery",
+  );
+}
+
+function isSelfAuthor(event: NormalizedInboundImEvent, externalBotId: string | null): boolean {
+  return (
+    event.message.author.isSelf === true ||
+    (event.message.author.kind === "bot" && event.message.author.externalId === externalBotId)
+  );
+}
+
+function resolveDeliverableTarget(
+  conversationKind: "channel" | "dm" | "group_dm" | null,
+  agentStatus: string,
+  agentComputerId: string | null,
+  agentCanExecute: boolean,
+):
+  | { ok: true; conversationKind: "channel" | "dm" | "group_dm"; agentComputerId: string }
+  | { ok: false; outcome: "no_delivery" | "agent_inactive" | "agent_computer_not_bound" | "agent_rebind_required" } {
+  if (conversationKind === null) return { ok: false, outcome: "no_delivery" };
+  if (agentStatus !== "active") return { ok: false, outcome: "agent_inactive" };
+  // A Session is placed on the Agent's Computer, so an Agent that has none has nowhere to
+  // run. The message is still recorded; only the delivery it cannot receive is withheld.
+  if (agentComputerId === null) return { ok: false, outcome: "agent_computer_not_bound" };
+  if (!agentCanExecute) return { ok: false, outcome: "agent_rebind_required" };
+  return { ok: true, conversationKind, agentComputerId };
+}
+
+function isDirectMessageOrMention(
+  conversationKind: "channel" | "dm" | "group_dm",
+  event: NormalizedInboundImEvent,
+  externalBotId: string | null,
+): boolean {
+  return conversationKind === "dm" || event.mentions.some((mention) => mention.externalId === externalBotId);
 }
 
 function resourceAvailability(resource: NonNullable<ImContentV1["resources"]>[number]) {

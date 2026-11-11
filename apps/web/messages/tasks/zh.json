@@ -56,7 +56,7 @@
   "tasks_failure_provider_unavailable": "模型服务暂时不可用。请稍后重试。",
   "tasks_failure_sandbox_unavailable": "沙箱不可用",
   "tasks_failure_session_resume_failed": "此前的执行进展未能恢复。",
-  "tasks_failure_tool_setup_failed": "飞书或 Slack 命令行准备失败",
+  "tasks_failure_tool_setup_failed": "回复用的命令行准备失败",
   "tasks_failure_turn_state_unknown": "结果未知",
   "tasks_failure_turn_timeout": "已超时",
   "tasks_failure_workspace_failed": "工作区不可用",

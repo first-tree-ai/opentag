@@ -56,7 +56,7 @@
   "tasks_failure_provider_unavailable": "The model service is temporarily unavailable. Try again shortly.",
   "tasks_failure_sandbox_unavailable": "Sandbox unavailable",
   "tasks_failure_session_resume_failed": "Previous execution progress could not be resumed.",
-  "tasks_failure_tool_setup_failed": "Feishu or Slack command line setup failed",
+  "tasks_failure_tool_setup_failed": "Reply command line setup failed",
   "tasks_failure_turn_state_unknown": "Outcome unknown",
   "tasks_failure_turn_timeout": "Timed out",
   "tasks_failure_workspace_failed": "Workspace unavailable",

@@ -7,6 +7,7 @@ import {
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import {
   agentSchedules,
   agents,
@@ -17,7 +18,13 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import {
+  type RuntimeDispatchAdmission,
+  RuntimeDomainOwner,
+  RuntimeDomainRequestError,
+} from "../runtime/runtime-domain-owner.js";
 import { DatabaseAgentOwnerResolver } from "../services/agents/index.js";
 import { disableImBindingInTransaction } from "../services/im-bindings/disable-im-binding.js";
 import {
@@ -26,6 +33,7 @@ import {
   ScheduleService,
   scheduledMessageId,
 } from "../services/schedules/index.js";
+import type { ScheduledMissNotices } from "../services/schedules/scheduled-failure-notifier.js";
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
 import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
@@ -216,6 +224,8 @@ function makeStack(
       afterRowLock?: (id: string) => Promise<void>;
     };
     scheduledBudgets?: { localMs?: number; cloudMs?: number };
+    runtime?: { domain: RuntimeDomainOwner; registry: ConnectionRegistry };
+    missNotices?: ScheduledMissNotices;
   } = {},
 ): Stack {
   const sessionsService = new SessionService(db.database, { now: () => currentTime });
@@ -286,8 +296,8 @@ function makeStack(
   const cloud = { deliver: vi.fn(async () => ({ status: "unreachable" as const, code: "runtime_unavailable" })) };
   const collaboration = new SessionCollaborationService({
     assembler,
-    domain: domain as never,
-    registry,
+    domain: options.runtime?.domain ?? (domain as never),
+    registry: options.runtime?.registry ?? registry,
     sessions: sessionsService,
     cloud: cloud as never,
     logger: { error: vi.fn() },
@@ -300,6 +310,7 @@ function makeStack(
     sessions: sessionsService,
     publicUrl: PUBLIC_URL,
     clock: testClock,
+    missNotices: options.missNotices,
     afterMessageInsert: options.schedulerHooks?.afterMessageInsert,
     afterRowLock: options.schedulerHooks?.afterRowLock,
   });
@@ -350,6 +361,250 @@ async function messageRow(messageId: string) {
   const [row] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId));
   return row;
 }
+
+async function localScheduleTransport(seed: Seed) {
+  const registry = new ConnectionRegistry();
+  const domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(db.database));
+  const notifyMissed = vi.fn<ScheduledMissNotices["notifyMissed"]>(async () => undefined);
+  const { scheduler } = makeStack(seed, { runtime: { registry, domain }, missNotices: { notifyMissed } });
+  const deliveryFrames: SessionMessageDeliveryRequestV3[] = [];
+
+  async function connect(instanceId = seed.instanceId) {
+    const context = {
+      computerId: seed.computerId,
+      instanceId,
+      installationId: seed.installationId,
+      connectionId: randomUUID(),
+      signal: new AbortController().signal,
+    };
+    const socket = {
+      readyState: WebSocket.OPEN,
+      close: vi.fn(),
+      send(serialized: string, callback: () => void) {
+        const frame = JSON.parse(serialized);
+        callback();
+        if (frame.type === "session:message:deliver") {
+          deliveryFrames.push(frame);
+        } else if (frame.type === "session:reconcile") {
+          void domain.handle(
+            {
+              type: "session:reconcile:result",
+              requestId: frame.requestId,
+              sessionId: frame.sessionId,
+              placementGeneration: frame.placementGeneration,
+              status: "ready",
+            },
+            context,
+          );
+        }
+      },
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        ...context,
+        clientVersion: "0.1.1",
+        lastHeartbeatAt: Date.now(),
+        negotiatedCapabilities: {
+          [RUNTIME_CAPABILITY.sessionReconcile]: 1,
+          [RUNTIME_CAPABILITY.sessionCollaboration]: 3,
+          [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+        },
+        socket,
+      },
+      async () => undefined,
+    );
+    return {
+      context,
+      disconnect: () => registry.remove(seed.computerId, instanceId, socket),
+    };
+  }
+
+  return { connect, deliveryFrames, domain, notifyMissed, scheduler };
+}
+
+function acceptScheduledFrame(frame: SessionMessageDeliveryRequestV3 | undefined): SessionMessageDeliveryResult {
+  if (!frame) throw new Error("expected a scheduled delivery frame");
+  return {
+    type: "session:message:deliver:result",
+    requestId: frame.requestId,
+    messageId: frame.messageId,
+    targetSessionId: frame.targetSessionId,
+    placementGeneration: frame.placementGeneration,
+    status: "accepted",
+  };
+}
+
+describe("Local scheduled delivery receipts", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(T0);
+  });
+
+  it("waits for a matching receipt at 89 seconds without sending a miss or a second frame", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    const connection = await connect();
+    try {
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+      const result = acceptScheduledFrame(deliveryFrames[0]);
+      await vi.advanceTimersByTimeAsync(89_000);
+      expect(notifyMissed).not.toHaveBeenCalled();
+      expect(scheduler.inFlightCount).toBe(1);
+
+      connection.disconnect();
+      const replacement = await connect(randomUUID());
+      await domain.handle(result, replacement.context);
+      replacement.disconnect();
+      const reconnected = await connect();
+      await domain.handle({ ...result, requestId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, messageId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, targetSessionId: randomUUID() }, reconnected.context);
+      await domain.handle({ ...result, placementGeneration: 2 }, reconnected.context);
+      expect(scheduler.inFlightCount).toBe(1);
+      expect((await messageRow(result.messageId))?.lastOutcome).toBe("unknown");
+
+      await domain.handle(result, reconnected.context);
+      await domain.handle(result, reconnected.context);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect(await messageRow(result.messageId)).toMatchObject({ lastOutcome: "accepted", attemptCount: 1 });
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: result.messageId,
+        outcome: "accepted",
+        code: null,
+      });
+      expect(deliveryFrames).toHaveLength(1);
+      expect(notifyMissed).not.toHaveBeenCalled();
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("notifies for the first unconfirmed send even when the next occurrence was claimed while waiting", async () => {
+    const seed = await seedStack();
+    const firstDue = new Date(T0.getTime() + 60_000);
+    const row = await insertSchedule(seed, {
+      schedule: { kind: "every", intervalSeconds: 60, anchorAt: T0.toISOString() },
+      nextTriggerAt: firstDue,
+    });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    await connect();
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      currentTime = firstDue;
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      currentTime = new Date(T0.getTime() + 120_000);
+      expect(notifyMissed).not.toHaveBeenCalled();
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(2));
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(notifyMissed).toHaveBeenCalledOnce());
+      expect(notifyMissed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "unconfirmed",
+          occurrence: expect.objectContaining({ scheduledFor: firstDue.toISOString() }),
+          requestId: scheduledMessageId(row.id, firstDue),
+        }),
+        expect.any(AbortSignal),
+      );
+      const firstId = scheduledMessageId(row.id, firstDue);
+      expect(await messageRow(firstId)).toMatchObject({ lastOutcome: "unknown", lastErrorCode: "delivery_timeout" });
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: scheduledMessageId(row.id, currentTime),
+        outcome: "unknown",
+        code: null,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect(notifyMissed).toHaveBeenCalledOnce();
+      expect(deliveryFrames.map((frame) => frame.messageId)).toEqual([
+        firstId,
+        scheduledMessageId(row.id, currentTime),
+      ]);
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("reports a provably unsent occurrence as missed and accepts the next occurrence after reconnect", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, {
+      schedule: { kind: "every", intervalSeconds: 600, anchorAt: T0.toISOString() },
+      nextTriggerAt: new Date(T0.getTime() + 600_000),
+    });
+    const { connect, deliveryFrames, domain, notifyMissed, scheduler } = await localScheduleTransport(seed);
+    try {
+      await vi.advanceTimersByTimeAsync(600_000);
+      currentTime = new Date(T0.getTime() + 600_000);
+      await scheduler.scanNow();
+      const missedId = scheduledMessageId(row.id, currentTime);
+      await vi.waitFor(async () => expect((await messageRow(missedId))?.attemptCount).toBe(1));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(notifyMissed).toHaveBeenCalledOnce());
+      expect(notifyMissed).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "missed", requestId: missedId }),
+        expect.any(AbortSignal),
+      );
+      expect(await messageRow(missedId)).toMatchObject({
+        lastOutcome: "unreachable",
+        lastErrorCode: "runtime_unavailable",
+      });
+      expect(deliveryFrames).toHaveLength(0);
+
+      const { context } = await connect();
+      await vi.advanceTimersByTimeAsync(540_000);
+      currentTime = new Date(T0.getTime() + 1_200_000);
+      await scheduler.scanNow();
+      await vi.waitFor(() => expect(deliveryFrames).toHaveLength(1));
+      await domain.handle(acceptScheduledFrame(deliveryFrames[0]), context);
+      await vi.waitFor(() => expect(scheduler.inFlightCount).toBe(0));
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: scheduledMessageId(row.id, currentTime),
+        outcome: "accepted",
+      });
+      expect(notifyMissed).toHaveBeenCalledOnce();
+    } finally {
+      await scheduler.stop();
+      await domain.close();
+    }
+  });
+
+  it("does not replay a sent occurrence or accept its stale receipt after Server restart", async () => {
+    const seed = await seedStack();
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const first = await localScheduleTransport(seed);
+    await first.connect();
+    await first.scheduler.scanNow();
+    await vi.waitFor(() => expect(first.deliveryFrames).toHaveLength(1));
+    const result = acceptScheduledFrame(first.deliveryFrames[0]);
+    await first.scheduler.stop();
+    await first.domain.close();
+    expect(first.notifyMissed).not.toHaveBeenCalled();
+
+    const restarted = await localScheduleTransport(seed);
+    const { context } = await restarted.connect();
+    try {
+      await restarted.domain.handle(result, context);
+      await restarted.scheduler.scanNow();
+      expect(restarted.deliveryFrames).toHaveLength(0);
+      expect(restarted.notifyMissed).not.toHaveBeenCalled();
+      expect(await messageRow(result.messageId)).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+      expect((await scheduleRow(row.id))?.nextTriggerAt).toBeNull();
+    } finally {
+      await restarted.scheduler.stop();
+      await restarted.domain.close();
+    }
+  });
+});
 
 describe("schedule claim window and clock (D02, D04)", () => {
   it("claims exactly inside the inclusive 30s window and skips past it", async () => {

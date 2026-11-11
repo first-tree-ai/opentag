@@ -1,4 +1,11 @@
+import {
+  FEISHU_CREDENTIAL_REJECTED_CODES,
+  FEISHU_RATE_LIMIT_CODE,
+  isFeishuCredentialRejectedCode,
+} from "@opentag/shared";
 import { z } from "zod";
+
+export { FEISHU_CREDENTIAL_REJECTED_CODES, FEISHU_RATE_LIMIT_CODE, isFeishuCredentialRejectedCode };
 
 export interface FeishuTenantToken {
   token: string;
@@ -21,9 +28,6 @@ const TenantTokenResponseSchema = z.object({
   expire: z.number().int().positive().optional(),
 });
 
-/** Feishu's application rate limit, which it can answer with any HTTP status. */
-export const FEISHU_RATE_LIMIT_CODE = 99991400;
-
 export class FeishuTenantTokenExchangeError extends Error {
   constructor(
     readonly kind: "upstream" | "rate_limited" | "rejected" | "invalid",
@@ -32,6 +36,17 @@ export class FeishuTenantTokenExchangeError extends Error {
   ) {
     super(`Feishu tenant token exchange failed: ${kind}`);
     this.name = "FeishuTenantTokenExchangeError";
+  }
+}
+
+async function parseTenantTokenPayload(response: Response): Promise<z.infer<typeof TenantTokenResponseSchema>> {
+  if (response.status === 429) throw new FeishuTenantTokenExchangeError("rate_limited", FEISHU_RATE_LIMIT_CODE);
+  if (response.status >= 500) throw new FeishuTenantTokenExchangeError("upstream");
+  try {
+    return TenantTokenResponseSchema.parse(await response.json());
+  } catch {
+    // Only a success status promised a token response; anything else is an unusable upstream answer.
+    throw new FeishuTenantTokenExchangeError(response.ok ? "invalid" : "upstream");
   }
 }
 
@@ -56,17 +71,14 @@ export async function exchangeFeishuTenantToken(
   } catch (_error) {
     throw new FeishuTenantTokenExchangeError("upstream");
   }
-  if (response.status === 429) throw new FeishuTenantTokenExchangeError("rate_limited", FEISHU_RATE_LIMIT_CODE);
-  if (response.status >= 500) throw new FeishuTenantTokenExchangeError("upstream");
-  let payload: z.infer<typeof TenantTokenResponseSchema>;
-  try {
-    payload = TenantTokenResponseSchema.parse(await response.json());
-  } catch {
-    // Only a success status promised a token response; anything else is an unusable upstream answer.
-    throw new FeishuTenantTokenExchangeError(response.ok ? "invalid" : "upstream");
-  }
+  const payload = await parseTenantTokenPayload(response);
   if (payload.code === FEISHU_RATE_LIMIT_CODE) throw new FeishuTenantTokenExchangeError("rate_limited", payload.code);
-  if (payload.code !== 0) throw new FeishuTenantTokenExchangeError("rejected", payload.code);
+  if (payload.code !== 0) {
+    throw new FeishuTenantTokenExchangeError(
+      isFeishuCredentialRejectedCode(payload.code) ? "rejected" : "upstream",
+      payload.code,
+    );
+  }
   if (!response.ok) throw new FeishuTenantTokenExchangeError("upstream");
   if (!payload.tenant_access_token || !payload.expire) throw new FeishuTenantTokenExchangeError("invalid");
   return { token: payload.tenant_access_token, expiresAt: now() + payload.expire * 1_000 };

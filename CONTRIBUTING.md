@@ -65,7 +65,7 @@ repository's first 290 commits touched `apps/web` — so in day-to-day terms mos
 human-review requirement. It is a deliberate trade for iteration speed, and CI plus after-the-fact review are what stand
 behind it.
 
-Markdown outside `apps/web` is `territory` with a wider owner pool of yuezengwu, bestony, Gandy2025, and liuchao-001,
+Markdown outside `apps/web` is `territory` owned by yuezengwu and bestony,
 except for the root policy and agent-instruction files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
 the Chinese mirrors of the last two. Those are pulled back into the gate, because agent-instruction files change what
 agents in this repository do and are behavior rather than documentation, and `CONTRIBUTING.md` is where this policy
@@ -84,5 +84,4 @@ from at least one owner named anywhere in `.github/CODEOWNERS`, whatever files i
 applies only to people with write access. Approvals are also not dismissed on a new push, so an approval obtained before
 a later push still counts, and the ownership gate does not close that gap either. Do not assume the check covers it.
 
-Relaxing the policy requires a reviewed change to `.github/CODEOWNERS`, which is itself gated. Ownership is derived from
-change history and recalculated monthly.
+Relaxing the policy requires a reviewed change to `.github/CODEOWNERS`, which is itself gated. When GitHub auto-requests multiple code owners (or after an eligible owner approves a pull request), the ownership gate trims redundant code-owner review requests so each pull request retains a single active code-owner reviewer (`bestony` or `yuezengwu`) while preserving a sole requested owner and unrelated reviewer requests. Ownership is derived from change history and recalculated monthly.

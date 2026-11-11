@@ -55,7 +55,7 @@ Each target Session has one serial inbox drain. The drain does not wait for a Se
 the Session's admission, so the next message tries to steer into it. A message waits in the FIFO, re-checking about once
 per second, while the busy runtime is not yet `running` with an active Run, cannot steer or refuses the steer, the Run
 already carries 16 Session messages, or (for a visible Session) there is no IM outbox context. It starts as its own Run,
-in order, once admission is released. The Cloud Runner path never steers a Session message: it queues behind the active Turn.
+in order, once admission is released. For Cloud delivery, see [Cloud Session message steering](#cloud-session-message-steering).
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
@@ -240,7 +240,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
 (`created_by_session_id`), and a visible target produces none:
 
 - Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
-  automatic retries, as described in
+  automatic retries; one whose model CLI failed to start gets one. As described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
   without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).
@@ -352,17 +352,26 @@ source/target SessionMessage Runtime delivery use that replica's transport owner
 load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
 horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.
 
-## Steering parent messages into a running child on Cloud
+## Cloud Session message steering
 
-> **Planned — not yet implemented.** Tracking: #1303
+A parent can redirect a child's running Turn with `session send`. The same path handles ordinary Session messages
+to an authorized visible Session with a matching IM outbox context. Pi steers the FIFO head into the active Turn,
+including a Turn started by another Session message. Each Turn carries at most 16 steered Session messages. The worker
+waits for Pi to accept its prompt before admitting a steer. During startup, the Runner rechecks about once per second. A known refusal, missing matching outbox, or the steer limit
+leaves the message at the head of the FIFO. It runs on its own after the active Turn. Scheduled occurrences keep their own
+execution context and wait in the FIFO.
 
-A parent Session may send a message to its child at any time, and the message is steered into the child's running Turn
-instead of waiting for that Turn to end. A Local Computer does this today; see
-[Session messages steered into a Session message Run](#session-messages-steered-into-a-session-message-run). On Cloud, no
-Session message is steered yet; it waits for the active Turn to end.
+The Server verifies custody before the Runner offers the message to Pi. `processed` succeeds with the joined Turn
+after its workspace checkpoint, `not_started` returns to the original FIFO position, and `interrupted` settles
+with the failed or cancelled Turn. Pi provides no per-input start evidence after acknowledging a steer, so its
+acknowledgement counts as possibly started. An uncertain injection or loss of the running worker without a receipt
+settles as unknown. Those messages take the existing Cloud Run outcome notice path as terminal work.
+Cloud model retries remain inside the model proxy and the current Turn.
 
-The existing steer outcome rules (`processed`, `not_started`, `interrupted`) apply unchanged. The child still reports
-completion, failure, or timeout to the parent, and the parent decides what to do next.
+An open Turn survives a control-channel disconnect when its worker stays alive. It reports the same outcomes after
+reconnecting. A steer that returns to the FIFO after a disconnect needs a fresh verification before it can run on
+its own. Older Runners keep the original FIFO behavior. See [Cloud Runner execution](../cloud/cloud-runner-execution.md#cloud-session-message-custody)
+for the custody and compatibility boundary.
 
 ## Stopping an internal Session
 
@@ -486,7 +495,7 @@ its messages, and work that runs at least 5 minutes between crashes is never sto
 steered message in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
 repeat. A message the conversation is confirmed to hold is not delivered again; see
 [Messages the conversation already holds](#messages-the-conversation-already-holds). A message steered just before a crash, whose
-`running` state was not yet written, is delivered again without the notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
+`running` state was not yet written, is delivered again without the notice. Cloud follows its [own Runner custody and model retry rules](#cloud-session-message-steering).
 
 ### Session messages steered into a Session message Run
 

@@ -142,7 +142,16 @@ describe("provider CLI validation classification", () => {
       { ok: false, error: { type: "validation", subtype: "invalid_argument" } },
       { status: "needs_attention", reason: "upgrade_required" },
     ],
-    ["unknown", { ok: false, error: { type: "api", subtype: "unknown" } }, { status: "needs_attention" }],
+    [
+      "unknown",
+      { ok: false, error: { type: "api", subtype: "unknown" } },
+      { status: "retrying", reason: "provider_unreachable" },
+    ],
+    [
+      "transient Feishu internal error code (99991644)",
+      { code: 99991644, msg: "upstream hiccup" },
+      { status: "retrying", reason: "provider_unreachable" },
+    ],
     [
       "rate limit as lark-cli reports it",
       { ok: false, identity: "bot", error: { type: "api", subtype: "rate_limit", code: 99991400, retryable: true } },
@@ -162,7 +171,38 @@ describe("provider CLI validation classification", () => {
     [
       "invalid app secret as lark-cli reports it",
       { ok: false, identity: "bot", error: { type: "config", subtype: "invalid_client", code: 10014 } },
-      { status: "needs_attention" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "explicit Feishu credential rejection code without normalization",
+      { code: 10003, msg: "invalid app_id" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "IP allowlist rejection (99991401)",
+      { code: 99991401, msg: "ip not in whitelist" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    ["app id unauthorized (10005)", { code: 10005 }, { status: "needs_attention", reason: "credential_rejected" }],
+    [
+      "app_id and app_secret mismatch (20002)",
+      { code: 20002 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "app_id or app_secret does not exist (99991543)",
+      { code: 99991543 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "app not in use / deactivated (99991662)",
+      { code: 99991662 },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "unauthorized app / not installed (99991673)",
+      { code: 99991673 },
+      { status: "needs_attention", reason: "credential_rejected" },
     ],
   ])("classifies structured Feishu %s failures", (_case, payload, expected) => {
     expect(classifyLarkAuthStatus(payload, feishuIdentity)).toEqual(expected);
@@ -267,13 +307,29 @@ describe("Feishu tenant token exchange", () => {
         (async () => new Response("not-json", { status: 400 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "invalid" });
+    for (const rejectedCode of [10005, 10014, 20002, 99991401, 99991543, 99991662, 99991673]) {
+      await expect(
+        exchangeFeishuTenantToken(
+          grant,
+          undefined,
+          (async () => new Response(JSON.stringify({ code: rejectedCode }), { status: 200 })) as typeof fetch,
+        ),
+      ).rejects.toMatchObject({ kind: "credential_rejected" });
+    }
     await expect(
       exchangeFeishuTenantToken(
         grant,
         undefined,
-        (async () => new Response(JSON.stringify({ code: 10014 }), { status: 200 })) as typeof fetch,
+        (async () => new Response(JSON.stringify({ code: 99991644 }), { status: 200 })) as typeof fetch,
       ),
-    ).rejects.toMatchObject({ kind: "credential_rejected" });
+    ).rejects.toMatchObject({ kind: "provider_unreachable" });
+    await expect(
+      exchangeFeishuTenantToken(
+        grant,
+        undefined,
+        (async () => new Response(JSON.stringify({ code: 99991644 }), { status: 400 })) as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ kind: "provider_unreachable" });
     await expect(
       exchangeFeishuTenantToken(
         grant,
@@ -595,7 +651,7 @@ exit 1
 
   it("classifies non-JSON without spawning a second process", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
-    const nonJson = await fakeCli(home, "#!/bin/sh\necho not-json\nexit 1\n");
+    const nonJsonExitOne = await fakeCli(home, "#!/bin/sh\necho not-json\nexit 1\n");
     const runner = new ProviderCliValidationRunner({ home, verifyTarget: async () => true });
     await expect(
       runner.run(
@@ -605,12 +661,27 @@ exit 1
           expiresAt: new Date(Date.now() + 15_000).toISOString(),
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
-          targetPath: nonJson,
+          targetPath: nonJsonExitOne,
           version: "4.10.0",
         },
         fence,
       ),
-    ).resolves.toMatchObject({ status: "needs_attention" });
+    ).resolves.toMatchObject({ status: "retrying", reason: "provider_unreachable" });
+    const nonJsonExitZero = await fakeCli(home, "#!/bin/sh\necho not-json\nexit 0\n");
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
+          requestId: fence.requestId,
+          targetPath: nonJsonExitZero,
+          version: "4.10.0",
+        },
+        fence,
+      ),
+    ).resolves.toMatchObject({ status: "retrying", reason: "provider_unreachable" });
   });
 
   it("enforces the combined UTF-8 output bound and classifies child timeout", async () => {
@@ -870,7 +941,10 @@ exit 1
       }),
       proxyCredentialMode: true,
     });
-    await expect(exploding.run(request, feishuFence)).resolves.toMatchObject({ status: "needs_attention" });
+    await expect(exploding.run(request, feishuFence)).resolves.toMatchObject({
+      status: "retrying",
+      reason: "provider_unreachable",
+    });
     expect(cleaned).toEqual(["attempted"]);
 
     const execFile = vi.fn();
@@ -999,5 +1073,38 @@ exit 1
       ),
     ).resolves.toEqual({ ...feishuFence, status: "ready" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs distinct local spawn and setup diagnostic codes when process spawn fails with ENOENT", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-enoent-"));
+    const entries: RecordedLog[] = [];
+    const logger = recordingLogger(entries);
+    const runner = new ProviderCliValidationRunner({
+      home,
+      logger,
+      execFile: async () => {
+        throw Object.assign(new Error("spawn /missing ENOENT"), { code: "ENOENT" });
+      },
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.10.0",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "retrying", reason: "provider_unreachable" });
+    expect(entries.map((entry) => entry.fields.code)).toContain("validation_process_spawn_failed");
+    expect(entries.map((entry) => entry.fields)).toContainEqual({
+      code: "local_validation_error",
+      errno: "ENOENT",
+    });
   });
 });

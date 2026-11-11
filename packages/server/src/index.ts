@@ -1407,6 +1407,7 @@ export async function startServer(): Promise<void> {
       cloudAvailability: () => cloudAvailability(config),
       agentStatusService: new AgentStatusService(database, registry, applicationCipher, {
         cloudAvailability: (now) => cloudAvailability(config, now),
+        logger: serviceLogger("agent-status"),
         refreshLegacy: (computerId) => {
           void providerCliReconcileOwner?.ensureLegacyReadinessForComputer(computerId).catch(() => {
             app?.log.warn({ computerId, code: "LEGACY_STATUS_REFRESH_FAILED" }, "Legacy runtime status refresh failed");

@@ -4018,6 +4018,135 @@ describe("IM binding persistence", () => {
     },
   );
 
+  it.each(["report first", "result first"] as const)(
+    "settles a declined steer and delivers subsequent inputs once in order (%s)",
+    async (order) => {
+      const value = await fixture();
+      let domain: RuntimeDomainOwner | undefined;
+      try {
+        const instanceId = crypto.randomUUID();
+        await value.database
+          .update(computers)
+          .set({ currentInstanceId: instanceId })
+          .where(eq(computers.id, value.computer.id));
+        const inbox = new ImMessageInbox(value.database);
+        await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-race-root"));
+        const dispatch = deferred<RuntimeImSteerRequest>();
+        const runtime = await respondingRuntime({
+          database: value.database,
+          computerId: value.computer.id,
+          instanceId,
+          installationId: value.computer.currentInstallationId,
+          negotiatedCapabilities: { [RUNTIME_CAPABILITY.imSteer]: 1 },
+          onFrame: (frame) => {
+            if (frame.type === "im:steer") dispatch.resolve(frame as unknown as RuntimeImSteerRequest);
+          },
+        });
+        domain = runtime.domain;
+        let retryAt = 0;
+        const diagnostic = vi.fn();
+        const worker = imDeliveryWorker({
+          database: value.database,
+          registry: runtime.registry,
+          domain,
+          now: () => new Date(Math.max(Date.now(), retryAt)),
+          onDiagnostic: diagnostic,
+        });
+        await worker.runOnce();
+        const [root] = await value.database.select().from(imMessageDeliveries);
+        if (!root?.turnId) throw new Error("Root Turn custody was not accepted");
+
+        const enqueue = async (sequence: 2 | 3) => {
+          const event = inbound(`Ev-steer-race-${sequence}`);
+          event.message.externalId = `1000.${sequence}`;
+          event.message.revisionKey = `created:1000.${sequence}`;
+          event.message.occurredAt = new Date(`2026-08-19T00:00:0${sequence}.000Z`);
+          return (await inbox.ingest(value.imBindingId, 1, event)).deliveryIds[0];
+        };
+        const firstId = await enqueue(2);
+        const inFlight = worker.runOnce();
+        const request = await dispatch.promise;
+        expect(request).toMatchObject({ deliveryId: firstId, rootDeliveryId: root.id });
+        const secondId = await enqueue(3);
+        const reportBody = {
+          deliveryId: root.id,
+          turnId: root.turnId,
+          sessionId: root.sessionId,
+          agentId: value.agent.id,
+          placementGeneration: root.placementGeneration,
+          outcome: "failed",
+          executionEffects: "may_have_occurred",
+          errorReason: "turn_timeout",
+          traceSummary: { lastSequence: 0, droppedEvents: 0 },
+        } as const;
+        const report: TurnReportRequest = {
+          type: "turn:report",
+          requestId: crypto.randomUUID(),
+          ...reportBody,
+          resultHash: computeTurnResultHash(reportBody),
+        };
+        const result = {
+          type: "im:steer:result",
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          rootDeliveryId: request.rootDeliveryId,
+          expectedTurnId: request.expectedTurnId,
+          status: "deferred",
+          reason: "turn_not_running",
+        } as const;
+        const finishRoot = () =>
+          expect(runtime.domain.handle(report, runtime.context)).resolves.toMatchObject({ status: "recorded" });
+        if (order === "report first") await finishRoot();
+        await runtime.domain.handle(result, runtime.context);
+        await inFlight;
+        expect(diagnostic).not.toHaveBeenCalled();
+        if (order === "result first") {
+          await finishRoot();
+          const [deferred] = await value.database
+            .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, request.deliveryId));
+          if (!deferred) throw new Error("Deferred delivery row is missing");
+          retryAt = deferred.nextAttemptAt.getTime();
+        }
+
+        await worker.runOnce();
+        const [first] = await value.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, request.deliveryId));
+        if (!first?.turnId) throw new Error("The declined input did not start a new Turn");
+        await expect(
+          runtime.domain.handle(
+            turnReportFor({ ...first, agentId: value.agent.id, deliveryId: first.id, turnId: first.turnId }),
+            runtime.context,
+          ),
+        ).resolves.toMatchObject({ status: "recorded" });
+        await runtime.domain.handle(result, runtime.context);
+        await worker.runOnce();
+        await worker.runOnce();
+        expect(
+          runtime.frames
+            .filter(
+              (frame): frame is DirectImMessageDeliveryRequest | RuntimeImSteerRequest =>
+                (frame as { type: string }).type === "im:deliver" || (frame as { type: string }).type === "im:steer",
+            )
+            .map(({ type, deliveryId }) => [type, deliveryId]),
+        ).toEqual([
+          ["im:deliver", root.id],
+          ["im:steer", firstId],
+          ["im:deliver", firstId],
+          ["im:deliver", secondId],
+        ]);
+      } finally {
+        await domain?.close();
+        await value.sql.end();
+      }
+    },
+  );
+
   it("retains an unconfirmed steer correlation after the root completes without starting another Turn", async () => {
     const value = await fixture();
     try {

@@ -22,6 +22,7 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
 import {
+  LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS,
   type RuntimeDispatchAdmission,
   type RuntimeDomainOwner,
   RuntimeDomainRequestError,
@@ -186,7 +187,7 @@ export interface ScheduleDispatch {
 /** A stop older than this is not sent again: a Run outlasting the Computer's absence is its Run budget's job. */
 const STOP_REDELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const STOP_REDELIVERY_LIMIT = 64;
-// Local reconcile + delivery. Cloud preparation + receipt, including time queued before the send.
+// Local preparation through the send mark. Cloud preparation through receipt.
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
 const SCHEDULED_LOCAL_RETRY_DELAY_MS = 5_000;
 const SCHEDULED_ASSEMBLY_FAILURE_CODES = { local: "runtime_assembly_failed", cloud: "runtime_not_ready" } as const;
@@ -492,13 +493,16 @@ export class SessionCollaborationService {
     parentSignal?.addEventListener("abort", onParentAbort);
     /*
      * The total budget starts at dispatch ENTRY and covers fencing, route resolution, runtime
-     * assembly, and every transport stage (Local reconcile + delivery; Cloud ensure + queue +
-     * receipt). The provisional timer uses the larger Local budget until the target kind is
+     * assembly, and transport through the Local send mark or the Cloud receipt. The
+     * provisional timer uses the larger Local budget until the target kind is
      * known; the corrected timer then anchors the exact remaining budget to the entry time.
      */
     const startedAt = Date.now();
     const shortCloudBudget = Math.min(this.#scheduledCloudBudgetMs, SCHEDULED_CLOUD_SHORT_BUDGET_MS);
-    let timer = startBudgetTimer(controller, Math.max(this.#scheduledLocalBudgetMs, shortCloudBudget));
+    let timer: ReturnType<typeof setTimeout> | undefined = startBudgetTimer(
+      controller,
+      Math.max(this.#scheduledLocalBudgetMs, shortCloudBudget),
+    );
     let releaseExtendedCloud: (() => void) | undefined;
     try {
       const signal = controller.signal;
@@ -545,9 +549,16 @@ export class SessionCollaborationService {
       }
       if (!local) return await this.#deliverScheduledCloud(snapshot, route, assembly.runtime, signal, record);
       // Preparation retries inside this slot first; only what is still unreachable after that is held.
-      return await this.#deliverScheduledLocal(snapshot, route, assembly.runtime, deadline, signal, settle);
+      // Once the send is marked, the receipt wait replaces the preparation budget; a receipt timeout is
+      // `unknown` (the frame may have arrived), so it is reported, never held.
+      return await this.#deliverScheduledLocal(snapshot, route, assembly.runtime, deadline, signal, settle, () => {
+        if (timer === undefined || signal.aborted) return;
+        clearTimeout(timer);
+        timer = startBudgetTimer(controller, LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS);
+      });
     } finally {
       clearTimeout(timer);
+      timer = undefined;
       parentSignal?.removeEventListener("abort", onParentAbort);
       releaseExtendedCloud?.();
     }
@@ -640,6 +651,7 @@ export class SessionCollaborationService {
     deadline: number,
     signal: AbortSignal,
     record: (outcome: SessionMessageOutcome, code?: string) => Promise<ScheduledMessageDispatchOutcome>,
+    onDispatched: () => void,
     /** A held redelivery is offered again by the worker, so it does not also retry inside one attempt. */
     retryPreparation = true,
   ): Promise<ScheduledMessageDispatchOutcome> {
@@ -679,7 +691,7 @@ export class SessionCollaborationService {
         route.targetComputerId,
         instanceId,
         request,
-        undefined,
+        onDispatched,
         admission,
         signal,
       );
@@ -1704,7 +1716,7 @@ export class SessionCollaborationService {
     let stillHeld = false;
     const controller = new AbortController();
     const deadline = Date.now() + this.#scheduledLocalBudgetMs;
-    const timer = startBudgetTimer(controller, this.#scheduledLocalBudgetMs);
+    let timer: ReturnType<typeof setTimeout> | undefined = startBudgetTimer(controller, this.#scheduledLocalBudgetMs);
     try {
       const settle = (outcome: SessionMessageOutcome, code?: string): Promise<ScheduledMessageDispatchOutcome> => {
         if (outcome === "unreachable" && code && this.#canHold(route.targetComputerId, { code })) {
@@ -1717,9 +1729,25 @@ export class SessionCollaborationService {
           return recorded;
         });
       };
-      await this.#deliverScheduledLocal(snapshot, route, runtime, deadline, controller.signal, settle, false);
+      // A held redelivery gets the same receipt wait as a first send once its frame is marked sent.
+      const onDispatched = () => {
+        if (timer === undefined || controller.signal.aborted) return;
+        clearTimeout(timer);
+        timer = startBudgetTimer(controller, LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS);
+      };
+      await this.#deliverScheduledLocal(
+        snapshot,
+        route,
+        runtime,
+        deadline,
+        controller.signal,
+        settle,
+        onDispatched,
+        false,
+      );
     } finally {
       clearTimeout(timer);
+      timer = undefined;
     }
     return stillHeld ? "held" : "settled";
   }

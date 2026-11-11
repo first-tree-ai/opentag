@@ -3242,6 +3242,17 @@ describe("ProviderCliReconcileOwner credential check false alarms", () => {
         .handle({ ...requirement, type: "provider-cli:artifact:status", status: "ready" }, context);
     }
     await vi.advanceTimersByTimeAsync(0);
+    const requirements = (agent = agents[0]) =>
+      frames().filter(
+        (frame) => frame.type === "provider-cli:requirement" && frame.integrationId === agent?.integrationId,
+      );
+    const answerArtifactReady = (agent = agents[0]) => {
+      const requirement = requirements(agent).at(-1);
+      if (!requirement) throw new Error("Missing requirement");
+      return owner
+        .businessOptions()
+        .handle({ ...requirement, type: "provider-cli:artifact:status", status: "ready" }, context);
+    };
     const grants = (agent = agents[0]) =>
       frames().filter(
         (frame) => frame.type === "provider-cli:validation:grant" && frame.integrationId === agent?.integrationId,
@@ -3273,9 +3284,11 @@ describe("ProviderCliReconcileOwner credential check false alarms", () => {
       advance,
       agents,
       answer,
+      answerArtifactReady,
       grants,
       observation,
       owner,
+      requirements,
       slowComputerKind: (ms: number) => {
         computerKindDelayMs = ms;
       },
@@ -3397,5 +3410,49 @@ describe("ProviderCliReconcileOwner credential check false alarms", () => {
       await binding.answer({ status: "needs_attention", reason: "credential_rejected" });
       expect(binding.observation()).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
       expect(binding.observation()?.timedOut).toBeFalsy();
+    }));
+
+  it("re-reconciles the artifact and re-issues a credential grant when validation reports artifact_changed", () =>
+    withBindings(async (binding) => {
+      const [first] = binding.agents;
+      if (!first) throw new Error("Missing agent");
+      await binding.answer({ status: "ready" });
+      await binding.advance(60_000);
+      binding.owner.onCredentialFailure({
+        agentId: first.agentId,
+        bindingId: first.integrationId,
+        credentialGeneration: "1:test",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(binding.grants()).toHaveLength(2);
+      expect(binding.requirements()).toHaveLength(1);
+      await binding.answer({ status: "retrying", reason: "artifact_changed" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+      await binding.advance(1_000);
+      expect(binding.requirements()).toHaveLength(2);
+      await binding.answerArtifactReady();
+      expect(binding.grants()).toHaveLength(3);
+      await binding.answer({ status: "ready" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+    }));
+
+  it("rechecks a rate-limited credential right after its cooldown expires instead of waiting a second 10-minute cycle", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(2);
+      await binding.advance(5_000);
+      await binding.answer({ status: "retrying", reason: "rate_limited" });
+      expect(binding.observation()).toMatchObject({
+        status: "needs_attention",
+        reason: "rate_limited",
+        timedOut: false,
+      });
+      await binding.advance(tenMinutes - 5_000);
+      expect(binding.grants()).toHaveLength(2);
+      await binding.advance(5_000);
+      expect(binding.grants()).toHaveLength(3);
+      await binding.answer({ status: "ready" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
     }));
 });

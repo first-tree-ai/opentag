@@ -538,6 +538,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       }),
     ).rejects.toMatchObject({ code: "binding_incompatible" });
     await expect(
+      new ClaudeCodeAgentRuntimeFactory().resume({
+        ...createRequest(() => undefined),
+        binding: {
+          providerId: "claude-code",
+          schemaVersion: 1,
+          payload: { sessionId: SESSION_ID, systemPromptSnapshotOff: "invalid" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    await expect(
       new ClaudeCodeAgentRuntimeFactory({ createSessionId: () => "bad" }).create(createRequest(() => undefined)),
     ).rejects.toThrow("UUID");
     await expect(
@@ -738,7 +748,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt --system-prompt-snapshot\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -793,7 +803,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     const script = (loggedIn: boolean, apiProvider = "firstParty") => `#!/bin/sh
 if [ "$1" = "--version" ]; then echo '2.1.210 (Claude Code)'; exit 0; fi
-if [ "$1" = "--help" ]; then echo 'stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools acceptEdits --permission-prompt-tool --append-system-prompt'; exit 0; fi
+if [ "$1" = "--help" ]; then echo 'stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools acceptEdits --permission-prompt-tool --append-system-prompt --system-prompt-snapshot'; exit 0; fi
 echo '{"loggedIn":${loggedIn},"apiProvider":"${apiProvider}"}'
 `;
     await writeFile(command, script(false), { mode: 0o700 });
@@ -818,27 +828,30 @@ echo '{"loggedIn":${loggedIn},"apiProvider":"${apiProvider}"}'
     expect(verifyCredential).toHaveBeenCalledOnce();
   });
 
-  it.each(["acceptEdits", "--permission-prompt-tool"])("rejects a CLI without %s support", async (missing) => {
-    const directory = await temporaryDirectory("opentag-claude-probe-");
-    const command = join(directory, "claude-fixture");
-    const help =
-      "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools acceptEdits --permission-prompt-tool --append-system-prompt";
-    await writeFile(
-      command,
-      `#!/bin/sh
+  it.each(["acceptEdits", "--permission-prompt-tool", "--system-prompt-snapshot"])(
+    "rejects a CLI without %s support",
+    async (missing) => {
+      const directory = await temporaryDirectory("opentag-claude-probe-");
+      const command = join(directory, "claude-fixture");
+      const help =
+        "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools acceptEdits --permission-prompt-tool --append-system-prompt --system-prompt-snapshot";
+      await writeFile(
+        command,
+        `#!/bin/sh
 if [ "$1" = "--version" ]; then echo '2.1.295 (Claude Code)'; exit 0; fi
 if [ "$1" = "--help" ]; then echo '${help.replace(missing, "")}'; exit 0; fi
 echo '{"loggedIn":true}'
 `,
-      "utf8",
-    );
-    await chmod(command, 0o755);
-    await expect(
-      new ClaudeCodeAgentRuntimeFactory({
-        process: { command, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fixture" } },
-      }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
-  });
+        "utf8",
+      );
+      await chmod(command, 0o755);
+      await expect(
+        new ClaudeCodeAgentRuntimeFactory({
+          process: { command, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fixture" } },
+        }).probe({}),
+      ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
+    },
+  );
 
   it.each(["logged-out", "invalid", "empty"])("rejects %s local credentials", async (mode) => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
@@ -851,7 +864,7 @@ echo '{"loggedIn":true}'
           : "exit 1";
     await writeFile(
       missingCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt --system-prompt-snapshot\\n"; exit 0; fi\n${authResponse}\n`,
       "utf8",
     );
     await chmod(missingCommand, 0o755);
@@ -870,7 +883,7 @@ echo '{"loggedIn":true}'
     const userCredentialCommand = join(directory, "claude-user-credential");
     await writeFile(
       userCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt --system-prompt-snapshot\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
       "utf8",
     );
     await chmod(userCredentialCommand, 0o755);
@@ -888,7 +901,7 @@ echo '{"loggedIn":true}'
     const nativeCredentialCommand = join(directory, "claude-native-credential");
     await writeFile(
       nativeCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt --system-prompt-snapshot\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "user" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
       "utf8",
     );
     await chmod(nativeCredentialCommand, 0o755);
@@ -903,7 +916,7 @@ echo '{"loggedIn":true}'
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; touch "$0.version-read"; exit 0; fi\nif [ "$1" = "--help" ]; then while [ ! -f "$0.version-read" ]; do sleep 0.01; done; printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; touch "$0.version-read"; exit 0; fi\nif [ "$1" = "--help" ]; then while [ ! -f "$0.version-read" ]; do sleep 0.01; done; printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "acceptEdits" --append-system-prompt --system-prompt-snapshot\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
       "utf8",
     );
     await chmod(vanishingCommand, 0o755);

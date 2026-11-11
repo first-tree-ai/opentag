@@ -1,7 +1,7 @@
 # 为 openTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
-> Last synced with: 2026-10-21
+> Last synced with: 2026-11-11
 
 openTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
@@ -55,7 +55,7 @@ npm 发布、绕开受保护流程创建 production tag，以及回退到 token 
 它约占受版本控制文件的四分之一，但占改动量的大多数——仓库最初 290 个 commit 中有 173 个触及 `apps/web`——因此就日常
 工作而言，成员写的大部分内容都没有人工评审要求。这是为迭代速度做出的有意取舍，支撑它的是 CI 和事后评审。
 
-`apps/web` 之外的 Markdown 为 territory，owner 范围更宽，包括 yuezengwu、bestony、Gandy2025 和 liuchao-001，
+`apps/web` 之外的 Markdown 为 territory，owner 为 yuezengwu 和 bestony，
 但根目录的策略与 agent 指令文件除外：`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`SECURITY.md` 以及后两者的中文镜像。
 这些文件被拉回 gate，因为 agent 指令文件会改变本仓库中 agent 的行为，属于行为而非文档，而 `CONTRIBUTING.md` 正是本策略
 自身的载体。三个例行杂务路径为 territory：`.editorconfig`、`.gitignore` 和 `LICENSE`。依赖清单为 exempt：任意层级的
@@ -70,5 +70,5 @@ bot——无论改动了哪些文件，该 Pull Request 都还需要 `.github/CO
 的豁免只适用于有写权限的人。此外，新的 push 不会撤销已有批准，因此在后续 push 之前获得的批准仍然有效，ownership gate
 也不会弥补这一缺口。不要假设该检查覆盖了这一点。
 
-放宽该策略需要对 `.github/CODEOWNERS` 做一次经过评审的改动，而该文件本身受 gate 约束。owner 由变更历史推导得出，
+放宽该策略需要对 `.github/CODEOWNERS` 做一次经过评审的改动，而该文件本身受 gate 约束。当 GitHub 自动请求多位 code owner（或其中一位符合条件的 owner 已批准该 Pull Request）时，ownership gate 会自动移除冗余的 code-owner 待审请求，确保每个 Pull Request 仅保留一位活跃的 code-owner reviewer（`bestony` 或 `yuezengwu`），同时保留单独指定的 owner 请求与非 owner 的评审请求。owner 由变更历史推导得出，
 每月重新计算一次。

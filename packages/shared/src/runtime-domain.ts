@@ -229,6 +229,10 @@ export const TurnFailureReasonSchema = z.enum([
   "workspace_failed",
   "configuration_conflict",
   "credential_unavailable",
+  // Turn report v4: causes split out of `credential_unavailable`.
+  "im_connection_unavailable",
+  "model_login_missing",
+  "tool_setup_failed",
   "sandbox_unavailable",
   "provider_start_failed",
   "session_resume_failed",
@@ -242,8 +246,16 @@ export const TurnFailureReasonSchema = z.enum([
   "client_shutdown",
 ]);
 
+/** Reasons that need Turn report v4; an older Server receives `credential_unavailable` instead. */
+export const CREDENTIAL_DETAIL_FAILURE_REASONS: readonly string[] = [
+  "im_connection_unavailable",
+  "model_login_missing",
+  "tool_setup_failed",
+];
+
 /** Minimum negotiated capability needed to send this immutable report. */
-export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
+export function requiredTurnReportVersion(report: object): 1 | 2 | 3 | 4 {
+  if ("errorReason" in report && CREDENTIAL_DETAIL_FAILURE_REASONS.includes(String(report.errorReason))) return 4;
   if ("errorReason" in report && ProviderFailureReasonSchema.safeParse(report.errorReason).success) return 3;
   if ("outgoingReplies" in report && report.outgoingReplies !== undefined) return 2;
   return 1;

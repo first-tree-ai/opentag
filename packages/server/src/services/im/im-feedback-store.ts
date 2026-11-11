@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { TurnReportRequest } from "@opentag/shared";
-import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../../db/im-delivery-work.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
@@ -18,9 +19,13 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
-import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
+import { type FeedbackLanguage, feedbackLanguage, messageExcerpt } from "./im-feedback-copy.js";
 
-export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
+export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
+  batchRetryBlocked?: boolean;
+  /** Messages in a frozen initial batch, the root included; set with `batchRetryBlocked`. */
+  batchSize?: number;
+};
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
 export interface FeedbackSettlement {
@@ -33,6 +38,19 @@ export interface FeedbackSettlement {
   errorCode?: string;
   stale?: boolean;
   dormant?: boolean;
+}
+export interface FeedbackRuntime {
+  /** `cloud` for an Agent on the Cloud Computer, which runs the platform model. */
+  tool: "claude-code" | "codex" | "pi" | "cloud";
+  model: string | null;
+}
+export interface FeedbackMessageContext {
+  language: FeedbackLanguage;
+  direct: boolean;
+  /** The start of what the sender wrote, for a card sent to their direct message. */
+  excerpt?: string;
+  /** The Agent's tool and model as its settings name them, for cards that tell someone what to fix. */
+  runtime?: FeedbackRuntime;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -89,8 +107,7 @@ export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId
       threadKey: row.message.threadKey,
       senderExternalId: row.message.authorExternalId,
       cardOwnerDeliveryId: row.delivery.steerTargetDeliveryId ?? deliveryId,
-      // The column default is the legacy card format, so new targets name text explicitly.
-      messageFormat: "text_v1",
+      messageFormat: "interactive_v1",
       sandboxId: row.sandbox?.id,
       environmentGeneration: row.sandbox?.environmentGeneration,
       resourceUid: row.sandbox?.currentResourceUid,
@@ -336,9 +353,7 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed
-        ? { ...claimed, batchRetryBlocked: await hasFrozenFeedbackBatch(tx, claimed.deliveryId) }
-        : undefined;
+      return claimed ? await withFrozenBatch(tx, claimed) : undefined;
     });
   }
 
@@ -405,7 +420,7 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked } : target;
+    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked, batchSize: target.batchSize } : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -457,9 +472,9 @@ export class ImFeedbackStore {
   async markSending(target: FeedbackTarget): Promise<boolean> {
     const rows = await this.database
       .update(imFeedbackTargets)
-      // Every new send is text. A legacy card target that never sent becomes text here, before any request
+      // Every new send is a card. A text target that never sent becomes a card here, before any request
       // exists, so readback and later updates match what was actually sent.
-      .set({ cardState: "sending", sendStartedAt: this.now(), messageFormat: "text_v1" })
+      .set({ cardState: "sending", sendStartedAt: this.now(), messageFormat: "interactive_v1" })
       .where(
         and(
           eq(imFeedbackTargets.id, target.id),
@@ -542,13 +557,41 @@ export class ImFeedbackStore {
   }
 
   /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
-  async messageLanguage(messageId: string): Promise<FeedbackLanguage> {
+  /** The reader's language, and whether the conversation is a direct message, which decides where a card goes. */
+  async messageContext(
+    target: Pick<FeedbackTarget, "messageId" | "sessionId"> & Partial<Pick<FeedbackTarget, "agentId">>,
+  ): Promise<FeedbackMessageContext> {
     const [message] = await this.database
       .select({ content: imMessages.content })
       .from(imMessages)
-      .where(eq(imMessages.id, messageId))
+      .where(eq(imMessages.id, target.messageId))
       .limit(1);
-    return message ? feedbackLanguage(message.content) : "en";
+    const [session] = await this.database
+      .select({ conversationKind: sessions.conversationKind })
+      .from(sessions)
+      .where(eq(sessions.id, target.sessionId))
+      .limit(1);
+    const [agent] = target.agentId
+      ? await this.database
+          .select({
+            provider: agents.runtimeProvider,
+            model: agentRuntimeConfigs.model,
+            computerKind: computers.kind,
+          })
+          .from(agents)
+          .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
+          .where(eq(agents.id, target.agentId))
+          .limit(1)
+      : [];
+    return {
+      language: message ? feedbackLanguage(message.content) : "en",
+      ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
+      direct: session?.conversationKind === "dm",
+      ...(agent
+        ? { runtime: { tool: agent.computerKind === "cloud" ? "cloud" : agent.provider, model: agent.model ?? null } }
+        : {}),
+    };
   }
 
   /**
@@ -780,6 +823,21 @@ function observerFeedbackUpdate(now: Date) {
     revision: sql`${imFeedbackTargets.revision}+1`,
     updatedAt: now,
   };
+}
+
+/** A claimed target with its frozen-batch flag and size: the root plus every message batched into it. */
+async function withFrozenBatch(tx: DatabaseTransaction, target: FeedbackTarget): Promise<FeedbackTarget> {
+  const [row] = await tx
+    .select({ members: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.steerTargetDeliveryId, target.deliveryId),
+        eq(imMessageDeliveries.reason, "batch_initial"),
+      ),
+    );
+  const members = row?.members ?? 0;
+  return { ...target, batchRetryBlocked: members > 0, ...(members > 0 ? { batchSize: members + 1 } : {}) };
 }
 
 export async function hasFrozenFeedbackBatch(

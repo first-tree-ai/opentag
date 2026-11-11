@@ -48,8 +48,9 @@ import {
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
-  RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
+  retryDelayMs,
+  retryLimit,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
@@ -644,8 +645,8 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
+      // An in-place retry follows a model failure and waits first; false when an orderly stop interrupts it.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -812,6 +813,9 @@ export class AgentTurnRunner {
     if (completion.outcome === "completed") return undefined;
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
+    // A start failure is retried only when it provably ran nothing.
+    /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
+    if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
@@ -821,7 +825,7 @@ export class AgentTurnRunner {
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
-        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs });
+        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
         return { ...ran, retries: count, retryRanMs: 0, interruption };
       });
     } catch {
@@ -1354,15 +1358,18 @@ export function completionForError(error: unknown, abortReason: unknown, expired
       errorReason: "turn_timeout",
     };
   }
+  if (error instanceof ImCredentialEnvironmentError && error.code === "im_connection_unavailable") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "im_connection_unavailable" };
+  }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
-    return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "tool_setup_failed" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {
     return {
       outcome: "failed",
       executionEffects: "not_started",
       errorReason: error.result.issues.some((issue) => issue.code === "credential_missing")
-        ? "credential_unavailable"
+        ? "model_login_missing"
         : "provider_start_failed",
     };
   }

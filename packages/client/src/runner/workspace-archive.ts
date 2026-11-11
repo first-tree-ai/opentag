@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, type Hash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, type Stats } from "node:fs";
 import {
   chmod,
@@ -498,7 +498,7 @@ async function assertEntryUnchanged(workspacePath: string, record: WalkRecord): 
  * production strictly sequential so memory stays bounded. A source whose size drifts mid-read
  * also fails closed via tar-stream's own size-mismatch check.
  */
-function addArchiveEntry(pack: Pack, header: TarHeaders, sourcePath?: string): Promise<void> {
+function addArchiveEntry(pack: Pack, header: TarHeaders, source?: { path: string; hash: Hash }): Promise<void> {
   return new Promise<void>((resolveEntry, rejectEntry) => {
     let settled = false;
     const done = (error?: unknown) => {
@@ -511,17 +511,30 @@ function addArchiveEntry(pack: Pack, header: TarHeaders, sourcePath?: string): P
       }
     };
     const sink = pack.entry(header, (err) => done(err));
-    if (sourcePath === undefined) {
+    if (source === undefined) {
       sink.end();
       return;
     }
-    pipeline(createReadStream(sourcePath), sink).then(() => done(), done);
+    const stream = createReadStream(source.path);
+    stream.on("data", (chunk: Buffer) => source.hash.update(chunk));
+    pipeline(stream, sink).then(() => done(), done);
   });
 }
 
-async function writeWorkspaceEntries(pack: Pack, workspacePath: string, records: readonly WalkRecord[]): Promise<void> {
+function updateFingerprint(hash: Hash, record: WalkRecord, content?: Buffer): void {
+  hash.update(JSON.stringify([record.rel, record.kind, record.size, record.mode, record.mtime, record.target]));
+  if (content !== undefined) hash.update(content);
+}
+
+async function writeWorkspaceEntries(
+  pack: Pack,
+  workspacePath: string,
+  records: readonly WalkRecord[],
+): Promise<string> {
+  const fingerprint = createHash("sha256");
   for (const record of records) {
     await assertEntryUnchanged(workspacePath, record);
+    let content: Buffer | undefined;
     if (record.kind === "symlink") {
       await addArchiveEntry(pack, {
         name: record.rel,
@@ -533,13 +546,17 @@ async function writeWorkspaceEntries(pack: Pack, workspacePath: string, records:
     } else if (record.kind === "directory") {
       await addArchiveEntry(pack, { name: record.rel, type: "directory", mode: record.mode, mtime: record.mtime });
     } else {
+      const hash = createHash("sha256");
       await addArchiveEntry(
         pack,
         { name: record.rel, type: "file", size: record.size, mode: record.mode, mtime: record.mtime },
-        join(workspacePath, ...record.rel.split("/")),
+        { path: join(workspacePath, ...record.rel.split("/")), hash },
       );
+      content = hash.digest();
     }
+    updateFingerprint(fingerprint, record, content);
   }
+  return fingerprint.digest("hex");
 }
 
 /** Hash the saved tree semantics without packing it. Callers must quiesce every writer. */
@@ -551,7 +568,7 @@ export async function fingerprintWorkspace(workspace: string): Promise<string> {
   const hash = createHash("sha256");
   for (const record of scan.records) {
     await assertEntryUnchanged(workspacePath, record);
-    hash.update(JSON.stringify([record.rel, record.kind, record.size, record.mode, record.mtime, record.target]));
+    let digest: Buffer | undefined;
     if (record.kind === "file") {
       const content = createHash("sha256");
       let bytes = 0;
@@ -561,8 +578,9 @@ export async function fingerprintWorkspace(workspace: string): Promise<string> {
         content.update(chunk);
       }
       if (bytes !== record.size) fail("workspace-changed", "Workspace changed while fingerprinting");
-      hash.update(content.digest());
+      digest = content.digest();
     }
+    updateFingerprint(hash, record, digest);
   }
   return hash.digest("hex");
 }
@@ -571,7 +589,7 @@ export async function createWorkspaceArchive(
   workspace: string,
   archivePath: string,
   limits?: WorkspaceArchiveLimits,
-): Promise<WorkspaceArchiveInfo> {
+): Promise<WorkspaceArchiveInfo & { readonly fingerprint: string }> {
   const resolvedLimits = resolveLimits(limits);
   const workspacePath = resolve(workspace);
   const archivePathResolved = resolve(archivePath);
@@ -601,8 +619,9 @@ export async function createWorkspaceArchive(
   // instead of letting backpressure stall the walk forever.
   output.catch(() => pack.destroy());
 
+  let fingerprint: string;
   try {
-    await writeWorkspaceEntries(pack, workspacePath, scan.records);
+    fingerprint = await writeWorkspaceEntries(pack, workspacePath, scan.records);
     pack.finalize();
     await output;
   } catch (error) {
@@ -619,7 +638,8 @@ export async function createWorkspaceArchive(
     throw toArchiveError(error, "io-failed", "Archive publish failed");
   }
 
-  const result: WorkspaceArchiveInfo = {
+  const result = {
+    fingerprint,
     bytes: compressed.readCount(),
     sha256: hashes.sha256.digest("hex"),
     md5: hashes.md5.digest("base64"),
@@ -660,6 +680,7 @@ class RestoreState {
   private readonly implicitDirs = new Set<string>();
   private readonly dirModes = new Map<string, number>();
   private readonly links = new Map<string, string>();
+  private readonly fileDigests = new Map<string, Buffer>();
   private entries = 0;
   private bytes = 0;
 
@@ -711,8 +732,10 @@ class RestoreState {
       this.declared.set(name, "file");
       const dest = this.dest(name);
       // Exclusive and private while streaming; the declared mode (sanitized) is applied after.
+      const hash = createHash("sha256");
       const tap = new PassThrough();
       tap.on("data", (chunk: Buffer) => {
+        hash.update(chunk);
         this.bytes += chunk.length;
         if (this.bytes > this.limits.maxBytes) {
           tap.destroy(
@@ -725,6 +748,7 @@ class RestoreState {
       });
       await pipeline(stream, tap, createWriteStream(dest, { flags: "wx", mode: 0o600 }));
       await chmod(dest, sanitizeMode(header.mode, 0o644));
+      this.fileDigests.set(name, hash.digest());
       return;
     }
     if (header.type === "link") {
@@ -734,7 +758,7 @@ class RestoreState {
   }
 
   /** Runs after the archive stream is fully consumed and both digests verify. */
-  async finalize(): Promise<void> {
+  async finalize(): Promise<string> {
     const namespace = new Map<string, NamespaceEntry>();
     for (const dir of this.implicitDirs) namespace.set(dir, { kind: "directory" });
     for (const [name, kind] of this.declared) {
@@ -744,10 +768,33 @@ class RestoreState {
     for (const [name, target] of this.links) {
       await symlink(target, this.dest(name));
     }
+    const fingerprint = await this.fingerprint();
     const deepestFirst = [...this.dirModes.keys()].sort((a, b) => b.split("/").length - a.split("/").length);
     for (const dir of deepestFirst) {
       await chmod(this.dest(dir), this.dirModes.get(dir) ?? 0o755);
     }
+    return fingerprint;
+  }
+
+  private async fingerprint(): Promise<string> {
+    // Scan the staged mtimes in workspace order while directories are still traversable.
+    // A smaller archive entry limit counts tar members; implicit parents still fit under
+    // the normal workspace ceiling. Larger overrides also apply to the staged tree.
+    const scan = await scanWorkspace(this.staging, {
+      ...this.limits,
+      maxEntries: Math.max(this.limits.maxEntries, WORKSPACE_MAX_ENTRIES),
+    });
+    assertLinksContained(scan.namespace, "unsafe-entry");
+    const hash = createHash("sha256");
+    for (const record of scan.records) {
+      const mode = this.dirModes.get(record.rel) ?? record.mode;
+      const content = this.fileDigests.get(record.rel);
+      if (record.kind === "file" && content === undefined) {
+        fail("invalid-archive", `No extracted content digest for ${bounded(record.rel)}`);
+      }
+      updateFingerprint(hash, { ...record, mode }, content);
+    }
+    return hash.digest("hex");
   }
 
   get stats(): { readonly workspaceBytes: number; readonly entryCount: number } {
@@ -790,7 +837,7 @@ async function extractArchiveInto(
   staging: string,
   expected: WorkspaceArchiveInfo,
   limits: ResolvedLimits,
-): Promise<{ readonly workspaceBytes: number; readonly entryCount: number }> {
+): Promise<{ readonly workspaceBytes: number; readonly entryCount: number; readonly fingerprint: string }> {
   const hashes = { sha256: createHash("sha256"), md5: createHash("md5") };
   const compressedMeter = new PassThrough();
   const compressed = attachCompressedMeter(compressedMeter, limits.maxArchiveBytes, hashes);
@@ -832,8 +879,8 @@ async function extractArchiveInto(
 
   // Integrity is proven and the full member graph is known: only now install symlinks and
   // apply declared directory modes.
-  await state.finalize();
-  return state.stats;
+  const fingerprint = await state.finalize();
+  return { ...state.stats, fingerprint };
 }
 
 /**
@@ -873,7 +920,7 @@ export async function restoreWorkspaceArchive(
   workspace: string,
   expected: WorkspaceArchiveInfo,
   limits?: WorkspaceArchiveLimits,
-): Promise<void> {
+): Promise<string> {
   const resolvedLimits = resolveLimits(limits);
   validateExpected(expected, resolvedLimits);
   const archivePathResolved = resolve(archivePath);
@@ -913,6 +960,7 @@ export async function restoreWorkspaceArchive(
     } catch {
       // Telemetry callback must never fail workspace restoration.
     }
+    return stats.fingerprint;
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error instanceof WorkspaceArchiveError

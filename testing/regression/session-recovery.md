@@ -20,14 +20,13 @@ the same Session after the daemon is back, its input begins with
 
 With an IM test binding on a Local Computer and permission to stop its daemon:
 
-1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then one reply within
-   about seventy-five seconds with the agreed four sentences and a Restore connection link. No Computer name or person
-   is named.
+1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then within about
+   seventy-five seconds one red card titled “Agent 所在电脑离线” with the body “电脑恢复后会自动处理” and no link. No
+   Computer name or person is named. In a direct message the card is not a quote reply.
 2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
    Expected: that Session gets its own single notice.
-3. Open the link signed in as the Agent owner. Expected: the Agent page shows the Computer as offline, and its link
-   opens the recovery page with the restore command. Open it signed out. Expected: sign-in. Open it as an Account with
-   other Agents. Expected: not found. Open it as an Account with no Agents. Expected: first-Agent setup.
+3. Open the Agent page signed in as the Agent owner. Expected: the Computer shows as offline, and its link opens the
+   recovery page with the restore command.
 4. Restart the daemon. Expected: the parked messages run and no "back online" message appears. Stop it again and send
    a request. Expected: one new notice for this new offline period.
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
@@ -40,9 +39,8 @@ arrives (for example a daemon whose reconcile hangs) until the dispatch timeout 
 that can be arranged, or with a delivery row set to `pending` and `last_error_code = 'IM_DELIVERY_PARKED'` on a test
 database:
 
-1. With the Computer online, send a Chinese request in the same Session. Expected: one reply within about seventy-five
-   seconds saying an earlier message has not been confirmed and this one waits behind it, with an 查看 Agent link. It
-   names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
+   one red card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
@@ -52,26 +50,31 @@ database:
 
 With an IM test binding and a runtime that can be made to fail on request:
 
-1. Send a Chinese request that fails. Expected: one plain-text reply in the same conversation or thread with three
-   Chinese sentences (what happened, whether operations ran, what to do next) and a clickable 查看详情 link with no raw
-   URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
-2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
+1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
+   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no link or button, and no sentence about whether
+   operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
+   shows above the card.
+2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
-3. Make the workspace save fail. Expected: one plain-text reply in the language of the request, with no card, buttons
-   or error code. Its next step says the save can be retried or the changes discarded from the details page, followed
-   by the details link. Open the link as the Agent owner, retry the save, and confirm. Expected: the operation runs from
-   the page, and the original reply is edited in place to show the result, actor and time. Repeat with Discard, which
-   asks for the permanent-loss confirmation first.
-4. Legacy cards from a release that still sent them. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the
-   messenger suite (`im-feedback-messenger.test.ts`), or a test deployment upgraded from such a release:
-   - A target stored as `interactive_v1` that never sent: it is rewritten to `text_v1` when the send is reserved and is
-     sent once as text.
-   - A card already sent: a later status change or save/discard result makes no provider call and posts no new message;
-     the details page shows the current state.
-   - A card send whose outcome is unknown: readback still binds the card (Slack by its `opentag_feedback:<id>` block ID,
-     Feishu by the details URL) and never creates a second message.
-   - Clicking a button on an old card: Slack answers without an error and does nothing; a Feishu Retry button shows a
-     "no longer available" toast. Neither returns a server error.
+3. Repeat in a group. Expected: Feishu quotes the failed message; Slack posts in the channel, not a thread. Repeat
+   inside a thread. Expected: the card is in that thread on both.
+4. Make the model authentication fail. Expected: the card names the Agent’s tool, for example “Claude Code 未登录或登录已失效”
+   with “请在 Agent 所在电脑登录 Claude Code” (Codex and Pi likewise), and no link. Only an Agent on the Cloud Computer
+   keeps the generic “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号”.
+5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
+   As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
+   turns green in place and reads only 已保存. Repeat with Discard, which asks for the
+   permanent-loss confirmation first and ends as 已放弃改动.
+6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
+   (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:
+   - A target stored as `text_v1` that never sent: it is rewritten to `interactive_v1` when the send is reserved and
+     is sent once as a card.
+   - A text message already sent: a later status change edits it as text and posts no new message.
+   - A card from before the text period: a later status change edits it in place as a current card.
+   - A send whose outcome is unknown: readback binds the message (Slack by its `opentag_feedback:<id>` block ID or a
+     text message's details URL, Feishu by the feedback URL) and never creates a second message.
+   - Clicking a button on a card from before the text period: Slack answers without an error and does nothing; a
+     Feishu Retry button shows a "no longer available" toast. Neither returns a server error.
 
 ## Feishu system reaction projection
 
@@ -217,10 +220,21 @@ Thread Session never compacts.
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+## Cloud Session message steering
+
+1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that
+   the child sees both in order before its Turn ends and the Runner starts only one worker. Confirm each
+   message settles once after the joined Turn's checkpoint.
+2. With a controlled worker that refuses steer or reports `not_started`, confirm the message runs in FIFO order
+   after the child Turn. If it reports `interrupted`, confirm the failure is terminal and no second worker handles it.
+3. Disconnect the control channel after a steer starts. Reconnect the same Runner and confirm that the input is
+   never injected again and its settlement can be acknowledged. Replace the process without a worker receipt and
+   confirm it reports unknown. An older compatible Runner still runs the messages in FIFO order.
+
 ## Stopping an internal Session
 
-Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and queue a second message
-to it with `opentag session send`.
+Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and send a second message
+to it with `opentag session send`. Confirm the message is still queued or joined to the same running Turn before stopping it.
 
 - `opentag session stop <id>` from its creator answers `status=stopped execution=stopped`. The Provider process is gone
   within seconds, the queued message never runs, and the daemon does not retry anything.
@@ -278,14 +292,18 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 1. Save a workspace containing Git state, Pi history and unpublished Context Tree drafts. Stop
    and replace its Instance through the normal release path. Expected: the replacement verifies
    and restores all saved content before readiness, advances the storage metadata fence and does
-   not repack or upload the restored archive. The first empty workspace still saves a valid archive.
-2. Let the restored workspace become idle without a Turn, then release it. Expected: after
+   not repack or upload the restored archive. The restore reports `extractMs` with the fingerprint
+   included. The first empty workspace still saves a valid archive.
+2. Run an ordinary checkpoint after a file change, then another without a change. Verify that each
+   checkpoint conditionally commits an archive generation and reports `packMs` with the fingerprint
+   included, and that both archives restore the expected contents.
+3. Let the restored workspace become idle without a Turn, then release it. Expected: after
    quiescing writers, the Runner checks actual file contents and seals the same archive generation
    by a conditional metadata update. Restart and verify the unpublished files and history again.
-3. Make a real file change through a controlled tool or background writer between checkpoint and
+4. Make a real file change through a controlled tool or background writer between checkpoint and
    idle release, including a same-length change with a restored mtime. Expected: release saves and
    restores the changed bytes instead of treating absence of Turns as proof of cleanliness.
-4. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
+5. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
    and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
    data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
    Make identical metadata PATCHes leave metageneration unchanged in the transport harness. Expected:
@@ -295,16 +313,16 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    is rejected or never commits before response loss. The successor can still seal, while an old
    upload with original pins is rejected. Restart a real Runner while the allocation
    is releasing and retry stop: it restores the same-owner object and completes the final seal.
-5. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
+6. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
    Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
    can still finish the authenticated claim and restore or save the initial empty archive.
-6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
+7. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
    through that adapter and read it again with the new one. Expected: the seven custom metadata
    keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
-7. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
+8. In the controlled Cloud Run harness, let idle reclaim prove the workspace seal and accept DELETE.
    Keep the same UID visible through 60 seconds, then return 404 on a later due sweep. Expected:
    each due sweep makes one confirmation GET and can process other candidates. After 404, the
    old binding clears, the capacity slot is free, and a synthetic Session input can reserve the

@@ -88,9 +88,8 @@ function renderSkills(cliCommand: string): readonly string[] {
 
 /**
  * The Agent may tune its own instructions, model, and reasoning effort through the Session proof.
- * Those fields feed the effective snapshot hash, so a change applies from the next Turn and that
- * Turn starts a new provider conversation instead of resuming the old one. The Agent is told so it
- * does not change them casually mid-task.
+ * Changes apply from the next Turn in every existing Session without resetting the provider
+ * conversation. The Agent is told to change them only when asked, not mid-task.
  *
  * MCP configuration is a separate section (`renderMcpInChat`). It used to be one sentence inside
  * this paragraph, which the model skipped when the user named a product or asked to connect a
@@ -100,7 +99,7 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
     "",
   ];
 }
@@ -179,6 +178,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSchedules(context),
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
@@ -253,6 +253,21 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
         ]
       : []),
+  ];
+}
+
+function renderSchedules(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) return [];
+  const cli = context.cliCommand;
+  return [
+    "",
+    "## Schedules",
+    "",
+    `Manage schedules pinned to this Session with \`${cli} self schedule\`:`,
+    `- \`${cli} self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]\``,
+    `- \`${cli} self schedule <list|show|update|pause|resume|delete|preview> ...\` (pass \`--help\` for flags).`,
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first. If a required command needs approval under Ask for approval, or if an MCP Server or credential is unauthorized, guide the user to complete authorization or add the required command rules in the Agent's Model settings first.",
   ];
 }
 

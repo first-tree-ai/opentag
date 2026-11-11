@@ -441,6 +441,10 @@ function createCloudTurnRunner(input: {
     credentialChannel: () => input.bridge,
     turnActivityEnabled: () => input.bridge.turnActivityEnabled,
     steeringEnabled: () => input.bridge.imInputEnabled,
+    // New collaboration contracts must account for every input when deriving the active Turn's authority.
+    sessionSteeringEnabled: () =>
+      input.bridge.sessionCollaborationEnabled &&
+      input.bridge.sessionCollaborationVersion <= RUNNER_SESSION_COLLABORATION_V3,
     journal: input.journal,
     onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
     publicDirectory: input.publicRoot,

@@ -186,15 +186,19 @@ metageneration of one: a later fencing claim or another byte-identical upload mu
 the old uploader's next write base. This is an operation identity, not another runtime epoch or
 an archive catalogue. The Server keeps it out of the legacy object response shape.
 
-Before sealing, the trusted Runner stops all writers and scans the saved tree again. A SHA-256
-fingerprint covers file contents, paths, types, modes, timestamps and link targets under the same
-archive exclusions and safety limits. It compares this with the local baseline taken after a
-verified restore or before a successful archive save. Confirmed upload pins and their fingerprint
-are retained together even if removing the temporary local archive fails. Absence of Turns alone never proves a clean
-workspace. If the fingerprint matches, an authenticated `POST /seal` conditionally updates only
-the existing object's seal using its exact generation and metageneration; it does not recompress,
-upload, replace content, or modify storage retention properties. Real changes still require a full
-archive save. Content hashing adds a bounded read pass to checkpoints and clean seals.
+A workspace SHA-256 fingerprint covers file contents, paths, types, modes, timestamps and link
+targets under the archive exclusions and safety limits. The Runner hashes file bytes as it streams
+them during packing and extraction. On restore it combines those digests with the staged
+filesystem metadata and the final directory modes. On checkpoint it records the fingerprint of
+the archive that was actually uploaded. Confirmed upload pins and their fingerprint are retained
+together even if removing the temporary local archive fails.
+
+Ordinary checkpoints still commit a conditional archive upload, including when the workspace is
+unchanged. Before sealing an existing archive, the Runner stops all writers and compares the
+current fingerprint with the baseline from the last verified restore or confirmed upload. Absence
+of Turns alone never proves a clean workspace. If the fingerprint matches, an authenticated
+`POST /seal` conditionally updates only the existing object's seal using its exact generation and
+metageneration. Real changes require a full archive save.
 
 Metadata seal responses must preserve the owner, archive generation, saved flag, size and both
 checksums and advance the metageneration exactly once. An uncertain response is read back against

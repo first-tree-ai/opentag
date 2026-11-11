@@ -114,6 +114,23 @@ export async function fetchChangedFiles(client, { owner, name, number, expectedC
   return paths;
 }
 
+function collectActiveReviewers(reviews) {
+  const active = new Set();
+  for (const review of reviews) {
+    const login = review?.user?.login;
+    const state = String(review?.state ?? "").toUpperCase();
+    if (typeof login !== "string" || login.length === 0 || state.length === 0 || state === "PENDING") {
+      continue;
+    }
+    const normalized = login.toLowerCase();
+    active.delete(normalized);
+    if (state !== "DISMISSED") {
+      active.add(normalized);
+    }
+  }
+  return [...active];
+}
+
 /**
  * The logins whose latest deciding review is an approval, lowercased so they can
  * be matched against CODEOWNERS entries.
@@ -159,13 +176,15 @@ export async function fetchApprovals(client, { owner, name, number, headSha, log
     }
   }
 
+  const activeReviewers = collectActiveReviewers(reviews);
   logger.debug("Resolved review approvals", {
     number,
     reviews: reviews.length,
     approvals: logins.size,
     stale: stale.length,
+    activeReviewers: activeReviewers.length,
   });
-  return { logins, stale: stale.sort() };
+  return { logins, stale: stale.sort(), activeReviewers };
 }
 
 function isBotAuthor(login, isBot) {
@@ -305,5 +324,19 @@ export async function postCommitStatus(client, { owner, name, sha, state, contex
     context,
     description: truncateDescription(description),
     target_url: targetUrl ?? null,
+  });
+}
+
+/**
+ * Removes redundant requested reviewers from a pull request so only one active
+ * reviewer remains assigned.
+ */
+export async function removeRequestedReviewers(client, { owner, name, number, reviewers, logger }) {
+  if (!Array.isArray(reviewers) || reviewers.length === 0) {
+    return null;
+  }
+  logger.info("Removing redundant requested reviewers", { number, reviewers });
+  return client.rest("DELETE", `${repositoryPath(owner, name)}/pulls/${number}/requested_reviewers`, {
+    reviewers,
   });
 }

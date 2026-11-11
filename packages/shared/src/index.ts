@@ -520,6 +520,7 @@ export {
   AgentTraceEventSchema,
   type ClientRuntimeBusinessFrame,
   ClientRuntimeBusinessFrameSchema,
+  CREDENTIAL_DETAIL_FAILURE_REASONS,
   computeDirectInputHash,
   computeLegacyDirectInputHash,
   computeLegacyRuntimeSnapshotHashes,

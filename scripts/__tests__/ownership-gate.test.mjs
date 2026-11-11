@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { createGitHubClient } from "../github/client.mjs";
+import { createLogger } from "../logger.mjs";
 import { createMatcher, parseCodeowners } from "../ownership-gate/codeowners.mjs";
 import {
   DEFAULT_MODE,
@@ -19,6 +21,7 @@ import {
   groupBlocking,
   STATE_FAILURE,
   STATE_SUCCESS,
+  selectReviewersToRemove,
 } from "../ownership-gate/policy.mjs";
 import {
   MAX_DESCRIPTION_LENGTH,
@@ -26,7 +29,7 @@ import {
   renderSummary,
   truncateDescription,
 } from "../ownership-gate/report.mjs";
-import { buildConfig, DEFAULT_CONTEXT } from "../ownership-gate.mjs";
+import { buildConfig, DEFAULT_CONTEXT, evaluate } from "../ownership-gate.mjs";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
 const workflowPath = join(repoRoot, ".github", "workflows", "ownership-gate.yml");
@@ -452,6 +455,7 @@ test("the job is not named after the status context it posts", async () => {
 test("the privileged workflow asks for the narrowest permissions the gate needs", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /^permissions:\n {2}contents: read$/m, "the default must stay read-only");
+  assert.match(workflow, /pull-requests: write/);
   assert.match(workflow, /statuses: write/);
   assert.doesNotMatch(workflow, /contents: write/);
 });
@@ -523,4 +527,227 @@ test("the summary states the external-author floor without claiming files are bl
   assert.match(summary, /fork pull request/);
   assert.match(summary, /only the external-author floor is unmet/);
   assert.doesNotMatch(summary, /Needs approval from/, "there is no blocking table to render");
+});
+
+test("selectReviewersToRemove keeps one deterministically chosen owner and leaves non-owner requests intact", () => {
+  const decision = decide({ files: ["packages/server/src/app.ts"], author: "liuchao-001" });
+  const even = selectReviewersToRemove({
+    number: 10,
+    requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }, { login: "security-specialist" }],
+    activeReviewers: [],
+    decision,
+    owners: ["bestony", "yuezengwu"],
+  });
+  const odd = selectReviewersToRemove({
+    number: 11,
+    requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }, { login: "security-specialist" }],
+    activeReviewers: [],
+    decision,
+    owners: ["bestony", "yuezengwu"],
+  });
+  assert.deepEqual(even, ["yuezengwu"]);
+  assert.deepEqual(odd, ["bestony"]);
+});
+
+test("selectReviewersToRemove preserves a sole manually reassigned reviewer after an earlier review", () => {
+  const unapproved = decide({ files: ["packages/server/src/app.ts"], author: "liuchao-001" });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }, { login: "security-specialist" }],
+      activeReviewers: ["bestony"],
+      decision: unapproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    [],
+  );
+});
+
+test("selectReviewersToRemove keeps the active eligible reviewer when multiple owners are requested and trims only owners on approval", () => {
+  const unapproved = decide({ files: ["packages/server/src/app.ts"], author: "liuchao-001" });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }, { login: "bestony" }, { login: "security-specialist" }],
+      activeReviewers: ["bestony"],
+      decision: unapproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+
+  const approved = decide({
+    files: ["packages/server/src/app.ts"],
+    author: "liuchao-001",
+    approvals: ["bestony"],
+  });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }, { login: "security-specialist" }],
+      activeReviewers: ["bestony"],
+      decision: approved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+});
+
+test("selectReviewersToRemove leaves a single eligible requested reviewer untouched", () => {
+  const decision = decide({ files: ["packages/server/src/app.ts"], author: "bestony" });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["bestony"],
+      decision,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    [],
+  );
+});
+
+test("selectReviewersToRemove requires an eligible owner approval before clearing owner requests", () => {
+  const territoryNonOwnerApproved = decide({
+    files: ["docs/releasing.md"],
+    author: "bestony",
+    approvals: ["external-observer"],
+  });
+  assert.equal(territoryNonOwnerApproved.state, STATE_SUCCESS);
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["external-observer"],
+      decision: territoryNonOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    [],
+  );
+
+  const exemptNonOwnerApproved = decide({
+    files: ["apps/web/src/app.tsx"],
+    author: "liuchao-001",
+    approvals: ["external-observer"],
+  });
+  assert.equal(exemptNonOwnerApproved.state, STATE_SUCCESS);
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }],
+      activeReviewers: ["external-observer"],
+      decision: exemptNonOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+
+  const territoryOwnerApproved = decide({
+    files: ["docs/releasing.md"],
+    author: "bestony",
+    approvals: ["yuezengwu"],
+  });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["yuezengwu"],
+      decision: territoryOwnerApproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+});
+
+test("evaluate preserves a sole reassigned reviewer and unrelated specialists while deleting only redundant owners", async () => {
+  const sha = "a".repeat(40);
+  const silentLogger = createLogger({ level: "error", sink: { log: () => {}, warn: () => {}, error: () => {} } });
+  const basePolicy = { ...policy(), owners: ["bestony", "yuezengwu"] };
+
+  async function runEvaluate({
+    author = "liuchao-001",
+    file = "packages/server/src/app.ts",
+    requestedReviewers,
+    reviews,
+  }) {
+    const deletes = [];
+    const client = createGitHubClient({
+      token: "test-token",
+      logger: silentLogger,
+      sleepImpl: async () => {},
+      fetchImpl: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (init.method === "DELETE") {
+          deletes.push({ path, body: JSON.parse(init.body) });
+          return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" };
+        }
+        let payload = [];
+        if (path.endsWith("/pulls/10")) {
+          payload = {
+            number: 10,
+            state: "open",
+            head: { sha, repo: { full_name: "first-tree-ai/opentag" } },
+            user: { login: author, type: "User" },
+            changed_files: 1,
+            base: { ref: "main" },
+            requested_reviewers: requestedReviewers,
+          };
+        } else if (path.endsWith("/pulls/10/files")) {
+          payload = [{ filename: file }];
+        } else if (path.endsWith("/pulls/10/reviews")) {
+          payload = reviews;
+        } else if (path.includes("/commits/")) {
+          payload = [{ number: 10, state: "open", head: { sha } }];
+        }
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(payload) };
+      },
+    });
+    const result = await evaluate({
+      client,
+      config: { repository: "first-tree-ai/opentag", number: 10, headSha: sha, dryRun: false },
+      policy: basePolicy,
+      logger: silentLogger,
+    });
+    return { result, deletes };
+  }
+
+  const reassigned = await runEvaluate({
+    requestedReviewers: [{ login: "yuezengwu" }],
+    reviews: [{ user: { login: "bestony" }, state: "COMMENTED", commit_id: sha }],
+  });
+  assert.equal(reassigned.result.state, STATE_FAILURE);
+  assert.deepEqual(reassigned.deletes, []);
+
+  const withSpecialist = await runEvaluate({
+    requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }, { login: "security-specialist" }],
+    reviews: [],
+  });
+  assert.equal(withSpecialist.result.state, STATE_FAILURE);
+  assert.deepEqual(withSpecialist.deletes, [
+    {
+      path: "/repos/first-tree-ai/opentag/pulls/10/requested_reviewers",
+      body: { reviewers: ["yuezengwu"] },
+    },
+  ]);
+
+  const nonOwnerApprovedDocs = await runEvaluate({
+    author: "bestony",
+    file: "docs/releasing.md",
+    requestedReviewers: [{ login: "yuezengwu" }],
+    reviews: [{ user: { login: "external-observer" }, state: "APPROVED", commit_id: sha }],
+  });
+  assert.equal(nonOwnerApprovedDocs.result.state, STATE_SUCCESS);
+  assert.deepEqual(nonOwnerApprovedDocs.deletes, []);
+
+  const ownerApprovedCode = await runEvaluate({
+    requestedReviewers: [{ login: "yuezengwu" }, { login: "security-specialist" }],
+    reviews: [{ user: { login: "bestony" }, state: "APPROVED", commit_id: sha }],
+  });
+  assert.equal(ownerApprovedCode.result.state, STATE_SUCCESS);
+  assert.deepEqual(ownerApprovedCode.deletes, [
+    {
+      path: "/repos/first-tree-ai/opentag/pulls/10/requested_reviewers",
+      body: { reviewers: ["yuezengwu"] },
+    },
+  ]);
 });

@@ -453,7 +453,9 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
       dispatchWithAdmission(() => new Promise(() => undefined), admission, onDispatched),
     );
     const dispatch = fixture.service.dispatchScheduledMessage(snapshot);
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(89_999);
+    expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     await expect(dispatch).resolves.toEqual({ outcome: "unknown", code: "delivery_timeout" });
     expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(

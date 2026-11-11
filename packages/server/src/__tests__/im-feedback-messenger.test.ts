@@ -164,7 +164,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("native feedback transport", () => {
-  it("sends the offline notice as an orange card outside the failure message identity", async () => {
+  it("sends the offline notice as a red card outside the failure message identity", async () => {
     const { messenger, cooldown } = harness();
     cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: false });
     const t = target("feishu");
@@ -174,7 +174,7 @@ describe("native feedback transport", () => {
     expect(data).not.toHaveProperty("uuid");
     expect(data.msg_type).toBe("interactive");
     const card = JSON.parse(data.content);
-    expect(card.header).toEqual({ title: { tag: "plain_text", content: "Agent 所在电脑离线" }, template: "orange" });
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "Agent 所在电脑离线" }, template: "red" });
     expect(card.config).toMatchObject({ update_multi: true });
     expect(card.elements).toEqual([
       {
@@ -196,7 +196,7 @@ describe("native feedback transport", () => {
     expect(sent).not.toHaveProperty("text");
     expect(sent.attachments).toEqual([
       {
-        color: "#F2952F",
+        color: "#E01E5A",
         fallback: "The Agent's computer is offline: Messages will be handled after the computer reconnects",
         blocks: [
           {
@@ -215,7 +215,7 @@ describe("native feedback transport", () => {
       },
     ]);
   });
-  it("sends the parked-dispatch notice as an orange card placed like the offline notice", async () => {
+  it("sends the parked-dispatch notice as a red card placed like the offline notice", async () => {
     const { messenger, cooldown } = harness();
     cooldown.messageContext.mockResolvedValueOnce({ language: "zh", direct: true });
     const t: FeedbackTarget = { ...target("feishu"), threadKey: null };
@@ -224,7 +224,7 @@ describe("native feedback transport", () => {
     const data = mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].data;
     expect(data).not.toHaveProperty("uuid");
     const card = JSON.parse(data.content);
-    expect(card.header).toEqual({ title: { tag: "plain_text", content: "排队中" }, template: "orange" });
+    expect(card.header).toEqual({ title: { tag: "plain_text", content: "排队中" }, template: "red" });
     expect(card.elements[0].text.content).toBe("前一条完成后处理");
     expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
     const slack = target("slack");
@@ -232,7 +232,7 @@ describe("native feedback transport", () => {
     await messenger.postOfflineNotice(slack, "parked");
     const sent = mocks.slack.chat.postMessage.mock.calls[0]?.[0];
     expect(sent.attachments[0]).toMatchObject({
-      color: "#F2952F",
+      color: "#E01E5A",
       fallback: "Queued: Handled after the earlier message finishes",
     });
     expect(sent.attachments[0].blocks[1].text.text).toBe("Handled after the earlier message finishes.");
@@ -282,7 +282,11 @@ describe("native feedback transport", () => {
     });
     expect(card("feishu", "tool_setup_failed")).toMatchObject({
       title: "Agent 运行出错",
-      body: "消息工具准备失败，请重试",
+      body: "飞书命令行没能准备好，请重试",
+    });
+    expect(card("slack", "tool_setup_failed")).toMatchObject({
+      title: "Agent 运行出错",
+      body: "Slack 命令行没能准备好，请重试",
     });
     // A Computer too old to name the cause, or a missing Cloud grant.
     expect(card("feishu", "credential_unavailable")).toMatchObject({ title: "Agent 运行出错", body: "请重试" });

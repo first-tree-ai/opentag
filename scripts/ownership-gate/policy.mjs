@@ -268,3 +268,66 @@ export function groupBlocking(blocking) {
   }
   return [...groups.values()];
 }
+
+function normalizeRequestedLogins(requestedReviewers) {
+  const logins = [];
+  for (const entry of requestedReviewers ?? []) {
+    const login = normalize(typeof entry === "string" ? entry : entry?.login);
+    if (login.length > 0 && !logins.includes(login)) {
+      logins.push(login);
+    }
+  }
+  return logins;
+}
+
+function singleReviewerPool(decision, owners) {
+  if (decision.requiredFrom.length === 0) {
+    return uniqueSorted(owners.map(normalize).filter((login) => login.length > 0 && login !== decision.author));
+  }
+  const externalEligible =
+    !decision.externalAuthor.required || decision.externalAuthor.satisfied
+      ? null
+      : new Set(decision.externalAuthor.eligible);
+  return decision.requiredFrom.filter(
+    (login) =>
+      decision.blocking.every((file) => file.eligible.includes(login)) &&
+      (externalEligible === null || externalEligible.has(login)),
+  );
+}
+
+/**
+ * Keeps at most one code-owner reviewer per pull request and prevents duplicate
+ * reviews once an eligible owner has already reviewed.
+ */
+export function selectReviewersToRemove({
+  number,
+  requestedReviewers = [],
+  activeReviewers = [],
+  decision,
+  owners = [],
+}) {
+  const requested = normalizeRequestedLogins(requestedReviewers);
+  if (requested.length === 0) {
+    return [];
+  }
+  if (decision.state === STATE_SUCCESS && decision.approvals.length > 0) {
+    return requested;
+  }
+  const candidates = singleReviewerPool(decision, owners);
+  if (candidates.length === 0) {
+    return [];
+  }
+  const candidateSet = new Set(candidates);
+  const activeEligible = (activeReviewers ?? []).map(normalize).filter((login) => candidateSet.has(login));
+  if (activeEligible.length > 0) {
+    const keep = activeEligible.at(-1);
+    return requested.filter((login) => login !== keep);
+  }
+  const requestedEligible = candidates.filter((login) => requested.includes(login));
+  if (requestedEligible.length === 0) {
+    return [];
+  }
+  const index = Number.isInteger(number) && number > 0 ? number % requestedEligible.length : 0;
+  const keep = requestedEligible[index];
+  return requested.filter((login) => login !== keep);
+}

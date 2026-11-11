@@ -48,7 +48,10 @@ transaction between reading reviews and writing a commit status.
 
 The queue changes no approval, author, or shared-head policy. In particular,
 dismissed reviews revoke approval, and the existing policy still accepts
-approvals of earlier commits after a push. No branch protection or ruleset is
+approvals of earlier commits after a push. During pull request evaluation, the
+gate also trims redundant `requested_reviewers` so at most one eligible owner
+(`bestony` or `yuezengwu`) remains requested, and removes remaining pending
+requests once an eligible owner has reviewed. No branch protection or ruleset is
 configured by this workflow.
 
 Keep task verification results and live-platform limitations in the task's GitHub PR or Issue.

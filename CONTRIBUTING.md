@@ -84,5 +84,4 @@ from at least one owner named anywhere in `.github/CODEOWNERS`, whatever files i
 applies only to people with write access. Approvals are also not dismissed on a new push, so an approval obtained before
 a later push still counts, and the ownership gate does not close that gap either. Do not assume the check covers it.
 
-Relaxing the policy requires a reviewed change to `.github/CODEOWNERS`, which is itself gated. Ownership is derived from
-change history and recalculated monthly.
+Relaxing the policy requires a reviewed change to `.github/CODEOWNERS`, which is itself gated. When GitHub auto-requests multiple code owners (or after one eligible owner has already reviewed a pull request), the ownership gate trims redundant review requests so each pull request retains a single active reviewer (`bestony` or `yuezengwu`). Ownership is derived from change history and recalculated monthly.

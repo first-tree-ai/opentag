@@ -19,6 +19,7 @@ import {
   groupBlocking,
   STATE_FAILURE,
   STATE_SUCCESS,
+  selectReviewersToRemove,
 } from "../ownership-gate/policy.mjs";
 import {
   MAX_DESCRIPTION_LENGTH,
@@ -452,6 +453,7 @@ test("the job is not named after the status context it posts", async () => {
 test("the privileged workflow asks for the narrowest permissions the gate needs", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   assert.match(workflow, /^permissions:\n {2}contents: read$/m, "the default must stay read-only");
+  assert.match(workflow, /pull-requests: write/);
   assert.match(workflow, /statuses: write/);
   assert.doesNotMatch(workflow, /contents: write/);
 });
@@ -523,4 +525,68 @@ test("the summary states the external-author floor without claiming files are bl
   assert.match(summary, /fork pull request/);
   assert.match(summary, /only the external-author floor is unmet/);
   assert.doesNotMatch(summary, /Needs approval from/, "there is no blocking table to render");
+});
+
+test("selectReviewersToRemove keeps one deterministically chosen owner when multiple owners are auto-requested", () => {
+  const decision = decide({ files: ["packages/server/src/app.ts"], author: "liuchao-001" });
+  const even = selectReviewersToRemove({
+    number: 10,
+    requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }],
+    activeReviewers: [],
+    decision,
+    owners: ["bestony", "yuezengwu"],
+  });
+  const odd = selectReviewersToRemove({
+    number: 11,
+    requestedReviewers: [{ login: "bestony" }, { login: "yuezengwu" }],
+    activeReviewers: [],
+    decision,
+    owners: ["bestony", "yuezengwu"],
+  });
+  assert.deepEqual(even, ["yuezengwu"]);
+  assert.deepEqual(odd, ["bestony"]);
+});
+
+test("selectReviewersToRemove keeps the active eligible reviewer and trims other pending reviewers", () => {
+  const unapproved = decide({ files: ["packages/server/src/app.ts"], author: "liuchao-001" });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }, { login: "bestony" }],
+      activeReviewers: ["bestony"],
+      decision: unapproved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+
+  const approved = decide({
+    files: ["packages/server/src/app.ts"],
+    author: "liuchao-001",
+    approvals: ["bestony"],
+  });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["bestony"],
+      decision: approved,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    ["yuezengwu"],
+  );
+});
+
+test("selectReviewersToRemove leaves a single eligible requested reviewer untouched", () => {
+  const decision = decide({ files: ["packages/server/src/app.ts"], author: "bestony" });
+  assert.deepEqual(
+    selectReviewersToRemove({
+      number: 10,
+      requestedReviewers: [{ login: "yuezengwu" }],
+      activeReviewers: ["bestony"],
+      decision,
+      owners: ["bestony", "yuezengwu"],
+    }),
+    [],
+  );
 });

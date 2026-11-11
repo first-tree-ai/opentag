@@ -396,7 +396,9 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     );
     try {
       return await Promise.race([this.#groupName(target, AbortSignal.any([signal, limit.signal])), expired]);
-    } catch {
+    } catch (error) {
+      // A cooldown that could not be stored must stop the worker like any other feedback call.
+      if (error instanceof FeedbackCooldownStorageError) throw error;
       return undefined;
     } finally {
       clearTimeout(timer);

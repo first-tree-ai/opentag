@@ -1219,6 +1219,15 @@ describe("the origin line on a card sent to the sender", () => {
     expect(await result).toMatchObject({ code: "IM_FEEDBACK_SEND_NOT_STARTED", knownNotApplied: true });
     expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
   });
+  it("stops on a cooldown that could not be stored during the group-name lookup", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "你好" });
+    cooldown.deferSlackInstallation.mockRejectedValueOnce(new Error("db down"));
+    mocks.slack.conversations.info.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
+    await expect(messenger.postOfflineNotice(quota("slack"))).rejects.toBeInstanceOf(FeedbackCooldownStorageError);
+    expect(mocks.slack.conversations.open).not.toHaveBeenCalled();
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
   it("adds no origin line to a card that stays in the conversation", async () => {
     const { messenger, cooldown } = harness();
     cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "hi" });

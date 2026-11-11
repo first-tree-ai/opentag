@@ -70,5 +70,5 @@ bot——无论改动了哪些文件，该 Pull Request 都还需要 `.github/CO
 的豁免只适用于有写权限的人。此外，新的 push 不会撤销已有批准，因此在后续 push 之前获得的批准仍然有效，ownership gate
 也不会弥补这一缺口。不要假设该检查覆盖了这一点。
 
-放宽该策略需要对 `.github/CODEOWNERS` 做一次经过评审的改动，而该文件本身受 gate 约束。当 GitHub 自动请求多位 code owner（或其中一位符合条件的 owner 已提交过 review）时，ownership gate 会自动移除冗余的待审请求，确保每个 Pull Request 仅保留一位活跃 reviewer（`bestony` 或 `yuezengwu`）。owner 由变更历史推导得出，
+放宽该策略需要对 `.github/CODEOWNERS` 做一次经过评审的改动，而该文件本身受 gate 约束。当 GitHub 自动请求多位 code owner（或其中一位符合条件的 owner 已批准该 Pull Request）时，ownership gate 会自动移除冗余的 code-owner 待审请求，确保每个 Pull Request 仅保留一位活跃的 code-owner reviewer（`bestony` 或 `yuezengwu`），同时保留单独指定的 owner 请求与非 owner 的评审请求。owner 由变更历史推导得出，
 每月重新计算一次。

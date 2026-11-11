@@ -310,24 +310,19 @@ export function selectReviewersToRemove({
   if (requested.length === 0) {
     return [];
   }
-  if (decision.state === STATE_SUCCESS && decision.approvals.length > 0) {
-    return requested;
-  }
   const candidates = singleReviewerPool(decision, owners);
-  if (candidates.length === 0) {
-    return [];
-  }
-  const candidateSet = new Set(candidates);
-  const activeEligible = (activeReviewers ?? []).map(normalize).filter((login) => candidateSet.has(login));
-  if (activeEligible.length > 0) {
-    const keep = activeEligible.at(-1);
-    return requested.filter((login) => login !== keep);
-  }
   const requestedEligible = candidates.filter((login) => requested.includes(login));
   if (requestedEligible.length === 0) {
     return [];
   }
+  if (decision.state === STATE_SUCCESS && decision.approvals.length > 0) {
+    return requestedEligible;
+  }
+  if (requestedEligible.length <= 1) {
+    return [];
+  }
+  const activeRequested = (activeReviewers ?? []).map(normalize).filter((login) => requestedEligible.includes(login));
   const index = Number.isInteger(number) && number > 0 ? number % requestedEligible.length : 0;
-  const keep = requestedEligible[index];
-  return requested.filter((login) => login !== keep);
+  const keep = activeRequested.length > 0 ? activeRequested.at(-1) : requestedEligible[index];
+  return requestedEligible.filter((login) => login !== keep);
 }

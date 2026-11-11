@@ -184,6 +184,25 @@ describe("Agent status snapshots", () => {
     f.credential("needs_attention", 1, details);
     expect(await f.read()).toMatchObject({ state: "problem", reason });
   });
+  it("logs a structured diagnostic warning with agentId and bindingId when stored credential inspection fails", async () => {
+    const f = await fixture();
+    f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, f.sample(), f.now);
+    const logger = { warn: vi.fn() };
+    const wrongCipher = new ApplicationCipher(Buffer.alloc(32, 9));
+    const service = new AgentStatusService(db.database, f.registry, wrongCipher, {
+      logger,
+      now: () => new Date(f.now),
+    });
+    const status = (await service.read(f.account.userId, [f.agent.id])).statuses[0];
+    expect(status).toMatchObject({ state: "problem", reason: "credential_validation_failed" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: f.agent.id,
+        code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
+      }),
+      expect.any(String),
+    );
+  });
   it("never reports an overdue credential answer as a failed check", async () => {
     const f = await fixture();
     f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, f.sample(), f.now);

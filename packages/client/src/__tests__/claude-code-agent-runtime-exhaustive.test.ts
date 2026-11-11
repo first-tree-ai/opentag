@@ -14,7 +14,6 @@ import type {
 import {
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
-  claudeFallbackModel,
 } from "../providers/claude-code/agent-runtime.js";
 import {
   type ClaudeCodeProcessClient,
@@ -650,26 +649,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
           expect(argumentAfter(args, "--model")).toBe("override");
           expect(argumentAfter(args, "--max-turns")).toBe("2");
           expect(args).not.toContain("--effort");
-          expect(args).not.toContain("--fallback-model");
         },
       },
       {
         request: { ...createRequest(() => undefined), configuration: undefined },
         expected: (args) => {
           expect(args).not.toContain("--model");
-          expect(args).not.toContain("--fallback-model");
           expect(args).not.toContain("--effort");
           expect(argumentAfter(args, "--append-system-prompt")).toBe("OpenTag managed system prompt");
           expect(args).not.toContain("--max-budget-usd");
           expect(args).not.toContain("--max-turns");
-        },
-      },
-      {
-        request: { ...createRequest(() => undefined), configuration: undefined },
-        promptConfiguration: { model: "claude-opus-5-5" },
-        expected: (args) => {
-          expect(argumentAfter(args, "--model")).toBe("claude-opus-5-5");
-          expect(argumentAfter(args, "--fallback-model")).toBe("sonnet");
         },
       },
       {
@@ -696,26 +685,6 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       });
       item.expected(process.args);
       await runtime.close();
-    }
-  });
-
-  it("picks the same family's smaller model as the fallback, and nothing it cannot be sure of (R1)", () => {
-    for (const model of ["opus", "claude-opus-5-5", "Claude-Opus-4-8[1m]", "us.anthropic.claude-opus-5-5-v1:0"]) {
-      expect(claudeFallbackModel(model)).toBe("sonnet");
-    }
-    for (const model of ["sonnet", "claude-sonnet-5-5", "sonnet[1m]"]) expect(claudeFallbackModel(model)).toBe("haiku");
-    for (const model of [
-      undefined,
-      "",
-      "  ",
-      "haiku",
-      "claude-haiku-5-5",
-      "claude-fable-5-1",
-      "gpt-5",
-      "opusx",
-      "default",
-    ]) {
-      expect(claudeFallbackModel(model)).toBeUndefined();
     }
   });
 

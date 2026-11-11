@@ -28,17 +28,13 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `provider_rate_limited`: the model API answered HTTP 429.
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
  * - `provider_process_exited`: the Provider's process died under a live daemon (crash, out of memory).
- * - `provider_unavailable`, `provider_connection_failed`: the model service was down or unreachable
- *   before the model produced anything (R2).
  */
 export type InterruptionReason =
   | "daemon_crash"
   | "client_shutdown"
   | "provider_rate_limited"
   | "provider_start_failed"
-  | "provider_process_exited"
-  | "provider_unavailable"
-  | "provider_connection_failed";
+  | "provider_process_exited";
 
 const REASONS = new Set<InterruptionReason>([
   "daemon_crash",
@@ -46,8 +42,6 @@ const REASONS = new Set<InterruptionReason>([
   "provider_rate_limited",
   "provider_start_failed",
   "provider_process_exited",
-  "provider_unavailable",
-  "provider_connection_failed",
 ]);
 
 /** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
@@ -55,17 +49,7 @@ const IN_PLACE = new Set<InterruptionReason>([
   "provider_rate_limited",
   "provider_start_failed",
   "provider_process_exited",
-  "provider_unavailable",
-  "provider_connection_failed",
 ]);
-
-/** Retried only when the failed attempt produced no model output (R2). */
-const BEFORE_OUTPUT = new Set<InterruptionReason>(["provider_unavailable", "provider_connection_failed"]);
-
-/** Whether this reason is retried only when the failed attempt produced no model output. */
-export function retriedOnlyBeforeOutput(reason: InterruptionReason): boolean {
-  return BEFORE_OUTPUT.has(reason);
-}
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -79,8 +63,6 @@ const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 /** A model CLI that failed to start gets a short pause before its one retry. */
 export const START_FAILURE_RETRY_DELAY_MS = 5_000;
-/** An unavailable or unreachable model service gets a little time to recover before the retry. */
-export const UNAVAILABLE_RETRY_DELAY_MS = 15_000;
 
 /** At most this many retries in a row for a reason; a start failure is retried once. */
 export function retryLimit(reason: InterruptionReason): number {
@@ -90,7 +72,6 @@ export function retryLimit(reason: InterruptionReason): number {
 /** The wait before an in-place retry for this reason. */
 export function retryDelayMs(reason: InterruptionReason): number {
   if (reason === "provider_rate_limited") return RATE_LIMIT_RETRY_DELAY_MS;
-  if (BEFORE_OUTPUT.has(reason)) return UNAVAILABLE_RETRY_DELAY_MS;
   return reason === "provider_start_failed" ? START_FAILURE_RETRY_DELAY_MS : 0;
 }
 
@@ -190,10 +171,6 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model CLI failed to start before doing any work";
     case "provider_process_exited":
       return "the Provider process exited unexpectedly";
-    case "provider_unavailable":
-      return "the model service was temporarily unavailable before answering";
-    case "provider_connection_failed":
-      return "the model service could not be reached before answering";
   }
 }
 

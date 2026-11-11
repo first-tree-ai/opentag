@@ -33,7 +33,6 @@ import {
   RATE_LIMIT_RETRY_DELAY_MS,
   type RetryCount,
   recoverableFailure,
-  retriedOnlyBeforeOutput,
   retryDelayMs,
   retryLimit,
   sessionMessageKey,
@@ -1459,7 +1458,7 @@ export class SessionMessageInbox {
       await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
       return undefined;
     }
-    const reason = timedOut || !mayRetry ? undefined : retryReason(failure.code, error);
+    const reason = timedOut || !mayRetry ? undefined : recoverableFailure(failure.code);
     const retry = reason && nextRetry(messageRetryCount(record), retryLimit(reason));
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
@@ -1658,32 +1657,10 @@ function turnContext(
     : { sessionKind: "internal" };
 }
 
-/**
- * A non-completed Run as an error that keeps the provider's code (e.g. `provider_rate_limited`), and
- * whether the model produced any text or output tokens before it failed.
- */
-function runFailure(result: {
-  status: string;
-  output?: readonly unknown[];
-  usage?: { outputTokens?: number };
-  error?: { code?: string; message?: string };
-}): Error {
+/** A non-completed Run as an error that keeps the provider's code (e.g. `provider_rate_limited`). */
+function runFailure(result: { status: string; error?: { code?: string; message?: string } }): Error {
   const error = new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
-  const produced = (result.output?.length ?? 0) > 0 || (result.usage?.outputTokens ?? 0) > 0;
-  return Object.assign(error, {
-    ...(result.error?.code ? { code: result.error.code } : {}),
-    ...(produced ? { producedOutput: true } : {}),
-  });
-}
-
-/** The retry a failure gets; an unavailable or unreachable model only before it produced anything (R2). */
-function retryReason(code: string, error: unknown): InterruptionReason | undefined {
-  const reason = recoverableFailure(code);
-  return reason && retriedOnlyBeforeOutput(reason) && producedOutput(error) ? undefined : reason;
-}
-
-function producedOutput(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { producedOutput?: unknown }).producedOutput === true;
+  return result.error?.code ? Object.assign(error, { code: result.error.code }) : error;
 }
 
 /** Prefix the continuation notice when this Run is the automatic retry of an interrupted Run. */

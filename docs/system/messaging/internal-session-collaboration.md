@@ -178,8 +178,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
 (`created_by_session_id`), and a visible target produces none:
 
 - Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
-  automatic retries; one whose model CLI failed to start gets one, and one whose model service was unavailable or unreachable before
-  it produced anything is retried within the same 2. As described in
+  automatic retries; one whose model CLI failed to start gets one. As described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
   without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).

@@ -1228,6 +1228,21 @@ describe("the origin line on a card sent to the sender", () => {
     expect(mocks.slack.conversations.open).not.toHaveBeenCalled();
     expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
   });
+  it("waits for a slow cooldown write after a rate-limited lookup, past the lookup's limit", async () => {
+    vi.useFakeTimers();
+    const { messenger, cooldown } = harness();
+    cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "你好" });
+    const write = deferred<boolean>();
+    cooldown.deferSlackInstallation.mockImplementationOnce(() => write.promise);
+    mocks.slack.conversations.info.mockRejectedValueOnce(new WebAPIRateLimitedError(7));
+    const result = messenger.postOfflineNotice(quota("slack")).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(2_001);
+    write.reject(new Error("db down"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await result).toBeInstanceOf(FeedbackCooldownStorageError);
+    expect(mocks.slack.conversations.open).not.toHaveBeenCalled();
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
   it("adds no origin line to a card that stays in the conversation", async () => {
     const { messenger, cooldown } = harness();
     cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, excerpt: "hi" });

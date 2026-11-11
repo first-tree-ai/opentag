@@ -391,11 +391,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async #groupNameWithin(target: FeedbackTarget, signal: AbortSignal): Promise<string | undefined> {
     const limit = new AbortController();
     const timer = setTimeout(() => limit.abort(), GROUP_NAME_TIMEOUT_MS);
-    const expired = new Promise<undefined>((resolve) =>
-      limit.signal.addEventListener("abort", () => resolve(undefined), { once: true }),
-    );
     try {
-      return await Promise.race([this.#groupName(target, AbortSignal.any([signal, limit.signal])), expired]);
+      return await this.#groupName(target, AbortSignal.any([signal, limit.signal]), limit.signal);
     } catch (error) {
       // A cooldown that could not be stored must stop the worker like any other feedback call.
       if (error instanceof FeedbackCooldownStorageError) throw error;
@@ -406,15 +403,20 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     }
   }
 
-  async #groupName(target: FeedbackTarget, signal: AbortSignal): Promise<string | undefined> {
+  /**
+   * Only the provider read races the courtesy limit. Once Slack answers with a rate limit, the cooldown it records
+   * is awaited to the end, so a failure to store it still reaches the worker.
+   */
+  async #groupName(target: FeedbackTarget, signal: AbortSignal, limit: AbortSignal): Promise<string | undefined> {
+    const within = <T>(read: Promise<T>) => Promise.race([read, untilAborted(limit)]);
     if (target.provider === "slack") {
       const { api } = await this.#slack(target, signal);
-      const r = await this.#slackCall(target, () => api.conversations.info({ channel: target.channelId }));
-      return r.channel?.name || undefined;
+      const r = await this.#slackCall(target, () => within(api.conversations.info({ channel: target.channelId })));
+      return r?.channel?.name || undefined;
     }
     const { api } = await this.#feishu(target, signal);
-    const r = await api.im.v1.chat.get({ path: { chat_id: target.channelId } });
-    return r.code === 0 ? r.data?.name || undefined : undefined;
+    const r = await within(api.im.v1.chat.get({ path: { chat_id: target.channelId } }));
+    return r?.code === 0 ? r.data?.name || undefined : undefined;
   }
 
   /** Opening the conversation posts nothing, so any failure here is known not to have sent the card. */
@@ -800,6 +802,14 @@ function rejectedAsUnreachable(error: unknown): never {
 }
 
 /** The Feishu error code of an HTTP error response, which means Feishu answered and refused the call. */
+/** Resolves with nothing once the signal aborts: the end of an optional read's time. */
+function untilAborted(signal: AbortSignal): Promise<undefined> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve(undefined);
+    else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
+}
+
 function feishuErrorCode(error: unknown): number | undefined {
   if (!error || typeof error !== "object" || !("response" in error)) return;
   const data = (error as { response?: { data?: { code?: unknown } } }).response?.data;

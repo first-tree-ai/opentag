@@ -26,6 +26,8 @@ import {
   RATE_LIMIT_RETRY_DELAY_MS,
   type RetryCount,
   recoverableFailure,
+  retryDelayMs,
+  retryLimit,
   sessionMessageKey,
   trackRunTime,
 } from "./interruption-retry.js";
@@ -222,9 +224,9 @@ export class SessionMessageInbox {
     this.#turnPlan = options.turnPlan;
     this.#imCredentialGrantVersion = options.imCredentialGrantVersion;
     this.#logger = options.logger ?? createLogger("session-message-inbox");
-    this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
-    this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 256, "maxQueuedTotal");
-    this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
+    this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 256, "maxQueuedPerSession");
+    this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 1024, "maxQueuedTotal");
+    this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 2048, "maxRememberedMessages");
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
     this.#onFailure = options.onFailure;
@@ -848,6 +850,15 @@ export class SessionMessageInbox {
     return true;
   }
 
+  /** Whether this runtime's conversation durably holds the message, so a retry need not repeat it. */
+  inConversation(message: SessionMessageDeliveryRequestV3, runId: string, runtime: AgentRuntime): boolean {
+    return alreadyInConversation(this.#records.get(sessionMessageKey(message)), runId, runtime);
+  }
+
+  #carriedToRepeat(run: SessionMessageRun, runtime: AgentRuntime): readonly SessionMessageDeliveryRequestV3[] {
+    return run.carried.filter((message) => !this.inConversation(message, run.id, runtime));
+  }
+
   /** The Run this message joined ended; resolves once the message's outcome is durable. */
   settleJoined(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void> {
     const key = sessionMessageKey(message);
@@ -1083,7 +1094,7 @@ export class SessionMessageInbox {
             buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
             continuation,
           ),
-          run.carried.map((message) =>
+          this.#carriedToRepeat(run, runtime).map((message) =>
             buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
           ),
         ),
@@ -1425,10 +1436,10 @@ export class SessionMessageInbox {
       return undefined;
     }
     const reason = timedOut || !mayRetry ? undefined : recoverableFailure(failure.code);
-    const retry = reason && nextRetry(messageRetryCount(record));
+    const retry = reason && nextRetry(messageRetryCount(record), retryLimit(reason));
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
-      const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
+      const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : retryDelayMs(reason);
       let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       try {
         retryable = await this.#transition(

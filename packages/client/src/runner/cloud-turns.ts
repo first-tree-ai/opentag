@@ -10,6 +10,7 @@ import {
   ProviderFailureReasonSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  RUNTIME_MAX_FRAME_BYTES,
   type RunnerClientFrame,
   type RunnerCloudDeliveryQueryFrame,
   type RunnerCloudDeliveryReportAckFrame,
@@ -68,13 +69,24 @@ import {
   computeCloudSessionInputHash,
   steerNeverStarted,
 } from "./cloud-journal.js";
-import { CLOUD_STEER_RELAY_SOURCE, cloudSteerResult, cloudSteerSocketPath } from "./cloud-steer-control.js";
+import {
+  CLOUD_SESSION_STEER_LIMIT,
+  CLOUD_STEER_RELAY_SOURCE,
+  type CloudSessionSteerRequest,
+  type CloudSessionSteerResult,
+  CloudSessionSteerResultSchema,
+  cloudSteerResult,
+  cloudSteerSocketPath,
+} from "./cloud-steer-control.js";
+import type { CloudWorkerCompletion } from "./cloud-turn-worker.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "./context-tree-command-worker.js";
 import { createSandboxContextTreeSessionHints } from "./context-tree-session-hints.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
+
+const startupClockId = randomUUID();
 
 /**
  * Trusted-parent Cloud Turn lifecycle (E4). Owns the durable journal boundary for every delivery
@@ -141,6 +153,7 @@ export interface CloudTurnRunnerOptions {
   readonly send: (frame: RunnerClientFrame) => void;
   readonly turnActivityEnabled?: () => boolean;
   readonly steeringEnabled?: () => boolean;
+  readonly sessionSteeringEnabled?: () => boolean;
   readonly steerWorker?: (
     input: { request: import("@opentag/shared").RuntimeImSteerRequest; token: string },
     signal: AbortSignal,
@@ -165,6 +178,7 @@ export interface CloudTurnRunnerOptions {
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
   readonly checkpoint?: (options?: { readonly executionEffects?: TurnCompletion["executionEffects"] }) => Promise<void>;
   readonly log?: (message: string) => void;
+  readonly onStartupDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
   readonly onPersistenceError?: (error: unknown) => void;
@@ -250,6 +264,9 @@ interface ActiveTurn {
   readonly settle: () => void;
   execution?: Promise<void>;
   steering?: { token: string; turnId: string };
+  readonly sessionSteers: Map<string, { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }>;
+  sessionSteerRetry?: ReturnType<typeof setTimeout>;
+  sessionSteeringBlocked?: boolean;
 }
 
 interface QueuedDeliveryVerified {
@@ -278,9 +295,13 @@ interface CloudTurnWork<Entry extends CloudJournalEntry> {
   readonly matches: (entry: CloudJournalEntry | undefined) => entry is Entry;
   readonly markStarted: (entry: Entry) => Promise<Entry>;
   readonly admit: (entry: Entry) => TurnCompletion | undefined;
-  readonly run: (entry: Entry, model: RunnerCloudModelGrant, signal: AbortSignal) => Promise<TurnCompletion>;
-  readonly settle: (entry: Entry, completion: TurnCompletion, checkpoint?: boolean) => Promise<void>;
-  readonly missingModel: (entry: Entry) => Promise<void>;
+  readonly run: (entry: Entry, model: RunnerCloudModelGrant, signal: AbortSignal) => Promise<CloudWorkerCompletion>;
+  readonly settle: (
+    entry: Entry,
+    completion: TurnCompletion,
+    checkpoint?: boolean,
+  ) => Promise<CloudJournalSettlementOutcome>;
+  readonly missingModel: (entry: Entry) => Promise<unknown>;
 }
 
 /**
@@ -307,6 +328,10 @@ const CloudTurnCompletionSchema = z
     executionEffects: z.enum(["completed", "may_have_occurred", "not_started"]),
     finalText: z.string().optional(),
     outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+    sessionSteers: z
+      .record(z.string().uuid(), z.enum(["processed", "not_started", "interrupted"]))
+      .refine((outcomes) => Object.keys(outcomes).length <= CLOUD_SESSION_STEER_LIMIT)
+      .optional(),
     usage: RuntimeUsageSchema.optional(),
   })
   .strict()
@@ -344,7 +369,7 @@ export class CloudTurnRunner {
   readonly #activity: TurnActivityReporter;
   readonly #cancelRequested = new Set<string>();
   /** Verified entries waiting for the single Session-serial turn slot, keyed by request id. */
-  readonly #queue = new Map<string, QueuedVerified>();
+  #queue = new Map<string, QueuedVerified>();
   /** Monotonic control-channel generation; a close invalidates queued connection-scoped grants. */
   #channelGeneration = 0;
   #active?: ActiveTurn;
@@ -570,7 +595,7 @@ export class CloudTurnRunner {
 
   async #steerRoot(request: import("@opentag/shared").RuntimeImSteerRequest, scope: CloudJournalScope) {
     const root = await this.#options.journal.read(request.rootDeliveryId);
-    if (!root || root.kind !== "delivery" || root.steer || root.turnId !== request.expectedTurnId) return undefined;
+    if (root?.kind !== "delivery" || root.steer || root.turnId !== request.expectedTurnId) return undefined;
     assertCloudJournalScope(root, scope);
     return root;
   }
@@ -733,6 +758,7 @@ export class CloudTurnRunner {
         await this.#reportTerminal(entry, denial.completion);
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueVerified(entry, frame, generation);
     });
   }
@@ -781,7 +807,13 @@ export class CloudTurnRunner {
     if (decision.kind === "refuse") return undefined;
     if (decision.kind === "reuse") return decision.entry;
     if (decision.kind === "rekey") {
-      return this.#options.journal.updateSessionRequestId(message.messageId, journalScope, frame.requestId);
+      const updated = await this.#options.journal.updateSessionRequestId(
+        message.messageId,
+        journalScope,
+        frame.requestId,
+      );
+      this.#retainSessionQueueSlot(decision.entry.requestId, updated.requestId);
+      return updated;
     }
     const input = {
       message,
@@ -791,9 +823,21 @@ export class CloudTurnRunner {
       requestId: frame.requestId,
       turnId: randomUUID(),
     };
-    return decision.kind === "replace"
-      ? this.#options.journal.replaceSessionReceived(input)
-      : this.#options.journal.recordSessionReceived(input);
+    if (decision.kind === "replace") {
+      const updated = await this.#options.journal.replaceSessionReceived(input);
+      this.#retainSessionQueueSlot(decision.entry.requestId, updated.requestId);
+      return updated;
+    }
+    return this.#options.journal.recordSessionReceived(input);
+  }
+
+  #retainSessionQueueSlot(previous: string, replacement: string): void {
+    if (previous === replacement || !this.#queue.has(previous)) return;
+    this.#queue = new Map(
+      [...this.#queue].map(([key, queued]) =>
+        key === previous ? [replacement, { ...queued, generation: -1 }] : [key, queued],
+      ),
+    );
   }
 
   /**
@@ -810,7 +854,7 @@ export class CloudTurnRunner {
   ):
     | { kind: "fresh" }
     | { kind: "refuse" }
-    | { kind: "replace" }
+    | { kind: "replace"; entry: CloudJournalSessionEntry }
     | { kind: "rekey"; entry: CloudJournalSessionEntry }
     | { kind: "reuse"; entry: CloudJournalSessionEntry } {
     const messageId = frame.message.messageId;
@@ -847,7 +891,7 @@ export class CloudTurnRunner {
     if (existing.phase === "received") {
       // The journaled input is outdated and the Turn never started: retire the stale entry and
       // journal this attempt (the Server replaces the never-executed custody record in step).
-      return { kind: "replace" };
+      return { kind: "replace", entry: existing };
     }
     this.#log(
       `refusing re-dispatch of ${messageId}: a ${existing.phase} entry with changed input settles through its own path`,
@@ -868,20 +912,22 @@ export class CloudTurnRunner {
       if (frame.status === "rejected") {
         if (entry.phase === "received") {
           await this.#options.journal.clearSessionRejected(entry.messageId, entry.scope);
+          this.#queue.delete(entry.requestId);
           this.#notifyJournalChanged();
+          this.#scheduleDrain();
         } else this.#log(`ignoring rejected receipt for Session message ${entry.messageId} in phase ${entry.phase}`);
         return;
       }
       if (entry.phase !== "received") return;
-      if (this.#closed || this.#cancelRequested.delete(entry.messageId)) {
-        await this.#settleSessionTerminal(entry, "cancelled");
-        return;
-      }
-      const denial = this.#admitSession(frame);
+      const denial =
+        this.#closed || this.#cancelRequested.delete(entry.messageId) ? "cancelled" : this.#admitSession(frame);
       if (denial) {
+        this.#queue.delete(entry.requestId);
         await this.#settleSessionTerminal(entry, denial);
+        this.#scheduleDrain();
         return;
       }
+      this.#startup(entry, "verified");
       await this.#queueSessionVerified(entry, frame, generation);
     });
   }
@@ -919,7 +965,7 @@ export class CloudTurnRunner {
     frame: RunnerCloudSessionMessageVerifiedFrame,
     generation: number,
   ): Promise<void> {
-    if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
+    if (!this.#queue.has(entry.requestId) && this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
       this.#log(`cloud turn queue is full; leaving ${entry.messageId} at the received boundary for re-verification`);
       return;
     }
@@ -962,19 +1008,26 @@ export class CloudTurnRunner {
       if (queuedKey === entryKey) this.#queue.delete(requestId);
     }
     this.#cancelRequested.add(entryKey);
-    void this.#enqueue(async () => {
-      if (!this.#cancelRequested.delete(entryKey)) return;
-      const entry = await this.#options.journal.read(entryKey);
-      if (!entry || entry.kind !== kind) return;
-      this.#assertCurrentScope(entry);
-      if (entry.phase !== "received") return;
-      if (entry.kind === "delivery" && entry.steer) {
-        await this.#reconcileSteer(entry);
-        return;
-      }
-      if (entry.kind === "delivery") await this.#reportTerminal(entry, cancelledBeforeStart());
-      else await this.#settleSessionTerminal(entry, "cancelled");
-    }).catch((error) => this.#reportPersistenceError(error));
+    void this.#enqueue(() => this.#settleEntryCancellation(kind, entryKey)).catch((error) =>
+      this.#reportPersistenceError(error),
+    );
+  }
+
+  async #settleEntryCancellation(kind: CloudJournalEntry["kind"], entryKey: string): Promise<void> {
+    if (!this.#cancelRequested.has(entryKey)) return;
+    const entry = await this.#options.journal.read(entryKey);
+    if (entry?.phase === "started" && this.#active?.sessionSteers.has(entryKey)) return;
+    this.#cancelRequested.delete(entryKey);
+    if (entry?.kind !== kind || entry.phase !== "received") return;
+    this.#assertCurrentScope(entry);
+    this.#queue.delete(entry.requestId);
+    if (entry.kind === "delivery" && entry.steer) {
+      await this.#reconcileSteer(entry);
+      return;
+    }
+    if (entry.kind === "delivery") await this.#reportTerminal(entry, cancelledBeforeStart());
+    else await this.#settleSessionTerminal(entry, "cancelled");
+    this.#scheduleDrain();
   }
 
   handleActivityResult(result: TurnActivityResult): void {
@@ -1110,7 +1163,10 @@ export class CloudTurnRunner {
       this.#sendSessionSettled(entry);
       return;
     }
-    if (this.#active?.kind === "session-message" && this.#active.entryKey === entry.messageId) {
+    if (
+      this.#active?.sessionSteers.has(entry.messageId) ||
+      (this.#active?.kind === "session-message" && this.#active.entryKey === entry.messageId)
+    ) {
       // A live execution in this process is never rewritten as unknown by a reconnect.
       this.#sendSessionProgress(entry);
       return;
@@ -1332,6 +1388,7 @@ export class CloudTurnRunner {
       kind: work.kind,
       settle,
       settled,
+      sessionSteers: new Map(),
     };
     this.#active = active;
     try {
@@ -1360,7 +1417,7 @@ export class CloudTurnRunner {
         return "settled";
       }
       await work.markStarted(current);
-      active.execution = this.#executeTurn(work, active.abort.signal)
+      active.execution = this.#executeTurn(work, active)
         .catch((error) => this.#reportPersistenceError(error))
         .finally(() => {
           this.#completeActive(active);
@@ -1420,12 +1477,140 @@ export class CloudTurnRunner {
 
   async #drain(): Promise<void> {
     for (;;) {
-      if (this.#closed || this.#active || this.#sandboxUnusable) return;
-      const first = this.#queue.values().next().value as QueuedVerified | undefined;
-      if (!first) return;
+      if (this.#closed || this.#sandboxUnusable) return;
+      const active = this.#active;
+      if (active) {
+        if (!(await this.#steerSessionQueueHead(active))) return;
+        continue;
+      }
+      const first = this.#queue.values().next().value;
+      if (!first || first.generation !== this.#channelGeneration) return;
       const outcome = await this.#processQueued(first);
       if (outcome !== "continue") return;
     }
+  }
+
+  async #steerSessionQueueHead(active: ActiveTurn): Promise<boolean> {
+    const steering = active.steering;
+    if (
+      !steering ||
+      !this.#options.sessionSteeringEnabled?.() ||
+      active.abort.signal.aborted ||
+      active.sessionSteeringBlocked ||
+      active.sessionSteerRetry ||
+      active.sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT
+    )
+      return false;
+    // Joined entries keep their queue slots until the Run settles. Only the unjoined FIFO head
+    // may steer, so a refusal cannot let a later message pass it.
+    const next = [...this.#queue.values()].find(
+      (queued) => queued.kind === "delivery" || !active.sessionSteers.has(queued.messageId),
+    );
+    if (next?.kind !== "session-message" || next.generation !== this.#channelGeneration) return false;
+    const entry = await this.#options.journal.read(next.messageId);
+    if (entry?.kind !== "session-message" || entry.phase !== "received" || entry.requestId !== next.frame.requestId) {
+      this.#queue.delete(next.frame.requestId);
+      return true;
+    }
+    this.#assertCurrentScope(entry);
+    // Scheduled occurrences retain their own execution context and grant.
+    if (entry.message.scheduledOrigin || this.#admitSession(next.frame)) return false;
+    if (active.steering !== steering || this.#cancelRequested.has(entry.messageId)) return false;
+    const request: CloudSessionSteerRequest = {
+      type: "session:message:steer",
+      expectedTurnId: steering.turnId,
+      sessionKind: entry.sessionKind,
+      outboxContext: entry.outboxContext,
+      message: entry.message,
+    };
+    if (Buffer.byteLength(JSON.stringify(request)) > RUNTIME_MAX_FRAME_BYTES) return false;
+    return this.#trySessionSteer(active, entry, next, request, steering);
+  }
+
+  async #trySessionSteer(
+    active: ActiveTurn,
+    entry: CloudJournalSessionEntry,
+    next: QueuedSessionVerified,
+    request: CloudSessionSteerRequest,
+    steering: NonNullable<ActiveTurn["steering"]>,
+  ): Promise<boolean> {
+    // Reconnect and process loss must see a potentially started input before it can reach Pi.
+    const started = await this.#options.journal.markSessionStarted(entry.messageId, entry.scope);
+    active.sessionSteers.set(entry.messageId, { entry: started, queued: next });
+    const stillAuthorized =
+      !this.#closed &&
+      active.steering === steering &&
+      !active.abort.signal.aborted &&
+      !this.#cancelRequested.has(entry.messageId) &&
+      next.generation === this.#channelGeneration;
+    const result = stillAuthorized ? await this.#relaySessionSteer(active, steering.token, request) : "refused";
+    if (result === "accepted") return true;
+    if (result === "uncertain") {
+      active.sessionSteeringBlocked = true;
+      return false;
+    }
+    const received = await this.#options.journal.requeueUnstartedSessionSteer(started);
+    active.sessionSteers.delete(entry.messageId);
+    if (next.generation !== this.#channelGeneration) {
+      this.#reverifySessionSteers([{ entry: received, queued: next }]);
+    } else if (result === "retry" && active.steering === steering) {
+      active.sessionSteerRetry = setTimeout(() => {
+        active.sessionSteerRetry = undefined;
+        this.#scheduleDrain();
+      }, 1_000).unref();
+    } else {
+      active.sessionSteeringBlocked = true;
+    }
+    return false;
+  }
+
+  async #relaySessionSteer(
+    active: ActiveTurn,
+    token: string,
+    request: CloudSessionSteerRequest,
+  ): Promise<CloudSessionSteerResult> {
+    try {
+      const response = await this.#options.sandbox.exec(
+        SANDBOX_NODE,
+        ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(active.entryKey)],
+        { stdin: JSON.stringify({ token, request }), timeoutMs: 3_000, signal: active.abort.signal },
+      );
+      if (response.code === 0) return CloudSessionSteerResultSchema.parse(JSON.parse(response.stdout));
+    } catch (error) {
+      this.#log(
+        `Cloud Session steer was unconfirmed for ${request.message.messageId}: ${error instanceof Error ? error.name : "unknown error"}`,
+      );
+    }
+    return "uncertain";
+  }
+
+  #reverifySessionSteers(steers: { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }[]): void {
+    if (steers.length === 0) return;
+    const slots = steers.map(({ entry, queued }) => [entry.requestId, queued] as const);
+    this.#queue = new Map([...slots, ...this.#queue]);
+    for (const { entry } of steers) this.#sendSessionProgress(entry);
+  }
+
+  async #settleSessionSteers(
+    active: ActiveTurn,
+    completion: CloudWorkerCompletion,
+    rootOutcome: CloudJournalSettlementOutcome,
+  ): Promise<void> {
+    const reverify: { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }[] = [];
+    for (const { entry, queued } of active.sessionSteers.values()) {
+      const cancelled = this.#cancelRequested.delete(entry.messageId) || active.abort.signal.aborted;
+      const receipt = completion.sessionSteers?.[entry.messageId];
+      if (!cancelled && !this.#closed && receipt === "not_started") {
+        const received = await this.#options.journal.requeueUnstartedSessionSteer(entry);
+        if (queued.generation !== this.#channelGeneration) reverify.push({ entry: received, queued });
+        continue;
+      }
+      this.#queue.delete(entry.requestId);
+      const outcome = cancelled ? "cancelled" : sessionSteerSettlement(receipt, rootOutcome);
+      await this.#settleSessionTerminal(entry, outcome, false, undefined, completion.errorReason);
+    }
+    // A disconnected channel revoked these slots' grants, but later work must still wait its turn.
+    this.#reverifySessionSteers(reverify);
   }
 
   /**
@@ -1482,11 +1667,13 @@ export class CloudTurnRunner {
   }
 
   #completeActive(active: ActiveTurn): void {
+    clearTimeout(active.sessionSteerRetry);
     if (this.#active === active) this.#active = undefined;
     active.settle();
   }
 
-  async #executeTurn<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>, signal: AbortSignal): Promise<void> {
+  async #executeTurn<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>, active: ActiveTurn): Promise<void> {
+    const signal = active.abort.signal;
     const current = await this.#options.journal.read(work.key);
     if (!work.matches(current) || current.phase !== "started") return;
     if (work.generation !== this.#channelGeneration || signal.aborted) {
@@ -1497,7 +1684,7 @@ export class CloudTurnRunner {
       await work.missingModel(current);
       return;
     }
-    let completion: TurnCompletion;
+    let completion: CloudWorkerCompletion;
     try {
       completion = await work.run(current, work.model, signal);
     } catch {
@@ -1506,9 +1693,13 @@ export class CloudTurnRunner {
     if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
       completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
     }
+    active.steering = undefined;
     // Hold occupation through namespace cleanup, checkpoint and durable terminal evidence.
     const cleanup = await this.#cleanupInterrupted(completion);
-    await work.settle(current, cleanup.completion, true);
+    const rootOutcome = await work.settle(current, cleanup.completion, true);
+    if (active.sessionSteers.size > 0) {
+      await this.#enqueue(() => this.#settleSessionSteers(active, completion, rootOutcome));
+    }
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
@@ -1537,7 +1728,7 @@ export class CloudTurnRunner {
     entry: CloudJournalDeliveryEntry,
     completion: TurnCompletion,
     checkpoint = false,
-  ): Promise<void> {
+  ): Promise<CloudJournalSettlementOutcome> {
     const saved = checkpoint ? await this.#checkpoint(completion.executionEffects) : undefined;
     const checkpointError = saved?.error;
     if (saved?.failed && completion.executionEffects !== "not_started") completion = workspaceSaveFailure(completion);
@@ -1545,10 +1736,12 @@ export class CloudTurnRunner {
     // started/unknown custody (never automatic replay), not a success whose workspace was lost.
     const report = entry.report ?? this.#buildReport(entry.delivery, entry, completion);
     const recorded = await this.#options.journal.recordReport(entry.deliveryId, entry.scope, report);
-    if (!recorded.report) return;
-    this.#notifyJournalChanged();
-    this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
+    if (recorded.report) {
+      this.#notifyJournalChanged();
+      this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
+    }
     if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
+    return sessionSettlementOutcome(completion);
   }
 
   #buildReport(
@@ -1593,6 +1786,20 @@ export class CloudTurnRunner {
     frame: RunnerCloudDeliveryVerifiedFrame,
   ): { readonly completion: TurnCompletion } | undefined {
     const now = Date.now();
+    // The deadline comes first: the model grant expires thirty seconds after it and is never reissued past
+    // it, so an expired grant is a Turn that waited past its deadline, and reports as a timeout.
+    if (delivery.deadlineAt) {
+      const deadline = Date.parse(delivery.deadlineAt);
+      if (!Number.isFinite(deadline) || deadline <= now) {
+        return {
+          completion: {
+            errorReason: "turn_timeout",
+            executionEffects: "not_started",
+            outcome: "failed",
+          },
+        };
+      }
+    }
     const model = frame.model;
     if (!model) {
       return {
@@ -1612,18 +1819,6 @@ export class CloudTurnRunner {
         },
       };
     }
-    if (delivery.deadlineAt) {
-      const deadline = Date.parse(delivery.deadlineAt);
-      if (!Number.isFinite(deadline) || deadline <= now) {
-        return {
-          completion: {
-            errorReason: "turn_timeout",
-            executionEffects: "not_started",
-            outcome: "failed",
-          },
-        };
-      }
-    }
     return undefined;
   }
 
@@ -1633,23 +1828,22 @@ export class CloudTurnRunner {
     entry: CloudJournalDeliveryEntry,
     signal: AbortSignal,
     generation: number,
-  ): Promise<TurnCompletion> {
+  ): Promise<CloudWorkerCompletion> {
     const scope = this.#options.scope();
     if (!scope) throw new Error("The Runner scope is not established");
     // No model/Pi/tool effect exists yet: a stop here must never open credentials or spawn work.
     if (signal.aborted) return cancelledBeforeStart();
-    const steering = this.#options.steeringEnabled?.() ? { turnId: entry.turnId, token: randomUUID() } : undefined;
-    if (this.#active?.entryKey === entry.deliveryId && steering) this.#active.steering = steering;
     const openExecution =
       this.#options.openExecution ??
       ((input: CloudTurnExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
-    const openStartedAtMs = Date.now();
-    const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
-    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ delivery, scope, turnId: entry.turnId, signal }),
+    );
     try {
       // The credential bridge is open, but the worker has not started; close it without calling
       // the worker when a stop or grant revocation landed during the open.
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
+      const steering = this.#armSteering(entry, this.#options.steeringEnabled?.());
       const stdin = serializeRunnerCloudTurnWorkerStdin({
         delivery,
         ...(steering ? { steering } : {}),
@@ -1669,6 +1863,7 @@ export class CloudTurnRunner {
         ...scope,
         turnId: entry.turnId,
         deliveryId: delivery.deliveryId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       this.#activity.end(entry.turnId);
@@ -1694,7 +1889,7 @@ export class CloudTurnRunner {
     checkpoint = false,
     executionEffects?: TurnCompletion["executionEffects"],
     reason?: TurnCompletion["errorReason"],
-  ): Promise<void> {
+  ): Promise<CloudJournalSettlementOutcome> {
     const saved = checkpoint ? await this.#checkpoint(executionEffects) : undefined;
     const checkpointError = saved?.error;
     const effective = saved?.failed && executionEffects !== "not_started" ? "failed" : outcome;
@@ -1706,10 +1901,12 @@ export class CloudTurnRunner {
       effective,
       effectiveReason,
     );
-    if (!recorded.settlement) return;
-    this.#notifyJournalChanged();
-    this.#sendSessionSettled(recorded);
+    if (recorded.settlement) {
+      this.#notifyJournalChanged();
+      this.#sendSessionSettled(recorded);
+    }
     if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
+    return effective;
   }
 
   async #checkpoint(
@@ -1736,7 +1933,7 @@ export class CloudTurnRunner {
     entry: CloudJournalSessionEntry,
     signal: AbortSignal,
     generation: number,
-  ): Promise<TurnCompletion> {
+  ): Promise<CloudWorkerCompletion> {
     const scope = this.#options.scope();
     if (!scope) throw new Error("The Runner scope is not established");
     if (signal.aborted) return cancelledBeforeStart();
@@ -1750,13 +1947,15 @@ export class CloudTurnRunner {
     const openExecution =
       this.#options.openSessionExecution ??
       ((input: CloudSessionExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
-    const openStartedAtMs = Date.now();
-    const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
-    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
+    const { execution, credentialOpenMs } = await this.#traceCredentialOpen(entry, () =>
+      openExecution({ message, scope, turnId: entry.turnId, signal }),
+    );
     try {
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
+      const steering = this.#armSteering(entry);
       const stdin = serializeRunnerCloudSessionWorkerStdin({
         message,
+        ...(steering ? { steering } : {}),
         executionDir: execution.executionDir,
         ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
         ...(execution.webTools ? { webTools: execution.webTools } : {}),
@@ -1774,10 +1973,20 @@ export class CloudTurnRunner {
         ...scope,
         turnId: entry.turnId,
         messageId: message.messageId,
+        dispatchRequestId: entry.requestId,
       });
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
+  }
+
+  #armSteering(entry: CloudJournalEntry, imEnabled = false): ActiveTurn["steering"] {
+    if (!imEnabled && !this.#options.sessionSteeringEnabled?.()) return undefined;
+    const active = this.#active;
+    if (!active) return undefined;
+    active.steering = { turnId: entry.turnId, token: randomUUID() };
+    this.#scheduleDrain();
+    return active.steering;
   }
 
   /** Both execution paths use the same transport-failure and completion boundary. */
@@ -1786,11 +1995,14 @@ export class CloudTurnRunner {
     signal: AbortSignal,
     execution: CloudTurnExecutionHandle,
     context: PiDiagnosticContext,
-  ): Promise<TurnCompletion> {
+  ): Promise<CloudWorkerCompletion> {
     const workerSignal = execution.bridgeFailureSignal
       ? AbortSignal.any([signal, execution.bridgeFailureSignal])
       : signal;
-    const diagnostics = createPiDiagnosticReader(context, (record) => this.#options.onDiagnostic?.(record));
+    this.#startupRecord("native_exec", context);
+    const diagnostics = createPiDiagnosticReader({ ...context, clockId: startupClockId }, (record) =>
+      this.#options.onDiagnostic?.(record),
+    );
     let workerExitCode: number | undefined;
     let execFailed = false;
     let execError: unknown;
@@ -2214,9 +2426,73 @@ export class CloudTurnRunner {
     this.#options.onPersistenceError?.(error);
   }
 
+  async #traceCredentialOpen(entry: CloudJournalEntry, open: () => Promise<CloudTurnExecutionHandle>) {
+    const started = performance.now();
+    try {
+      const execution = await open();
+      const credentialOpenMs = performance.now() - started;
+      this.#startup(entry, "credential_open", { durationMs: credentialOpenMs, outcome: "completed" });
+      return { execution, credentialOpenMs };
+    } catch (error) {
+      this.#startup(entry, "credential_open", { durationMs: performance.now() - started, outcome: "failed" });
+      throw error;
+    }
+  }
+
+  #startup(
+    entry: CloudJournalEntry,
+    event: "verified" | "credential_open",
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    this.#startupRecord(
+      event,
+      {
+        ...entry.scope,
+        turnId: entry.turnId,
+        dispatchRequestId: entry.requestId,
+        ...(entry.kind === "delivery" ? { deliveryId: entry.deliveryId } : { messageId: entry.messageId }),
+      },
+      timing,
+    );
+  }
+
+  #startupRecord(
+    event: "received" | "verified" | "credential_open" | "native_exec",
+    context: PiDiagnosticContext,
+    timing?: { durationMs: number; outcome: "completed" | "failed" },
+  ): void {
+    try {
+      this.#options.onStartupDiagnostic?.({
+        ...context,
+        module: "cloud-runner",
+        operation: "runner.turn.startup",
+        event,
+        timestamp: new Date().toISOString(),
+        clockId: startupClockId,
+        monotonicMs: performance.now(),
+        ...timing,
+      });
+    } catch {
+      // Startup diagnostics must never affect custody or execution.
+    }
+  }
+
   #send(frame: RunnerClientFrame): void {
     try {
       this.#options.send(frame);
+      if (
+        frame.type === "delivery:received" ||
+        (frame.type === "session:message:received" && frame.status === "accepted")
+      ) {
+        const scope = this.#options.scope();
+        if (scope)
+          this.#startupRecord("received", {
+            ...scope,
+            turnId: frame.turnId,
+            dispatchRequestId: frame.requestId,
+            ...(frame.type === "delivery:received" ? { deliveryId: frame.deliveryId } : { messageId: frame.messageId }),
+          });
+      }
     } catch {
       this.#log("cloud delivery frame could not be sent (channel closed)");
     }
@@ -2300,6 +2576,15 @@ function sessionSettlementOutcome(completion: TurnCompletion): CloudJournalSettl
   return "failed";
 }
 
+function sessionSteerSettlement(
+  receipt: import("../agent-runtime/types.js").AgentSteerOutcome | undefined,
+  rootOutcome: CloudJournalSettlementOutcome,
+): CloudJournalSettlementOutcome {
+  if (receipt === undefined) return "unknown";
+  if (rootOutcome !== "completed") return rootOutcome;
+  return receipt === "processed" ? "completed" : "failed";
+}
+
 function workspaceSaveFailure(completion: TurnCompletion): TurnCompletion {
   const message =
     "Workspace save failed. Execution effects may already exist, but these files are not durably saved. " +
@@ -2344,7 +2629,7 @@ function errorMessage(error: unknown): string {
 }
 
 /** Parse exactly one bounded in-sandbox result line; malformed output is an explicit unknown. */
-function parseWorkerCompletion(stdout: string): TurnCompletion {
+function parseWorkerCompletion(stdout: string): CloudWorkerCompletion {
   if (utf8Length(stdout) > CLOUD_TURN_WORKER_STDOUT_MAX_BYTES) {
     return { errorReason: "output_too_large", executionEffects: "may_have_occurred", outcome: "unknown" };
   }

@@ -3,6 +3,7 @@ import {
   AGENT_SLUG_CHARACTERS,
   contextTreeName,
   contextTreeSelector,
+  SESSION_DELIVERY_FAILURE_NOTICE_HEADER,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
 } from "@opentag/shared";
 import type { ContextTreeResult, ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
@@ -87,9 +88,8 @@ function renderSkills(cliCommand: string): readonly string[] {
 
 /**
  * The Agent may tune its own instructions, model, and reasoning effort through the Session proof.
- * Those fields feed the effective snapshot hash, so a change applies from the next Turn and that
- * Turn starts a new provider conversation instead of resuming the old one. The Agent is told so it
- * does not change them casually mid-task.
+ * Changes apply from the next Turn in every existing Session without resetting the provider
+ * conversation. The Agent is told to change them only when asked, not mid-task.
  *
  * MCP configuration is a separate section (`renderMcpInChat`). It used to be one sentence inside
  * this paragraph, which the model skipped when the user named a product or asked to connect a
@@ -99,7 +99,7 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`. Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation; change them only when asked, not mid-task. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
     "",
   ];
 }
@@ -178,6 +178,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSchedules(context),
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
@@ -233,7 +234,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     `- ${context.cliCommand} session send <target-session-id> --message <text>`,
     `- ${context.cliCommand} session stop <internal-session-id>`,
     `- ${context.cliCommand} session list`,
-    "A result of `unreachable` with code `client_busy` means the target Client is briefly not admitting new work, for example during an upgrade. The message was not delivered and nothing retries it for you: send it again shortly with `--message-id` set to the returned message ID.",
+    `A result of \`accepted\` from \`session send\` or \`session create\` means openTag has the message. If the target's Client is briefly unavailable, for example during an upgrade, openTag keeps the message and delivers it in order when the Client is back, so do not send it again. If it can never be delivered, you get a message that begins with "${SESSION_DELIVERY_FAILURE_NOTICE_HEADER}".`,
     `Each Run of an internal Session is stopped when its time budget runs out; the child keeps its conversation, but the interrupted work does not finish on its own. When you create one, estimate how long the task needs and pass \`--max-duration-ms\` with headroom: for example 4 hours (14400000) for coding, debugging, or test runs, up to the 24-hour maximum (86400000) for very long work. Without it, the Session gets the larger of 2 hours and this Agent's configured budget.`,
     context.environment === "cloud"
       ? "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof."
@@ -244,7 +245,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
         ]
       : []),
     "An accepted result means the target accepted the message for processing; it does not mean the delegated task is complete.",
-    "If a command result is uncertain, retry with the same messageId and exactly the same semantic input.",
+    "An `unknown` result from `session create` or `session send` means delivery is unconfirmed. To retry, use the same arguments and set `--message-id` to the original message ID.",
     `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag, not by the Session it names: that Session, which you sent a message to or created, stopped before finishing (for example \`timed_out\` after reaching its maximum Run duration), so its final result will not arrive on its own. openTag does not rerun it. The child keeps its conversation context; to continue, send it a follow-up with \`${context.cliCommand} session send <child-session-id> --message <text>\`, or choose another approach. Decide what, if anything, the user needs to hear.`,
     `\`session stop\` ends an internal Session you created, directly or through your children, without its cooperation: its running Run is cancelled and its queued messages are withdrawn. A stopped Session cannot be messaged or resumed, so to continue that work create a new Session. Use it when work is no longer wanted or is being replaced, instead of asking the child to stop. It also stops every Session below it, the same way. \`session list --include-stopped\` also shows stopped Sessions. A notice saying the child was stopped means another Session stopped it; do not try to continue it.`,
     ...(context.environment === "cloud"
@@ -252,6 +253,21 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
         ]
       : []),
+  ];
+}
+
+function renderSchedules(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) return [];
+  const cli = context.cliCommand;
+  return [
+    "",
+    "## Schedules",
+    "",
+    `Manage schedules pinned to this Session with \`${cli} self schedule\`:`,
+    `- \`${cli} self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]\``,
+    `- \`${cli} self schedule <list|show|update|pause|resume|delete|preview> ...\` (pass \`--help\` for flags).`,
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first. If a required command needs approval under Ask for approval, or if an MCP Server or credential is unauthorized, guide the user to complete authorization or add the required command rules in the Agent's Model settings first.",
   ];
 }
 

@@ -1,5 +1,5 @@
 {
-  "id": "d5b7a3de-ddbd-455b-acfc-b0ed42e7c13f",
+  "id": "74d70e48-aa1b-4c58-a968-b47f33ed9ad7",
   "prevId": "f2026f00-cb88-4f41-85c4-355aa7b35cf0",
   "version": "7",
   "dialect": "postgresql",
@@ -403,13 +403,6 @@
         },
         "revision": {
           "name": "revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "access_generation": {
-          "name": "access_generation",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -6470,6 +6463,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_messages_held_idx": {
+          "name": "session_messages_held_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"last_outcome\" = 'unknown' and \"session_messages\".\"last_error_code\" = 'delivery_held'",
           "concurrently": false,
           "method": "btree",
           "with": {}

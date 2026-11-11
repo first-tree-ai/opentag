@@ -663,6 +663,19 @@ describe("AgentTurnRunner", () => {
         undefined,
       ),
     ).toMatchObject({ outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" });
+    expect(
+      completionForResult(
+        result("failed", {
+          error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+        }),
+        undefined,
+      ),
+    ).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "provider_quota_exceeded",
+      retryAt: "2026-11-11T07:30:00.000Z",
+    });
     for (const status of ["aborted", "cancelled"] as const) {
       expect(completionForResult(result(status, { usage: { inputTokens: 1 } }), undefined)).toMatchObject({
         outcome: "cancelled",
@@ -705,7 +718,7 @@ describe("AgentTurnRunner", () => {
     expect(completionForError(new ImCredentialEnvironmentError("credential_stale"), undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     expect(
       completionForError(
@@ -715,7 +728,12 @@ describe("AgentTurnRunner", () => {
         }),
         undefined,
       ),
-    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" });
+    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "model_login_missing" });
+    expect(completionForError(new ImCredentialEnvironmentError("im_connection_unavailable"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "im_connection_unavailable",
+    });
     expect(
       completionForError(
         new AgentRuntimeProviderUnavailableError("claude-code", {
@@ -915,6 +933,40 @@ describe("AgentTurnRunner", () => {
         outcome: "unknown",
         error: expect.any(AgentProviderError),
       }),
+    );
+  });
+
+  it("passes a quota reset time to the report owner, which decides whether the Server can take it", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "d".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => ({
+          prompt: async (): Promise<AgentRunResult> => ({
+            runId: "turn-1",
+            status: "failed",
+            output: [],
+            error: { code: "provider_quota_exceeded", message: "limit", retryAt: "2026-11-11T07:30:00.000Z" },
+          }),
+        }),
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ errorReason: "provider_quota_exceeded", retryAt: "2026-11-11T07:30:00.000Z" }),
+      expect.any(Number),
     );
   });
 
@@ -1290,7 +1342,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "model_login_missing",
       }),
       expect.any(Number),
     );
@@ -1328,7 +1380,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         level: "warn",
         message: "Turn failed",
-        fields: expect.objectContaining({ errorReason: "credential_unavailable", errorCode: "provider_cli_unready" }),
+        fields: expect.objectContaining({ errorReason: "tool_setup_failed", errorCode: "provider_cli_unready" }),
       }),
     );
   });
@@ -1525,7 +1577,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );
@@ -1566,7 +1618,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );
@@ -1617,7 +1669,10 @@ describe("AgentTurnRunner", () => {
     let receipt: RecordedSteerInput | undefined;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
-    const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
+    const steer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("steer failed"))
+      .mockResolvedValue({ outcome: Promise.resolve("processed") });
     const markReporting = vi.fn(
       () =>
         new Promise<void>((resolve) => {

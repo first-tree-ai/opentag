@@ -122,7 +122,7 @@ The worker writes fixed-prefix JSON lines to stderr; the parent consumes them wh
 No diagnostic is stored in the workspace, database, or Turn report. Local Pi runs do not enable
 this stream.
 
-The parent owns `turnId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
+The parent owns `turnId`, `dispatchRequestId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
 `sandboxId`, `environmentGeneration`, and the Instance's `resourceName`. Child fields cannot
 replace them. The parent's startup record includes the probed Runner and Pi versions once.
 Use `module=cloud-pi`, `operation=pi.diagnostic`, and `provider=pi` to identify this stream.
@@ -139,6 +139,16 @@ Failures have `severity=ERROR`; normal transitions have `severity=INFO`.
 | `await_terminal` | Acknowledged prompt until terminal result and queued events settle. |
 | `cleanup` | Pi shutdown; any failure remains separate from the original failure. |
 
+The first Pi `turn_start` accepted for the owned prompt emits one `event=milestone`,
+`milestone=first_turn_start` record per OpenTag Turn. It has child `elapsedMs` and Runner
+`receivedElapsedMs`, `clockId`, and `monotonicMs`, with parent-owned allocation, Turn, and
+`dispatchRequestId` correlation. The milestone can precede the `prompt_acceptance` end
+because the native prompt also waits for a post-ack state fence. It leaves phase tracking intact.
+The `get_state` end can include the OS child-spawn observation and the OpenTag MCP gateway
+extension's own module-load and Session-start durations, when those stderr markers have arrived.
+These are independently observed, potentially overlapping timings. Other Pi extensions and native
+MCP connections have no per-extension attribution in this stream.
+
 Each phase has `start` and `end` or `failure` records. `durationMs` measures the current phase,
 `elapsedMs` measures worker elapsed time, and `seq` orders worker records. All use process-local
 monotonic clocks; `receivedElapsedMs` is the parent's independent receive clock. Never subtract
@@ -154,6 +164,12 @@ and elapsed time, and whether its timer is paused. These observe the existing pa
 Total prompt wall time can exceed the RPC budget during compaction. An acknowledged prompt's
 timer is already cleared, so its end record reports it as paused. Cancellation before acknowledgement
 records the aborted RPC in `prompt_acceptance` and does not enter `await_terminal`.
+
+A failed result returned after acknowledgement adds `terminalFailureCategory` to the
+`await_terminal` end record with `outcome=failed`. An allowlisted runtime provider failure code
+takes precedence. Without one, the category is `unfinished_tool_use` for Pi's `toolUse` stop
+or `unknown` otherwise. Only the category is emitted. The Cloud delivery v1 Turn report still
+uses `provider_failed` for these results.
 
 The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
 when later cleanup fails. Errors preserve safe name/code, including the owned `AgentRuntimeError`
@@ -214,6 +230,13 @@ attribution. New collection, export or retention paths require their own approve
 
 An opt-in Staging lane observes Cloud IM preparation/allocation calls and Runner workspace-ready,
 worker-execution, checkpoint and matching report-ack boundaries on the existing log streams.
+It includes an IM dispatch span. Runner `runner.turn.startup` events mark the journal receipt
+send attempt, authorization, credential bridge open, and native exec. Join with the first-Turn
+milestone by allocation, Turn, and dispatch request. Compare `monotonicMs` only within one
+Runner `clockId`. Duplicate receipt and verification observations can occur on a retry.
+Server performance records use `deliveryId` and `attempt` for IM claims and retries, and
+`messageId` plus `dispatchRequestId` for Session messages. Allocation ensure outcomes and
+the dispatch send and receipt records connect those identities to the Sandbox generation.
 It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and an explicit
 `OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
 or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
@@ -238,7 +261,7 @@ IDs, a process clock identity, UTC and monotonic durations; they exclude content
 Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
 
 The [manual stdin-only aggregator](https://github.com/first-tree-ai/opentag/blob/main/packages/server/scripts/cloud-latency-report.ts) reuses existing
-Pi phase durations, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
+Pi phase durations and the Runner-observed native-exec-to-first-Turn interval, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
 aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
 separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
@@ -308,9 +331,11 @@ In addition to paired performance spans, the Server and Cloud Runner emit struct
 streaming telemetry:
 
 - **Sandbox lifecycle (`module="sandboxes"`)** — `sandbox.lifecycle.provision` (`startupMode="cold_start"`), `sandbox.lifecycle.borrow` (`startupMode="warm_reuse"`), `sandbox.lifecycle.ready` (`startupDurationMs` on initial promotion, `startupMode="cold_start" | "warm_reuse" | "reconnect"`, `runnerVersion`), `sandbox.lifecycle.seal` (`durationMs`, `outcome`), and `sandbox.lifecycle.release` (`previousLifecycle`).
-- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents).
+- **Provider allocation and control connection** — Server allocation performance spans time start/ensure and report readiness outcomes. `sandbox.lifecycle.create_accepted` identifies an accepted v1/v2 create submission, and `sandbox.lifecycle.instance_verified` records the verified instance UID. Runner `runner.connection.auth` measures dial through welcome or failure, and `runner.connection.rebind` measures assignment binding or reuse. Match auth records by request ID.
+- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents). Runner claim times the initial metadata fence. Restore reports download and extraction separately when reached. The restored fingerprint is computed within `extractMs` using streamed content digests and staged metadata. Ordinary saves compute their fingerprint within `packMs`. The standalone `fingerprintMs` phase measures the pre-seal check against an existing saved archive. Save also reports upload and uncertain-commit verification durations where applicable. Use matching phase boundaries when comparing versions. Upload includes the object write and its response, and verification covers read-back after a failed response. The Server upload record includes the object-store write span. A save without a prior saved archive has `reason=initial_empty_workspace`, including retries of the initial save. An existing archive is fenced and restored without this save.
 - **Runner native sandbox lifecycle (`module="cloud-runner"`)** — `runner.native_sandbox.start`, `runner.native_sandbox.probe`, `runner.native_sandbox.reset`, and `runner.boot.ready` emit single-line JSON records to stderr with `durationMs`, `thresholdMs`, `slow`, `outcome`, and `runnerVersion`.
 - **Cloud Model streaming (`module="cloud-model-proxy"`, `operation="cloud_model.chat_completions"`)** — Records `firstEventMs` (time to first upstream chunk), `streamDurationMs`, `responseBytes`, `retryCount`, and `retryWaitMs`.
+  `cloud_model_cancel_failed` reports a failure in active upstream cancellation. An upstream body that has already errored, including after a request abort or deadline, has no cancellation work left.
 - **MCP probe and Skill archive operations** — `McpProbe` logs `durationMs` on both `"MCP probe succeeded"` and `"MCP probe failed"`. `SkillService` records `normalizeDurationMs` on archive validation and `durationMs` on bundle opening, while `RemoteSkillService` records `openDurationMs` and `durationMs` on source resolution and installation.
 
 ## Configuration

@@ -157,7 +157,7 @@ Agent for it.
 Rollback: a downgraded Client can inherit Turns accepted concurrently on different revisions. The Server then recovers them
 oldest revision first, answering `session:recover` with `retry` (`older_configuration_recovering`) until the older Turns
 have reported. The Client's recover attempts bound that wait at about 5 minutes. After that, it reports the waiting Turn
-through its ordinary failure path, so that Turn gets an error card and isn't resumed.
+through its ordinary failure path, so that Turn gets a failure message and isn't resumed.
 
 ## Session recovery
 
@@ -209,6 +209,22 @@ The Client freezes the negotiated report version when a Turn starts. New reports
 started on v3 retains its category even if it finishes during a disconnect. A durable
 v3 report waits for v3 support after reconnection; its reason and hash are never rewritten
 for replay. Reply snapshots remain supported on both v2 and v3.
+
+`runtime.turnReport` v4 splits two causes out of `credential_unavailable` that a person can fix:
+`im_connection_unavailable`, when the Server refuses the Feishu or Slack connection (`binding_inactive` or
+`credential_stale` on a credential acquire), and `model_login_missing`, when the Computer's model CLI has no
+signed-in account (`credential_missing` in its readiness probe), and `tool_setup_failed`, when the CLI the Agent
+replies through or its credential environment could not be prepared. On v1 to v3 the Client sends
+`credential_unavailable` instead, under the same freeze rule. A missing or expired Cloud model grant stays
+`credential_unavailable`.
+
+`runtime.turnReport` v5 adds an optional `retryAt` to a `provider_quota_exceeded` report: when the used-up quota is
+available again, as the model CLI reported it in structured output. It is rejected on any other reason. The Server
+keeps it only inside the Turn report the delivery already stores and passes it to the quota card; nothing else reads
+it. A report without `retryAt` keeps its v4 hash. Today only Claude Code supplies it: a `rate_limit_event` whose
+`rate_limit_info.status` is `rejected` names when that usage window resets (`resetsAt`, Unix seconds). A rate-limited
+or quota failure in the same Run is then reported as `provider_quota_exceeded` with that time. Codex, Pi and Cloud
+Turns send no `retryAt`.
 
 Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion: 1` contract.
 It retains the legacy failure vocabulary: new provider categories become `provider_failed`

@@ -28,6 +28,7 @@ function makeSnapshot(scheduleId: string, scheduledFor = T0): ScheduledMessageSn
       name: "Daily check",
     },
     attemptedAt: scheduledFor,
+    nextTriggerAt: null,
     detailUrl: `https://opentag.example.com/agents/x?schedule=${scheduleId}`,
   };
 }

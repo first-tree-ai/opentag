@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -800,6 +800,50 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("retries a Run whose model CLI failed to start once after a short delay; a second failure is reported (R3)", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: { code: "provider_start_failed", message: "spawn ENOENT" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([5_000]);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(retries).toHaveLength(1);
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_start_failed" }),
+    );
+    inbox.stop();
+  });
+
   it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
     const BUDGET = 600_000;
     let now = 1_000;
@@ -1391,6 +1435,66 @@ describe("SessionMessageInbox", () => {
     restarted.stop();
   });
 
+  it("still deduplicates a replay of a message finished more than a week earlier, after a restart (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-old-replay-"));
+    try {
+      let now = Date.now();
+      const store = new FileRuntimeDurabilityStore(home, { now: () => now });
+      const prompts: string[] = [];
+      const inbox = () =>
+        new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          sessionCollaborationVersion: () => 4,
+          persistence: store,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(
+              async () =>
+                ({
+                  waitForIdle: vi.fn(async () => undefined),
+                  prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                    prompts.push(input.input.items.at(-1)?.text ?? "");
+                    return { runId: input.runId, status: "completed", output: [] };
+                  }),
+                }) as never,
+            ),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+        });
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const original = delivery({ text: "A", targetSessionId, agentId });
+      const first = inbox();
+      await first.ready();
+      // The acceptance reply is lost on the way back: the Server row stays unknown and may be replayed.
+      await first.accept(original);
+      await vi.waitFor(() => expect(prompts).toEqual(["A"]));
+      await first.settled();
+      first.stop();
+
+      now += 8 * 24 * 60 * 60 * 1_000;
+      await store.write({
+        acceptedAt: now,
+        attempts: 0,
+        key: "unrelated",
+        kind: "session-message",
+        payload: {},
+        status: "dead-letter",
+        updatedAt: now,
+      });
+      const restarted = inbox();
+      await restarted.ready();
+      await expect(restarted.accept(original)).resolves.toMatchObject({ status: "accepted" });
+      await restarted.settled();
+      restarted.stop();
+      expect(prompts).toEqual(["A"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-inbox-fifo-"));
     try {
@@ -1461,6 +1565,51 @@ describe("SessionMessageInbox", () => {
       await vi.waitFor(() => expect(order).toEqual(["A", "B"]));
       await restarted.settled();
       restarted.stop();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("starts from a corrupt inbox file by moving it aside, and runs new messages (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-corrupt-"));
+    try {
+      const quarantined: string[] = [];
+      const store = new FileRuntimeDurabilityStore(home, {
+        onQuarantine: (quarantine) => quarantined.push(quarantine.kind),
+      });
+      const directory = join(home, "data/runtime/durability");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(directory, "session-message.json"), '[{"kind": "session-message", "key": "trunc', {
+        mode: 0o600,
+      });
+      const ran: string[] = [];
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        persistence: store,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                  ran.push(input.input.items.at(-1)?.text ?? "");
+                  return { runId: input.runId, status: "completed", output: [] };
+                }),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      await inbox.ready();
+      expect(quarantined).toEqual(["session-message"]);
+      await inbox.accept(delivery({ text: "after the corruption" }));
+      await vi.waitFor(() => expect(ran).toEqual(["after the corruption"]));
+      await inbox.settled();
+      inbox.stop();
     } finally {
       await rm(home, { recursive: true, force: true });
     }

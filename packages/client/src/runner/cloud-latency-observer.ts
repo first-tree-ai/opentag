@@ -38,6 +38,10 @@ export class RunnerCloudLatencyObserver {
     this.#write = input.write;
   }
 
+  observes(sessionId: string): boolean {
+    return this.#sessions.has(sessionId);
+  }
+
   #observation(key: string, context: CloudLatencyCorrelation): Observation | undefined {
     const existing = this.#observations.get(key);
     if (existing)

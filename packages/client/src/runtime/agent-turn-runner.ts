@@ -48,8 +48,9 @@ import {
   MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
-  RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
+  retryDelayMs,
+  retryLimit,
   type TurnRetryRecord,
   type TurnRetryStore,
   trackRunTime,
@@ -74,6 +75,7 @@ import type {
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
+import { conversationIdentity } from "./session-message-run.js";
 import {
   ClientRuntimeProviderStartError,
   type SessionRuntimeManager,
@@ -136,6 +138,8 @@ export interface AgentTurnRunnerOptions {
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
+    /** Whether this runtime's conversation durably holds the message, so a retry need not repeat it. */
+    inConversation?(message: SessionMessageDeliveryRequestV3, runId: string, runtime: AgentRuntime): boolean;
   };
 }
 
@@ -143,6 +147,7 @@ export interface TurnStartOptions {
   /** Set when this start is the automatic retry of an interrupted Turn. */
   readonly continuation?: Interruption;
   readonly steers?: readonly RuntimeImSteerRequest[];
+  readonly steerConversations?: Readonly<Record<string, string>>;
 }
 
 interface TurnAttempt {
@@ -199,8 +204,10 @@ interface RunningTurn {
   finalized: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
-  /** Messages an earlier attempt held, replayed in the current attempt's input. */
+  /** Messages an earlier attempt held, replayed in the current attempt's input unless its conversation has them. */
   steers: readonly SteeredInput[];
+  /** Which provider conversation durably holds each IM steer, by delivery. */
+  steerConversations: Readonly<Record<string, string>>;
 }
 
 export interface TurnCompletion {
@@ -209,6 +216,8 @@ export interface TurnCompletion {
   readonly finalText?: string;
   readonly outcome: "completed" | "failed" | "cancelled" | "unknown";
   readonly usage?: TurnReportHashInput["usage"];
+  /** When a used-up model quota is available again; sent only on Turn report v5. */
+  readonly retryAt?: string;
 }
 
 interface TurnPhaseTimings {
@@ -294,6 +303,7 @@ export class AgentTurnRunner {
       finalized: false,
       unrecordedRunMs: 0,
       steers: options.steers ?? [],
+      steerConversations: options.steerConversations ?? {},
     };
     turn.promise = this.#run(turn, abort.signal)
       .catch(
@@ -357,12 +367,13 @@ export class AgentTurnRunner {
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
-      await runtime.steer({
+      const receipt = await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
         input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
       await this.#bindingStore.recordSteer(request, semanticHash);
+      void receipt.inConversation?.then(() => this.#recordSteerInConversation(turn, runtime, request));
     } catch (error) {
       await this.#retries.removeSteer(request).catch(() => undefined);
       // The Turn already ended and nothing reached the provider, so the Server delivers it after this Turn.
@@ -371,6 +382,34 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
+  }
+
+  /** Best effort: without it a retry repeats the steer, which it has always been allowed to. */
+  async #recordSteerInConversation(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: RuntimeImSteerRequest,
+  ): Promise<void> {
+    const conversation = conversationIdentity(runtime.binding);
+    if (!conversation) return;
+    const steerConversations = { [request.deliveryId]: conversation };
+    turn.steerConversations = { ...turn.steerConversations, ...steerConversations };
+    await this.#retries
+      .update(request.sessionId, request.expectedTurnId, (record) => ({
+        ...record,
+        steerConversations: { ...record.steerConversations, ...steerConversations },
+      }))
+      .catch(() => undefined);
+  }
+
+  /** What a retry must still repeat: a conversation that durably holds a message has it already. */
+  #steersToRepeat(turn: RunningTurn, runtime: AgentRuntime): readonly SteeredInput[] {
+    const conversation = conversationIdentity(runtime.binding);
+    return turn.steers.filter((steer) =>
+      steer.type === "im:steer"
+        ? conversation === undefined || turn.steerConversations[steer.deliveryId] !== conversation
+        : !this.#sessionMessages.inConversation?.(steer, turn.owner.turnId, runtime),
+    );
   }
 
   /**
@@ -564,6 +603,8 @@ export class AgentTurnRunner {
       executionEffects: completion.executionEffects,
       ...(completion.finalText ? { finalText: completion.finalText } : {}),
       ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
+      // The report owner drops it below Turn report v5 or on any other reason.
+      ...(completion.retryAt ? { retryAt: completion.retryAt } : {}),
       ...(completion.usage ? { usage: completion.usage } : {}),
       traceSummary,
       ...(outgoingReplies ? { outgoingReplies } : {}),
@@ -608,8 +649,8 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
+      // An in-place retry follows a model failure and waits first; false when an orderly stop interrupts it.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -698,7 +739,7 @@ export class AgentTurnRunner {
         input: interruption
           ? buildRetryAgentInput(
               owner.request,
-              turn.steers,
+              this.#steersToRepeat(turn, runtime),
               interruption,
               new Date(this.#now()),
               this.#sessionMessages.input,
@@ -776,6 +817,9 @@ export class AgentTurnRunner {
     if (completion.outcome === "completed") return undefined;
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
+    // A start failure is retried only when it provably ran nothing.
+    /* v8 ignore next -- every start failure is classified not_started today; this keeps a future one that may have run from being replayed. */
+    if (reason === "provider_start_failed" && completion.executionEffects !== "not_started") return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
@@ -785,7 +829,7 @@ export class AgentTurnRunner {
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
-        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs });
+        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
         return { ...ran, retries: count, retryRanMs: 0, interruption };
       });
     } catch {
@@ -1276,6 +1320,7 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
     errorReason: providerTurnFailureReason(result.error?.code),
+    ...(result.error?.retryAt ? { retryAt: result.error.retryAt } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
   };
 }
@@ -1318,15 +1363,18 @@ export function completionForError(error: unknown, abortReason: unknown, expired
       errorReason: "turn_timeout",
     };
   }
+  if (error instanceof ImCredentialEnvironmentError && error.code === "im_connection_unavailable") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "im_connection_unavailable" };
+  }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
-    return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "tool_setup_failed" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {
     return {
       outcome: "failed",
       executionEffects: "not_started",
       errorReason: error.result.issues.some((issue) => issue.code === "credential_missing")
-        ? "credential_unavailable"
+        ? "model_login_missing"
         : "provider_start_failed",
     };
   }

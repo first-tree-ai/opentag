@@ -925,7 +925,7 @@ function answerFeishuTokenRefusal(error: unknown): ProviderProxyResponse {
   if (!(error instanceof FeishuTenantTokenExchangeError) || error.providerCode === undefined) throw error;
   const body = JSON.stringify({ code: error.providerCode, msg: "Feishu refused the tenant token exchange" });
   return {
-    status: error.kind === "rate_limited" ? 429 : 400,
+    status: error.kind === "rate_limited" ? 429 : error.kind === "upstream" ? 503 : 400,
     headers: { "content-type": "application/json" },
     body: singleChunk(new TextEncoder().encode(body)),
   };

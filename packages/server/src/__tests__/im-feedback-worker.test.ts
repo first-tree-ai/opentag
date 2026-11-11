@@ -40,10 +40,14 @@ function harness(targets = Array.from({ length: 8 }, (_, i) => target(i))) {
     latestAction: vi.fn(async () => undefined),
     markSending: vi.fn(async () => true),
     settle: vi.fn(async () => {}),
+    reserveOfflineNotice: vi.fn(async (): Promise<Date | undefined> => undefined),
+    reserveParkedNotice: vi.fn(async (): Promise<Date | undefined> => undefined),
+    releaseOfflineNotice: vi.fn(async (_t?: FeedbackTarget, _at?: Date): Promise<void> => {}),
   };
   const transport = {
     reaction: vi.fn(async (_t: FeedbackTarget) => {}),
     post: vi.fn(async () => "card"),
+    postOfflineNotice: vi.fn(async (_t?: FeedbackTarget): Promise<void> => {}),
     update: vi.fn(async () => {}),
     find: vi.fn(async () => ({ ids: [] })),
   };
@@ -256,6 +260,65 @@ describe("feedback pass scheduling", () => {
       expect(h.store.settle).toHaveBeenCalledTimes(4);
     },
   );
+
+  it("halts admission when the offline notice hits a cooldown failure, even while its release waits", async () => {
+    vi.useFakeTimers();
+    const h = harness(Array.from({ length: 8 }, (_, i) => ({ ...target(i), state: "queued" as const })));
+    const reservedAt = new Date();
+    const fail = deferred();
+    const siblings = deferred();
+    const release = deferred();
+    h.store.reserveOfflineNotice.mockImplementation(async () => reservedAt);
+    h.store.releaseOfflineNotice.mockImplementation(() => release.promise);
+    h.transport.postOfflineNotice.mockImplementation(async (t?: FeedbackTarget) => {
+      if (t?.id !== "0") return siblings.promise;
+      await fail.promise;
+      throw new FeedbackCooldownStorageError();
+    });
+    const pass = h.worker.runOnce();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(4);
+      fail.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      siblings.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.store.claim).toHaveBeenCalledTimes(4);
+      expect(h.store.releaseOfflineNotice).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "0" }),
+        reservedAt,
+      );
+      release.resolve();
+      await vi.runAllTimersAsync();
+      await pass;
+      expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(4);
+      expect(h.store.settle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "0" }),
+        expect.objectContaining({ errorCode: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE" }),
+      );
+    } finally {
+      fail.resolve();
+      siblings.resolve();
+      release.resolve();
+      await pass;
+    }
+  });
+
+  it("keeps the cooldown failure when releasing the offline notice also fails", async () => {
+    const h = harness([{ ...target(0), state: "queued" as const }]);
+    h.store.reserveOfflineNotice.mockImplementation(async () => new Date());
+    h.store.releaseOfflineNotice.mockImplementation(async () => {
+      throw new Error("release failed");
+    });
+    h.transport.postOfflineNotice.mockImplementation(async () => {
+      throw new FeedbackCooldownStorageError();
+    });
+    await h.worker.runOnce();
+    expect(h.store.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "0" }),
+      expect.objectContaining({ errorCode: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE" }),
+    );
+  });
 
   it("halts admission before a cooldown failure's delayed settlement completes", async () => {
     vi.useFakeTimers();

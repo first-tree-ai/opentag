@@ -153,6 +153,8 @@ export type AgentRunErrorCode =
 export interface AgentRunError {
   readonly code: AgentRunErrorCode;
   readonly message: string;
+  /** When a used-up model quota is available again, as the model CLI reported it. */
+  readonly retryAt?: string;
 }
 
 export interface AgentRunResult {
@@ -241,6 +243,8 @@ export interface CreateAgentRuntimeRequest {
 
 export interface ResumeAgentRuntimeRequest extends CreateAgentRuntimeRequest {
   readonly binding: AgentRuntimeBinding;
+  /** The Session's system prompt inputs changed since the bound conversation was last opened. */
+  readonly systemPromptUpdated?: boolean;
 }
 
 export interface AgentRuntimeProbeRequest {

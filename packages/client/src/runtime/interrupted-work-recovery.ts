@@ -3,6 +3,7 @@ import { RUNTIME_CAPABILITY, type SessionRecoverRequest, type SessionRecoverResu
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   acknowledgedSteers,
+  countedAtFailure,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   nextRetry,
@@ -141,6 +142,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       this.#options.custody.resume(pending.record.request, pending.record.turnId, {
         continuation: pending.interruption,
         steers: pending.steers,
+        ...(pending.record.steerConversations ? { steerConversations: pending.record.steerConversations } : {}),
       });
     this.#logger.info(
       { sessionId, turnId: turn.turnId, reason: pending.interruption.reason, started },
@@ -274,7 +276,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     // Counted before anything runs; a 429 was counted when it failed and its retry has not started. So
     // was a retry that an earlier start counted and never began: a restart in that wait costs nothing.
     // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
-    const counted = record.interruption?.reason === "provider_rate_limited" || record.retryNotStarted === true;
+    const counted = countedAtFailure(record.interruption?.reason) || record.retryNotStarted === true;
     const { count, exhausted } = counted
       ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });

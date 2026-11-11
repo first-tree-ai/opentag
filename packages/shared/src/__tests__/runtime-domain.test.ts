@@ -85,7 +85,36 @@ describe("runtime domain contract", () => {
     expect(requiredTurnReportVersion({ ...report, outgoingReplies: { status: "complete", replies: [] } })).toBe(3);
   });
 
+  it("accepts a v5 quota report that says when to retry, and hashes it apart", () => {
+    const retryAt = "2026-11-11T07:30:00.000Z";
+    const without = turnReport({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_quota_exceeded",
+    });
+    const report = turnReport({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_quota_exceeded",
+      retryAt,
+    });
+    expect(TurnReportRequestSchema.parse(report)).toEqual(report);
+    expect(requiredTurnReportVersion(report)).toBe(5);
+    expect(report.resultHash).not.toBe(without.resultHash);
+    const { retryAt: _, resultHash: __, type: ___, requestId: ____, ...base } = report;
+    expect(computeTurnResultHash(base)).toBe(without.resultHash);
+    const rateLimited = turnReport({ outcome: "failed", errorReason: "provider_rate_limited" });
+    const withRetry = { ...rateLimited, retryAt };
+    expect(
+      TurnReportRequestSchema.safeParse({ ...withRetry, resultHash: computeTurnResultHash(withRetry) }).success,
+    ).toBe(false);
+  });
+
   it("keeps legacy report capability requirements", () => {
+    expect(requiredTurnReportVersion({ errorReason: "im_connection_unavailable" })).toBe(4);
+    expect(requiredTurnReportVersion({ errorReason: "model_login_missing" })).toBe(4);
+    expect(requiredTurnReportVersion({ errorReason: "tool_setup_failed" })).toBe(4);
+    expect(requiredTurnReportVersion({ errorReason: "credential_unavailable" })).toBe(1);
     expect(requiredTurnReportVersion({})).toBe(1);
     expect(requiredTurnReportVersion(turnReport())).toBe(1);
     expect(requiredTurnReportVersion({ errorReason: "provider_failed", outgoingReplies: undefined })).toBe(1);
@@ -597,6 +626,34 @@ describe("runtime domain contract", () => {
     expect(computeReconcilePayloadHash({ ...request, desired: "stopped", runtime: undefined })).toBe(
       "27e33a25c9891fad2b548720db65feb9a61d65655ed54015314995687db7c54f",
     );
+  });
+
+  it("binds the attached message to the reconcile request identity", () => {
+    const agentId = randomUUID();
+    const request = {
+      type: "session:reconcile" as const,
+      requestId: randomUUID(),
+      installationId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId,
+      placementGeneration: 1,
+      desired: "ready" as const,
+      runtime: { ...snapshot(), agentId },
+    };
+    const sessionMessage = {
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      content: { kind: "text" as const, text: "work" },
+    };
+    const combined = { ...request, sessionMessage };
+    expect(ServerRuntimeBusinessFrameSchema.parse(combined)).toEqual(combined);
+    expect(computeReconcilePayloadHash(combined)).not.toBe(computeReconcilePayloadHash(request));
+    expect(computeReconcilePayloadHash(combined)).not.toBe(
+      computeReconcilePayloadHash({ ...combined, sessionMessage: { ...sessionMessage, messageId: randomUUID() } }),
+    );
+    expect(
+      ServerRuntimeBusinessFrameSchema.safeParse({ ...combined, desired: "stopped", runtime: undefined }).success,
+    ).toBe(false);
   });
 
   it("B-06 rejects unsafe IDs and sequence boundaries without coercion", () => {

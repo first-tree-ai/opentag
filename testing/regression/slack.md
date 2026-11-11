@@ -195,7 +195,7 @@ A Local Agent's Sessions run concurrently, and a configuration change doesn't wa
 4. Let chat A finish. It ran on the old model, and its provider access still works after the change, so what it sends
    after the change arrives. Send another message in chat A. That Turn runs on the new model.
 5. Repeat step 3, then restart the daemon right after chat B's message is sent. Chat A resumes once on the old model and
-   completes, chat B completes on the new model, and neither chat gets an error card. The client log has no
+   completes, chat B completes on the new model, and neither chat gets a failure message. The client log has no
    `TURN_RETRY_ABANDONED`. The arrival order after a restart can't be forced by hand, so if chat A happened to recover
    first, this step passes without covering the other order. `session-binding-store.test.ts` pins chat B arriving first.
 6. With 10 chats running, send a message in an 11th. It waits with no error, then runs once a slot opens. A follow-up in a

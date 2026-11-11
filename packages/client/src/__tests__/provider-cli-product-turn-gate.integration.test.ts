@@ -171,7 +171,7 @@ describe("provider CLI product Turn gate", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       1,
     );

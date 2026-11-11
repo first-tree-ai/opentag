@@ -6,7 +6,7 @@ import {
   SKILL_REPLACE_HEADER,
   SKILL_SHA256_HEADER,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../index.js";
 
 const AGENT_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
@@ -30,6 +30,14 @@ function skillRecord(): Record<string, unknown> {
   };
 }
 
+function skillDetailRecord(): Record<string, unknown> {
+  return {
+    ...skillRecord(),
+    files: [{ path: "SKILL.md", bytes: 5 }],
+    filesTruncated: false,
+  };
+}
+
 interface Captured {
   readonly method: string;
   readonly path: string;
@@ -41,8 +49,9 @@ const servers: Array<{ close(): Promise<void> }> = [];
 
 async function loopback(
   respond: (request: Captured, response: ServerResponse) => void,
-): Promise<{ api: OpenTagApi; requests: Captured[] }> {
+): Promise<{ api: OpenTagApi; requests: Captured[]; debugLog: ReturnType<typeof vi.fn> }> {
   const requests: Captured[] = [];
+  const debugLog = vi.fn();
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -58,7 +67,11 @@ async function loopback(
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
   const address = server.address() as AddressInfo;
   servers.push({ close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())) });
-  return { api: new OpenTagApi(`http://127.0.0.1:${address.port}`), requests };
+  return {
+    api: new OpenTagApi(`http://127.0.0.1:${address.port}`, { logger: { debug: debugLog } }),
+    requests,
+    debugLog,
+  };
 }
 
 function json(response: ServerResponse, body: unknown, status = 200): void {
@@ -72,13 +85,16 @@ afterEach(async () => {
 
 describe("Agent Skill API methods", () => {
   it("addresses the Account surface and sends account-scoped upload headers", async () => {
-    const { api, requests } = await loopback((_request, response) => json(response, skillRecord()));
-    await api.uploadAgentSkill(
+    const { api, requests, debugLog } = await loopback((_request, response) => json(response, skillDetailRecord()));
+    const uploaded = await api.uploadAgentSkill(
       "account-access",
       AGENT_ID,
       { archive: ARCHIVE, sha256: "b".repeat(64), format: "tar.gz", replace: true },
       { requestId: "req-1" },
     );
+    expect(uploaded.files).toEqual([{ path: "SKILL.md", bytes: 5 }]);
+    expect(uploaded.filesTruncated).toBe(false);
+    expect(debugLog).not.toHaveBeenCalledWith("Ignored response fields unknown to this client", expect.anything());
     const request = requests[0] as Captured;
     expect(request.method).toBe("POST");
     expect(request.path).toBe(`/api/v1/agents/${AGENT_ID}/skills`);
@@ -90,7 +106,7 @@ describe("Agent Skill API methods", () => {
     expect(request.headers[SKILL_REPLACE_HEADER]).toBe("true");
     expect(request.body.equals(Buffer.from(ARCHIVE))).toBe(true);
 
-    const withoutReplace = await loopback((_request, response) => json(response, skillRecord()));
+    const withoutReplace = await loopback((_request, response) => json(response, skillDetailRecord()));
     await withoutReplace.api.uploadAgentSkill("account-access", AGENT_ID, {
       archive: ARCHIVE,
       sha256: "b".repeat(64),
@@ -109,8 +125,14 @@ describe("Agent Skill API methods", () => {
     });
     expect(list.requests[0]?.path).toBe(`/api/v1/agents/${AGENT_ID}/skills`);
 
-    const patch = await loopback((_request, response) => json(response, skillRecord()));
-    await patch.api.updateAgentSkill("account-access", AGENT_ID, SKILL_ID, { enabled: false });
+    const patch = await loopback((_request, response) => json(response, skillDetailRecord()));
+    const updated = await patch.api.updateAgentSkill("account-access", AGENT_ID, SKILL_ID, { enabled: false });
+    expect(updated.files).toEqual([{ path: "SKILL.md", bytes: 5 }]);
+    expect(updated.filesTruncated).toBe(false);
+    expect(patch.debugLog).not.toHaveBeenCalledWith(
+      "Ignored response fields unknown to this client",
+      expect.anything(),
+    );
     expect(patch.requests[0]?.method).toBe("PATCH");
     expect(patch.requests[0]?.body.toString()).toBe(JSON.stringify({ enabled: false }));
 
@@ -175,12 +197,15 @@ describe("Agent Skill API methods", () => {
     expect(list.requests[0]?.path).toBe("/api/v1/runtime/skills");
     expect(list.requests[0]?.headers[SESSION_CLI_PROOF_HEADER]).toBe("proof-token");
 
-    const push = await loopback((_request, response) => json(response, skillRecord(), 201));
-    await push.api.pushRuntimeSkill("proof-token", {
+    const push = await loopback((_request, response) => json(response, skillDetailRecord(), 201));
+    const pushed = await push.api.pushRuntimeSkill("proof-token", {
       archive: ARCHIVE,
       sha256: "b".repeat(64),
       format: "tar.gz",
     });
+    expect(pushed.files).toEqual([{ path: "SKILL.md", bytes: 5 }]);
+    expect(pushed.filesTruncated).toBe(false);
+    expect(push.debugLog).not.toHaveBeenCalledWith("Ignored response fields unknown to this client", expect.anything());
     expect(push.requests[0]?.method).toBe("POST");
     expect(push.requests[0]?.headers[SESSION_CLI_PROOF_HEADER]).toBe("proof-token");
     expect(push.requests[0]?.headers["content-length"]).toBe("5");

@@ -650,6 +650,80 @@ describe("SessionService with the unit database", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("sends a notice whose recipient has ended to the nearest active Session up its creation chain", async () => {
+    const service = new SessionService(db.database, { now: () => fixture.now });
+    const root = await service.ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const create = (creator: { session: { id: string }; placement?: { generation: number } }, initialMessage: string) =>
+      service.createInternalSessionWithMessage({
+        creatorSessionId: creator.session.id,
+        creatorInstallationId: fixture.installationId,
+        creatorConnectionInstanceId: fixture.instanceId,
+        creatorComputerId: fixture.computerId,
+        creatorPlacementGeneration: creator.placement?.generation ?? 1,
+        messageId: randomUUID(),
+        initialMessage,
+      });
+    const send = (
+      source: { session: { id: string }; placement: { generation: number } },
+      targetSessionId: string,
+      content: string,
+    ) =>
+      service.authorizeAndRecordMessage({
+        messageId: randomUUID(),
+        sourceSessionId: source.session.id,
+        sourceInstallationId: fixture.installationId,
+        sourceComputerId: fixture.computerId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourcePlacementGeneration: source.placement.generation,
+        targetSessionId,
+        content,
+      });
+    const end = (sessionId: string) =>
+      db.database.update(sessions).set({ endedAt: fixture.now }).where(eq(sessions.id, sessionId));
+    const resolve = (childSessionId: string, messageId: string) =>
+      service.resolveRunOutcomeNotice({ childSessionId, messageId });
+    const toRecipient = (recipientSessionId: string) => ({
+      recipientSessionId,
+      installationId: fixture.installationId,
+    });
+
+    // root -> manager -> worker, and a separate target the worker writes to.
+    const manager = await create(root, "manage");
+    const worker = await create(manager, "work");
+    const target = await create(root, "target");
+    const fromWorker = await send(worker, target.session.id, "from the worker");
+    await expect(resolve(target.session.id, fromWorker.message.id)).resolves.toEqual(toRecipient(worker.session.id));
+
+    await end(worker.session.id);
+    await expect(resolve(target.session.id, fromWorker.message.id)).resolves.toEqual(toRecipient(manager.session.id));
+    await end(manager.session.id);
+    await expect(resolve(target.session.id, fromWorker.message.id)).resolves.toEqual(toRecipient(root.session.id));
+    await end(root.session.id);
+    await expect(resolve(target.session.id, fromWorker.message.id)).resolves.toBeUndefined();
+    // A corrupt chain that loops gives up at the depth bound instead of spinning.
+    await db.database
+      .update(sessions)
+      .set({ createdBySessionId: worker.session.id })
+      .where(eq(sessions.id, manager.session.id));
+    await expect(resolve(target.session.id, fromWorker.message.id)).resolves.toBeUndefined();
+
+    // A chain that leads back to the reporting Session stops there: it would only notify itself.
+    const owner = await create(
+      await service.ensureChatSession(
+        { imBindingId: fixture.bindingId, channelId: "C2", conversationKind: "dm" },
+        "channel",
+      ),
+      "owner",
+    );
+    const helper = await create(owner, "help");
+    const fromHelper = await send(helper, owner.session.id, "from the helper");
+    await end(helper.session.id);
+    await expect(resolve(owner.session.id, fromHelper.message.id)).resolves.toBeUndefined();
+  });
+
   it("keeps a future notice's ID out of ordinary ingress, so another sender's notice is delivered", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const creator = await service.ensureChatSession(
@@ -2119,6 +2193,8 @@ describe("SessionCollaborationService response mapping", () => {
     const sessions = {
       createInternalSessionWithMessage: vi.fn().mockResolvedValue({ ...attempt, session: { id: "target" } }),
       authorizeAndRecordMessage: vi.fn().mockResolvedValue(attempt),
+      heldHasRoom: vi.fn().mockResolvedValue(true),
+      hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
       recordMessageOutcome: vi.fn().mockResolvedValue(true),
       withCollaborationDispatchAdmission: vi.fn(),
     };
@@ -2141,7 +2217,9 @@ describe("SessionCollaborationService response mapping", () => {
     };
     const registry = {
       currentInstanceId: vi.fn().mockReturnValue("instance"),
-      supportsCapability: vi.fn().mockReturnValue(true),
+      supportsCapability: vi.fn(
+        (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+      ),
       capabilityVersion: vi.fn().mockReturnValue(2),
     };
     const assembler = { assembleForSession: vi.fn().mockResolvedValue({}) };
@@ -2162,21 +2240,28 @@ describe("SessionCollaborationService response mapping", () => {
       value.service.send({ messageId: "message-0", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "runtime_not_ready" });
     value.assembler.assembleForSession.mockResolvedValue({});
-    value.registry.currentInstanceId.mockReturnValueOnce(null);
+    value.registry.currentInstanceId.mockReturnValue(null);
     await expect(
       value.service.send({ messageId: "message", targetSessionId: "target", message: "hello" }, source),
-    ).resolves.toMatchObject({ code: "runtime_unavailable" });
+    ).resolves.toMatchObject({ status: "accepted" });
+    expect(value.sessions.recordMessageOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_held" }),
+    );
     value.registry.currentInstanceId.mockReturnValue("instance");
     value.registry.supportsCapability.mockReturnValue(false);
     await expect(
       value.service.send({ messageId: "message-2", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "runtime_unavailable" });
-    value.registry.supportsCapability.mockReturnValue(true);
+    value.registry.supportsCapability.mockImplementation(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    );
     value.attempt.route.targetSessionKind = "channel";
     await expect(
       value.service.send({ messageId: "message-channel", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ status: "accepted" });
-    value.registry.capabilityVersion.mockReturnValue(1);
+    value.registry.capabilityVersion.mockImplementation((_computer, _instance, capability) =>
+      capability === "runtime.imCredentialGrant" ? 1 : undefined,
+    );
     await expect(
       value.service.send({ messageId: "message-3", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "outbox_unavailable" });

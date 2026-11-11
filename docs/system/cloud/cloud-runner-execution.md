@@ -256,10 +256,12 @@ Missing connections, unanswered or failed queries, paused/stopped `started` reco
 answers remain `IM_DELIVERY_CLOUD_REPORT_PENDING` failures. The overdue replay warning is unchanged.
 Distinct waiting codes ensure that a later fault is diagnosed even after repeated normal waits.
 
-Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
+Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
-the execution and its lifetime is bounded by the runtime deadline. In E4,
+the execution and its lifetime is bounded by the runtime deadline: it expires thirty seconds after it and is never
+issued past it. Admission therefore checks the deadline before the grant, so a Turn that waited past its deadline
+reports `turn_timeout`, not `credential_unavailable`. In E4,
 credential and model grants are revoked when the Runner connection is lost (fail-closed,
 connection-scoped authority). Journal recovery still preserves the actual Turn outcome and never
 replays `started` work, but a transient Server or control-channel outage may fail an active
@@ -277,6 +279,24 @@ message-count cap. These bounds are not an aggregate spend quota.
 Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasoning_text` echoes,
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
+
+### Cloud Session message custody
+
+Ordinary Session messages use the existing Session collaboration frames. The Runner fsyncs a received journal
+entry, and the Server verifies durable custody and current target authority before execution. The Runner tries the
+FIFO head against the active worker using the same authenticated in-Sandbox control socket as IM steering. It
+checks the active Turn, Session, Agent, placement, and visible outbox context. The input uses the active Turn's
+model, tools, deadline, and credential execution.
+
+Before the relay can inject input, the Runner journals the message as started under its own settlement identity.
+A live reconnect re-announces that identity without injecting again. A lost worker or ambiguous relay with no
+worker receipt leaves an unknown settlement. Only explicit no-effect evidence returns a started steer to the FIFO.
+Worker receipts are bound to the message ID and settled after the joined Turn's checkpoint. The Runner retains each
+terminal settlement until the exact Server ack.
+
+The private parent-to-worker document is paired within the pinned Runner image. Steering uses the existing
+Session collaboration wire versions 1 through 3, journal file layout, and database schema. Older Runners
+receive the same frames and wait for the active Turn to finish.
 
 ### Model retry ownership
 
@@ -330,7 +350,7 @@ remain resource-policy follow-ups; the current global limit can be consumed by o
 
 Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
 report, plus the Runner's per-allocation input journal — not a generic provider write journal or
-receipt. Provider writes proxied on behalf of a Turn follow the #634 rules: one upstream attempt
+receipt. Provider writes proxied on behalf of a Turn make one upstream attempt
 per proxied request, classified in memory as succeeded, definitely rejected, or unknown; an
 unknown write surfaces as an explicit `write_outcome_unknown` and is reconciled by the task layer
 instead of being replayed automatically. E4 therefore does not promise exactly-once provider
@@ -575,7 +595,10 @@ proxy host allowlist remains unchanged.
 
 Deploy this Server before the updated Runner image: workspace Runners now opt into
 `renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
-bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.
+bounded reconnect backoff. A persistent Runner gives each connection attempt one 45-second
+authentication budget spanning connection establishment, WebSocket upgrade, and the Server's
+response, including Cloud API checks. An expired budget ends the attempt and triggers reconnect
+backoff.
 
 ## E7: idle reclamation and same-account physical reuse
 
@@ -628,11 +651,13 @@ so workspace controls keep their existing pending-release behavior.
 Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
 most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
 15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
-release; a different UID or a failed read is an incomplete release. A still-present UID at a due
-read after the original 60-second confirmation window also becomes incomplete and returns to
-the ten-minute failure cooldown. The start of this window
-survives restarts and is never extended by a confirmation read. Explicit Account stop retains
-its bounded synchronous verification. No schema change or additional worker is needed.
+release and frees the capacity slot. A different UID or a failed read retains the binding
+and records an incomplete release. If the same UID is still present at 60 seconds, the
+automatic sweep keeps confirming at the same cadence for up to five more minutes. The
+six-minute budget starts at DELETE acceptance and survives restarts. Each due sweep gets one
+read, including the final confirmation at or after the deadline. If the same UID is still
+present at that point, the release becomes incomplete and returns to the ten-minute failure
+cooldown. Explicit Account stop retains its original bounded synchronous verification.
 
 The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
 each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,

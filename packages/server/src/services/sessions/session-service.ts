@@ -9,9 +9,10 @@ import type {
   SessionCliListQuery,
   SessionCliListResponse,
   SessionKind,
+  SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -27,6 +28,13 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "./session-closure.js";
+import {
+  deliveryFailureNoticeMessageId,
+  isDeliveryFailureNotice,
+  renderDeliveryFailureNotice,
+  SESSION_MESSAGE_HELD_CODE,
+  SESSION_MESSAGE_TARGET_STOPPED_CODE,
+} from "./session-held-delivery.js";
 import { isRunOutcomeNotice } from "./session-run-outcome-notice.js";
 
 type SessionRow = typeof sessions.$inferSelect;
@@ -135,6 +143,8 @@ export interface StoppedInternalSession {
   /** The target's descendants: fixed once it has ended, so what a notice says about them does not change. */
   descendantCount: number;
   stoppedDescendantCount: number;
+  /** Computers where a notice about a message held for a stopped Session now waits. */
+  heldNoticeComputerIds: string[];
 }
 
 export interface AuthorizeAndRecordSessionMessageInput {
@@ -167,6 +177,55 @@ export interface AuthorizedSessionMessageRoute {
   targetSessionKind: SessionKind;
   targetCreatorSessionId: string | null;
 }
+
+/** The target-only authority a held message is redelivered under; the sender is no longer checked. */
+export type AuthorizedHeldMessageRoute = Omit<
+  AuthorizedSessionMessageRoute,
+  "sourceSessionId" | "sourceComputerId" | "sourcePlacementGeneration" | "sourceConnectionInstanceId"
+>;
+
+export interface HeldSessionMessage {
+  id: string;
+  sourceSessionId: string | null;
+  scheduledOrigin: SessionMessageScheduledOrigin | null;
+  targetSessionId: string;
+  targetCreatorSessionId: string | null;
+  /** Null only for an expired message whose target lost its binding; it is never redelivered. */
+  agentId: string | null;
+  content: string;
+  attemptCount: number;
+  createdAt: Date;
+  lastAttemptAt: Date | null;
+}
+
+export interface HeldSweepMessage extends HeldSessionMessage {
+  computerId: string | null;
+  targetEnded: boolean;
+}
+
+export interface HeldSweepCursor {
+  createdAt: Date;
+  id: string;
+}
+
+/**
+ * Literal, not bound: PostgreSQL can only prove a partial index applies when it sees these values, and a
+ * prepared statement's generic plan would not.
+ */
+const HELD_ROW = sql`${sessionMessages.lastOutcome} = 'unknown' and ${sessionMessages.lastErrorCode} = ${sql.raw(`'${SESSION_MESSAGE_HELD_CODE}'`)}`;
+
+const HELD_MESSAGE_COLUMNS = {
+  id: sessionMessages.id,
+  sourceSessionId: sessionMessages.sourceSessionId,
+  scheduledOrigin: sessionMessages.scheduledOrigin,
+  targetSessionId: sessionMessages.targetSessionId,
+  targetCreatorSessionId: sessions.createdBySessionId,
+  agentId: imBindings.agentId,
+  content: sessionMessages.content,
+  attemptCount: sessionMessages.attemptCount,
+  createdAt: sessionMessages.createdAt,
+  lastAttemptAt: sessionMessages.lastAttemptAt,
+};
 
 export interface SessionMessageAttempt {
   route: AuthorizedSessionMessageRoute;
@@ -261,6 +320,9 @@ function assertOrdinaryMessageIdFree(messageId: string): void {
     throw new SessionServiceError("SESSION_MESSAGE_ID_RESERVED", "Version 5 message IDs are reserved for the Server");
   }
 }
+
+/** How far up the creation chain a Run outcome notice looks for an active Session. */
+const RUN_OUTCOME_NOTICE_MAX_CHAIN_DEPTH = 32;
 
 export class SessionServiceError extends Error {
   constructor(
@@ -646,6 +708,8 @@ export class SessionService {
           .where(and(inArray(sessions.id, liveIds), isNull(sessions.endedAt)));
         await markEndedDescendantsInactive(transaction, { sessionIds: liveIds });
       }
+      // Messages first, then schedules: the order every outcome write with a schedule summary takes.
+      const heldNoticeComputerIds = await this.#settleHeldForStoppedSessions(transaction, input, treeIds);
       // Stopped Sessions' schedules stop with them, and can't be resumed. On a repeated stop this finds none.
       await transaction
         .update(agentSchedules)
@@ -665,8 +729,71 @@ export class SessionService {
         alreadyStopped: !liveIds.includes(input.targetSessionId),
         descendantCount: descendants.length,
         stoppedDescendantCount: liveIds.filter((id) => id !== input.targetSessionId).length,
+        heldNoticeComputerIds,
       };
     });
+  }
+
+  /**
+   * A stopped Session will never run its held messages, so they end with the stop rather than expiring a day
+   * later. The bumped attempt makes a hand-off still in flight lose its write. The Session that asked for the
+   * stop already knows, and one stopped with it can't hear; any other sender was told `accepted` and hears
+   * now, in the same commit. Answers the Computers where such a notice now waits.
+   */
+  async #settleHeldForStoppedSessions(
+    transaction: DatabaseTransaction,
+    input: StopInternalSessionInput,
+    stoppedIds: readonly string[],
+  ): Promise<string[]> {
+    const now = this.#now();
+    const settled = await transaction
+      .update(sessionMessages)
+      .set({
+        lastOutcome: "rejected",
+        lastErrorCode: SESSION_MESSAGE_TARGET_STOPPED_CODE,
+        attemptCount: sql`${sessionMessages.attemptCount} + 1`,
+        lastAttemptAt: now,
+        updatedAt: now,
+      })
+      .where(and(inArray(sessionMessages.targetSessionId, [...stoppedIds]), HELD_ROW))
+      .returning({
+        id: sessionMessages.id,
+        sourceSessionId: sessionMessages.sourceSessionId,
+        targetSessionId: sessionMessages.targetSessionId,
+        content: sessionMessages.content,
+        scheduledOrigin: sessionMessages.scheduledOrigin,
+      });
+    if (settled.length === 0) return [];
+    await transaction
+      .update(sessionDescendants)
+      .set({ lastDeliveryOutcome: "rejected" })
+      .where(
+        inArray(
+          sessionDescendants.lastMessageId,
+          settled.map(({ id }) => id),
+        ),
+      );
+    const computerIds = new Set<string>();
+    for (const message of settled) {
+      // A scheduled message has no sender, so its schedule's summary is where the answer shows.
+      if (message.scheduledOrigin)
+        await this.#writeStoppedScheduleSummary(transaction, message.id, message.scheduledOrigin, now);
+      const sender = message.sourceSessionId;
+      if (!sender || sender === input.sourceSessionId || stoppedIds.includes(sender)) continue;
+      if (isRunOutcomeNotice(message) || isDeliveryFailureNotice(message)) continue;
+      const recorded = await this.#insertDeliveryFailureNotice(transaction, {
+        noticeId: deliveryFailureNoticeMessageId(message.id),
+        failedTargetSessionId: message.targetSessionId,
+        senderSessionId: sender,
+        content: renderDeliveryFailureNotice({
+          messageId: message.id,
+          targetSessionId: message.targetSessionId,
+          code: SESSION_MESSAGE_TARGET_STOPPED_CODE,
+        }),
+      });
+      if (recorded) computerIds.add(recorded.computerId);
+    }
+    return [...computerIds];
   }
 
   /**
@@ -715,7 +842,8 @@ export class SessionService {
    * Who hears that a message's Run did not complete: its sender, whatever kind of Session the target
    * is. A message with no other sender (scheduled, or sent to itself) and a notice that itself failed
    * go to an internal target's creator instead, so notices can only climb the creation tree from
-   * there and never bounce between two Sessions.
+   * there and never bounce between two Sessions. A recipient that has ended is replaced by the
+   * nearest active Session up its own creation chain, so the notice still reaches someone.
    *
    * An unlocked eligibility read: the reported message must be stored and addressed to that active
    * Session. The facts only select the notice route; the subsequent `authorizeAndRecordMessage`
@@ -746,22 +874,373 @@ export class SessionService {
       )
       .limit(1);
     if (!row) return undefined;
-    const isNotice = isRunOutcomeNotice({
-      id: input.messageId,
-      sourceSessionId: row.sourceSessionId,
-      content: row.content,
-    });
+    const stored = { id: input.messageId, sourceSessionId: row.sourceSessionId, content: row.content };
+    const isNotice = isRunOutcomeNotice(stored) || isDeliveryFailureNotice(stored);
     const sender = !isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
-    const recipientSessionId = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    const candidate = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    const recipientSessionId = candidate ? await this.#firstActiveCreator(candidate, input.childSessionId) : undefined;
     return recipientSessionId ? { recipientSessionId, installationId: row.installationId } : undefined;
+  }
+
+  /**
+   * The candidate when it is still active, else the nearest active Session up its creation chain: a
+   * sender that has ended leaves the work to whoever created it. The chain never reaches the reporting
+   * Session itself (a notice to itself would tell it nothing) and gives up past a bounded depth.
+   */
+  async #firstActiveCreator(candidate: string, reporterSessionId: string): Promise<string | undefined> {
+    let current: string | null = candidate;
+    for (let depth = 0; current !== null && current !== reporterSessionId; depth += 1) {
+      if (depth >= RUN_OUTCOME_NOTICE_MAX_CHAIN_DEPTH) return undefined;
+      const [row] = await this.#database
+        .select({ creatorSessionId: sessions.createdBySessionId, endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(eq(sessions.id, current))
+        .limit(1);
+      if (!row) return undefined;
+      if (row.endedAt === null) return current;
+      current = row.creatorSessionId;
+    }
+    return undefined;
   }
 
   async withCollaborationDispatchAdmission<T>(
     route: AuthorizedSessionMessageRoute,
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    return this.#admitDispatch((transaction) => this.#authorityAdmits(transaction, route), operation);
+  }
+
+  /**
+   * The final admission for a held message. The sender was authorized when the message was recorded and
+   * may since have restarted or ended, so this proves only the target's current authority.
+   */
+  async withHeldDispatchAdmission<T>(
+    route: AuthorizedHeldMessageRoute,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    const targetRoute: AuthorizedSessionMessageRoute = {
+      ...route,
+      sourceSessionId: route.targetSessionId,
+      sourceComputerId: route.targetComputerId,
+      sourcePlacementGeneration: route.targetPlacementGeneration,
+      sourceConnectionInstanceId: "",
+    };
+    return this.#admitDispatch(async (transaction) => {
+      const agent = await this.#agentAndBindingAdmit(transaction, targetRoute);
+      if (!agent) return false;
+      const placements = await this.#sessionsAndPlacementsAdmit(transaction, targetRoute);
+      if (!placements) return false;
+      return this.#computersAdmit(transaction, targetRoute, placements, agent.createdByUserId);
+    }, operation);
+  }
+
+  /** Whether an older held message must be delivered to this target first. */
+  async hasOlderHeldMessage(
+    targetSessionId: string,
+    message: { id: string; createdAt: Date },
+    cutoff: Date,
+  ): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ id: sessionMessages.id })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
+          gt(sessionMessages.createdAt, cutoff),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+          sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
+  }
+
+  /**
+   * Active Sessions on a Computer that hold messages, one page at a time, through the held index. A message
+   * to an ended target is settled by the sweep instead.
+   */
+  async listHeldTargetsForComputer(
+    computerId: string,
+    cutoff: Date,
+    afterTargetSessionId: string | null,
+    limit: number,
+  ): Promise<string[]> {
+    const rows = await this.#database
+      .selectDistinct({ id: sessionMessages.targetSessionId })
+      .from(sessionMessages)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .where(
+        and(
+          HELD_ROW,
+          gt(sessionMessages.createdAt, cutoff),
+          eq(sessionPlacements.computerId, computerId),
+          isNull(sessions.endedAt),
+          afterTargetSessionId ? gt(sessionMessages.targetSessionId, afterTargetSessionId) : undefined,
+        ),
+      )
+      .orderBy(sessionMessages.targetSessionId)
+      .limit(limit);
+    return rows.map(({ id }) => id);
+  }
+
+  /** One target's held messages, oldest first. */
+  async listHeldMessagesForTarget(targetSessionId: string, cutoff: Date, limit: number): Promise<HeldSessionMessage[]> {
+    return this.#database
+      .select(HELD_MESSAGE_COLUMNS)
+      .from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
+          gt(sessionMessages.createdAt, cutoff),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+        ),
+      )
+      .orderBy(sessionMessages.createdAt, sessionMessages.id)
+      .limit(limit);
+  }
+
+  /**
+   * Whether one more message fits in the hold. Each count stops at its limit, and both read the held index.
+   * The message itself never counts: a hand-off past its send budget is already marked held when it asks.
+   * Concurrent sends may each see room, so the limits can be passed by the sends in flight.
+   */
+  async heldHasRoom(
+    targetSessionId: string,
+    computerId: string,
+    cutoff: Date,
+    limits: { perTarget: number; perComputer: number },
+    messageId: string,
+  ): Promise<boolean> {
+    const [target] = await this.#database.select({ count: sql<number>`count(*)::int` }).from(
+      this.#database
+        .select({ id: sessionMessages.id })
+        .from(sessionMessages)
+        .where(
+          and(
+            eq(sessionMessages.targetSessionId, targetSessionId),
+            gt(sessionMessages.createdAt, cutoff),
+            ne(sessionMessages.id, messageId),
+            HELD_ROW,
+          ),
+        )
+        .limit(limits.perTarget)
+        .as("held_target"),
+    );
+    if ((target?.count ?? 0) >= limits.perTarget) return false;
+    const [computer] = await this.#database.select({ count: sql<number>`count(*)::int` }).from(
+      this.#database
+        .select({ id: sessionMessages.id })
+        .from(sessionMessages)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+        .where(
+          and(
+            eq(sessionPlacements.computerId, computerId),
+            gt(sessionMessages.createdAt, cutoff),
+            ne(sessionMessages.id, messageId),
+            HELD_ROW,
+          ),
+        )
+        .limit(limits.perComputer)
+        .as("held_computer"),
+    );
+    return (computer?.count ?? 0) < limits.perComputer;
+  }
+
+  /**
+   * One page of every held message in `(created_at, id)` order through the held index. The keyset also gets
+   * the sweep past a row it could not settle.
+   */
+  async sweepHeldMessages(cursor: HeldSweepCursor | null, limit: number): Promise<HeldSweepMessage[]> {
+    return this.#database
+      .select({
+        ...HELD_MESSAGE_COLUMNS,
+        computerId: sessionPlacements.computerId,
+        targetEnded: sql<boolean>`${sessions.endedAt} is not null`,
+      })
+      .from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .leftJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+      .where(
+        and(
+          HELD_ROW,
+          cursor
+            ? sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+            : undefined,
+        ),
+      )
+      .orderBy(sessionMessages.createdAt, sessionMessages.id)
+      .limit(limit);
+  }
+
+  /**
+   * Fence one redelivery. The held code stays until a final answer is written, so a Server that crashes
+   * after this write still redelivers; the Client deduplicates by message ID.
+   */
+  async beginHeldAttempt(messageId: string, attemptCount: number): Promise<number | undefined> {
+    const now = this.#now();
+    const [updated] = await this.#database
+      .update(sessionMessages)
+      .set({ attemptCount: attemptCount + 1, lastAttemptAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, attemptCount),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+        ),
+      )
+      .returning({ attemptCount: sessionMessages.attemptCount });
+    return updated?.attemptCount;
+  }
+
+  /** Mark an attempt that is still unanswered as held; a final answer already written is left alone. */
+  async markMessageHeld(messageId: string, attemptCount: number): Promise<void> {
+    await this.#database
+      .update(sessionMessages)
+      .set({ lastErrorCode: SESSION_MESSAGE_HELD_CODE, updatedAt: this.#now() })
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, attemptCount),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          isNull(sessionMessages.lastErrorCode),
+        ),
+      );
+  }
+
+  /** The facts that decide whether a held scheduled occurrence is still the one to deliver. */
+  async readHeldSchedule(scheduleId: string): Promise<
+    | {
+        enabled: boolean;
+        revision: number;
+        prompt: string;
+        lastDispatch: AgentScheduleLastDispatch | null;
+      }
+    | undefined
+  > {
+    const [row] = await this.#database
+      .select({
+        enabled: agentSchedules.enabled,
+        revision: agentSchedules.revision,
+        prompt: agentSchedules.prompt,
+        lastDispatch: agentSchedules.lastDispatch,
+      })
+      .from(agentSchedules)
+      .where(eq(agentSchedules.id, scheduleId))
+      .limit(1);
+    return row;
+  }
+
+  /** The occurrence of this schedule before the given one, through the target and time index. */
+  async readPreviousScheduledOutcome(
+    targetSessionId: string,
+    scheduleId: string,
+    message: { id: string; createdAt: Date },
+  ): Promise<{ outcome: SessionMessageOutcome; code: string | null } | null> {
+    const [row] = await this.#database
+      .select({ outcome: sessionMessages.lastOutcome, code: sessionMessages.lastErrorCode })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
+          sql`${sessionMessages.scheduledOrigin} ->> 'scheduleId' = ${scheduleId}`,
+          sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
+        ),
+      )
+      .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Record the Server's notice to a sender whose message was given up. It is written as held, so it
+   * waits for the sender's Client like any other message. The notice comes from the failed target,
+   * which supplies the source the row requires. Answers the sender's Computer when a Local notice now
+   * waits there, and undefined when the sender cannot receive one.
+   */
+  async recordDeliveryFailureNotice(input: {
+    noticeId: string;
+    failedTargetSessionId: string;
+    senderSessionId: string;
+    content: string;
+  }): Promise<{ computerId: string } | undefined> {
+    return this.#database.transaction((transaction) => this.#insertDeliveryFailureNotice(transaction, input));
+  }
+
+  async #writeStoppedScheduleSummary(
+    transaction: DatabaseTransaction,
+    messageId: string,
+    origin: SessionMessageScheduledOrigin,
+    now: Date,
+  ): Promise<void> {
+    const summary: AgentScheduleLastDispatch = {
+      scheduledFor: origin.scheduledFor,
+      attemptedAt: now.toISOString(),
+      messageId,
+      outcome: "rejected",
+      code: SESSION_MESSAGE_TARGET_STOPPED_CODE,
+    };
+    await transaction
+      .update(agentSchedules)
+      .set({ lastDispatch: summary })
+      .where(
+        and(
+          eq(agentSchedules.id, origin.scheduleId),
+          sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${messageId}`,
+        ),
+      );
+  }
+
+  async #insertDeliveryFailureNotice(
+    transaction: DatabaseTransaction,
+    input: { noticeId: string; failedTargetSessionId: string; senderSessionId: string; content: string },
+  ): Promise<{ computerId: string } | undefined> {
+    const [sender] = await transaction
+      .select({
+        endedAt: sessions.endedAt,
+        computerId: sessionPlacements.computerId,
+        computerKind: computers.kind,
+      })
+      .from(sessions)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(eq(sessions.id, input.senderSessionId))
+      .limit(1);
+    if (!sender || sender.endedAt !== null || sender.computerKind !== "local") return undefined;
+    const now = this.#now();
+    const [message] = await transaction
+      .insert(sessionMessages)
+      .values({
+        id: input.noticeId,
+        sourceSessionId: input.failedTargetSessionId,
+        targetSessionId: input.senderSessionId,
+        content: input.content,
+        contentHash: hashSessionMessage(input.content),
+        lastOutcome: "unknown",
+        lastErrorCode: SESSION_MESSAGE_HELD_CODE,
+        attemptCount: 1,
+        lastAttemptAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (message) await this.#recordSessionActivity(transaction, message, [input.senderSessionId]);
+    return { computerId: sender.computerId };
+  }
+
+  async #admitDispatch<T>(
+    admits: (transaction: DatabaseTransaction) => Promise<boolean>,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
     return this.#database.transaction(async (transaction) => {
-      if (!(await this.#authorityAdmits(transaction, route))) return { admitted: false } as const;
+      if (!(await admits(transaction))) return { admitted: false } as const;
       let markDispatched: () => void = () => undefined;
       const dispatched = new Promise<void>((resolve) => {
         markDispatched = resolve;
@@ -936,6 +1415,8 @@ export class SessionService {
      * receipt can never overwrite a newer claim's summary. Never touches enabled/revision/next.
      */
     scheduleSummary?: { scheduleId: string; scheduledFor: string; attemptedAt: string };
+    /** Write only if the message is still held, so giving it up cannot replace a committed answer. */
+    expectHeld?: boolean;
   }): Promise<boolean> {
     return this.#database.transaction(async (transaction) => {
       const now = this.#now();
@@ -950,6 +1431,12 @@ export class SessionService {
           and(
             eq(sessionMessages.id, input.messageId),
             eq(sessionMessages.attemptCount, input.attemptCount),
+            input.expectHeld
+              ? and(
+                  eq(sessionMessages.lastOutcome, "unknown"),
+                  eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+                )
+              : undefined,
             // A scheduled Runner receipt is durable custody. A later dispatch timeout or
             // transport error cannot revoke that fact, even if authorization is still minting.
             input.outcome === "accepted"
@@ -963,6 +1450,9 @@ export class SessionService {
         .update(sessionDescendants)
         .set({ lastDeliveryOutcome: input.outcome })
         .where(eq(sessionDescendants.lastMessageId, input.messageId));
+      // A Run that already failed is the last word on this occurrence: its report may be gone by the
+      // time a slower hand-off result arrives, so nothing would write the reason again.
+      const keepsRunFailure = sql`not coalesce(${agentSchedules.lastDispatch} ->> 'outcome' = 'accepted' and ${agentSchedules.lastDispatch} ->> 'code' is not null, false)`;
       if (input.scheduleSummary) {
         const summary: AgentScheduleLastDispatch = {
           scheduledFor: input.scheduleSummary.scheduledFor,
@@ -979,6 +1469,7 @@ export class SessionService {
               eq(agentSchedules.id, input.scheduleSummary.scheduleId),
               sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${input.scheduleSummary.scheduledFor}`,
               sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+              keepsRunFailure,
             ),
           );
       } else if (input.outcome === "accepted" && updated.scheduledOrigin) {
@@ -994,6 +1485,7 @@ export class SessionService {
               eq(agentSchedules.id, updated.scheduledOrigin.scheduleId),
               sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${updated.scheduledOrigin.scheduledFor}`,
               sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+              keepsRunFailure,
             ),
           );
       }
@@ -1024,10 +1516,9 @@ export class SessionService {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * The scheduled one-shot fence: the single hand-off attempt moves `attempt_count` 0 -> 1
-   * atomically. Unlike the ordinary path there is no retry ladder — a fenced message is never
-   * dispatched again, and a missing, ordinary-origin, or already-fenced row answers `undefined`
-   * so the caller can never send it.
+   * The scheduled claim's fence: its hand-off attempt moves `attempt_count` 0 -> 1 atomically. Only a
+   * held occurrence is offered again, through `beginHeldAttempt`. A missing, ordinary-origin, or
+   * already-fenced row answers `undefined` so the caller can never send it.
    */
   async beginScheduledMessageAttempt(messageId: string): Promise<SessionMessageRow | undefined> {
     const now = this.#now();

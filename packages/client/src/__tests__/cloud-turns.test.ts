@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import {
   computeRuntimeImSteerInputHash,
   computeTurnResultHash,
@@ -18,6 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
   CloudJournal,
@@ -27,6 +29,7 @@ import {
   cloudJournalEntryKey,
 } from "../runner/cloud-journal.js";
 import { cloudSteerResult } from "../runner/cloud-steer-control.js";
+import { runCloudTurnWorker } from "../runner/cloud-turn-worker.js";
 import {
   CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS,
   CloudTurnRunner,
@@ -35,7 +38,9 @@ import {
 } from "../runner/cloud-turns.js";
 import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
 import { NativeSandboxError } from "../runner/native-sandbox.js";
+import { runRunnerWorker } from "../runner/worker.js";
 import { WorkspaceArchiveError } from "../runner/workspace-archive.js";
+import { RUNTIME_PROXY_PROVIDER_CA_KEY, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 // The delivery:report failure vocabulary from d70d270a, before runtime report v3.
@@ -762,12 +767,170 @@ describe("CloudTurnRunner", () => {
     },
   );
 
+  it.each([
+    {
+      stopReason: "error",
+      errorMessage: '429: {"error":{"code":"rate_limit_exceeded","message":"private-provider-detail"}}',
+      category: "provider_rate_limited",
+    },
+    {
+      stopReason: "toolUse",
+      errorMessage: '429: {"error":{"code":"rate_limit_exceeded","message":"private-provider-detail"}}',
+      category: "provider_rate_limited",
+    },
+    { stopReason: "error", errorMessage: "private-provider-detail: API key fixture-secret", category: "unknown" },
+    { stopReason: "length", category: "provider_execution_limit" },
+    { stopReason: "toolUse", category: "unfinished_tool_use" },
+  ])(
+    "correlates a returned Pi $stopReason failure as $category with the durable Turn",
+    async ({ stopReason, errorMessage, category }) => {
+      const mount = join(directory, "mount");
+      const executionDir = join(mount, "execution");
+      await mkdir(executionDir, { recursive: true });
+      const ca = join(executionDir, "ca.pem");
+      await writeFile(ca, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
+      await writeFile(
+        join(executionDir, "environment.json"),
+        JSON.stringify({
+          executionId: randomUUID(),
+          environment: {
+            [RUNTIME_PROXY_PROVIDER_URL_KEY]: "http://127.0.0.1:18080",
+            [RUNTIME_PROXY_PROVIDER_CA_KEY]: ca,
+          },
+        }),
+      );
+      const diagnostics: Readonly<Record<string, unknown>>[] = [];
+      const commands: unknown[] = [];
+      const delivery = cloudDeliveryFixture();
+      delivery.content = { ...delivery.content, kind: "text", text: "private-prompt-body" };
+      const h = harness({
+        delivery,
+        runnerOptions: {
+          onDiagnostic: (record) => diagnostics.push(record),
+          openExecution: async () => ({ executionDir, close: async () => undefined }),
+        },
+        worker: async (input) => {
+          expect(await journal.list()).toMatchObject([{ phase: "started" }]);
+          let stdout = "";
+          const code = await runRunnerWorker(
+            {
+              stdin: Readable.from([Buffer.from(input.stdin)]) as NodeJS.ReadStream,
+              stdout: {
+                write: (line) => {
+                  stdout += line;
+                },
+              },
+              stderr: { write: (line) => input.onStderr?.(Buffer.from(line)) },
+            },
+            {
+              workspace: join(directory, "workspace"),
+              runCloudTurn: (request, options) =>
+                runCloudTurnWorker(request, {
+                  ...options,
+                  executionMount: mount,
+                  localProxyLoopbackSeam: true,
+                  prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
+                  createPiFactory: ({ onDiagnostic }) =>
+                    new PiAgentRuntimeFactory({
+                      onDiagnostic,
+                      createClient: (_cwd, args) => {
+                        let emit: ((event: Readonly<Record<string, unknown>>) => void) | undefined;
+                        const sessionId = args[args.indexOf("--session-id") + 1];
+                        return {
+                          request: async (command) => {
+                            commands.push(command.type);
+                            if (command.type === "get_state") {
+                              return { sessionId, sessionFile: join(directory, "session.jsonl"), messageCount: 0 };
+                            }
+                            if (command.type !== "prompt") throw new Error("unexpected Pi RPC");
+                            // The RPC resolves before the terminal sequence, as it does after a prompt acknowledgement.
+                            setImmediate(() => {
+                              const assistant = { role: "assistant", content: [], stopReason, errorMessage };
+                              emit?.({ type: "agent_start" });
+                              emit?.({ type: "turn_start" });
+                              emit?.({ type: "message_start", message: assistant });
+                              emit?.({ type: "message_end", message: assistant });
+                              emit?.({ type: "turn_end", message: assistant });
+                              emit?.({ type: "agent_settled" });
+                            });
+                          },
+                          subscribe: (listener) => {
+                            emit = listener;
+                            return () => {
+                              emit = undefined;
+                            };
+                          },
+                          close: async () => undefined,
+                        };
+                      },
+                    }),
+                }),
+            },
+          );
+          const errorReason = ProviderFailureReasonSchema.safeParse(category).data ?? "provider_failed";
+          expect(JSON.parse(stdout)).toMatchObject({ kind: "result", completion: { errorReason, outcome: "failed" } });
+          return { code, stdout, stderr: "" };
+        },
+      });
+
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await h.runner.waitForActive();
+      const [frame] = reportsOf(h.sent);
+      if (!frame) throw new Error("missing delivery report");
+      const { report } = frame;
+      expect(report).toMatchObject({
+        deliveryId: h.delivery.deliveryId,
+        outcome: "failed",
+        executionEffects: "may_have_occurred",
+        errorReason: "provider_failed",
+      });
+      expect(frozenCloudV1ReportSchema.parse(frame)).toEqual(frame);
+      expect(report.resultHash).toBe(computeTurnResultHash(report));
+      expect(await journal.read(h.delivery.deliveryId)).toMatchObject({ phase: "reported", report });
+      expect(
+        diagnostics.filter((record) => record.event === "end" && record.phase !== "worker_startup").slice(-3),
+      ).toMatchObject([
+        { phase: "prompt_acceptance" },
+        {
+          phase: "await_terminal",
+          outcome: "failed",
+          terminalFailureCategory: category,
+          turnId: report.turnId,
+          deliveryId: h.delivery.deliveryId,
+          dispatchRequestId: h.delivery.requestId,
+        },
+        { phase: "cleanup" },
+      ]);
+      expect(diagnostics.at(-1)).toMatchObject({ event: "worker_end", diagnosticIncomplete: false });
+      expect(JSON.stringify(diagnostics)).not.toMatch(
+        /private-prompt-body|private-provider-detail|fixture-secret|unit-execution-token/,
+      );
+      h.sent.length = 0;
+      await h.runner.reconcile();
+      expect(reportsOf(h.sent).map((replay) => replay.report)).toEqual([report]);
+      expect(commands).toEqual(["get_state", "prompt"]);
+      expect(h.workerInputs).toHaveLength(1);
+      await h.runner.handleReportAck({
+        type: "delivery:report:ack",
+        requestId: randomUUID(),
+        turnId: report.turnId,
+        resultHash: report.resultHash,
+        status: "recorded",
+      });
+      expect(await journal.read(h.delivery.deliveryId)).toBeUndefined();
+      await h.runner.close();
+    },
+  );
+
   it("wires native exec stderr to diagnostics without changing the failed completion", async () => {
     const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const startup: Readonly<Record<string, unknown>>[] = [];
     const h = harness({
       runnerOptions: {
         runWorker: undefined,
         onDiagnostic: (record) => diagnostics.push(record),
+        onStartupDiagnostic: (record) => startup.push(record),
         sandbox: {
           name: "native-diagnostic-fixture",
           openDuplex: () => {
@@ -791,6 +954,16 @@ describe("CloudTurnRunner", () => {
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
     await h.runner.waitForActive();
+    expect(startup.map((record) => record.event)).toEqual(["received", "verified", "credential_open", "native_exec"]);
+    expect(
+      startup.every(
+        (record) =>
+          record.dispatchRequestId === h.delivery.requestId &&
+          record.clockId === diagnostics[0]?.clockId &&
+          record.turnId === diagnostics[0]?.turnId &&
+          record.environmentGeneration === diagnostics[0]?.environmentGeneration,
+      ),
+    ).toBe(true);
     expect(diagnostics).toContainEqual(
       expect.objectContaining({ phase: "get_state", event: "failure", primaryFailure: true, errorCode: "timeout" }),
     );
@@ -1315,6 +1488,24 @@ describe("CloudTurnRunner", () => {
       expect(entry?.phase).toBe("reported");
       await h.runner.close();
     }
+  });
+
+  it("reports a Turn whose deadline and grant both passed as a timeout, not as unavailable credentials", async () => {
+    // The Server's grant expires thirty seconds after the deadline, so an expired grant means a missed deadline.
+    const late = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() - 31_000).toISOString() });
+    const h = harness({ delivery: late });
+    await h.runner.handleDeliveryRun(runFrame(late));
+    await h.runner.handleVerified(
+      verifiedFrame(late.requestId, { ...MODEL_GRANT, expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+    );
+    const [report] = reportsOf(h.sent);
+    expect(report?.report).toMatchObject({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "turn_timeout",
+    });
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
   });
 
   it("refuses a verified turn whose persisted runtime deadline already passed and never extends the budget", async () => {

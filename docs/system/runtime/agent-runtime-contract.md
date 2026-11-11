@@ -7,8 +7,6 @@ description: "Normative Provider-neutral Agent Runtime contract: Run ownership, 
 
 Status: normative
 
-Last updated: 2026-08-20
-
 ## Purpose
 
 Agent Runtime is the lowest Client execution boundary. It lets the Client own
@@ -33,8 +31,8 @@ Provider-specific configuration, binding, and protocol validation.
 - One Run is active at a time. Every mutation carries an expected Run identity.
 - `steer` resolves with a receipt whose outcome settles with the joined Run: `processed` (the Run completed),
   `not_started` (the Provider reports it never began the input, so delivering it again is safe), or `interrupted`
-  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
-  still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
+  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin and tracks whether
+  `command_lifecycle` or a result names it as started. Codex and Pi acknowledge steer
   over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
   Provider is accepting steer, only a Provider that reports the input never started may reject it (`steer_not_sent`)
   for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
@@ -134,11 +132,13 @@ rejected, including after a Client restart. A newer Session revision does not ex
 Agent revision. Preparation runs again when the effective snapshot changes, including an
 Agent-only revision change.
 
-An unchanged snapshot or a supported compatible legacy upgrade can retain the native Provider
-conversation. A valid newer configuration with changed content creates a new native conversation
-within the same OpenTag Session. It preserves the workspace, historical snapshots, and delivery
-receipts, and uses the current requested permissions. Historical messages are not automatically
-replayed. An unresolved Turn must settle before a configuration switch.
+An unchanged snapshot, a valid current-format update (`instructions`, `selfConfigurationEnabled`,
+`contextTrees`, `model`, `reasoningEffort`, `execution`, or `budget`), or a supported compatible legacy upgrade
+retains the native Provider conversation and resumes it on the next Run with the updated
+configuration. Legacy layout transitions that change the effective snapshot hash start a new native
+conversation within the same OpenTag Session while preserving the workspace, historical snapshots,
+and delivery receipts. Historical messages are not automatically replayed. An unresolved Turn must
+settle before a configuration switch.
 
 The Client writes the new snapshot before atomically updating the binding. A missing snapshot
 can be reconstructed from a request with the exact saved hash and identity; a different request
@@ -158,13 +158,27 @@ initialization. The Run ends at the `result` of its own input, not at the first 
 Code reports a task that the previous process left behind by queueing a notification and emitting a `result` for it with
 `origin` set, `num_turns: 0` and empty text, ahead of the Run's input. Taking that one as the terminal stopped the process
 before the model saw the input, and the Run reported `completed` with no work done. So the Run's input carries a `uuid`, and a successful `result` with an
-`origin` and no `user_message_uuids` never ends the Run. "No response requested." in a
+`origin` and no `user_message_uuids` never ends the Run. When a result explicitly names a pending steer's UUID in
+`user_message_uuids`, that input counts as started even if its lifecycle frame was absent. The Run can end once the
+result qualifies as terminal and all other pending steers have started. "No response requested." in a
 transcript is what Claude Code writes on the next `--resume` for a user message left unanswered, with model `<synthetic>`.
-It is not a model reply. An error `result` still ends the Run, whatever its origin. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+It is not a model reply. An error `result` still ends the Run, whatever its origin. The one exception is a
+resume that finds nothing. If Claude Code has no transcript for the bound conversation on this Computer (deleted,
+replaced home, or a Session moved from another machine), it answers `--resume` with an `error_during_execution`
+result: `num_turns: 0` and `No conversation found with session ID: <id>`. Resuming again would fail the same way
+on every later message. Instead, the Run closes that process and starts a new conversation under the same Session
+ID with `--session-id`. It emits a `claude_session_history_unavailable` provider warning and puts an
+`[openTag notice]` saying the earlier history is unavailable ahead of the Run's input. The binding does not change,
+and later Runs resume the new conversation. On a new or unchanged Session, Local Claude Code omits
+`--system-prompt-snapshot`; once a bound Session's system prompt changes, the binding records a sticky
+`systemPromptSnapshotOff` marker and passes `--system-prompt-snapshot off` with `--append-system-prompt` on that Run
+and every later Run of the Session so Claude Code does not restore the cached transcript prompt snapshot. Local Pi also
+starts a process per Run, restoring the exact Pi Session and applying the current `--append-system-prompt`. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service
-attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
-resume RPC response; it does not remove the model's conversation history. Local configuration
-replacement follows the binding rules above, rather than replaying the old history.
+attachment may reload that same thread, and when a bound Session's system prompt changes, `thread/resume` is followed by
+`thread/inject_items` to append a developer message superseding earlier developer instructions in the rollout.
+`excludeTurns: true` suppresses history returned in the resume RPC response; it does not remove the model's conversation
+history. Local configuration replacement follows the binding rules above, rather than replaying the old history.
 
 Cloud execution uses Pi only. Its worker restores the binding and Pi history under
 `.opentag/pi-session` and appends the current input. The Cloud model transport is Chat Completions,

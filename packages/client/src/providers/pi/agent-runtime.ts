@@ -245,6 +245,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: Deferred<PiTerminal>;
   #promptAccepted?: Deferred<void>;
+  #promptReady = false;
   #promptAcceptanceClock?: PiPromptAcceptanceClock;
   #providerFailure?: Error;
   #currentTurnId?: string;
@@ -265,6 +266,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #mcpEnabled = false;
   #agentStarted = false;
   #promptPhase: "startup" | "awaiting-ack" | "owned" = "startup";
+
+  get steerReady(): boolean {
+    return this.#promptReady && !this.#terminalClaimed;
+  }
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -304,9 +309,15 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     let result: AgentProviderRunResult;
     try {
       this.#diagnostics.start("pi_spawn");
+      const environment = piExtensionEnvironment(
+        request,
+        this.#configuration,
+        this.#mcpAdapterEntry,
+        this.#nativeResources,
+      );
       client = this.#createClient(
         this.#arguments(request),
-        piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry, this.#nativeResources),
+        this.#onDiagnostic ? { ...environment, OPENTAG_PI_STARTUP_DIAGNOSTICS: "1" } : environment,
       );
       this.#diagnostics.end();
       this.#client = client;
@@ -315,7 +326,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const rawState = await client.request({ type: "get_state" }, context.signal, {
         timeoutMs: this.#getStateTimeoutMs,
       });
-      this.#diagnostics.end();
+      this.#diagnostics.end(undefined, client.startupMetrics);
       this.#diagnostics.start("session_restore");
       const state = requireRecord(rawState, "Pi get_state returned invalid data");
       await this.#restoreSessionState(state, context);
@@ -324,6 +335,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const accepted = await this.#compactThenPrompt(client, request, context.signal);
       if (accepted) {
         await this.#checkNativePrompt(client, context.signal);
+        this.#promptReady = true;
         this.#promptAccepted?.resolve();
         this.#diagnostics.end();
         this.#diagnostics.start("await_terminal");
@@ -334,7 +346,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       result = this.#runResult(terminal);
-      if (accepted) this.#diagnostics.end(undefined, result.status);
+      if (accepted) this.#diagnostics.endTerminal(result.status, terminal.stopReason, result.error?.code);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");
@@ -501,6 +513,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   async #cleanupRun(client: PiRpcClient | undefined): Promise<Error | undefined> {
+    this.#promptReady = false;
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     let failure: Error | undefined;
@@ -636,6 +649,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (this.#nativeResources && this.#promptPhase !== "owned" && piModelActivity(message) && !preflightCompaction) {
       this.#failProvider(protocolError("Pi emitted model activity before the requested prompt was acknowledged"));
       return;
+    }
+    if (message.type === "turn_start" && this.#promptPhase === "owned") {
+      this.#diagnostics.firstTurnStarted();
     }
     this.#claimTerminalAtIngress(message);
     if (message.type === "agent_start") this.#agentStarted = true;

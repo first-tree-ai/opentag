@@ -31,7 +31,7 @@ to proceed and required approval requests remain available. Long-running delegat
 exception: it posts short new milestone messages rather than edits, as described in
 [Internal Session collaboration](internal-session-collaboration.md). The final result uses the normal
 provider CLI reply path. The Server owns working/error reactions and their cleanup; the Agent must not
-change these reactions itself. [System task feedback](im-feedback.md) supplies terminal error cards and
+change these reactions itself. [System task feedback](im-feedback.md) supplies terminal failure messages and
 Account-owned recovery operations.
 
 Each IM or visible collaboration input retains a short adjacent reminder that ordinary output is the
@@ -77,7 +77,7 @@ local repair without ensure. Explicit Check again / `refreshPreparation` opens o
 clicks coalesce per Agent). Reconnect, credential generation change, and an actual Computer placement change may start a
 new episode; a repeated identical placement notification must not. Public reasons are allowlisted and negotiated with
 reconcile capability v2; older peers keep exact v1 frames and a generic stable diagnostic after a bounded unknown
-episode. HTTP responses keep the pre-#490 shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
+episode. HTTP responses keep the legacy response shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
 
 Preparation uses one existing five-minute operation budget from admission, covering eligibility/requirement
 SQL and socket dispatch waiting as well as the readiness fallback. Close or deadline rejects the admitted

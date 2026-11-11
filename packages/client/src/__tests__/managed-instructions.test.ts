@@ -122,7 +122,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("## Self-configuration");
     expect(prompt).toContain("`opentag-dev agent self show`");
     expect(prompt).toContain("`opentag-dev agent self update`");
-    expect(prompt).toContain("apply from your next Turn and start a new provider conversation");
+    expect(prompt).toContain(
+      "Instruction, model, and reasoning-effort changes apply from your next Turn in every existing Session without resetting the conversation",
+    );
     expect(prompt).toContain("read the current value first");
     expect(prompt).toContain("## MCP");
     expect(prompt).toContain("Run `opentag-dev self mcp` before you reply.");
@@ -430,11 +432,11 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("Session collaboration is available through these commands:");
     expect(local).toContain("- opentag-dev session create --message <task>");
     expect(local).toContain("- opentag-dev session send <target-session-id> --message <text>");
-    expect(local).toContain("send it again shortly with `--message-id` set to the returned message ID");
+    expect(local).toContain("openTag keeps the message and delivers it in order when the Client is back");
     expect(local).toContain("- opentag-dev session list");
     expect(local).toContain("Do not pass or look for agentId or sourceSessionId arguments");
     expect(local).toContain("An accepted result means the target accepted the message for processing");
-    expect(local).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(local).toContain("To retry, use the same arguments and set `--message-id` to the original message ID.");
     expect(local).not.toContain("its final text is not automatically returned to its parent");
     expect(local).toContain("pass `--max-duration-ms` with headroom");
 
@@ -446,7 +448,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("Do not copy or persist its temporary proof");
     expect(cloud).toContain("another Session cannot read this workspace");
     expect(cloud).toContain("An accepted result means the target accepted the message for processing");
-    expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(cloud).toContain("To retry, use the same arguments and set `--message-id` to the original message ID.");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
     expect(cloud).toContain("pass `--max-duration-ms` with headroom");
 
@@ -619,4 +621,33 @@ it("describes one-code Slack provisioning for visible managed Sessions without g
   expect(renderManagedSystemPrompt(snapshot, { ...cloudSession, sessionKind: "internal" })).not.toContain(
     "agent provision-slack",
   );
+});
+
+it("includes schedule self-management and permission pre-verification instructions when the Session CLI is available", () => {
+  const localPrompt = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
+  expect(localPrompt).toContain("## Schedules");
+  expect(localPrompt).toContain(
+    "`opentag-dev self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]`",
+  );
+  expect(localPrompt).toContain(
+    "`opentag-dev self schedule <list|show|update|pause|resume|delete|preview> ...` (pass `--help` for flags).",
+  );
+  expect(localPrompt).toContain(
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+  );
+  expect(localPrompt).toContain(
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first.",
+  );
+  expect(localPrompt).not.toContain("verify and exercise");
+
+  const cloudPrompt = renderManagedSystemPrompt(snapshot, cloudSession);
+  expect(cloudPrompt).toContain("## Schedules");
+  expect(cloudPrompt).toContain("`opentag self schedule create");
+  expect(cloudPrompt).toContain(
+    "using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update",
+  );
+
+  const withoutCli = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
+  expect(withoutCli).not.toContain("## Schedules");
+  expect(withoutCli).not.toContain("self schedule");
 });

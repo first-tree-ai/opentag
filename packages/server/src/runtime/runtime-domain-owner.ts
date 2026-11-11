@@ -33,10 +33,19 @@ import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, with
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
-import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
+import type {
+  AcceptedDeliveryRecord,
+  RecordedTurnRecord,
+  RuntimeCustodyStore,
+  SteerReleaseDisposition,
+} from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
+
+// A sent Local scheduled message is never replayed. Wait through the default runtime heartbeat
+// window before reporting that the hand-off was unconfirmed.
+export const LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS = 90_000;
 
 /** Server-only evidence of committed claims; the Client's manifest remains untrusted. */
 export type RuntimeReconcileResult = SessionReconcileResult & {
@@ -67,6 +76,12 @@ function sessionMessageRequestOriginKey(request: AnySessionMessageDeliveryReques
     return ["scheduled", origin.scheduleId, origin.scheduledFor, origin.timezone, origin.name];
   }
   return request.sourceSessionId;
+}
+
+function matchesReconcileMessage(request: SessionReconcileRequest, result: SessionReconcileResult): boolean {
+  const message = result.sessionMessage;
+  if (!request.sessionMessage) return message === undefined;
+  return message === "deferred" || message?.messageId === request.sessionMessage.messageId;
 }
 
 type ProviderCliResultFrame = Extract<
@@ -101,6 +116,7 @@ export class RuntimeDomainRequestError extends Error {
       | "aborted"
       | "authority_unavailable"
       | "capacity"
+      | "delivery_unconfirmed"
       | "not_pending"
       | "send_unavailable"
       | "stale_placement"
@@ -158,6 +174,7 @@ export interface RuntimeDomainOwnerOptions {
 
 interface PendingBase<TRequest, TResult> {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   request: TRequest;
@@ -201,6 +218,7 @@ interface ExpiredDelivery {
 
 interface CompletedRequest {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   kind: "reconcile" | "delivery" | "steer" | "session-message";
@@ -209,6 +227,7 @@ interface CompletedRequest {
 
 type PendingRequestBase = {
   computerId: string;
+  expectedConnectionId?: string;
   hash: string;
   instanceId: string;
   request:
@@ -289,7 +308,13 @@ export class RuntimeDomainOwner {
   readonly #tracedPromises = new WeakMap<Promise<unknown>, Promise<unknown>>();
   readonly #preparingReconciles = new Map<
     string,
-    { hash: string; instanceId: string; computerId: string; promise: Promise<SessionReconcileResult> }
+    {
+      hash: string;
+      instanceId: string;
+      computerId: string;
+      connectionId?: string;
+      promise: Promise<SessionReconcileResult>;
+    }
   >();
 
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
@@ -340,7 +365,8 @@ export class RuntimeDomainOwner {
           this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined),
         );
       }
-      pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+      const code = pending.kind === "reconcile" && pending.request.sessionMessage ? "delivery_unconfirmed" : "stopped";
+      pending.reject(new RuntimeDomainRequestError(code, "The runtime domain owner stopped"));
     }
     this.#pending.clear();
 
@@ -371,6 +397,7 @@ export class RuntimeDomainOwner {
     let operation: Promise<SessionReconcileResult>;
     try {
       this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
+      const connectionId = this.#inlineMessageConnection(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
       const preparation = this.#options.prepareReconcile;
       if (!preparation) {
@@ -387,15 +414,19 @@ export class RuntimeDomainOwner {
               undefined,
               admissionDispatched,
               signal,
-              undefined,
-              options.joinSettlement,
+              { joinReconcileSettlement: options.joinSettlement, expectedConnectionId: connectionId },
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
       } else {
         const existing = this.#preparingReconciles.get(request.requestId);
         if (existing) {
-          if (existing.hash !== hash || existing.computerId !== computerId || existing.instanceId !== instanceId) {
+          if (
+            existing.hash !== hash ||
+            existing.computerId !== computerId ||
+            existing.instanceId !== instanceId ||
+            existing.connectionId !== connectionId
+          ) {
             throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
           }
           onDispatched?.();
@@ -418,13 +449,17 @@ export class RuntimeDomainOwner {
                   undefined,
                   admissionDispatched,
                   signal,
-                  prepared.onResult,
-                  options.joinSettlement,
+                  {
+                    onReconcileResult: prepared.onResult,
+                    joinReconcileSettlement: options.joinSettlement,
+                    expectedConnectionId: connectionId,
+                  },
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
           );
           this.#preparingReconciles.set(request.requestId, {
+            connectionId,
             hash,
             instanceId,
             computerId,
@@ -451,6 +486,22 @@ export class RuntimeDomainOwner {
       (result) => outcomeAttrs(result.status, "reason" in result ? result.reason : undefined),
       runtimeDomainFailureAttrs,
     );
+  }
+
+  #inlineMessageConnection(
+    computerId: string,
+    instanceId: string,
+    request: SessionReconcileRequest,
+  ): string | undefined {
+    if (!request.sessionMessage) return undefined;
+    const connectionId = this.#registry.currentConnectionId(computerId, instanceId);
+    if (
+      connectionId &&
+      this.#registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.sessionMessageReconcile) === 1
+    ) {
+      return connectionId;
+    }
+    throw new RuntimeDomainRequestError("authority_unavailable", "The Local Session message connection is unavailable");
   }
 
   async requestSteer(
@@ -573,6 +624,10 @@ export class RuntimeDomainOwner {
   ): Promise<SessionMessageDeliveryResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    const timeoutMs =
+      "scheduledOrigin" in request && request.scheduledOrigin !== undefined
+        ? LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS
+        : undefined;
     return this.#track(
       this.#withDispatchAdmission(
         admission,
@@ -595,6 +650,7 @@ export class RuntimeDomainOwner {
             undefined,
             admissionDispatched,
             signal,
+            { timeoutMs },
           ) as Promise<SessionMessageDeliveryResult>,
         onDispatched,
       ),
@@ -977,8 +1033,17 @@ export class RuntimeDomainOwner {
     semanticHash?: string,
     onDispatched?: () => void,
     signal?: AbortSignal,
-    onReconcileResult?: PreparedSessionReconcile["onResult"],
-    joinReconcileSettlement = false,
+    {
+      onReconcileResult,
+      joinReconcileSettlement = false,
+      expectedConnectionId,
+      timeoutMs = this.#options.requestTimeoutMs,
+    }: {
+      onReconcileResult?: PreparedSessionReconcile["onResult"];
+      joinReconcileSettlement?: boolean;
+      expectedConnectionId?: string;
+      timeoutMs?: number;
+    } = {},
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
@@ -987,7 +1052,8 @@ export class RuntimeDomainOwner {
         existing.kind !== kind ||
         existing.hash !== hash ||
         existing.computerId !== computerId ||
-        existing.instanceId !== instanceId
+        existing.instanceId !== instanceId ||
+        existing.expectedConnectionId !== expectedConnectionId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
@@ -1000,7 +1066,8 @@ export class RuntimeDomainOwner {
         completed.kind !== kind ||
         completed.hash !== hash ||
         completed.computerId !== computerId ||
-        completed.instanceId !== instanceId
+        completed.instanceId !== instanceId ||
+        completed.expectedConnectionId !== expectedConnectionId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
@@ -1054,10 +1121,11 @@ export class RuntimeDomainOwner {
         );
       }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
-    }, this.#options.requestTimeoutMs);
+    }, timeoutMs);
     timer.unref();
     const base = {
       computerId,
+      expectedConnectionId,
       hash,
       instanceId,
       request,
@@ -1068,7 +1136,7 @@ export class RuntimeDomainOwner {
     };
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
-    const dispatch = this.#registry.send(computerId, instanceId, request);
+    const dispatch = this.#registry.send(computerId, instanceId, request, expectedConnectionId);
     if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
       const abort = () => {
         if (this.#pending.get(request.requestId) !== pending || pending.completing) return;
@@ -1146,7 +1214,9 @@ export class RuntimeDomainOwner {
     if (!this.#matchesContext(pending, context)) return;
     if (
       result.sessionId !== pending.request.sessionId ||
-      result.placementGeneration !== pending.request.placementGeneration
+      result.placementGeneration !== pending.request.placementGeneration ||
+      !matchesReconcileMessage(pending.request, result) ||
+      (pending.expectedConnectionId !== undefined && pending.expectedConnectionId !== context.connectionId)
     ) {
       return;
     }
@@ -1338,11 +1408,12 @@ export class RuntimeDomainOwner {
   }
 
   #rememberCompleted(
-    request: Pick<PendingRequest | ExpiredDelivery, "hash" | "instanceId" | "kind" | "request" | "computerId">,
+    request: Pick<PendingRequest, "hash" | "instanceId" | "kind" | "request" | "computerId" | "expectedConnectionId">,
     result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
   ): void {
     this.#completed.set(request.request.requestId, {
       computerId: request.computerId,
+      expectedConnectionId: request.expectedConnectionId,
       hash: request.hash,
       instanceId: request.instanceId,
       kind: request.kind,
@@ -1405,6 +1476,7 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
         aborted: "RUNTIME_REQUEST_ABORTED",
         authority_unavailable: "RUNTIME_AUTHORITY_UNAVAILABLE",
         capacity: "RUNTIME_OWNER_CAPACITY",
+        delivery_unconfirmed: "RUNTIME_DELIVERY_UNCONFIRMED",
         not_pending: "RUNTIME_REQUEST_NOT_PENDING",
         send_unavailable: "RUNTIME_SEND_UNAVAILABLE",
         stale_placement: "RUNTIME_PLACEMENT_STALE",
@@ -1496,7 +1568,8 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   return `turn:${frame.turnId}`;
 }
 
-function steerReleaseDisposition(result: RuntimeImSteerResult): "retry" | "deferred" | "uncertain" {
+function steerReleaseDisposition(result: RuntimeImSteerResult): SteerReleaseDisposition {
   if (result.status === "deferred" && result.reason === "steer_state_unknown") return "uncertain";
+  if (result.status === "deferred" && result.reason === "turn_not_running") return "turn_not_running";
   return result.status === "retry" ? "retry" : "deferred";
 }

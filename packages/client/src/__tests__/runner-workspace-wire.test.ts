@@ -43,15 +43,24 @@ interface ProtocolPeerOptions {
   readonly rejectUpload?: (sealed: boolean) => boolean;
   readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
+  readonly upgradeDelayMs?: number;
+  readonly onHealthRequest?: (request: IncomingMessage) => void;
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
+async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const instancePrefix = options.instancePrefix ?? "ots-test";
   const peerSandboxId = options.sandboxId ?? sandboxId;
   const peerSessionId = options.sessionId ?? sessionId;
   let generation = 1;
   let uploads = 0;
+  let writeId: string | undefined;
   let authAttempts = 0;
   let bytes = Buffer.alloc(0);
   let object: RunnerWorkspaceObject = {
@@ -96,6 +105,44 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       saved: true,
       sealed: request.headers["x-opentag-workspace-sealed"] === "true",
     };
+    writeId = request.headers["x-opentag-workspace-write-id"] as string | undefined;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const claim = async (request: IncomingMessage, response: ServerResponse) => {
+    const body = await jsonBody(request);
+    const inspection = body.upload as { id: string; generation: string; metageneration: string } | undefined;
+    if (inspection) {
+      const unchanged =
+        inspection.generation === object.generation && inspection.metageneration === object.metageneration;
+      const committed = inspection.id === writeId && object.metageneration === "1";
+      response
+        .writeHead(unchanged || committed ? 200 : 409, { "content-type": "application/json" })
+        .end(JSON.stringify(object));
+      return;
+    }
+    if (object.ownerGeneration < generation || (body.fence && !object.sealed)) {
+      object = {
+        ...object,
+        ownerGeneration: generation,
+        sealed: false,
+        metageneration: String(Number(object.metageneration) + 1),
+      };
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(object));
+  };
+  const seal = async (request: IncomingMessage, response: ServerResponse) => {
+    const pins = await jsonBody(request);
+    if (options.rejectUpload?.(true)) {
+      response.writeHead(503).end();
+      return;
+    }
+    if (pins.generation !== object.generation || pins.metageneration !== object.metageneration || object.sealed) {
+      response.writeHead(409).end();
+      return;
+    }
+    object = { ...object, sealed: true, metageneration: String(BigInt(object.metageneration) + 1n) };
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(object));
   };
@@ -107,28 +154,34 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       response.writeHead(403).end();
       return;
     }
-    if (request.url?.endsWith("/claim")) {
-      if (object.ownerGeneration < generation) {
-        object = {
-          ...object,
-          ownerGeneration: generation,
-          sealed: false,
-          metageneration: String(Number(object.metageneration) + 1),
-        };
-      }
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify(object));
-    } else if (request.method === "PUT") {
+    if (request.url?.endsWith("/claim")) await claim(request, response);
+    else if (request.url?.endsWith("/seal")) await seal(request, response);
+    else if (request.method === "PUT") {
       await upload(request, response);
     } else {
       response.setHeader("content-type", "application/octet-stream");
       response.end(bytes);
     }
   };
+
   const http = createServer((request, response) => {
+    if (request.url === "/healthz" && options.onHealthRequest) {
+      options.onHealthRequest(request);
+      return;
+    }
     void serve(request, response).catch(() => response.destroy());
   });
-  const wss = new WebSocketServer({ server: http });
+  const wss = new WebSocketServer({
+    server: http,
+    ...(options.upgradeDelayMs === undefined
+      ? {}
+      : {
+          verifyClient: (info, done) => {
+            const timer = setTimeout(() => done(true), options.upgradeDelayMs);
+            info.req.socket.once("close", () => clearTimeout(timer));
+          },
+        }),
+  });
   const authenticate = (socket: WebSocket, frame: Record<string, unknown>) => {
     expect(frame.workspaceVersion).toBe(1);
     const reply = options.authReply?.(frame, ++authAttempts);
@@ -211,12 +264,12 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     disconnect() {
       current?.terminate();
     },
-    wait(type: string, after = 0): Promise<Record<string, unknown>> {
+    wait(type: string, after = 0, timeoutMs = 5_000): Promise<Record<string, unknown>> {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           waiters.delete(check);
           reject(new Error(`missing ${type}`));
-        }, 5_000);
+        }, timeoutMs);
         const check = () => {
           const found = frames.filter((frame) => frame.type === type)[after];
           if (!found) return;
@@ -236,6 +289,105 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     },
   };
 }
+
+it("welcomes a persistent Runner on its first attempt when the upgrade takes more than five seconds", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-slow-upgrade-"));
+  const peer = await protocolPeer({ upgradeDelayMs: 5_100 });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async () => mkdir(workspace, { recursive: true })),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const stop = new AbortController();
+  const sleep = vi.fn(async () => stop.abort());
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: "fixture-1",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      sleep,
+    },
+  );
+  try {
+    await peer.wait("runner:ready", 0, 8_000);
+    expect(peer.count("auth")).toBe(1);
+    expect(sleep).not.toHaveBeenCalled();
+  } finally {
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it("initializes and reconnects while the credential-free workspace warmup is stalled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-workspace-warmup-"));
+  const warmupReachedPeer = deferred();
+  const peer = await protocolPeer({
+    onHealthRequest(request) {
+      expect(request.method).toBe("GET");
+      expect(request.headers.authorization).toBeUndefined();
+      warmupReachedPeer.resolve();
+    },
+  });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async (): Promise<void> => {}).mockImplementationOnce(() => warmupReachedPeer.promise),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const stop = new AbortController();
+  const fetchWorkspace = vi.fn<typeof fetch>((input, init) => fetch(input, init));
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: "fixture-1",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      workspaceFetchImpl: fetchWorkspace,
+      sleep: async () => undefined,
+    },
+  );
+  try {
+    await peer.wait("runner:ready");
+    const [input, init] = fetchWorkspace.mock.calls[0] ?? [];
+    expect(String(input)).toBe(new URL("/healthz", peer.url.replace("ws:", "http:")).href);
+    expect(init?.signal?.aborted).toBe(false);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-1"]);
+    expect(peer.object().saved).toBe(true);
+
+    peer.disconnect();
+    await peer.wait("runner:ready", 1);
+    expect(fetchWorkspace.mock.calls.filter(([url]) => String(url).endsWith("/healthz"))).toHaveLength(1);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-1"]);
+    stop.abort();
+    expect(init?.signal?.aborted).toBe(true);
+  } finally {
+    warmupReachedPeer.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it("retains unsaved files through rejected auth and renews before saving on a fresh connection", async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-auth-recovery-"));

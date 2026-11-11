@@ -43,7 +43,7 @@ import {
   resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
-import { TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
+import { START_FAILURE_RETRY_DELAY_MS, TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -108,6 +108,43 @@ describe("createClientRuntime production composition", () => {
       } finally {
         runtime.stop();
         await running;
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "starts with corrupt durable files moved aside, logged, and relayed when a reporter is given (%s)",
+    async (withReporter) => {
+      const home = await temporaryDirectory("opentag-durable-quarantine-");
+      const directory = resolve(home, "data/runtime/durability");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(resolve(directory, "session-message.json"), '[{"kind": "session-message", "key": "trunc', {
+        mode: 0o600,
+      });
+      await writeFile(resolve(directory, "session-message-outcome.json"), "{ corrupt", { mode: 0o600 });
+      const logs: RecordedLog[] = [];
+      const reported: string[] = [];
+      const runtime = await createClientRuntime(runtimeConnection(), {
+        clientVersion: "0.0.1",
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: readyFactory(),
+        home,
+        logger: recordingLogger(logs),
+        ...(withReporter
+          ? { durableQuarantineReporter: (quarantine: { kind: string }) => reported.push(quarantine.kind) }
+          : {}),
+      });
+      try {
+        const errors = logs.filter((log) => log.level === "error" && log.fields.module === "runtime-durability");
+        expect(errors.map((log) => log.fields.kind).sort()).toEqual(["session-message", "session-message-outcome"]);
+        expect(errors.find((log) => log.fields.kind === "session-message")?.fields).toMatchObject({
+          lostRecords: 1,
+          errorMessage: "Runtime storage contains invalid JSON",
+        });
+        expect(reported.sort()).toEqual(withReporter ? ["session-message", "session-message-outcome"] : []);
+      } finally {
+        runtime.stop();
+        await runtime.run();
       }
     },
   );
@@ -711,6 +748,12 @@ describe("createClientRuntime production composition", () => {
       return {} as Awaited<ReturnType<ProviderCliTurnPlanManager["prepare"]>>;
     });
     const submit = vi.spyOn(runtime.reportOwner, "submit").mockResolvedValue(undefined);
+    // The fixture provider never starts, so the Turn takes its one start-failure retry: keep that wait short.
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+        realSetTimeout(handler, ms === START_FAILURE_RETRY_DELAY_MS ? 1 : ms, ...(rest as []))) as typeof setTimeout);
     try {
       expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject(
         { status: "ready" },
@@ -742,6 +785,7 @@ describe("createClientRuntime production composition", () => {
       credentials.mockRestore();
       prepare.mockRestore();
       submit.mockRestore();
+      timers.mockRestore();
     }
   });
 
@@ -1137,7 +1181,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool acceptEdits --append-system-prompt\\n"; exit 0; fi\nif [ "$3" = "auth" ]; then echo \'{"loggedIn":true}\'; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool acceptEdits --append-system-prompt --system-prompt-snapshot\\n"; exit 0; fi\nif [ "$3" = "auth" ]; then echo \'{"loggedIn":true}\'; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);

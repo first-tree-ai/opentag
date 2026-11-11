@@ -111,6 +111,7 @@ import {
   ListAgentSkillsResponseSchema,
   type SkillDetail,
   SkillDetailSchema,
+  type UpdateSkillRequest,
 } from "./skill.js";
 import {
   type InstallSkillPresetResponse,
@@ -536,6 +537,15 @@ export const accountApiEndpoints = {
     return {
       method: "GET",
       path: agentSkillPath(agentId, skillId),
+      schema: SkillDetailSchema,
+    };
+  },
+
+  updateAgentSkill(agentId: string, skillId: string, input: UpdateSkillRequest): AccountApiEndpoint<SkillDetail> {
+    return {
+      method: "PATCH",
+      path: agentSkillPath(agentId, skillId),
+      jsonBody: input,
       schema: SkillDetailSchema,
     };
   },

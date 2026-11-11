@@ -93,7 +93,7 @@ seal remains nonexecuting on that allocation.
 [IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
 for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
 an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a
-"saved" card result. A release without that proof remains explicitly unverified.
+"saved" result. A release without that proof remains explicitly unverified.
 
 Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
 Turns and internal Session messages log deterministic archive failures without cycling the control
@@ -140,6 +140,11 @@ with unknown effects follow existing custody reconciliation and are never automa
 
 The Server reuses its Google identity to access GCS. The trusted Runner transfers archive bytes
 over authenticated streaming HTTP, using its current allocation-scoped bootstrap credential.
+At process startup, a Runner with workspace persistence starts a bounded, unauthenticated
+`GET /healthz` against the same HTTP origin in parallel with native startup and control-channel
+setup. The workspace client can reuse a connection opened by the probe. Probe completion is
+independent of authorization and readiness. The fencing claim still runs after authenticated
+assignment binding and native cleanup, and archive downloads use the pins returned by that claim.
 Small control messages remain on WSS. The Sandbox receives neither a Google token nor an extra
 parent management listener. The Server derives the destination from the database; the caller
 cannot supply a bucket, object name, or another Session's storage address.
@@ -149,15 +154,57 @@ A failed initialization leaves generation zero retryable; Runner claims never re
 object, including in generation one. Each new allocation claims the same object's metadata before reading it. Writes require both its
 GCS generation and metageneration to match. Updating the owning environment generation fences a
 late upload from the previous Instance even when the replacement has not written new archive
-bytes. A fresh Runner process also conditionally saves once before readiness, fencing a delayed
-upload from an earlier process of the same allocation. These are native conditional-write tokens,
-not application storage versions.
+bytes. A fresh Runner process requests a fencing claim before restore, advancing the metageneration
+even within the same allocation. This fences a delayed upload from an earlier process without
+repacking or uploading the restored archive. Same-owner claims never reopen a sealed object;
+readback claims do not advance the fence. Only a first unsaved workspace needs an initial archive
+upload before readiness. These are native conditional-write tokens, not application storage versions.
+Fencing retries remain bound to the original generation and metageneration within one transfer
+deadline. Definitive CAS conflicts are rejected without reconciliation. After an uncertain result,
+only an unchanged original object permits another conditional attempt. Even a one-step metadata
+change cannot identify which claim committed, so changed readback fails closed and initialization
+retries through a fresh authenticated request. A later claim, seal or upload never becomes a new
+base for the old request.
+While releasing, a fresh process may fence and restore an existing same-owner object before answering
+the retry seal. It cannot seed missing storage or take ownership from another environment.
 See Google's [request preconditions](https://docs.cloud.google.com/storage/docs/request-preconditions)
 and [conditional object insertion](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert).
 
 An interrupted upload retains the previous complete object. When an upload's response is lost,
 success requires readback matching the intended owner, length, checksum, and seal. No unconditional
 overwrite or automatic empty fallback is allowed.
+Each upload carries a random attempt identity, retained across its bounded retries and encoded in
+the standard GCS `contentDisposition` filename. The fixed seven custom metadata keys stay unchanged,
+so fixed-point Server readers can still claim, read and restore new archives during rollback.
+Every unsealed fencing claim toggles an `opentag-fence` parameter in that standard disposition,
+preserving its upload identity. This makes the metadata change real even for a same-owner seed or
+restored archive; fencing does not depend on GCS advancing metageneration for an identical PATCH.
+The parameter is only a change marker: authority still requires the native generation/metageneration
+CAS, and changed uncertain readback still fails closed. Seals preserve the disposition; legacy archive writes may omit it.
+Upload readback verifies the identity and the new archive's initial
+metageneration of one: a later fencing claim or another byte-identical upload must never become
+the old uploader's next write base. This is an operation identity, not another runtime epoch or
+an archive catalogue. The Server keeps it out of the legacy object response shape.
+
+A workspace SHA-256 fingerprint covers file contents, paths, types, modes, timestamps and link
+targets under the archive exclusions and safety limits. The Runner hashes file bytes as it streams
+them during packing and extraction. On restore it combines those digests with the staged
+filesystem metadata and the final directory modes. On checkpoint it records the fingerprint of
+the archive that was actually uploaded. Confirmed upload pins and their fingerprint are retained
+together even if removing the temporary local archive fails.
+
+Ordinary checkpoints still commit a conditional archive upload, including when the workspace is
+unchanged. Before sealing an existing archive, the Runner stops all writers and compares the
+current fingerprint with the baseline from the last verified restore or confirmed upload. Absence
+of Turns alone never proves a clean workspace. If the fingerprint matches, an authenticated
+`POST /seal` conditionally updates only the existing object's seal using its exact generation and
+metageneration. Real changes require a full archive save.
+
+Metadata seal responses must preserve the owner, archive generation, saved flag, size and both
+checksums and advance the metageneration exactly once. An uncertain response is read back against
+that exact result, without another mutation or adopting newer pins. Conflicts and unverified
+results keep execution blocked and retain local files for retry. Missing or corrupt archives still
+fail restoration, and seal retains the ready/releasing allocation and live-channel authority checks.
 
 ## Resource and rollout limits
 

@@ -10,9 +10,11 @@ import {
   readFile,
   readlink,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -24,6 +26,7 @@ import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createWorkspaceArchive,
+  fingerprintWorkspace,
   restoreWorkspaceArchive,
   WORKSPACE_ARCHIVE_MAX_BYTES,
   WORKSPACE_MAX_BYTES,
@@ -204,6 +207,44 @@ async function populateWorkspace(workspace: string): Promise<void> {
   await writeFile(join(workspace, "bin", "notes.txt"), "not executable\n");
 }
 
+describe("saved workspace fingerprints", () => {
+  it.each(["add", "remove", "rename", "mode", "mtime", "symlink"])("detects %s changes", async (change) => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const first = join(workspace, "first");
+    await writeFile(first, "first payload");
+    await writeFile(join(workspace, "second"), "second payload");
+    await symlink("first", join(workspace, "link"));
+    const baseline = await fingerprintWorkspace(workspace);
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    if (change === "add") await mkdir(join(workspace, "new-empty-directory"));
+    if (change === "remove") await rm(join(workspace, "second"));
+    if (change === "rename") await rename(join(workspace, "second"), join(workspace, "renamed"));
+    if (change === "mode") await chmod(first, 0o600);
+    if (change === "mtime") await utimes(first, new Date(0), new Date(0));
+    if (change === "symlink") {
+      await rm(join(workspace, "link"));
+      await symlink("second", join(workspace, "link"));
+    }
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+
+  it("uses archive exclusions while retaining unpublished Context Tree state", async () => {
+    const workspace = await makeRoot();
+    const home = join(workspace, ".opentag/context-tree/home/.context-tree");
+    await mkdir(join(home, "cleanup"), { recursive: true });
+    await mkdir(join(home, "sessions"));
+    await writeFile(join(home, "cleanup/log"), "old log");
+    await writeFile(join(home, "sessions/draft"), "unpublished work");
+    const baseline = await fingerprintWorkspace(workspace);
+    await writeFile(join(home, "cleanup/log"), "new log");
+    expect(await fingerprintWorkspace(workspace)).toBe(baseline);
+    await writeFile(join(home, "sessions/draft"), "changed unpublished work");
+    expect(await fingerprintWorkspace(workspace)).not.toBe(baseline);
+  });
+});
+
 describe("workspace archive limits", () => {
   it("exposes the documented safety ceilings", () => {
     expect(WORKSPACE_ARCHIVE_MAX_BYTES).toBe(512 * 1024 * 1024);
@@ -223,7 +264,7 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     const info = await createWorkspaceArchive(workspace, archivePath);
 
     const archive = await readFile(archivePath);
-    expect(info).toEqual(infoOf(archive));
+    expect(info).toEqual({ ...infoOf(archive), fingerprint: await fingerprintWorkspace(workspace) });
     expect(info.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(info.md5).toMatch(/^[A-Za-z0-9+/]{22}==$/);
     // The archive may hold user secrets: exclusively created, owner-only.
@@ -339,7 +380,9 @@ describe("createWorkspaceArchive + restoreWorkspaceArchive roundtrip", () => {
     const info = await createWorkspaceArchive(workspace, archivePath);
     const restored = join(root, "restored");
     // Restore onto a MISSING destination.
-    await restoreWorkspaceArchive(archivePath, restored, info);
+    const restoredFingerprint = await restoreWorkspaceArchive(archivePath, restored, info);
+    expect(info.fingerprint).toBe(await fingerprintWorkspace(workspace));
+    expect(restoredFingerprint).toBe(await fingerprintWorkspace(restored));
 
     expect(await readlink(join(restored, "node_modules", "tool"))).toBe(join("..", "lib", "tool"));
     expect(await readlink(join(restored, "node_modules", ".bin", "tool"))).toBe(join("..", "tool", "bin", "tool.js"));
@@ -856,13 +899,33 @@ describe("restoreWorkspaceArchive integrity", () => {
     ]);
     const archivePath = await writeArchive(root, archive);
     const destination = join(root, "restored");
-    await restoreWorkspaceArchive(archivePath, destination, infoOf(archive));
+    const fingerprint = await restoreWorkspaceArchive(archivePath, destination, infoOf(archive), { maxEntries: 3 });
+    expect(fingerprint).toBe(await fingerprintWorkspace(destination));
     expect(await readFile(join(destination, "a", "b", "c", "deep.txt"), "utf8")).toBe("deep");
     expect(await readFile(join(destination, "top.txt"), "utf8")).toBe("top");
     // The declared 0500 mode was applied in finalize, after the child was written.
     expect((await stat(join(destination, "a", "b"))).mode & 0o777).toBe(0o500);
     await chmod(join(destination, "a", "b"), 0o700);
     expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("fingerprints the installed metadata and bytes of an out-of-order legacy archive", async () => {
+    const root = await makeRoot();
+    const archive = makeTarGz([
+      { name: "./", type: "directory" },
+      { name: "a-/nested/data", content: Buffer.alloc(128 * 1024, 7) },
+      { name: "a/link", type: "symlink", linkname: "../a-/nested/data" },
+      { name: "a-/empty" },
+      { name: "a", type: "directory", mode: 0o500 },
+      { name: ".opentag/context-tree/home/.context-tree/cleanup/legacy.log", content: "old log" },
+    ]);
+    const archivePath = await writeArchive(root, archive);
+    const restored = join(root, "restored");
+    const fingerprint = await restoreWorkspaceArchive(archivePath, restored, infoOf(archive));
+    expect((await lstat(join(restored, "a"))).mode & 0o777).toBe(0o500);
+    await writeFile(join(restored, ".opentag/context-tree/home/.context-tree/cleanup/legacy.log"), "new log");
+    expect(fingerprint).toBe(await fingerprintWorkspace(restored));
+    await chmod(join(restored, "a"), 0o700);
   });
 
   it("rejects a member nested beneath a non-directory and one colliding with a directory", async () => {

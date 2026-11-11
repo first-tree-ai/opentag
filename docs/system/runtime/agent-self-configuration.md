@@ -169,13 +169,13 @@ observation, so the caller can tell the human the URL is still valid and check a
 ## When changes apply
 
 - An owner change to the switch advances the runtime configuration revision atomically with the Agent
-  update. The next eligible Turn uses the new setting and starts a new native conversation after
-  any unresolved work settles. Repeating the same value does not advance the runtime revision.
+  update. Because the switch changes the managed system prompt, the next eligible Turn uses the new
+  setting and resumes the existing native conversation after any unresolved work settles. Repeating the same
+  value does not advance the runtime revision.
 - Instructions, model, and reasoning effort are read from the live Agent configuration when each Turn is assembled, so
   a change applies from the next Turn of every existing Session. These fields are part of the effective runtime
-  snapshot hash, so that Turn starts a new provider conversation instead of resuming the previous one: earlier
-  conversation context is not carried over. Internal Sessions created with their own model or reasoning-effort override
-  keep that override.
+  snapshot hash; changes resume the existing provider conversation under the updated snapshot so earlier conversation
+  context is preserved. Internal Sessions created with their own model or reasoning-effort override keep that override.
 - MCP mounts are read by the MCP gateway on each request, so attaching, enabling, or disabling a Server changes the
   tool catalog on the next MCP request. An Agent that had no usable MCP Server gets MCP access at its next execution.
 - Detaching or deleting a Server drops this Agent's authorization and mount for it, while retaining the Account
@@ -186,7 +186,7 @@ observation, so the caller can tell the human the URL is still valid and check a
 An Agent configuration change takes effect at once for every Session that prepares after it, on a Local Computer
 too: it doesn't wait for the Session that made the change or for any other running Session. A running Session finishes
 on the configuration it started with, and a Turn that resumes after a restart keeps its pinned one. Its next Turn picks
-up the change. Only per-Session configuration works this way. Sessions of one Agent share its working directory and
+up the change. Only per-Session configuration works this way. Local Sessions of one Agent share its working directory and
 Skills, so a change to the files there, such as Context Tree connections, reaches a running Session as soon as a new
 Session writes it. Platform access doesn't keep the old configuration either: each request from a running Turn uses the
 current credentials and connections, and a save doesn't end that access. See
@@ -198,9 +198,11 @@ current value with `self show` and keep what still applies.
 
 For Local Sessions saved by an older Client, a valid newer Soul can apply directly during the
 first Session preparation after upgrade. A separate format-only migration is not required.
-Unresolved work settles first; the configuration change then starts a new native conversation
-while preserving the OpenTag Session and its history. The Client checks both Agent and Session
-revisions from the saved snapshot, so restarting does not bypass same-revision conflicts.
+Unresolved work settles first; any configuration change during a legacy layout upgrade starts a new
+native conversation while preserving the OpenTag Session and its history, whereas configuration
+updates on a current-format Session resume the existing native conversation. The Client checks both
+Agent and Session revisions from the saved snapshot, so restarting does not bypass same-revision
+conflicts.
 
 ## Observability
 

@@ -11,6 +11,7 @@ import {
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, computers, imBindings, slackInstallations } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { inspectBindingCredentials } from "../im-bindings/credential-material.js";
@@ -30,6 +31,7 @@ export class AgentStatusService {
       now?: () => Date;
       cloudAvailability?: (now: Date) => CloudAvailability;
       refreshLegacy?: (computerId: string) => void;
+      logger?: Pick<ServiceLogger, "warn">;
     } = {},
   ) {}
 
@@ -206,8 +208,10 @@ export class AgentStatusService {
     const { binding, installation } = scope;
     if (binding.status === "provisioning") return "im_provisioning";
     const inspection = inspectBindingCredentials(this.cipher, binding, installation, {
+      agentId,
       bindingId: binding.id,
       slackInstallationId: binding.slackInstallationId ?? undefined,
+      logger: this.options.logger,
     });
     if (
       binding.status === "reauthorization_required" ||

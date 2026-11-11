@@ -3,13 +3,37 @@ import { chmod, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import {
   RUNTIME_MAX_FRAME_BYTES,
+  RuntimeImOutboxContextSchema,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
   type RuntimeImSteerResult,
+  SessionMessageDeliveryRequestV3Schema,
 } from "@opentag/shared";
 import { z } from "zod";
 
-const ControlPacketSchema = z.object({ token: z.string().uuid(), request: RuntimeImSteerRequestSchema }).strict();
+const CloudSessionSteerRequestSchema = z
+  .object({
+    type: z.literal("session:message:steer"),
+    expectedTurnId: z.string().min(1).max(256),
+    sessionKind: z.enum(["internal", "visible"]),
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
+    message: SessionMessageDeliveryRequestV3Schema,
+  })
+  .strict();
+
+export type CloudSessionSteerRequest = z.infer<typeof CloudSessionSteerRequestSchema>;
+
+export const CloudSessionSteerResultSchema = z.enum(["accepted", "retry", "refused", "uncertain"]);
+export type CloudSessionSteerResult = z.infer<typeof CloudSessionSteerResultSchema>;
+
+export const CLOUD_SESSION_STEER_LIMIT = 16;
+
+const ControlPacketSchema = z
+  .object({
+    token: z.string().uuid(),
+    request: z.union([RuntimeImSteerRequestSchema, CloudSessionSteerRequestSchema]),
+  })
+  .strict();
 
 export function cloudSteerSocketPath(deliveryId: string): string {
   return `/tmp/opentag-steer-${createHash("sha256").update(deliveryId).digest("hex").slice(0, 32)}.sock`;
@@ -36,7 +60,8 @@ export function cloudSteerResult(
 export async function openCloudSteerControl(input: {
   deliveryId: string;
   token: string;
-  steer(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
+  steer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
+  steerSession?(request: CloudSessionSteerRequest): Promise<CloudSessionSteerResult>;
 }): Promise<{ close(): Promise<void> }> {
   const path = cloudSteerSocketPath(input.deliveryId);
   await rm(path, { force: true });
@@ -98,6 +123,10 @@ process.stdin.on("end", () => {
   socket.on("end", () => { process.stdout.write(output); socket.destroy(); });
   socket.on("error", error => {
     if (!connected && ["ENOENT", "ECONNREFUSED"].includes(error.code)) {
+      if (packet.request.type === "session:message:steer") {
+        process.stdout.write(JSON.stringify("retry"));
+        return;
+      }
       const { requestId, deliveryId, sessionId, placementGeneration, rootDeliveryId, expectedTurnId } = packet.request;
       process.stdout.write(JSON.stringify({ type: "im:steer:result", requestId, deliveryId, sessionId, placementGeneration, rootDeliveryId, expectedTurnId, status: "retry", reason: "turn_starting" }));
     } else process.exitCode = 3;
@@ -116,8 +145,11 @@ async function handleControlSocket(
       expected = Buffer.from(input.token);
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return;
     if (Buffer.byteLength(JSON.stringify(value.request)) > RUNTIME_MAX_FRAME_BYTES) return;
-    const result = await input.steer(value.request);
-    if (!socket.destroyed) socket.end(JSON.stringify(result));
+    const result =
+      value.request.type === "session:message:steer"
+        ? ((await input.steerSession?.(value.request)) ?? "refused")
+        : await input.steer?.(value.request);
+    if (result !== undefined && !socket.destroyed) socket.end(JSON.stringify(result));
   } catch {
     socket.destroy();
   } finally {

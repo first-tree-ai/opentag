@@ -415,7 +415,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, undefined) === true;
         runtime =
           runtimeBinding && !replaceBinding
-            ? await provider.factory.resume({ ...common, binding: runtimeBinding })
+            ? await provider.factory.resume(
+                withSystemPromptUpdated({ ...common, binding: runtimeBinding }, managed.binding.systemPromptUpdated),
+              )
             : await provider.factory.create(common);
       } catch (error) {
         logger.debug(
@@ -681,4 +683,11 @@ async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promis
 
 function fencedByUnresolvedTurn(prepared: SessionPreparationResult, options: SessionPreparationOptions): boolean {
   return prepared.unresolvedTurn !== undefined && prepared.unresolvedTurn.turnId !== options.resumeTurnId;
+}
+
+function withSystemPromptUpdated<T extends object>(
+  request: T,
+  systemPromptUpdated: boolean | undefined,
+): T & { systemPromptUpdated?: boolean } {
+  return systemPromptUpdated ? { ...request, systemPromptUpdated: true } : request;
 }

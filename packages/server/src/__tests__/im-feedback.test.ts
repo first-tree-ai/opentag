@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  computers,
   imBindings,
   imFeedbackActions,
   imFeedbackTargets,
@@ -16,17 +17,31 @@ import {
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
-import { feedbackCardContent, renderFeedbackCard, renderFeedbackText } from "../services/im/im-feedback-card.js";
+import { feedbackCard } from "../services/im/im-feedback-card.js";
 import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "../services/im/im-feedback-messenger.js";
-import { createImFeedbackTarget, ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
+import {
+  createImFeedbackTarget,
+  type FeedbackAction,
+  type FeedbackTarget,
+  ImFeedbackStore,
+  startImFeedback,
+} from "../services/im/im-feedback-store.js";
+
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
 import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
+
+/** Everything a card shows, as one string. */
+function cardText(target: FeedbackTarget, action?: FeedbackAction): string {
+  const card = feedbackCard(target, action, "en");
+  return [card.title, card.body].filter(Boolean).join("\n");
+}
 
 let db: UnitDatabase;
 let clock: Date;
@@ -49,6 +64,7 @@ async function fixture(provider: "slack" | "feishu" = "slack") {
   const transport = {
     reaction: vi.fn<FeedbackTransport["reaction"]>(async () => {}),
     post: vi.fn<FeedbackTransport["post"]>(async () => "card-1"),
+    postOfflineNotice: vi.fn<FeedbackTransport["postOfflineNotice"]>(async () => {}),
     update: vi.fn<FeedbackTransport["update"]>(async () => {}),
     find: vi.fn<FeedbackTransport["find"]>(async () => ({ ids: [] as string[] })),
   };
@@ -168,14 +184,343 @@ async function workspaceFixture() {
   return { ...h, t, status, runner, service, submit };
 }
 
-describe("durable IM feedback", () => {
-  it("creates plain text targets unless the rollback flag is set", async () => {
+describe("IM offline notice", () => {
+  const setComputer = async (
+    h: Awaited<ReturnType<typeof fixture>>,
+    values: Partial<typeof computers.$inferInsert>,
+  ) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set(values)
+      .where(eq(computers.id, placement?.computerId ?? ""));
+  };
+  const offlineSince = (h: Awaited<ReturnType<typeof fixture>>, ms: number) =>
+    setComputer(h, { lastSeenAt: new Date(clock.getTime() - ms), currentInstanceId: null });
+  async function queued() {
     const h = await fixture();
-    expect((await h.target()).messageFormat).toBe("text_v1");
+    const park = async (deliveryId: string, receivedMsAgo: number) => {
+      await db.database
+        .update(imMessageDeliveries)
+        .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      const [delivery] = await db.database
+        .select({ messageId: imMessageDeliveries.messageId })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      await db.database
+        .update(imMessages)
+        .set({ receivedAt: new Date(clock.getTime() - receivedMsAgo) })
+        .where(eq(imMessages.id, delivery?.messageId ?? ""));
+      await db.database
+        .update(imFeedbackTargets)
+        .set({ state: "queued", desiredReaction: "none" })
+        .where(eq(imFeedbackTargets.deliveryId, deliveryId));
+    };
+    await park(h.frame.deliveryId, 300_000);
+    return { ...h, park };
+  }
+
+  it("waits sixty seconds from the later of receipt and the Computer going silent", async () => {
+    const h = await queued();
+    await offlineSince(h, 59_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    await offlineSince(h, 61_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
   });
 
-  it("uses a card for a workspace failure because it needs buttons", async () => {
+  it("starts the sixty seconds at receipt when a message arrives during an outage", async () => {
+    const h = await queued();
+    await offlineSince(h, 300_000);
+    await h.park(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("sends once per Session and offline period, and again in a later period", async () => {
+    const h = await queued();
+    const second = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, second.frame.deliveryId, clock));
+    await h.park(second.frame.deliveryId, 300_000);
+    await offlineSince(h, 120_000);
+    const [secondTarget] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, second.frame.deliveryId));
+    if (!secondTarget) throw new Error("Missing second target");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    clock = new Date(clock.getTime() + 600_000);
+    await offlineSince(h, 120_000);
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
+  });
+
+  it("keeps one notice through an outage longer than the input lifetime", async () => {
+    const h = await queued();
+    await offlineSince(h, 120_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+    const later = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, later.frame.deliveryId, clock));
+    await h.park(later.frame.deliveryId, 300_000);
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ createdAt: new Date(clock.getTime() - 9 * 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    const [target] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, later.frame.deliveryId));
+    if (!target) throw new Error("Missing later target");
+    expect(await h.store.reserveOfflineNotice(target)).toBeUndefined();
+  });
+
+  it("starts a never-connected Computer's offline period when it was created, not at the epoch", async () => {
+    const h = await queued();
+    await setComputer(h, {
+      lastSeenAt: null,
+      currentInstanceId: null,
+      createdAt: new Date(clock.getTime() - 120_000),
+    });
+    const second = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, second.frame.deliveryId, clock));
+    await h.park(second.frame.deliveryId, 300_000);
+    const [secondTarget] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, second.frame.deliveryId));
+    if (!secondTarget) throw new Error("Missing second target");
+
+    // A send from before this Computer existed belongs to no offline period of it.
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ sendStartedAt: new Date(clock.getTime() - 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
+
+    // Later input in the same outage still gets no second notice, whenever it was received.
+    await h.park(h.frame.deliveryId, 61_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("stays silent for a connected Computer, a Cloud Computer and a suspended Agent", async () => {
+    const h = await queued();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID() });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    await offlineSince(h, 300_000);
+    await setComputer(h, { kind: "cloud" });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    await setComputer(h, { kind: "local" });
+    await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, h.frame.agentId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("treats a Computer that stopped heartbeating as offline at the presence timeout", async () => {
+    const h = await queued();
+    const live = randomUUID();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 89_000), currentInstanceId: live });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 91_000), currentInstanceId: live });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("posts through the worker, retries only a send known not to have applied, and keeps the failure message", async () => {
+    const h = await queued();
+    await offlineSince(h, 300_000);
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    h.transport.postOfflineNotice.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true));
+    await due();
+    await h.worker.runOnce();
+    expect((await h.target()).sendStartedAt).toBeNull();
+    h.transport.postOfflineNotice.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false));
+    await due();
+    await h.worker.runOnce();
+    expect((await h.target()).sendStartedAt).toEqual(clock);
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(2);
+    expect((await h.target()).cardState).toBe("none");
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("IM parked-dispatch notice", () => {
+  const online = async (h: Awaited<ReturnType<typeof fixture>>) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID(), disconnectedAt: null })
+      .where(eq(computers.id, placement?.computerId ?? ""));
+    return placement?.computerId ?? "";
+  };
+  const receivedAgo = async (deliveryId: string, ms: number) => {
+    const [delivery] = await db.database
+      .select({ messageId: imMessageDeliveries.messageId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await db.database
+      .update(imMessages)
+      .set({ receivedAt: new Date(clock.getTime() - ms) })
+      .where(eq(imMessages.id, delivery?.messageId ?? ""));
+  };
+  /** The fixture's input, queued and received five minutes ago, behind an earlier input of its Session. */
+  async function behindEarlier() {
+    const h = await fixture();
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    const computerId = await online(h);
+    const earlier = await h.delivery();
+    await receivedAgo(earlier.frame.deliveryId, 3_600_000);
+    const park = (lastErrorCode: string | null) =>
+      db.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "pending",
+          lastErrorCode,
+          acceptedAt: null,
+          inputHash: null,
+          turnId: null,
+          reportOwnerInstanceId: null,
+        })
+        .where(eq(imMessageDeliveries.id, earlier.frame.deliveryId));
+    return { ...h, computerId, earlier, park };
+  }
+
+  it("tells a queued input once that it waits behind a parked dispatch, with its Computer online", async () => {
+    const h = await behindEarlier();
+    // An earlier dispatch still in flight is ordinary waiting.
+    await h.park(null);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+  });
+
+  it("waits sixty seconds after receipt, and leaves an offline Computer to the offline notice", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await receivedAgo(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+
+    await receivedAgo(h.frame.deliveryId, 300_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 300_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveParkedNotice(await h.target())).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends no offline notice for a later outage while the same parked input still blocks the Session", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    expect(await h.store.reserveParkedNotice(await h.target())).toEqual(clock);
+
+    // The Computer heartbeats after that notice, then goes offline with the dispatch still parked.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    // Once the parked input settles, a later outage is an ordinary new offline period again.
+    await h.park(null);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("sends one waiting notice in total across worker passes that include the parked input's own target", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.earlier.frame.deliveryId, clock));
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.earlier.frame.deliveryId));
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(inArray(imFeedbackTargets.deliveryId, [h.frame.deliveryId, h.earlier.frame.deliveryId]));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice.mock.calls.map((call) => call[1])).toEqual(["parked"]);
+
+    // A heartbeat after that notice, then an outage, with the dispatch still parked: neither target sends again.
+    clock = new Date(clock.getTime() + 600_000);
+    await db.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(clock.getTime() - 120_000), currentInstanceId: null })
+      .where(eq(computers.id, h.computerId));
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts the parked notice through the worker", async () => {
+    const h = await behindEarlier();
+    await h.park("IM_DELIVERY_PARKED");
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(1);
+    expect(h.transport.postOfflineNotice.mock.calls[0]?.[1]).toBe("parked");
+    expect((await h.target()).sendStartedAt).toEqual(clock);
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("durable IM feedback", () => {
+  it("creates card targets", async () => {
+    const h = await fixture();
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
+  });
+
+  it("shows a workspace failure with the OpenTag step, and no link or button", async () => {
     const h = await workspaceFixture();
+    const target = await h.target();
+    expect(target.messageFormat).toBe("interactive_v1");
+    expect(feedbackCard(target, undefined, "zh")).toEqual({
+      kind: "failure",
+      tone: "failure",
+      title: "工作区改动没能保存",
+      body: "请在 OpenTag 重试保存或放弃改动",
+    });
+  });
+
+  it("sends a plain-text target that never sent as a card", async () => {
+    const h = await fixture();
+    await h.finish();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ messageFormat: "text_v1" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    const claimed = await h.store.claim();
+    if (!claimed) throw new Error("Missing claim");
+    expect(await h.store.markSending(claimed)).toBe(true);
     expect((await h.target()).messageFormat).toBe("interactive_v1");
   });
 
@@ -183,42 +528,36 @@ describe("durable IM feedback", () => {
     const sent = await fixture();
     await db.database
       .update(imFeedbackTargets)
-      .set({ cardState: "sent", cardMessageId: "text-message" })
+      .set({ cardState: "sent", cardMessageId: "text-message", messageFormat: "text_v1" })
       .where(eq(imFeedbackTargets.deliveryId, sent.frame.deliveryId));
     await sent.finish("failed", "completed", "workspace_failed");
     expect(await sent.target()).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
   });
 
-  it("keeps an ordinary failure in plain text and leaves code to the details page", async () => {
+  it("sends an ordinary failure as a red card and leaves the code to the details page", async () => {
     const h = await fixture();
     await h.finish();
     const target = await h.target();
-    expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).not.toContain("provider_failed");
-    expect(text.split("\n\n")).toHaveLength(3);
+    const card = feedbackCard(target, undefined, "en");
+    expect(card).toEqual({
+      kind: "failure",
+      tone: "failure",
+      title: "The Agent ran into an error",
+      body: "The model call failed. Try again",
+    });
   });
 
-  it("reads the language of the input the target was created for", async () => {
+  it("reads the language and conversation kind of the input the target was created for", async () => {
     const h = await fixture();
-    expect(await h.store.messageLanguage((await h.target()).messageId)).toBe("en");
-    expect(await h.store.messageLanguage(randomUUID())).toBe("en");
-  });
-
-  it("freezes the message format at target creation across rollout flag changes", async () => {
-    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "true");
-    const h = await fixture();
-    expect((await h.target()).messageFormat).toBe("text_v1");
-    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "false");
-    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.frame.deliveryId, clock));
-    expect((await h.target()).messageFormat).toBe("text_v1");
-    const old = await h.delivery();
-    await db.database.transaction((tx) => startImFeedback(tx, old.frame.deliveryId, clock));
-    const [legacy] = await db.database
-      .select()
-      .from(imFeedbackTargets)
-      .where(eq(imFeedbackTargets.deliveryId, old.frame.deliveryId));
-    expect(legacy?.messageFormat).toBe("interactive_v1");
+    const target = await h.target();
+    expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
+    expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
+    expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);
+    expect(await h.store.messageContext({ messageId: randomUUID(), sessionId: randomUUID() })).toEqual({
+      language: "en",
+      direct: false,
+    });
   });
 
   it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
@@ -252,7 +591,7 @@ describe("durable IM feedback", () => {
       expect((await h.target()).state).toBe("completed");
       if (bound) {
         expect(h.transport.update).toHaveBeenCalledOnce();
-        expect(renderFeedbackCard(await h.target(), "https://app.test").slack.text).toContain("Task completed");
+        expect(cardText(await h.target())).toBe("Done");
       } else expect(h.transport.post).not.toHaveBeenCalled();
     },
   );
@@ -388,6 +727,19 @@ describe("durable IM feedback", () => {
     expect(await h.target()).toMatchObject({ cardMessageId: "provider-confirmed-card", cardState: "sent" });
     expect(h.transport.post).toHaveBeenCalledOnce();
   });
+  it("reads back an unknown direct-message send there, and starts there again when exhausted", async () => {
+    const h = await fixture();
+    await h.finish();
+    h.transport.post.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK),
+    );
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({ cardState: "send_unknown", reconciliationCursor: SENDER_READBACK });
+    clock = new Date(clock.getTime() + 31_000);
+    await h.worker.runOnce();
+    expect(h.transport.find).toHaveBeenCalledWith(expect.anything(), SENDER_READBACK);
+    expect((await h.target()).reconciliationCursor).toBe(SENDER_READBACK);
+  });
   it("recovers after a provider accepted the card but its DB acknowledgement failed", async () => {
     const h = await fixture();
     await h.finish();
@@ -486,23 +838,14 @@ describe("durable IM feedback", () => {
     await h.store.retain();
     expect(await db.database.select().from(imFeedbackTargets)).toHaveLength(0);
   });
-  it("renders external-effect uncertainty identically and never copies arbitrary runtime output", async () => {
+  it("never copies a code or arbitrary runtime output into a card", async () => {
     const h = await fixture();
     await h.finish();
     const t = await h.target();
-    const card = renderFeedbackCard(t, "https://example.test");
-    expect(card.slack.text).toContain("may already have run");
-    expect(card.feishu).toContain("may already have run");
-    expect(card.slack.text).not.toContain("no operations were run");
-    expect(card.feishu).not.toContain("no operations were run");
-    expect(card.slack.text).not.toContain("provider_failed");
-    expect(card.feishu).not.toContain("provider_failed");
-    expect(JSON.stringify(card.slack.blocks)).not.toContain("provider_failed");
-    expect(feedbackCardContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
-      "The execution environment had a problem, so the task didn't finish.",
-    );
-    expect(renderFeedbackCard({ ...t, effects: "not_started" }, "https://example.test").slack.text).toContain(
-      "no operations were run",
+    for (const provider of ["slack", "feishu"] as const)
+      expect(cardText({ ...t, provider })).not.toContain("provider_failed");
+    expect(cardText({ ...t, errorCode: "<@everyone> private raw details" })).toBe(
+      "The Agent ran into an error\nTry again",
     );
   });
 });
@@ -572,18 +915,6 @@ describe("safe feedback actions", () => {
       const t = await h.target();
       const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
       expect((await service.getForAccount(h.accountId, t.id)).actions).toEqual([]);
-      expect(
-        await service.submitNativeRetry({
-          feedbackId: t.id,
-          revision: t.revision,
-          provider: "slack",
-          userId: t.senderExternalId,
-          generation: t.bindingGeneration,
-          channelId: t.channelId,
-          messageId: "card-1",
-          installationId: t.installationId ?? undefined,
-        }),
-      ).toBe("unavailable");
     },
   );
   it("rejects a forged confirmation, foreign Account, expired action and stale revision", async () => {
@@ -634,56 +965,32 @@ describe("safe feedback actions", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
-  it("rejects retired native Retry buttons even for the original sender", async () => {
-    const h = await fixture();
-    await h.finish("failed", "not_started");
-    await h.worker.runOnce();
-    const t = await h.target();
-    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
-    const input = {
-      feedbackId: t.id,
-      revision: t.revision,
-      provider: "slack" as const,
-      userId: t.senderExternalId,
-      generation: t.bindingGeneration,
-      channelId: t.channelId,
-      messageId: t.cardMessageId ?? "",
-      installationId: t.installationId ?? undefined,
-    };
-    expect(await service.submitNativeRetry({ ...input, userId: "someone-else" })).toBe("unavailable");
-    expect(await service.submitNativeRetry({ ...input, messageId: "another-card" })).toBe("unavailable");
-    expect(await service.submitNativeRetry(input)).toBe("unavailable");
-  });
-  it.each(["save_release", "discard"] as const)("updates the original card from a verified %s result", async (kind) => {
-    const h = await workspaceFixture();
-    await h.worker.runOnce();
-    await h.submit(kind);
-    await h.service.close();
-    await h.worker.runOnce();
-    const view = await h.service.getForAccount(h.accountId, h.t.id);
-    expect(view.state).toBe("resolved");
-    expect(view.action).toMatchObject({
-      kind,
-      state: "succeeded",
-      resultCode: kind === "discard" ? "discarded" : "saved_released",
-    });
-    const content = renderFeedbackCard(
-      await h.target(),
-      "https://app.test",
-      (await db.database.select().from(imFeedbackActions))[0],
-    );
-    expect(content.slack.text).toContain(
-      kind === "discard" ? "Unsaved changes discarded" : "Saved and environment released",
-    );
-    expect(content.slack.text).not.toContain("Task completed");
-    expect(content.feishu).toContain("Working");
-    expect(h.transport.post).toHaveBeenCalledOnce();
-    expect(h.transport.update).toHaveBeenCalledOnce();
-    expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
-      environmentGeneration: 3,
-      ...(kind === "discard" ? { discardUnsavedChanges: true } : {}),
-    });
-  });
+  it.each(["save_release", "discard"] as const)(
+    "updates the original message from a verified %s result",
+    async (kind) => {
+      const h = await workspaceFixture();
+      await h.worker.runOnce();
+      await h.submit(kind);
+      await h.service.close();
+      await h.worker.runOnce();
+      const view = await h.service.getForAccount(h.accountId, h.t.id);
+      expect(view.state).toBe("resolved");
+      expect(view.action).toMatchObject({
+        kind,
+        state: "succeeded",
+        resultCode: kind === "discard" ? "discarded" : "saved_released",
+      });
+      const content = cardText(await h.target(), (await db.database.select().from(imFeedbackActions))[0]);
+      expect(content).toBe(kind === "discard" ? "Changes discarded" : "Saved");
+      expect(content).not.toContain("Done");
+      expect(h.transport.post).toHaveBeenCalledOnce();
+      expect(h.transport.update).toHaveBeenCalledOnce();
+      expect(h.runner.stopForAccount).toHaveBeenCalledWith(h.accountId, expect.any(String), {
+        environmentGeneration: 3,
+        ...(kind === "discard" ? { discardUnsavedChanges: true } : {}),
+      });
+    },
+  );
   it("requires exact sealed proof before claiming a successful save", async () => {
     const h = await workspaceFixture();
     h.runner.verifySavedForAccount.mockResolvedValue(false);
@@ -899,21 +1206,7 @@ describe("feedback review regressions", () => {
     await h.worker.runOnce();
     const posted = h.transport.post.mock.calls[0]?.[0];
     if (!posted) throw new Error("Missing card");
-    const card = renderFeedbackCard(posted, "https://example.test");
-    expect(card.slack.text).toContain("frozen batch cannot be retried");
-    expect(JSON.stringify(card.slack.blocks)).not.toContain('"opentag_feedback_retry"');
-    expect(
-      await service.submitNativeRetry({
-        feedbackId: target.id,
-        revision: target.revision,
-        provider: "slack",
-        userId: target.senderExternalId,
-        generation: target.bindingGeneration,
-        channelId: target.channelId,
-        messageId: "card-1",
-        installationId: target.installationId ?? undefined,
-      }),
-    ).toBe("unavailable");
+    expect(cardText(posted)).toBe("The Agent ran into an error\nTry again (2 messages)");
     expect(await db.database.select().from(imMessageDeliveries)).toHaveLength(2);
     expect(await db.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
@@ -944,13 +1237,14 @@ describe("feedback review regressions", () => {
 
 it("preserves workspace recovery and paused-Session guidance for a frozen batch root on both providers", async () => {
   const h = await workspaceFixture();
-  const card = renderFeedbackCard({ ...(await h.target()), batchRetryBlocked: true }, "https://example.test");
-  for (const rendered of [JSON.stringify(card.slack), card.feishu]) {
-    expect(rendered).toContain("Retry save");
-    expect(rendered).toContain("Discard unsaved changes");
-    expect(rendered).toContain("Work in this Session is paused; new input for this Session remains queued.");
-    expect(rendered).not.toContain("frozen batch cannot be retried");
-    expect(rendered).not.toContain("opentag_feedback_retry");
+  for (const provider of ["slack", "feishu"] as const) {
+    const rendered = cardText({ ...(await h.target()), provider, batchRetryBlocked: true });
+    expect(rendered).toBe("Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag");
+    expect(rendered).not.toContain("Review the original task");
+    // A batch of several messages says how many.
+    expect(cardText({ ...(await h.target()), provider, batchRetryBlocked: true, batchSize: 3 })).toBe(
+      "Workspace changes weren't saved\nRetry the save or discard the changes in OpenTag (3 messages)",
+    );
   }
 });
 

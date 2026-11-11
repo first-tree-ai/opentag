@@ -771,13 +771,18 @@ describe("automatic deletion confirmation on PostgreSQL", () => {
     });
   }
 
-  it("reserves one confirmation across concurrent Server connections", async () => {
+  it("reserves one late confirmation across concurrent Server connections", async () => {
     const stack = makeStack();
     let now = new Date(Date.now() + 1_000);
     const ready = await failedIdleClaim(stack, now, "releasing");
     pendingDeletes(stack);
     await retryService(database, stack, () => now).reclaimIdleSandboxes();
     expect((await rowFor(ready.row.id)).lastErrorCode).toBe("cloud_delete_pending");
+    now = new Date(now.getTime() + 60_000);
+    expect(await retryService(database, stack, () => now).reclaimIdleSandboxes()).toMatchObject({
+      released: 0,
+      failed: 0,
+    });
     now = new Date(now.getTime() + 15_000);
     const clients = [0, 1].map(() => createDatabaseClient(testDatabase.databaseUrl, { max: 1 }));
     const locked = deferred();

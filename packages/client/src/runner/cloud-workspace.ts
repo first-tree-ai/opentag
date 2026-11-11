@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { type FileHandle, mkdir, mkdtemp, open, readdir, rename, rm } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -10,9 +11,10 @@ import {
   type RunnerWorkspaceObject,
   RunnerWorkspaceObjectSchema,
 } from "@opentag/shared";
-import { type RunnerPerformanceSink, traceRunnerOperation } from "./perf-log.js";
+import { type RunnerPerformanceMetrics, type RunnerPerformanceSink, traceRunnerOperation } from "./perf-log.js";
 import {
   createWorkspaceArchive,
+  fingerprintWorkspace,
   restoreWorkspaceArchive,
   WorkspaceArchiveError,
   type WorkspaceArchiveErrorCode,
@@ -21,6 +23,7 @@ import {
 
 const CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS = 3;
 const CLOUD_WORKSPACE_RETRY_DELAY_MS = 1000;
+const WORKSPACE_WARMUP_TIMEOUT_MS = 5000;
 
 export class CloudWorkspaceError extends Error {
   readonly archiveErrorCode?: WorkspaceArchiveErrorCode;
@@ -113,6 +116,26 @@ async function boundedJson(response: Response): Promise<unknown> {
   }
 }
 
+export async function warmWorkspaceConnection(
+  config: { backendUrl: string; workspacePersistence?: boolean },
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!config.workspacePersistence) return;
+  try {
+    const url = new URL("/healthz", workspaceOrigin(config.backendUrl));
+    const response = await fetchImpl(url, {
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(WORKSPACE_WARMUP_TIMEOUT_MS)]),
+    });
+    // Read the small response to completion so the workspace requests can reuse the connection.
+    await boundedJson(response);
+  } catch {
+    // A slow, unavailable, or unsupported probe must never gate startup or the authenticated claim.
+  }
+}
+
 /**
  * Latest-state transfer in the trusted parent. The caller exclusively owns the native namespace
  * and MUST stop every workspace writer before initialize/save. Reconnects retry unsaved local
@@ -123,6 +146,7 @@ export class CloudWorkspace {
   readonly #url: string;
   readonly #fetch: typeof fetch;
   #object?: RunnerWorkspaceObject;
+  #fingerprint?: string;
   #restored = false;
   #pendingSave = false;
   #rollbackPending = false;
@@ -160,31 +184,23 @@ export class CloudWorkspace {
         return;
       }
       try {
-        const object = await this.#claim();
+        const object = await traceRunnerOperation(
+          this.#options.onPerformanceLog,
+          "runner.workspace.claim",
+          async (addMetrics) => {
+            const claimed = await this.#claim(this.#signal(), { fence: true });
+            addMetrics({ workspaceGeneration: claimed.generation, saved: claimed.saved, sealed: claimed.sealed });
+            return claimed;
+          },
+          { environmentGeneration: this.#options.environmentGeneration(), reason: "initial_restore_fence" },
+        );
         this.#object = object;
         if (object.sealed) {
           this.#rollbackPending = false;
           return;
         }
-        await traceRunnerOperation(
-          this.#options.onPerformanceLog,
-          "runner.workspace.restore",
-          async (addMetrics) => {
-            await this.#restoreFromObject(object, this.#rollbackPending, addMetrics);
-          },
-          {
-            environmentGeneration: this.#options.environmentGeneration(),
-            workspaceGeneration: object.generation,
-            saved: object.saved,
-            sealed: object.sealed,
-            ...(object.saved ? { archiveBytes: object.bytes } : {}),
-          },
-        );
-        this.#rollbackPending = false;
-        this.#restored = true;
-        // Even a saved restore commits once before readiness. This CAS fences an upload still
-        // in flight from a prior process of the SAME allocation, without a second runtime epoch.
-        await this.#save(false);
+        await this.#restoreClaimedWorkspace(object, this.#rollbackPending);
+        if (!object.saved) await this.#save(false);
       } catch (error) {
         throw new CloudWorkspaceError("restore_failed", true, { cause: error });
       }
@@ -199,6 +215,7 @@ export class CloudWorkspace {
     return this.#enqueue(async () => {
       if (this.sealed) return;
       this.#restored = false;
+      this.#fingerprint = undefined;
       this.#pendingSave = false;
       this.#terminalFailure = undefined;
       this.#rollbackPending = true;
@@ -209,45 +226,41 @@ export class CloudWorkspace {
           this.#rollbackPending = false;
           return;
         }
-        await traceRunnerOperation(
-          this.#options.onPerformanceLog,
-          "runner.workspace.restore",
-          async (addMetrics) => {
-            await this.#restoreFromObject(object, true, addMetrics);
-          },
-          {
-            environmentGeneration: this.#options.environmentGeneration(),
-            workspaceGeneration: object.generation,
-            saved: object.saved,
-            sealed: object.sealed,
-            ...(object.saved ? { archiveBytes: object.bytes } : {}),
-          },
-        );
-        this.#rollbackPending = false;
-        this.#restored = true;
+        await this.#restoreClaimedWorkspace(object, true);
       } catch (error) {
         throw new CloudWorkspaceError("restore_failed", true, { cause: error });
       }
     });
   }
 
+  async #restoreClaimedWorkspace(object: RunnerWorkspaceObject, replaceExisting: boolean): Promise<void> {
+    await traceRunnerOperation(
+      this.#options.onPerformanceLog,
+      "runner.workspace.restore",
+      async (addMetrics) => {
+        this.#fingerprint = await this.#restoreFromObject(object, replaceExisting, addMetrics);
+        this.#rollbackPending = false;
+        this.#restored = true;
+      },
+      {
+        environmentGeneration: this.#options.environmentGeneration(),
+        workspaceGeneration: object.generation,
+        saved: object.saved,
+        sealed: object.sealed,
+        ...(object.saved ? { archiveBytes: object.bytes } : {}),
+      },
+    );
+  }
+
   async #restoreFromObject(
     object: RunnerWorkspaceObject,
     replaceExisting: boolean,
-    addMetrics?: (metrics: { archiveBytes?: number; workspaceBytes?: number; entryCount?: number }) => void,
-  ): Promise<void> {
+    addMetrics: (metrics: RunnerPerformanceMetrics) => void,
+  ): Promise<string | undefined> {
     if (!replaceExisting) {
       await mkdir(this.#options.workspace, { recursive: true, mode: 0o700 });
       if ((await readdir(this.#options.workspace)).length !== 0) throw new CloudWorkspaceError("restore_failed");
-      if (object.saved) {
-        await this.#temporaryArchive(async (path) => {
-          await this.#download(object, path);
-          await restoreWorkspaceArchive(path, this.#options.workspace, object, {
-            onStats: (stats) => addMetrics?.(stats),
-          });
-        });
-      }
-      return;
+      return object.saved ? this.#restoreArchive(object, this.#options.workspace, addMetrics) : undefined;
     }
     if (!object.saved) {
       await rm(this.#options.workspace, { recursive: true, force: true });
@@ -259,18 +272,29 @@ export class CloudWorkspace {
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(join(parent, `.${basename(workspacePath)}.rollback-`));
     try {
-      await this.#temporaryArchive(async (path) => {
-        await this.#download(object, path);
-        await restoreWorkspaceArchive(path, staging, object, {
-          onStats: (stats) => addMetrics?.(stats),
-        });
-      });
+      const fingerprint = await this.#restoreArchive(object, staging, addMetrics);
       await rm(workspacePath, { recursive: true, force: true });
       await rename(staging, workspacePath);
+      return fingerprint;
     } catch (error) {
       await rm(staging, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  async #restoreArchive(
+    object: RunnerWorkspaceObject,
+    target: string,
+    addMetrics: (metrics: RunnerPerformanceMetrics) => void,
+  ): Promise<string> {
+    return this.#temporaryArchive(async (path) => {
+      await measureWorkspaceStep("downloadMs", addMetrics, () => this.#download(object, path));
+      return measureWorkspaceStep("extractMs", addMetrics, () =>
+        restoreWorkspaceArchive(path, target, object, {
+          onStats: addMetrics,
+        }),
+      );
+    });
   }
 
   save(sealed = false): Promise<void> {
@@ -291,17 +315,29 @@ export class CloudWorkspace {
       sealed ? "runner.workspace.seal" : "runner.workspace.save",
       async (addMetrics) => {
         try {
-          await this.#temporaryArchive(async (path) => {
-            const info = await createWorkspaceArchive(this.#options.workspace, path, {
-              onStats: (stats) => addMetrics(stats),
-            });
-            const uploaded = await this.#upload(path, previous, info, sealed);
-            this.#object = uploaded;
-            addMetrics({
-              workspaceGeneration: uploaded.generation,
-              saved: uploaded.saved,
-              sealed: uploaded.sealed,
-            });
+          const unchanged =
+            sealed &&
+            previous.saved &&
+            (await measureWorkspaceStep("fingerprintMs", addMetrics, () =>
+              fingerprintWorkspace(this.#options.workspace),
+            )) === this.#fingerprint;
+          const object = unchanged
+            ? await this.#seal(previous)
+            : await this.#temporaryArchive(async (path) => {
+                const info = await measureWorkspaceStep("packMs", addMetrics, () =>
+                  createWorkspaceArchive(this.#options.workspace, path, { onStats: addMetrics }),
+                );
+                const uploaded = await this.#upload(path, previous, info, sealed, addMetrics);
+                // Keep the confirmed version and its baseline together if local cleanup fails.
+                this.#object = uploaded;
+                this.#fingerprint = info.fingerprint;
+                return uploaded;
+              });
+          this.#object = object;
+          addMetrics({
+            workspaceGeneration: object.generation,
+            saved: object.saved,
+            sealed: object.sealed,
           });
           this.#pendingSave = false;
         } catch (error) {
@@ -327,6 +363,7 @@ export class CloudWorkspace {
       },
       {
         environmentGeneration: this.#options.environmentGeneration(),
+        reason: previous.saved ? undefined : "initial_empty_workspace",
         sealed,
       },
     );
@@ -365,16 +402,49 @@ export class CloudWorkspace {
     return object;
   }
 
-  async #claim(signal = this.#signal()): Promise<RunnerWorkspaceObject> {
+  async #claim(
+    signal = this.#signal(),
+    options: {
+      fence?: true;
+      upload?: Pick<RunnerWorkspaceObject, "generation" | "metageneration"> & { id: string };
+    } = {},
+  ): Promise<RunnerWorkspaceObject> {
     signal.throwIfAborted();
     const response = await this.#fetch(`${this.#url}/claim`, {
       method: "POST",
       headers: { ...this.#headers(), "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify(options),
       redirect: "error",
       signal,
     });
     return this.#parseObject(await boundedJson(response));
+  }
+
+  async #seal(previous: RunnerWorkspaceObject): Promise<RunnerWorkspaceObject> {
+    const signal = this.#signal();
+    const confirmsSeal = (object: RunnerWorkspaceObject) =>
+      this.#sameObject(object, {
+        ...previous,
+        metageneration: String(BigInt(previous.metageneration) + 1n),
+        sealed: true,
+      });
+    try {
+      const response = await this.#fetch(`${this.#url}/seal`, {
+        method: "POST",
+        headers: { ...this.#headers(), "content-type": "application/json" },
+        body: JSON.stringify({ generation: previous.generation, metageneration: previous.metageneration }),
+        redirect: "error",
+        signal,
+      });
+      const object = this.#parseObject(await boundedJson(response));
+      if (!confirmsSeal(object)) throw new CloudWorkspaceError("save_failed", false);
+      return object;
+    } catch (error) {
+      // Readback never fences or adopts a new base. An uncertain PATCH is not retried here.
+      const current = await this.#claim(signal);
+      if (!confirmsSeal(current)) throw error;
+      return current;
+    }
   }
 
   async #download(object: RunnerWorkspaceObject, path: string): Promise<void> {
@@ -415,20 +485,40 @@ export class CloudWorkspace {
     previous: RunnerWorkspaceObject,
     info: WorkspaceArchiveInfo,
     sealed: boolean,
+    addMetrics: (metrics: RunnerPerformanceMetrics) => void,
   ): Promise<RunnerWorkspaceObject> {
     const signal = this.#signal();
-    for (let attempt = 0; ; attempt += 1) {
-      signal.throwIfAborted();
-      try {
-        const object = await this.#putArchive(path, previous, info, sealed, signal);
-        if (!this.#confirmsWrite(object, previous, info, sealed)) throw new CloudWorkspaceError("save_failed", false);
-        return object;
-      } catch (error) {
-        const confirmed = await this.#verifyFailedUpload(error, previous, info, sealed, signal);
-        if (confirmed) return confirmed;
-        if (attempt === CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS - 1) throw error;
-        await this.#waitBackoff(attempt, signal);
+    const writeId = randomUUID();
+    let uploadMs = 0;
+    let commitVerificationMs: number | undefined;
+    try {
+      for (let attempt = 0; ; attempt += 1) {
+        signal.throwIfAborted();
+        try {
+          const object = await measureWorkspaceStep(
+            "uploadMs",
+            (metrics) => {
+              uploadMs += metrics.uploadMs ?? 0;
+            },
+            () => this.#putArchive(path, previous, info, sealed, writeId, signal),
+          );
+          if (!this.#confirmsWrite(object, previous, info, sealed)) throw new CloudWorkspaceError("save_failed", false);
+          return object;
+        } catch (error) {
+          const confirmed = await measureWorkspaceStep(
+            "commitVerificationMs",
+            (metrics) => {
+              commitVerificationMs = (commitVerificationMs ?? 0) + (metrics.commitVerificationMs ?? 0);
+            },
+            () => this.#verifyFailedUpload(error, previous, info, sealed, writeId, signal),
+          );
+          if (confirmed) return confirmed;
+          if (attempt === CLOUD_WORKSPACE_SAVE_MAX_ATTEMPTS - 1) throw error;
+          await this.#waitBackoff(attempt, signal);
+        }
       }
+    } finally {
+      addMetrics({ uploadMs, commitVerificationMs });
     }
   }
 
@@ -443,6 +533,7 @@ export class CloudWorkspace {
     previous: RunnerWorkspaceObject,
     info: WorkspaceArchiveInfo,
     sealed: boolean,
+    writeId: string,
     signal: AbortSignal,
   ): Promise<RunnerWorkspaceObject | undefined> {
     if (
@@ -453,7 +544,9 @@ export class CloudWorkspace {
     }
     // A missing response may hide a committed write. Only an unchanged original object
     // permits another conditional upload; an unrelated newer object is never a new base.
-    const current = await this.#claim(signal);
+    const current = await this.#claim(signal, {
+      upload: { id: writeId, generation: previous.generation, metageneration: previous.metageneration },
+    });
     if (this.#confirmsWrite(current, previous, info, sealed)) return current;
     if (!this.#sameObject(current, previous)) throw new CloudWorkspaceError("save_failed", false, { cause: error });
     if (!(error instanceof CloudWorkspaceError && error.retryable)) throw error;
@@ -465,6 +558,7 @@ export class CloudWorkspace {
     previous: RunnerWorkspaceObject,
     info: WorkspaceArchiveInfo,
     sealed: boolean,
+    writeId: string,
     signal: AbortSignal,
   ): Promise<RunnerWorkspaceObject> {
     if (previous.ownerGeneration !== this.#options.environmentGeneration()) {
@@ -484,6 +578,7 @@ export class CloudWorkspace {
           "x-opentag-workspace-sha256": info.sha256,
           "content-md5": info.md5,
           "x-opentag-workspace-sealed": String(sealed),
+          "x-opentag-workspace-write-id": writeId,
         },
         body: body as unknown as NonNullable<RequestInit["body"]>,
         duplex: "half",
@@ -523,6 +618,7 @@ export class CloudWorkspace {
   ): boolean {
     return (
       object.generation !== previous.generation &&
+      object.metageneration === "1" &&
       object.ownerGeneration === previous.ownerGeneration &&
       object.saved &&
       object.sealed === sealed &&
@@ -536,5 +632,18 @@ export class CloudWorkspace {
     const pending = this.#serial.then(operation, operation);
     this.#serial = pending.catch(() => undefined);
     return pending;
+  }
+}
+
+async function measureWorkspaceStep<T>(
+  field: "downloadMs" | "extractMs" | "fingerprintMs" | "packMs" | "uploadMs" | "commitVerificationMs",
+  addMetrics: (metrics: RunnerPerformanceMetrics) => void,
+  action: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await action();
+  } finally {
+    addMetrics({ [field]: performance.now() - started });
   }
 }

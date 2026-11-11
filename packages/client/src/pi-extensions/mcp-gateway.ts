@@ -4,6 +4,18 @@ import { createRequire } from "node:module";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import { createPiDiagnosticStderrWriter, PI_STARTUP_TIMING_PREFIX } from "../observability/pi-diagnostic-stderr.js";
+
+const loadStarted = performance.now();
+const writeStartupTiming =
+  process.env.OPENTAG_PI_STARTUP_DIAGNOSTICS === "1" ? createPiDiagnosticStderrWriter(process.stderr) : undefined;
+function startupTiming(name: "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs", started: number): void {
+  try {
+    writeStartupTiming?.(`${PI_STARTUP_TIMING_PREFIX}${name}=${(performance.now() - started).toFixed(3)}\n`);
+  } catch {
+    // Losing the diagnostic pipe must not affect gateway initialization or hide its error.
+  }
+}
 
 const url = process.env.OPENTAG_MCP_GATEWAY_URL;
 const token = process.env.OPENTAG_MCP_GATEWAY_TOKEN;
@@ -39,6 +51,8 @@ const adapter = (
   registerMcpServer(options: { pi: ExtensionAPI; name: string; definition: typeof definition }): Registration;
 };
 
+startupTiming("mcpGatewayLoadMs", loadStarted);
+
 function installGateway(pi: ExtensionAPI, name: string): void {
   adapter.createMcpAdapter({
     config: {
@@ -60,7 +74,7 @@ export default function gatewayExtension(pi: ExtensionAPI): void {
     await registration?.dispose();
     registration = undefined;
   });
-  pi.on("session_start", async (event, context) => {
+  async function startGateway(event: SessionStartEvent, context: ExtensionContext): Promise<void> {
     if (fallbackHandlers) {
       for (const handler of fallbackHandlers) await handler(event, context);
       return;
@@ -96,5 +110,13 @@ export default function gatewayExtension(pi: ExtensionAPI): void {
     });
     installGateway(scopedApi, name);
     for (const handler of startHandlers) await handler(event, context);
+  }
+  pi.on("session_start", async (event, context) => {
+    const started = performance.now();
+    try {
+      await startGateway(event, context);
+    } finally {
+      startupTiming("mcpGatewaySessionStartMs", started);
+    }
   });
 }

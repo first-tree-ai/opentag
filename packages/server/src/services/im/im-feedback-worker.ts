@@ -1,8 +1,10 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
+  CONVERSATION_READBACK,
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
+  SENDER_READBACK,
 } from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
@@ -15,7 +17,16 @@ export class ImFeedbackWorker {
     readonly options: {
       store: Pick<
         ImFeedbackStore,
-        "claim" | "isCurrent" | "refreshQueued" | "markSending" | "settle" | "latestAction" | "desiredReaction"
+        | "claim"
+        | "isCurrent"
+        | "refreshQueued"
+        | "markSending"
+        | "settle"
+        | "latestAction"
+        | "desiredReaction"
+        | "reserveOfflineNotice"
+        | "reserveParkedNotice"
+        | "releaseOfflineNotice"
       >;
       transport: FeedbackTransport;
       logger: Pick<ServiceLogger, "warn">;
@@ -98,10 +109,52 @@ export class ImFeedbackWorker {
       retryAfterMs = reaction.retryAfterMs ?? 0;
       if (target.cardState === "send_unknown") await this.#recover(target, reaction);
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
-      else await this.#settleKnown(target, reaction);
+      else {
+        await this.#offlineNotice(target, halt);
+        await this.#settleKnown(target, reaction);
+      }
     } catch (error) {
       if (error instanceof FeedbackCooldownStorageError) halt();
       await this.#failure(target, error, retryAfterMs);
+    }
+  }
+  /**
+   * The one waiting notice of a queued input: its Computer is offline, or, with the Computer online, it
+   * waits behind a parked dispatch. Queued targets are revisited every fifteen seconds, which bounds how
+   * late past sixty seconds this runs.
+   */
+  async #offlineNotice(target: FeedbackTarget, halt: () => void): Promise<void> {
+    if (target.state !== "queued" || target.cardState !== "none") return;
+    let reservedAt: Date | undefined;
+    try {
+      reservedAt = await this.options.store.reserveOfflineNotice(target);
+      if (reservedAt) await this.options.transport.postOfflineNotice(target);
+      else {
+        reservedAt = await this.options.store.reserveParkedNotice(target);
+        if (reservedAt) await this.options.transport.postOfflineNotice(target, "parked");
+      }
+    } catch (error) {
+      const cooldown = error instanceof FeedbackCooldownStorageError;
+      if (cooldown) halt();
+      this.options.logger.warn(
+        { code: "IM_FEEDBACK_OFFLINE_NOTICE_FAILED", feedbackId: target.id, provider: target.provider },
+        "IM offline notice was not confirmed",
+      );
+      if (reservedAt && error instanceof FeedbackProviderError && error.knownNotApplied)
+        await this.#releaseOfflineNotice(target, reservedAt, cooldown);
+      if (cooldown) throw error;
+    }
+  }
+  async #releaseOfflineNotice(target: FeedbackTarget, reservedAt: Date, cooldown: boolean): Promise<void> {
+    try {
+      await this.options.store.releaseOfflineNotice(target, reservedAt);
+    } catch (error) {
+      // A held reservation only loses this notice; it must not replace the cooldown failure.
+      if (!cooldown) throw error;
+      this.options.logger.warn(
+        { code: "IM_FEEDBACK_OFFLINE_NOTICE_RELEASE_FAILED", feedbackId: target.id },
+        "IM offline notice reservation was not released",
+      );
     }
   }
   async #failure(target: FeedbackTarget, error: unknown, retryAfterMs: number): Promise<void> {
@@ -183,7 +236,8 @@ export class ImFeedbackWorker {
       reaction: reaction.value,
       errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
-      reconciliationCursor: cursor ?? null,
+      // An exhausted direct-message readback starts over there, not in the conversation.
+      reconciliationCursor: cursor ?? readbackLeg(target.reconciliationCursor),
     });
   }
   async #readback(target: FeedbackTarget): Promise<{ matches: Set<string>; cursor?: string } | undefined> {
@@ -247,14 +301,31 @@ function reactionRetry(target: FeedbackTarget, result: ReactionResult) {
 function sendFailure(
   error: unknown,
   target: FeedbackTarget,
-): { cardState: FeedbackTarget["cardState"]; errorCode: string; delayMs: number } {
+): {
+  cardState: FeedbackTarget["cardState"];
+  errorCode: string;
+  delayMs: number;
+  reconciliationCursor?: string | null;
+} {
   if (!(error instanceof FeedbackProviderError) || !error.knownNotApplied)
-    return { cardState: "send_unknown", errorCode: "IM_FEEDBACK_SEND_UNKNOWN", delayMs: 30_000 };
+    return {
+      cardState: "send_unknown",
+      errorCode: "IM_FEEDBACK_SEND_UNKNOWN",
+      delayMs: 30_000,
+      reconciliationCursor: error instanceof FeedbackProviderError ? (error.readbackCursor ?? null) : null,
+    };
   return {
     cardState: error.permanent ? "blocked" : "pending",
     errorCode: error.code,
     delayMs: error.retryAfterMs ?? (error.permanent ? 300_000 : feedbackRetryDelay(target.attemptCount)),
   };
+}
+
+/** An exhausted readback starts over on the same leg: the sender's direct message or the fallback conversation. */
+function readbackLeg(cursor: string | null): string | null {
+  // An unrecorded leg (no cursor, or `either:` phases) starts over from the conversation.
+  if (cursor?.startsWith(SENDER_READBACK)) return SENDER_READBACK;
+  return cursor?.startsWith(CONVERSATION_READBACK) ? CONVERSATION_READBACK : null;
 }
 
 function feedbackRetryDelay(attempt: number): number {

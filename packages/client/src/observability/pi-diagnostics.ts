@@ -1,5 +1,8 @@
 import { performance } from "node:perf_hooks";
+import { ProviderFailureReasonSchema } from "@opentag/shared";
 import { z } from "zod";
+
+export { createPiDiagnosticStderrWriter } from "./pi-diagnostic-stderr.js";
 
 export const PI_DIAGNOSTIC_PREFIX = "opentag-pi-diagnostic:";
 export const PI_DIAGNOSTIC_LINE_BYTES = 4 * 1024;
@@ -86,9 +89,13 @@ const diagnosticSchema = z
     seq: z.number().int().positive(),
     elapsedMs: durationSchema,
     phase: phaseSchema,
-    event: z.enum(["ready", "start", "end", "failure", "worker_end"]),
+    event: z.enum(["ready", "start", "end", "failure", "worker_end", "milestone"]),
+    milestone: z.literal("first_turn_start").optional(),
     diagnosticIncomplete: z.boolean().optional(),
     outcome: z.enum(["completed", "failed", "aborted", "cancelled"]).optional(),
+    terminalFailureCategory: z
+      .enum([...ProviderFailureReasonSchema.options, "unfinished_tool_use", "unknown"])
+      .optional(),
     durationMs: durationSchema,
     timeoutMs: durationSchema.optional(),
     rpcCommand: z.enum(["get_state", "prompt"]).optional(),
@@ -111,14 +118,28 @@ const diagnosticSchema = z
     proxyStartMs: durationSchema.optional(),
     contextTreePreparationMs: durationSchema.optional(),
     skillsAssembleMs: durationSchema.optional(),
+    piProcessSpawnMs: durationSchema.optional(),
+    mcpGatewayLoadMs: durationSchema.optional(),
+    mcpGatewaySessionStartMs: durationSchema.optional(),
   })
   .strict()
-  .refine((record) => record.event !== "failure" || record.error !== undefined);
+  .refine((record) => record.event !== "failure" || record.error !== undefined)
+  .refine((record) => (record.event === "milestone") === (record.milestone !== undefined))
+  .refine(
+    (record) =>
+      record.terminalFailureCategory === undefined ||
+      (record.phase === "await_terminal" && record.event === "end" && record.outcome === "failed"),
+  );
 
 export type PiDiagnosticPhase = z.infer<typeof phaseSchema>;
 export type PiDiagnosticRecord = z.infer<typeof diagnosticSchema>;
 export type PiDiagnosticEvent = Omit<PiDiagnosticRecord, "version" | "seq" | "elapsedMs">;
 export type PiDiagnosticSink = (event: PiDiagnosticEvent) => void;
+export type PiStartupMetrics = Pick<
+  PiDiagnosticEvent,
+  "piProcessSpawnMs" | "mcpGatewayLoadMs" | "mcpGatewaySessionStartMs"
+>;
+type PiDiagnosticEndFields = PiStartupMetrics & Pick<PiDiagnosticEvent, "outcome" | "terminalFailureCategory">;
 export interface PiProcessExit {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -206,36 +227,6 @@ export function emitPiDiagnostic(sink: PiDiagnosticSink | undefined, event: PiDi
   }
 }
 
-interface PiDiagnosticStderr {
-  write(line: string, callback?: (error?: Error | null) => void): unknown;
-  on?(event: "error", listener: (error: Error) => void): unknown;
-}
-
-const stderrStates = new WeakMap<PiDiagnosticStderr, { failed: boolean }>();
-
-export function createPiDiagnosticStderrWriter(stderr: PiDiagnosticStderr): (line: string) => void {
-  let state = stderrStates.get(stderr);
-  if (!state) {
-    state = { failed: false };
-    stderrStates.set(stderr, state);
-    const shared = state;
-    try {
-      stderr.on?.("error", () => {
-        shared.failed = true;
-      });
-    } catch {
-      shared.failed = true;
-    }
-  }
-  const shared = state;
-  return (line) => {
-    if (shared.failed) throw new Error("Pi diagnostic stderr is unavailable");
-    stderr.write(line, (error) => {
-      if (error) shared.failed = true;
-    });
-  };
-}
-
 const rpcCommandByPhase: Partial<Record<PiDiagnosticPhase, "get_state" | "prompt">> = {
   get_state: "get_state",
   prompt_acceptance: "prompt",
@@ -245,6 +236,7 @@ export class PiRunDiagnostics {
   readonly #sink: PiDiagnosticSink | undefined;
   readonly #now: () => number;
   #phase: PiDiagnosticPhase = "pi_spawn";
+  #firstTurnStarted = false;
   #started = 0;
   #timeoutMs: number | undefined;
   #compactions = 0;
@@ -266,8 +258,30 @@ export class PiRunDiagnostics {
     this.#emit("start");
   }
 
-  end(exit?: PiProcessExit, outcome?: PiDiagnosticEvent["outcome"]): void {
-    this.#emit("end", exit, undefined, false, outcome);
+  firstTurnStarted(): void {
+    if (this.#firstTurnStarted) return;
+    this.#firstTurnStarted = true;
+    emitPiDiagnostic(this.#sink, {
+      phase: this.#phase,
+      event: "milestone",
+      milestone: "first_turn_start",
+      durationMs: 0,
+    });
+  }
+
+  end(exit?: PiProcessExit, fields?: PiDiagnosticEndFields): void {
+    this.#emit("end", exit, undefined, false, fields);
+  }
+
+  endTerminal(outcome: NonNullable<PiDiagnosticEvent["outcome"]>, stopReason: string, errorCode?: string): void {
+    if (outcome !== "failed") {
+      this.end(undefined, { outcome });
+      return;
+    }
+    const terminalFailureCategory =
+      ProviderFailureReasonSchema.safeParse(errorCode).data ??
+      (stopReason === "toolUse" ? "unfinished_tool_use" : "unknown");
+    this.end(undefined, { outcome, terminalFailureCategory });
   }
 
   failure(error: unknown, exit?: PiProcessExit, aborted = false): void {
@@ -305,16 +319,16 @@ export class PiRunDiagnostics {
     exit?: PiProcessExit,
     error?: unknown,
     aborted = false,
-    outcome?: PiDiagnosticEvent["outcome"],
+    fields?: PiDiagnosticEndFields,
   ): void {
     const now = this.#now();
     emitPiDiagnostic(this.#sink, {
       phase: this.#phase,
       rpcCommand: rpcCommandByPhase[this.#phase],
       event,
+      ...fields,
       durationMs: Math.max(0, now - this.#started),
       ...(this.#timeoutMs === undefined ? {} : { timeoutMs: this.#timeoutMs }),
-      ...(outcome ? { outcome } : {}),
       ...(exit ? { exitCode: exit.code, exitSignal: exit.signal } : {}),
       ...(event === "failure" ? { error: piDiagnosticError(error) } : {}),
       ...(aborted ? { abortSource: "run_signal" as const } : {}),
@@ -401,6 +415,8 @@ export interface PiDiagnosticContext {
   readonly environmentGeneration: number;
   readonly deliveryId?: string;
   readonly messageId?: string;
+  readonly dispatchRequestId?: string;
+  readonly clockId?: string;
 }
 
 // Leave 1 KiB for the parent serve startup version enrichment.
@@ -460,6 +476,13 @@ export function createPiDiagnosticReader(
     ready = true;
     output({ event: "end", phase: "worker_startup", durationMs: Math.max(0, now() - started), severity: "INFO" });
   };
+  const trackPhase = (record: PiDiagnosticRecord) => {
+    if (record.event === "worker_end") workerEnded = true;
+    else if (record.event !== "milestone") {
+      phase = record.phase;
+      phaseComplete = record.event === "end";
+    }
+  };
   const accept = (line: Buffer) => {
     const record = parseDiagnosticLine(line);
     if (record === null) return;
@@ -467,23 +490,20 @@ export function createPiDiagnosticReader(
       incomplete = true;
       return;
     }
-    if (record.seq !== lastSeq + 1) incomplete = true;
+    incomplete ||= record.seq !== lastSeq + 1 || record.diagnosticIncomplete === true;
     lastSeq = record.seq;
     endStartup();
-    if (record.event === "worker_end") workerEnded = true;
-    else {
-      phase = record.phase;
-      phaseComplete = record.event === "end";
-    }
-    if (record.diagnosticIncomplete) incomplete = true;
+    trackPhase(record);
     const primaryFailure = record.event === "failure" && !originalErrorReceived;
     if (primaryFailure) {
       originalErrorReceived = true;
       failurePhase = record.phase;
     }
+    const received = now();
     output({
       ...record,
-      receivedElapsedMs: Math.max(0, now() - started),
+      receivedElapsedMs: Math.max(0, received - started),
+      ...(record.event === "milestone" ? { monotonicMs: received, timestamp: new Date().toISOString() } : {}),
       errorCode: record.error?.errorCode,
       primaryFailure,
       severity: record.event === "failure" ? "ERROR" : "INFO",

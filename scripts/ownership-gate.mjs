@@ -7,12 +7,13 @@ import { createGitHubClient } from "./github/client.mjs";
 import { createLogger } from "./logger.mjs";
 import { collectOwners, createMatcher, ownerLogin, parseCodeowners } from "./ownership-gate/codeowners.mjs";
 import { parseModeConfig } from "./ownership-gate/modes.mjs";
-import { decidePullRequest, STATE_FAILURE, STATE_SUCCESS } from "./ownership-gate/policy.mjs";
+import { decidePullRequest, STATE_FAILURE, STATE_SUCCESS, selectReviewersToRemove } from "./ownership-gate/policy.mjs";
 import {
   fetchApprovals,
   fetchAuthorAccess,
   fetchChangedFiles,
   postCommitStatus,
+  removeRequestedReviewers,
 } from "./ownership-gate/pull-request.mjs";
 import { renderStatusDescription, renderSummary, truncateDescription } from "./ownership-gate/report.mjs";
 
@@ -199,7 +200,32 @@ async function collectInputs(client, { owner, name, number, pullRequest, logger 
   return { files, approvals, access, isFork };
 }
 
-async function judgePullRequest(client, { owner, name, number, policy, logger }) {
+async function reconcileRequestedReviewers(
+  client,
+  { owner, name, number, pullRequest, approvals, decision, owners, dryRun, logger },
+) {
+  const reviewers = selectReviewersToRemove({
+    number,
+    requestedReviewers: pullRequest.requested_reviewers,
+    activeReviewers: approvals.activeReviewers,
+    decision,
+    owners,
+  });
+  if (reviewers.length === 0 || dryRun) {
+    return;
+  }
+  try {
+    await removeRequestedReviewers(client, { owner, name, number, reviewers, logger });
+  } catch (error) {
+    logger.warn("Could not remove redundant requested reviewers", {
+      number,
+      reviewers,
+      message: error?.message,
+    });
+  }
+}
+
+async function judgePullRequest(client, { owner, name, number, policy, dryRun = false, logger }) {
   const pullRequest = await readPullRequest(client, { owner, name, number, logger });
   const { files, approvals, access, isFork } = await collectInputs(client, {
     owner,
@@ -217,6 +243,18 @@ async function judgePullRequest(client, { owner, name, number, policy, logger })
     hasWriteAccess: access.hasWriteAccess,
     approvals: approvals.logins,
     owners: policy.owners,
+  });
+
+  await reconcileRequestedReviewers(client, {
+    owner,
+    name,
+    number,
+    pullRequest,
+    approvals,
+    decision,
+    owners: policy.owners,
+    dryRun,
+    logger,
   });
 
   logger.info("Decided", {
@@ -248,10 +286,11 @@ async function judgePullRequest(client, { owner, name, number, policy, logger })
  */
 export async function evaluate({ client, config, policy, logger }) {
   const { owner, name } = parseRepository(config.repository);
+  const dryRun = config.dryRun === true;
   const seed =
     config.number === null
       ? null
-      : await judgePullRequest(client, { owner, name, number: config.number, policy, logger });
+      : await judgePullRequest(client, { owner, name, number: config.number, policy, dryRun, logger });
   const headSha = seed?.pullRequest.headSha ?? config.headSha;
   if (!headSha) {
     throw new Error(`Pull request #${config.number} has no head commit to report on`);
@@ -261,7 +300,9 @@ export async function evaluate({ client, config, policy, logger }) {
   const siblings = numbers.filter((number) => number !== seed?.pullRequest.number);
   const results = [
     ...(seed === null ? [] : [seed]),
-    ...(await Promise.all(siblings.map((number) => judgePullRequest(client, { owner, name, number, policy, logger })))),
+    ...(await Promise.all(
+      siblings.map((number) => judgePullRequest(client, { owner, name, number, policy, dryRun, logger })),
+    )),
   ];
 
   if (results.length === 0) {

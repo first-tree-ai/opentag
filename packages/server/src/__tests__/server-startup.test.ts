@@ -232,6 +232,8 @@ vi.mock("../services/sessions/index.js", () => ({
     }
   },
   SessionCollaborationService: class {
+    setHeldListener(): void {}
+    setHeldScheduledMissListener(): void {}
     notifyRunOutcomeInBackground(input: unknown) {
       return state.notifyRunOutcomeInBackground(input);
     }
@@ -239,7 +241,9 @@ vi.mock("../services/sessions/index.js", () => ({
       state.events.push("outcome-notices:close");
     }
   },
-  SessionService: class {},
+  SessionService: class {
+    sweepHeldMessages = async () => [];
+  },
   SessionServiceError: class extends Error {},
 }));
 vi.mock("../services/agents/index.js", () => ({

@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
-import { RuntimeCredentialEnvironmentManager } from "../runtime/runtime-credential-environment-manager.js";
+import {
+  RuntimeCredentialEnvironmentManager,
+  toEnvironmentError,
+} from "../runtime/runtime-credential-environment-manager.js";
 import { parseRuntimeCredentialServerFrame, runtimeProxyErrorReason } from "../runtime/runtime-credential-frames.js";
 import {
   RuntimeCredentialRelay,
@@ -460,6 +463,27 @@ describe("RuntimeCredentialRelay", () => {
       serverCode: "placement_stale",
     });
   });
+
+  it.each(["binding_inactive", "credential_stale"])(
+    "reports a Feishu or Slack connection the Server refuses (%s) as an IM connection failure",
+    async (code) => {
+      for (const provider of ["feishu", "slack"] as const) {
+        const harness = relayHarness({
+          providers: [provider],
+          grants: { [provider]: { type: "runtime:credential:result", status: "rejected", code } },
+        });
+        const error = await RuntimeCredentialRelay.open(harness.relayOptions, harness.subject).catch((e) => e);
+        expect(error).toMatchObject({ code: "acquire_failed", serverCode: code, provider });
+        expect(toEnvironmentError(error).code).toBe("im_connection_unavailable");
+      }
+      const github = relayHarness({
+        providers: ["github"],
+        grants: { github: { type: "runtime:credential:result", status: "rejected", code } },
+      });
+      const error = await RuntimeCredentialRelay.open(github.relayOptions, github.subject).catch((e) => e);
+      expect(toEnvironmentError(error).code).toBe("execution_rejected");
+    },
+  );
 
   it("sends runtime:execution:close when released before reports", async () => {
     const harness = relayHarness({ providers: ["github"] });

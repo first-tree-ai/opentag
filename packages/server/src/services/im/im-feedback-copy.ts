@@ -71,6 +71,27 @@ const FAILURES = {
     },
     next: NEXT.owner,
   },
+  im_connection_unavailable: {
+    cause: {
+      zh: "飞书或 Slack 连接已失效，任务没有完成。",
+      en: "The Feishu or Slack connection is no longer valid, so the task didn't finish.",
+    },
+    next: NEXT.owner,
+  },
+  tool_setup_failed: {
+    cause: {
+      zh: "消息工具没能准备好，任务没有完成。",
+      en: "The messaging tool couldn't be prepared, so the task didn't finish.",
+    },
+    next: NEXT.environment,
+  },
+  model_login_missing: {
+    cause: {
+      zh: "Agent 所在电脑没有登录模型账号，任务没有完成。",
+      en: "The Agent's computer isn't signed in to the model account, so the task didn't finish.",
+    },
+    next: NEXT.owner,
+  },
   provider_context_limit: {
     cause: { zh: "这个任务超过了上下文上限，没有完成。", en: "This task hit the context limit, so it didn't finish." },
     next: NEXT.smaller,

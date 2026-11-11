@@ -51,9 +51,19 @@ const FAILURE_CARDS = {
       en: "Rephrase it, or remove images and attachments, and try again",
     },
   },
-  credential_unavailable: {
-    title: { zh: "执行凭据不可用", en: "Execution credentials unavailable" },
-    body: { zh: "请在 OpenTag 更新凭据", en: "Update the credentials in OpenTag" },
+  // A Computer too old to report which cause it was, or a missing Cloud model grant.
+  credential_unavailable: ENVIRONMENT,
+  // The CLI the Agent replies through could not be prepared.
+  tool_setup_failed: agentError("消息工具准备失败，请重试", "The messaging tool couldn't be prepared. Try again"),
+  // Titled by the conversation's provider in `failureCardCopy`.
+  im_connection_unavailable: {
+    title: { zh: "飞书连接已失效", en: "The Feishu connection is no longer valid" },
+    body: { zh: "请在 OpenTag 重新连接", en: "Reconnect it in OpenTag" },
+  },
+  // Shown as the sign-in card; `failureCardCopy` maps it there.
+  model_login_missing: {
+    title: { zh: "模型未登录或登录已失效", en: "The model isn't signed in, or the sign-in expired" },
+    body: { zh: "请在 Agent 所在电脑登录模型账号", en: "Sign in to the model on the Agent's computer" },
   },
   // Interim until the conversation is compacted automatically.
   provider_context_limit: agentError("对话太长，请重试", "The conversation is too long. Try again"),
@@ -100,16 +110,32 @@ const INPUT_FAILURE_CARDS: Record<string, CardCopy> = {
   input_rejected: { title: { zh: "消息没能送达", en: "Message not delivered" }, body: BODY.retry },
 };
 
+const SLACK_CONNECTION_TITLE: Localized = {
+  zh: "Slack 连接已失效",
+  en: "The Slack connection is no longer valid",
+};
+
 export function failureCardCopy(
-  code: string | null,
-  options: { batchRetryBlocked?: boolean; batchSize?: number; workspaceBlocked?: boolean } = {},
+  reportedCode: string | null,
+  options: {
+    batchRetryBlocked?: boolean;
+    batchSize?: number;
+    workspaceBlocked?: boolean;
+    provider?: "slack" | "feishu";
+  } = {},
 ): CardCopy {
-  const failure =
+  // A Computer with no signed-in model account gets the sign-in card, including its tool name.
+  const code = reportedCode === "model_login_missing" ? "provider_authentication_failed" : reportedCode;
+  const reason =
     code && Object.hasOwn(FAILURE_CARDS, code)
       ? FAILURE_CARDS[code as TurnFailureReason]
       : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT;
+  const failure =
+    code === "im_connection_unavailable" && options.provider === "slack"
+      ? { ...reason, title: SLACK_CONNECTION_TITLE }
+      : reason;
   const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : failure;
   // A failed batch keeps its card and says how many messages it held.
   if (!batchSuffix(options, "zh")) return card;

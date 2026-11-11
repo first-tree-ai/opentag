@@ -79,6 +79,7 @@ export function feedbackCard(
       workspaceBlocked: target.state === "workspace_blocked",
       batchRetryBlocked: target.batchRetryBlocked,
       ...(target.batchSize ? { batchSize: target.batchSize } : {}),
+      provider: target.provider,
     }),
     "failure",
     language,

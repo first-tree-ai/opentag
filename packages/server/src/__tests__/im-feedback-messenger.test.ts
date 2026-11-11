@@ -253,6 +253,29 @@ describe("native feedback transport", () => {
     );
     expect(data.content).not.toContain("provider_authentication_failed");
   });
+  it("names the lost IM connection by provider, and the missing model sign-in", () => {
+    const card = (provider: "slack" | "feishu", errorCode: string) =>
+      feedbackCard({ ...target(provider), errorCode }, undefined, "zh");
+    expect(card("feishu", "im_connection_unavailable")).toMatchObject({
+      title: "飞书连接已失效",
+      body: "请在 OpenTag 重新连接",
+    });
+    expect(card("slack", "im_connection_unavailable")).toMatchObject({
+      title: "Slack 连接已失效",
+      body: "请在 OpenTag 重新连接",
+    });
+    // A Computer with no signed-in model account gets the sign-in card.
+    expect(card("slack", "model_login_missing")).toMatchObject({
+      title: "模型未登录或登录已失效",
+      body: "请在 Agent 所在电脑登录模型账号",
+    });
+    expect(card("feishu", "tool_setup_failed")).toMatchObject({
+      title: "Agent 运行出错",
+      body: "消息工具准备失败，请重试",
+    });
+    // A Computer too old to name the cause, or a missing Cloud grant.
+    expect(card("feishu", "credential_unavailable")).toMatchObject({ title: "Agent 运行出错", body: "请重试" });
+  });
   it("gives a Feishu failure card a zero-width identity link for readback", async () => {
     const { messenger } = harness();
     const t: FeedbackTarget = { ...target("feishu"), errorCode: "provider_unavailable" };

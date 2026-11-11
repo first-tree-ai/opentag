@@ -83,6 +83,18 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it.each([undefined, 3, 4])("sends a credential detail only on report capability 4 (%s)", (version) => {
+    const connection = new FakeConnection("registered");
+    connection.turnReportVersion = version;
+    const owner = new TurnReportOwner({ connection });
+    for (const reason of ["im_connection_unavailable", "model_login_missing", "tool_setup_failed"] as const) {
+      const report = owner.create(reportInput({ outcome: "failed", errorReason: reason }));
+      expect(report.errorReason).toBe(version === 4 ? reason : "credential_unavailable");
+      expect(report.resultHash).toBe(computeTurnResultHash(report));
+    }
+    owner.stop();
+  });
+
   it("keeps a durable v3 failure unchanged while reconnecting through an older Server", async () => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = 3;

@@ -136,7 +136,10 @@ the invisible readback identity described under [Message format compatibility](#
 | Authentication | 模型未登录或登录已失效 / The model isn't signed in, or the sign-in expired | 请在 Agent 所在电脑登录模型账号 / Sign in to the model on the Agent's computer |
 | Access denied | 没有该模型的使用权限 / No permission to use this model | 请在 OpenTag 更换模型 / Choose another model in OpenTag |
 | Request rejected | 模型拒绝了这次请求 / The model rejected this request | 请换个说法，或去掉图片和附件后重试 |
-| Credentials unavailable | 执行凭据不可用 / Execution credentials unavailable | 请在 OpenTag 更新凭据 / Update the credentials in OpenTag |
+| Feishu or Slack connection lost | 飞书连接已失效 / Slack 连接已失效 (The Feishu/Slack connection is no longer valid) | 请在 OpenTag 重新连接 / Reconnect it in OpenTag |
+| Model account not signed in on the Computer (`model_login_missing`) | The authentication card above | |
+| Messaging tool could not be prepared (`tool_setup_failed`) | Agent 运行出错 | 消息工具准备失败，请重试 |
+| Other credential failures (a missing Cloud model grant, or a Computer too old to name the cause) | Agent 运行出错 | 请重试 |
 | Timeout | 任务超时 / Task timed out | 回复“继续”，Agent 会接着做 / Reply "continue" and the Agent will pick it up |
 | Context limit | Agent 运行出错 / The Agent ran into an error | 对话太长，请重试 |
 | Execution limit (cut-off reply) | Agent 运行出错 | 内容太长没写完，请重试 |

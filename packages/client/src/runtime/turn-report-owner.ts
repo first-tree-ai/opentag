@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  CREDENTIAL_DETAIL_FAILURE_REASONS,
   computeTurnResultHash,
   ProviderFailureReasonSchema,
   RUNTIME_CAPABILITY,
@@ -143,6 +144,9 @@ export class TurnReportOwner {
   ): TurnReportRequest {
     if (ProviderFailureReasonSchema.safeParse(input.errorReason).success && reportVersion < 3) {
       input = { ...input, errorReason: "provider_failed" };
+    }
+    if (CREDENTIAL_DETAIL_FAILURE_REASONS.includes(input.errorReason ?? "") && reportVersion < 4) {
+      input = { ...input, errorReason: "credential_unavailable" };
     }
     const report = {
       type: "turn:report" as const,

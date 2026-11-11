@@ -332,6 +332,10 @@ const CloudTurnCompletionSchema = z
       .record(z.string().uuid(), z.enum(["processed", "not_started", "interrupted"]))
       .refine((outcomes) => Object.keys(outcomes).length <= CLOUD_SESSION_STEER_LIMIT)
       .optional(),
+    imJoins: z
+      .record(z.string().min(1).max(256), z.enum(["processed", "not_started", "interrupted"]))
+      .refine((outcomes) => Object.keys(outcomes).length <= CLOUD_SESSION_STEER_LIMIT)
+      .optional(),
     usage: RuntimeUsageSchema.optional(),
   })
   .strict()

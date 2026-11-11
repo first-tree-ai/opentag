@@ -157,8 +157,11 @@ can say which; released CLIs ignore unknown response fields.
 | Settlement that never arrives | Server | report-acceptance cutoff settles `unknown` (unchanged) | Local: Client reports; Cloud: allocation loss settles `failed / allocation_retired` **and** notifies the sender | same as Session |
 
 Redelivery is safe because the Client deduplicates by `messageId` and `inputHash` and never prunes a finished
-Session message record; an `unconfirmed` attempt that was in fact delivered answers `accepted` from the record, and the
-Server then records the truth it missed. For IM the frozen dispatch correlation already gives the same guarantee.
+Session message record, so a redelivered attempt never starts a second Run. Its answer tells the Server what it
+missed: `accepted` while the record is queued, running, retrying, or succeeded, and `rejected` with
+`provider_unavailable` once the Run has failed for good. The Server records that answer as the attempt's outcome; a
+rejected replay is a terminal failure to notify about, never proof that the message was not accepted the first time.
+For IM the frozen dispatch correlation already gives the same guarantee.
 
 ## Deduplication and persistence on the Client
 
@@ -266,8 +269,9 @@ never received is redelivered. Phases 2 and 3 remove the false alarm; phase 6 re
   duplicate receipt, a Server restart, overlapping windows) for every kind, plus the hold and redelivery paths of
   #1353.
 - **Session Lab** (local): a stalled Server-to-Client link of 60 seconds and of 120 seconds for `session send`, a
-  scheduled occurrence, and an IM message; a Client upgrade during each; a Server restart between a schedule claim and
-  its dispatch; a replay with the same `--message-id` after `unknown`.
+  scheduled occurrence, and an IM message, each started at the reconcile and again after the message frame left; a
+  Client upgrade during each; a Server restart between a schedule claim and its dispatch; a replay with the same
+  `--message-id` after `unknown`, once against a succeeded record and once against a failed one.
 - **IM Lab** (local): offline, queued, expiry, and corrected scheduled-task messages on Feishu and Slack; one message
   per cause.
 - **Cloud** (staging): a cold allocation under a scheduled occurrence, an allocation retired while a Session message is

@@ -586,6 +586,7 @@ export class ProviderCliReconcileOwner {
       );
     const reusable =
       reuseCredential &&
+      !prior?.forceCredentialCheck &&
       this.#selfCheckingComputer(computerId) &&
       retained &&
       this.#now() - retained.observedAt < RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
@@ -600,6 +601,7 @@ export class ProviderCliReconcileOwner {
       grantConsumed: false,
       forceCredentialCheck: !reusable,
       nextCredentialCheckAt: (reusable ? retained.observedAt : this.#now()) + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+      hintNotBefore: existing?.hintNotBefore,
       cooldownUntil: existing?.cooldownUntil,
       grantRepairStopped: prior?.grantRepairStopped ?? false,
       grantRetryAttempt: prior?.grantRetryAttempt ?? 0,

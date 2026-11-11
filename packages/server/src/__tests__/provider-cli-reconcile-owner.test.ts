@@ -3414,8 +3414,16 @@ describe("ProviderCliReconcileOwner credential check false alarms", () => {
 
   it("re-reconciles the artifact and re-issues a credential grant when validation reports artifact_changed", () =>
     withBindings(async (binding) => {
+      const [first] = binding.agents;
+      if (!first) throw new Error("Missing agent");
       await binding.answer({ status: "ready" });
-      await binding.advance(tenMinutes);
+      await binding.advance(60_000);
+      binding.owner.onCredentialFailure({
+        agentId: first.agentId,
+        bindingId: first.integrationId,
+        credentialGeneration: "1:test",
+      });
+      await vi.advanceTimersByTimeAsync(0);
       expect(binding.grants()).toHaveLength(2);
       expect(binding.requirements()).toHaveLength(1);
       await binding.answer({ status: "retrying", reason: "artifact_changed" });

@@ -288,7 +288,10 @@ export class ScheduleScheduler {
       this.#noticeMiss(occurrence, {
         outcome: outcome.outcome,
         code: outcome.code,
-        previous,
+        previous:
+          outcome.outcome === "unknown" && outcome.code === "delivery_timeout"
+            ? await this.#settledPreviousDispatch(previous)
+            : previous,
         // The only rejection left after the self-inflicted codes that also turned the schedule off.
         disabled: outcome.outcome === "rejected" && outcome.code === "target_invalid",
       });
@@ -306,6 +309,27 @@ export class ScheduleScheduler {
       this.#noticeMiss(occurrence, { outcome: "unknown", code: DISPATCH_FAILED_CODE, previous });
     } finally {
       this.#inFlight.delete(entry);
+    }
+  }
+
+  /** The next occurrence can be claimed while the previous Local receipt is still pending. */
+  async #settledPreviousDispatch(
+    previous: AgentScheduleLastDispatch | null,
+  ): Promise<AgentScheduleLastDispatch | null> {
+    if (!previous?.messageId || previous.outcome !== "unknown" || previous.code !== null) return previous;
+    try {
+      const [message] = await this.#database
+        .select({ outcome: sessionMessages.lastOutcome, code: sessionMessages.lastErrorCode })
+        .from(sessionMessages)
+        .where(eq(sessionMessages.id, previous.messageId))
+        .limit(1);
+      return message ? { ...previous, ...message } : previous;
+    } catch {
+      this.#options.logger?.error(
+        { event: "schedule.previous_dispatch_read_failed", messageId: previous.messageId },
+        "Previous scheduled dispatch could not be read",
+      );
+      return previous;
     }
   }
 

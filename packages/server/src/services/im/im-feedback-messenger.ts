@@ -49,7 +49,12 @@ const FEISHU_REQUEST_DEDUP_MS = 50 * 60_000;
  * Failure cards that, in a group, go to the sender's direct message with the Bot (Gandy 11-10). Both waiting
  * notices go there too. Every other card stays in the conversation.
  */
-const SENDER_FAILURE_CODES = new Set(["input_expired", "input_rejected", "provider_quota_exceeded"]);
+const SENDER_FAILURE_CODES = new Set([
+  "input_expired",
+  "input_rejected",
+  "input_unsupported",
+  "provider_quota_exceeded",
+]);
 export function failureGoesToSender(target: Pick<FeedbackTarget, "errorCode" | "state">): boolean {
   return target.state !== "workspace_blocked" && SENDER_FAILURE_CODES.has(target.errorCode ?? "");
 }

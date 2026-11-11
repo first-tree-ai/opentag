@@ -172,7 +172,7 @@ multi-person direct message counts as a group.
 
 In a group, including its threads, five cards go to the sender's direct message with the Bot instead, because they
 concern only that person: the offline and queued notices, and the failure cards for an expired message
-(`input_expired`), an undelivered message (`input_rejected`), and used-up model quota (`provider_quota_exceeded`).
+(`input_expired`), an undelivered message (`input_rejected` or `input_unsupported`), and used-up model quota (`provider_quota_exceeded`).
 The sender is the target's `sender_external_id`: a Feishu card goes to that `open_id`, and a Slack card to the channel
 `conversations.open` returns. When the provider refuses that message (the Feishu sender is outside the app's
 availability or is a bot, Slack cannot open the conversation, or the call is rejected), the card goes to the group

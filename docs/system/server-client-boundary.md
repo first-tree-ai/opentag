@@ -110,12 +110,6 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   (`executionEffects: not_started`) gets one automatic retry, in place, after about
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
-- A model service that is unavailable (`provider_unavailable`, e.g. 5xx or overloaded)
-  or unreachable (`provider_connection_failed`) is retried in place after about 15
-  seconds, within the same count, but only when the failed attempt produced nothing:
-  no model text and no tool call for an IM Turn, no output items or output tokens for
-  a Session message (Gandy 11-10, R2). Once the model produced something the failure
-  is reported, so a half-done answer is never silently restarted.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.
@@ -137,7 +131,7 @@ original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
 - A 429 retries in place, in the same daemon, after about 30 seconds; a start
-  failure after about 5 seconds; an unavailable model after about 15 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
+  failure after about 5 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
   the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
   `cancelled / client_shutdown`; it records the interruption durably and leaves

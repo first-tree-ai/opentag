@@ -154,7 +154,14 @@ the invisible readback identity described under [Message format compatibility](#
 | A frozen batch that cannot be retried, including a workspace failure | The reason's own title | The reason's own body, then （共 N 条消息） / (N messages); a legacy plain-text message edited later keeps the reason's next step with the same count |
 
 The context-limit, cut-off, too-large, outcome-unknown and workspace bodies are interim: each changes or disappears when
-its automatic recovery ships. Cards that will name the Agent's tool or model say "模型" until they can.
+its automatic recovery ships.
+
+Sign-in, access, process-exit, start-up and protocol cards name the Agent's tool and model from its settings when the
+card is rendered: `agents.runtime_provider` (Claude Code, Codex or Pi; 云端模型 / "The cloud model" for an Agent on
+the Cloud Computer) and `agent_runtime_configs.model`. Sign-in reads "{tool} 未登录或登录已失效 / 请在 Agent 所在电脑登录
+{tool}", access "没有 {model} 的使用权限", and the Agent error body "{tool} 意外退出", "{tool} 没能启动，请检查 Agent
+所在电脑上的 {tool} 是否已安装" or "{tool} 返回了无法识别的结果". Without a chosen model, and for sign-in and start-up on
+the Cloud Computer, which happen on no computer the owner controls, the card keeps the generic copy above.
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the
@@ -225,15 +232,18 @@ seconds until it is ready, the next trigger arrives, or 60 seconds have elapsed 
 message ID and dispatch slot, and tries the business send at most once. A pause, edit, or deletion still wins at send
 admission. The final result distinguishes runtime assembly failure, reconcile timeout, other reconcile failures, and
 an explicit not-ready reply. Local retries and extended Cloud hand-offs share 75 slots per Server. If those slots
-are all taken, a Local preparation failure settles immediately. A miss is reported only after the hand-off settles.
+are all taken, a Local preparation failure settles immediately. After the Local send is marked, the Server keeps the
+dispatch slot and waits up to 90 seconds for its receipt, even if the next occurrence is due. A matching acceptance
+within that window settles the hand-off silently. A receipt timeout after send is unconfirmed. A newer claim can
+advance the schedule during the wait, and an older receipt updates only its own message once that happens.
 
 A claimed Cloud occurrence can wait for its Sandbox to finish releasing, allocate a replacement, and restore the
 workspace before sending. It retains the original message identity and dispatch slot. The hand-off ends within
 280 seconds of dispatch entry or at the next trigger, whichever comes first. When the shared slots are full, Cloud
 hand-offs have up to 20 seconds so they free scheduler slots
-within the 30-second claim window. A pause, edit, or deletion still
-wins at final send admission. Once sent, the occurrence is never resent, even if the receipt is lost. A Server
-restart does not recover an unfinished scheduled hand-off.
+within the 30-second claim window. A pause, edit, or deletion still wins at final send admission. For both Local and
+Cloud, once sent, the occurrence is never resent, even if the receipt is lost. A Server restart does not recover
+an unfinished scheduled hand-off.
 
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |

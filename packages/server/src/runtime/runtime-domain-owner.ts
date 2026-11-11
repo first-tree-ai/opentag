@@ -43,6 +43,10 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
+// A sent Local scheduled message is never replayed. Wait through the default runtime heartbeat
+// window before reporting that the hand-off was unconfirmed.
+export const LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS = 90_000;
+
 /** Server-only evidence of committed claims; the Client's manifest remains untrusted. */
 export type RuntimeReconcileResult = SessionReconcileResult & {
   claimedRetainedReports?: NonNullable<SessionReconcileResult["retainedReports"]>;
@@ -410,9 +414,7 @@ export class RuntimeDomainOwner {
               undefined,
               admissionDispatched,
               signal,
-              undefined,
-              options.joinSettlement,
-              connectionId,
+              { joinReconcileSettlement: options.joinSettlement, expectedConnectionId: connectionId },
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
@@ -447,9 +449,11 @@ export class RuntimeDomainOwner {
                   undefined,
                   admissionDispatched,
                   signal,
-                  prepared.onResult,
-                  options.joinSettlement,
-                  connectionId,
+                  {
+                    onReconcileResult: prepared.onResult,
+                    joinReconcileSettlement: options.joinSettlement,
+                    expectedConnectionId: connectionId,
+                  },
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -620,6 +624,10 @@ export class RuntimeDomainOwner {
   ): Promise<SessionMessageDeliveryResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    const timeoutMs =
+      "scheduledOrigin" in request && request.scheduledOrigin !== undefined
+        ? LOCAL_SCHEDULE_RECEIPT_TIMEOUT_MS
+        : undefined;
     return this.#track(
       this.#withDispatchAdmission(
         admission,
@@ -642,6 +650,7 @@ export class RuntimeDomainOwner {
             undefined,
             admissionDispatched,
             signal,
+            { timeoutMs },
           ) as Promise<SessionMessageDeliveryResult>,
         onDispatched,
       ),
@@ -1024,9 +1033,17 @@ export class RuntimeDomainOwner {
     semanticHash?: string,
     onDispatched?: () => void,
     signal?: AbortSignal,
-    onReconcileResult?: PreparedSessionReconcile["onResult"],
-    joinReconcileSettlement = false,
-    expectedConnectionId?: string,
+    {
+      onReconcileResult,
+      joinReconcileSettlement = false,
+      expectedConnectionId,
+      timeoutMs = this.#options.requestTimeoutMs,
+    }: {
+      onReconcileResult?: PreparedSessionReconcile["onResult"];
+      joinReconcileSettlement?: boolean;
+      expectedConnectionId?: string;
+      timeoutMs?: number;
+    } = {},
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
@@ -1104,7 +1121,7 @@ export class RuntimeDomainOwner {
         );
       }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
-    }, this.#options.requestTimeoutMs);
+    }, timeoutMs);
     timer.unref();
     const base = {
       computerId,

@@ -4,6 +4,7 @@ import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { PARKED_DELIVERY_CODE } from "../../db/im-delivery-work.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
@@ -40,11 +41,18 @@ export interface FeedbackSettlement {
   stale?: boolean;
   dormant?: boolean;
 }
+export interface FeedbackRuntime {
+  /** `cloud` for an Agent on the Cloud Computer, which runs the platform model. */
+  tool: "claude-code" | "codex" | "pi" | "cloud";
+  model: string | null;
+}
 export interface FeedbackMessageContext {
   language: FeedbackLanguage;
   direct: boolean;
   /** The start of what the sender wrote, for a card sent to their direct message. */
   excerpt?: string;
+  /** The Agent's tool and model as its settings name them, for cards that tell someone what to fix. */
+  runtime?: FeedbackRuntime;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -559,7 +567,9 @@ export class ImFeedbackStore {
 
   /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
   /** The reader's language, and whether the conversation is a direct message, which decides where a card goes. */
-  async messageContext(target: Pick<FeedbackTarget, "messageId" | "sessionId">): Promise<FeedbackMessageContext> {
+  async messageContext(
+    target: Pick<FeedbackTarget, "messageId" | "sessionId"> & Partial<Pick<FeedbackTarget, "agentId">>,
+  ): Promise<FeedbackMessageContext> {
     const [message] = await this.database
       .select({ content: imMessages.content })
       .from(imMessages)
@@ -570,10 +580,26 @@ export class ImFeedbackStore {
       .from(sessions)
       .where(eq(sessions.id, target.sessionId))
       .limit(1);
+    const [agent] = target.agentId
+      ? await this.database
+          .select({
+            provider: agents.runtimeProvider,
+            model: agentRuntimeConfigs.model,
+            computerKind: computers.kind,
+          })
+          .from(agents)
+          .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
+          .where(eq(agents.id, target.agentId))
+          .limit(1)
+      : [];
     return {
       language: message ? feedbackLanguage(message.content) : "en",
       ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
       direct: session?.conversationKind === "dm",
+      ...(agent
+        ? { runtime: { tool: agent.computerKind === "cloud" ? "cloud" : agent.provider, model: agent.model ?? null } }
+        : {}),
     };
   }
 

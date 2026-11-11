@@ -57,7 +57,6 @@ import {
   type TurnRetryStore,
   trackRunTime,
 } from "./interruption-retry.js";
-import { truncateUtf8 } from "./provider-cli/outgoing-reply-process.js";
 import {
   budgetTurnReportHashInput,
   emptyCompleteOutgoingReplies,
@@ -1293,21 +1292,6 @@ function runtimeResourceContext(request: DirectImMessageDeliveryRequest | Runtim
   return text;
 }
 
-const FINAL_TEXT_TRUNCATED = {
-  zh: "\n\n（回复过长，后面部分已截断）",
-  en: "\n\n(The reply was too long; the rest was cut off.)",
-};
-
-/**
- * The work is done even when its last reply is over the report bound, so the reply is cut to fit and
- * marked, and the Turn still completes (R4). Local and cloud Turns both pass through here.
- */
-export function boundFinalText(text: string | undefined): string | undefined {
-  if (!text || Buffer.byteLength(text, "utf8") <= RUNTIME_FINAL_TEXT_MAX_BYTES) return text;
-  const marker = /\p{Script=Han}/u.test(text) ? FINAL_TEXT_TRUNCATED.zh : FINAL_TEXT_TRUNCATED.en;
-  return truncateUtf8(text, RUNTIME_FINAL_TEXT_MAX_BYTES - Buffer.byteLength(marker, "utf8")).text + marker;
-}
-
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
@@ -1316,7 +1300,10 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
   }
   if (result.status === "completed") {
-    const finalText = boundFinalText(result.output.filter((item) => item.type === "text").at(-1)?.text);
+    const finalText = result.output.filter((item) => item.type === "text").at(-1)?.text;
+    if (finalText && Buffer.byteLength(finalText, "utf8") > RUNTIME_FINAL_TEXT_MAX_BYTES) {
+      return { outcome: "failed", executionEffects: "completed", errorReason: "output_too_large" };
+    }
     return {
       outcome: "completed",
       executionEffects: "completed",

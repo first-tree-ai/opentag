@@ -1,7 +1,7 @@
 # 为 openTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
-> Last synced with: 2026-10-21
+> Last synced with: 2026-11-10
 
 openTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
@@ -55,7 +55,7 @@ npm 发布、绕开受保护流程创建 production tag，以及回退到 token 
 它约占受版本控制文件的四分之一，但占改动量的大多数——仓库最初 290 个 commit 中有 173 个触及 `apps/web`——因此就日常
 工作而言，成员写的大部分内容都没有人工评审要求。这是为迭代速度做出的有意取舍，支撑它的是 CI 和事后评审。
 
-`apps/web` 之外的 Markdown 为 territory，owner 范围更宽，包括 yuezengwu、bestony、Gandy2025 和 liuchao-001，
+`apps/web` 之外的 Markdown 为 territory，owner 为 yuezengwu 和 bestony，
 但根目录的策略与 agent 指令文件除外：`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`SECURITY.md` 以及后两者的中文镜像。
 这些文件被拉回 gate，因为 agent 指令文件会改变本仓库中 agent 的行为，属于行为而非文档，而 `CONTRIBUTING.md` 正是本策略
 自身的载体。三个例行杂务路径为 territory：`.editorconfig`、`.gitignore` 和 `LICENSE`。依赖清单为 exempt：任意层级的

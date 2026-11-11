@@ -470,6 +470,8 @@ function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory
 
 export interface CloudWorkerCompletion extends TurnCompletion {
   readonly sessionSteers?: Readonly<Record<string, AgentSteerOutcome>>;
+  /** IM deliveries that joined this Session message Turn, keyed by delivery id. */
+  readonly imJoins?: Readonly<Record<string, AgentSteerOutcome>>;
 }
 
 export async function runCloudTurnWorker(
@@ -653,12 +655,15 @@ export async function runCloudTurnWorker(
     let completion: TurnCompletion;
     let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
     const sessionSteers = new Map<string, AgentSteerReceipt>();
+    const imJoins = new Map<string, AgentSteerReceipt>();
     const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
-      steering = await openWorkerSteering(request, activeRuntime, sessionSteers, options).catch((error: unknown) => {
-        diagnostics.failure(error);
-        return undefined;
-      });
+      steering = await openWorkerSteering(request, activeRuntime, { sessionSteers, imJoins }, options).catch(
+        (error: unknown) => {
+          diagnostics.failure(error);
+          return undefined;
+        },
+      );
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
@@ -682,7 +687,7 @@ export async function runCloudTurnWorker(
       terminateTrackedProcesses(pids);
     }
     await recordRunLimit(backgroundWork, completion, options);
-    return finishWorkerSteers(completion, sessionSteers);
+    return finishWorkerSteers(completion, sessionSteers, imJoins);
   } finally {
     registerRunnerSignalCleanup(undefined);
     await rm(scratch, { recursive: true, force: true });
@@ -894,10 +899,17 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
 async function finishWorkerSteers(
   completion: TurnCompletion,
   steers: Map<string, AgentSteerReceipt>,
+  joins: Map<string, AgentSteerReceipt>,
 ): Promise<CloudWorkerCompletion> {
-  if (steers.size === 0) return completion;
-  const outcomes = await Promise.all([...steers].map(async ([id, receipt]) => [id, await receipt.outcome] as const));
-  return { ...completion, sessionSteers: Object.fromEntries(outcomes) };
+  const outcomes = async (receipts: Map<string, AgentSteerReceipt>) =>
+    Object.fromEntries(
+      await Promise.all([...receipts].map(async ([id, receipt]) => [id, await receipt.outcome] as const)),
+    );
+  return {
+    ...completion,
+    ...(steers.size > 0 ? { sessionSteers: await outcomes(steers) } : {}),
+    ...(joins.size > 0 ? { imJoins: await outcomes(joins) } : {}),
+  };
 }
 
 function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
@@ -910,9 +922,10 @@ function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
 async function openWorkerSteering(
   request: RunnerCloudWorkerRequest,
   activeRuntime: CloudTurnPiRuntime,
-  sessionSteers: Map<string, AgentSteerReceipt>,
+  receipts: { sessionSteers: Map<string, AgentSteerReceipt>; imJoins: Map<string, AgentSteerReceipt> },
   options: CloudTurnWorkerRunOptions,
 ) {
+  const { sessionSteers, imJoins } = receipts;
   const steering = request.steering;
   if (!steering) return undefined;
   const root = request.kind === "turn" ? request.delivery : request.message;
@@ -959,11 +972,40 @@ async function openWorkerSteering(
         return cloudSteerResult(input, "deferred", "steer_state_unknown");
       }
     },
+    joinIm: async ({ expectedTurnId, delivery }) => {
+      // Only a visible Session message Turn of the same Session and placement can take an IM delivery.
+      if (
+        request.kind === "turn" ||
+        !context ||
+        !activeRuntime.steer ||
+        expectedTurnId !== steering.turnId ||
+        delivery.sessionId !== sessionId ||
+        delivery.agentId !== root.agentId ||
+        delivery.placementGeneration !== root.placementGeneration
+      )
+        return "refused";
+      if (imJoins.has(delivery.deliveryId)) return "accepted";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
+      sessionSteerPending = true;
+      try {
+        const receipt = await activeRuntime.steer({
+          expectedRunId: runId,
+          input: buildAgentInput(delivery, undefined, undefined, now()),
+        });
+        imJoins.set(delivery.deliveryId, receipt);
+        return "accepted";
+      } catch (error) {
+        return sessionSteerRefusal(error);
+      } finally {
+        sessionSteerPending = false;
+      }
+    },
     steerSession: async (input) => {
       const { message } = input;
       if (!matchesSession(input) || (sessionKind === "visible" && !context) || !activeRuntime.steer) return "refused";
       if (sessionSteers.has(message.messageId)) return "accepted";
-      if (sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
       if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
       sessionSteerPending = true;
       try {

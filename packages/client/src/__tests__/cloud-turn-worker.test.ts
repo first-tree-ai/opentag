@@ -26,6 +26,7 @@ import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
   CLOUD_STEER_RELAY_SOURCE,
+  type CloudImJoinRequest,
   type CloudSessionSteerRequest,
   cloudSteerSocketPath,
 } from "../runner/cloud-steer-control.js";
@@ -1943,3 +1944,158 @@ it.each(["session-message", "turn"] as const)(
   },
   12_000,
 );
+
+it("lets an IM delivery join a running visible Session message Turn and returns its receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-im-join-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const executionDir = await fixtureExecution(root, "im-join");
+  const outboxContext = {
+    provider: "feishu",
+    sessionKind: "thread",
+    chatId: "oc_visible",
+    threadId: "omt_visible",
+  } satisfies RuntimeImOutboxContext;
+  const request = sessionRequest(executionDir, { steering, outboxContext, sessionKind: "visible" });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const inputs: AgentInput[] = [];
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async ({ runId }) => {
+          started();
+          await done;
+          return { runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        },
+        steerReady: true,
+        steer: async ({ input }) => {
+          inputs.push(input);
+          return { outcome: done.then(() => "processed") };
+        },
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  const base = cloudDeliveryFixture();
+  const delivery = cloudDeliveryFixture({
+    sessionId: request.message.targetSessionId,
+    agentId: request.message.agentId,
+    placementGeneration: request.message.placementGeneration,
+    runtime: request.message.runtime,
+    content: { ...base.content, text: "Also check the release notes." },
+  });
+  const join_: CloudImJoinRequest = { type: "im:join", expectedTurnId: steering.turnId, delivery };
+  const relay = (payload: CloudImJoinRequest) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        CLOUD_STEER_RELAY_SOURCE,
+        cloudSteerSocketPath(request.message.messageId),
+      ]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+    });
+  try {
+    await ready;
+    expect(JSON.parse(await relay({ ...join_, expectedTurnId: randomUUID() }))).toBe("refused");
+    expect(JSON.parse(await relay({ ...join_, delivery: { ...delivery, sessionId: randomUUID() } }))).toBe("refused");
+    expect(JSON.parse(await relay({ ...join_, delivery: { ...delivery, placementGeneration: 2 } }))).toBe("refused");
+    expect(JSON.parse(await relay(join_))).toBe("accepted");
+    expect(JSON.parse(await relay(join_))).toBe("accepted");
+    expect(inputs).toHaveLength(1);
+    expect(JSON.stringify(inputs[0])).toContain("Also check the release notes.");
+  } finally {
+    finish();
+  }
+  await expect(completion).resolves.toMatchObject({
+    outcome: "completed",
+    imJoins: { [delivery.deliveryId]: "processed" },
+  });
+  expect((await completion).sessionSteers).toBeUndefined();
+}, 12_000);
+
+it("refuses an IM join into an internal Session message Turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-im-join-internal-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const executionDir = await fixtureExecution(root, "im-join-internal");
+  const request = sessionRequest(executionDir, { steering });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async ({ runId }) => {
+          started();
+          await done;
+          return { runId, output: [], status: "completed" };
+        },
+        steerReady: true,
+        steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  const delivery = cloudDeliveryFixture({
+    sessionId: request.message.targetSessionId,
+    agentId: request.message.agentId,
+    placementGeneration: request.message.placementGeneration,
+    runtime: request.message.runtime,
+  });
+  try {
+    await ready;
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        CLOUD_STEER_RELAY_SOURCE,
+        cloudSteerSocketPath(request.message.messageId),
+      ]);
+      let text = "";
+      child.stdout.on("data", (chunk) => {
+        text += chunk;
+      });
+      child.once("error", reject).once("close", () => resolve(text));
+      child.stdin.end(
+        JSON.stringify({
+          token: steering.token,
+          request: { type: "im:join", expectedTurnId: steering.turnId, delivery },
+        }),
+      );
+    });
+    expect(JSON.parse(output)).toBe("refused");
+  } finally {
+    finish();
+  }
+  await expect(completion).resolves.not.toHaveProperty("imJoins");
+}, 12_000);

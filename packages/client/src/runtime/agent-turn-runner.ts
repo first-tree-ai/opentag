@@ -1394,7 +1394,7 @@ export function completionForError(error: unknown, abortReason: unknown, expired
     return { outcome: "failed", executionEffects: "not_started", errorReason: "im_connection_unavailable" };
   }
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
-    return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "tool_setup_failed" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {
     return {

@@ -213,9 +213,10 @@ for replay. Reply snapshots remain supported on both v2 and v3.
 `runtime.turnReport` v4 splits two causes out of `credential_unavailable` that a person can fix:
 `im_connection_unavailable`, when the Server refuses the Feishu or Slack connection (`binding_inactive` or
 `credential_stale` on a credential acquire), and `model_login_missing`, when the Computer's model CLI has no
-signed-in account (`credential_missing` in its readiness probe). On v1 to v3 the Client sends
-`credential_unavailable` instead, under the same freeze rule. A CLI that could not be prepared, other credential
-proxy failures, and a missing or expired Cloud model grant stay `credential_unavailable`.
+signed-in account (`credential_missing` in its readiness probe), and `tool_setup_failed`, when the CLI the Agent
+replies through or its credential environment could not be prepared. On v1 to v3 the Client sends
+`credential_unavailable` instead, under the same freeze rule. A missing or expired Cloud model grant stays
+`credential_unavailable`.
 
 Cloud `delivery:report` uses the independently negotiated `cloudDeliveryVersion: 1` contract.
 It retains the legacy failure vocabulary: new provider categories become `provider_failed`

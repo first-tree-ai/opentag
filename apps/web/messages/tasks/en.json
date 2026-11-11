@@ -37,6 +37,7 @@
   "tasks_failure_credential_unavailable": "Credential unavailable",
   "tasks_failure_im_connection_unavailable": "Messaging connection lost",
   "tasks_failure_model_login_missing": "Model account not signed in",
+  "tasks_failure_tool_setup_failed": "Messaging tool setup failed",
   "tasks_failure_output_too_large": "Result too large",
   "tasks_failure_progress_restore_failed": "Saved progress could not be restored. This request could not continue.",
   "tasks_failure_provider_access_denied": "Access to the selected model was denied. Check model permissions.",

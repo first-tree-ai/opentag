@@ -719,7 +719,7 @@ describe("AgentTurnRunner", () => {
     expect(completionForError(new ImCredentialEnvironmentError("credential_stale"), undefined)).toEqual({
       outcome: "failed",
       executionEffects: "not_started",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
     });
     expect(
       completionForError(
@@ -1341,7 +1341,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         level: "warn",
         message: "Turn failed",
-        fields: expect.objectContaining({ errorReason: "credential_unavailable", errorCode: "provider_cli_unready" }),
+        fields: expect.objectContaining({ errorReason: "tool_setup_failed", errorCode: "provider_cli_unready" }),
       }),
     );
   });
@@ -1538,7 +1538,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );
@@ -1579,7 +1579,7 @@ describe("AgentTurnRunner", () => {
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
-        errorReason: "credential_unavailable",
+        errorReason: "tool_setup_failed",
       }),
       expect.any(Number),
     );

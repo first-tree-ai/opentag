@@ -87,7 +87,7 @@ describe("TurnReportOwner", () => {
     const connection = new FakeConnection("registered");
     connection.turnReportVersion = version;
     const owner = new TurnReportOwner({ connection });
-    for (const reason of ["im_connection_unavailable", "model_login_missing"] as const) {
+    for (const reason of ["im_connection_unavailable", "model_login_missing", "tool_setup_failed"] as const) {
       const report = owner.create(reportInput({ outcome: "failed", errorReason: reason }));
       expect(report.errorReason).toBe(version === 4 ? reason : "credential_unavailable");
       expect(report.resultHash).toBe(computeTurnResultHash(report));

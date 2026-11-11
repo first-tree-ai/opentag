@@ -536,6 +536,7 @@ const turnFailureLabels: Record<TurnFailureReason, () => string> = {
   credential_unavailable: m.tasks_failure_credential_unavailable,
   im_connection_unavailable: m.tasks_failure_im_connection_unavailable,
   model_login_missing: m.tasks_failure_model_login_missing,
+  tool_setup_failed: m.tasks_failure_tool_setup_failed,
   sandbox_unavailable: m.tasks_failure_sandbox_unavailable,
   provider_start_failed: m.tasks_failure_provider_start_failed,
   session_resume_failed: m.tasks_failure_session_resume_failed,

@@ -78,6 +78,13 @@ const FAILURES = {
     },
     next: NEXT.owner,
   },
+  tool_setup_failed: {
+    cause: {
+      zh: "消息工具没能准备好，任务没有完成。",
+      en: "The messaging tool couldn't be prepared, so the task didn't finish.",
+    },
+    next: NEXT.environment,
+  },
   model_login_missing: {
     cause: {
       zh: "Agent 所在电脑没有登录模型账号，任务没有完成。",

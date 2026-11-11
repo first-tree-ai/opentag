@@ -229,9 +229,10 @@ export const TurnFailureReasonSchema = z.enum([
   "workspace_failed",
   "configuration_conflict",
   "credential_unavailable",
-  // Turn report v4: the two causes of `credential_unavailable` a person can fix themselves.
+  // Turn report v4: causes split out of `credential_unavailable`.
   "im_connection_unavailable",
   "model_login_missing",
+  "tool_setup_failed",
   "sandbox_unavailable",
   "provider_start_failed",
   "session_resume_failed",
@@ -249,6 +250,7 @@ export const TurnFailureReasonSchema = z.enum([
 export const CREDENTIAL_DETAIL_FAILURE_REASONS: readonly string[] = [
   "im_connection_unavailable",
   "model_login_missing",
+  "tool_setup_failed",
 ];
 
 /** Minimum negotiated capability needed to send this immutable report. */

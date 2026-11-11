@@ -50,7 +50,7 @@ working reaction like any successful Turn.
 ## Offline notice
 
 A direct message parked on an offline Local Computer otherwise shows nothing, because the working reaction waits for
-custody. After sixty seconds the Bot sends one orange [card](#cards), placed like a failure card:
+custody. After sixty seconds the Bot sends one red [card](#cards), placed like a failure card:
 
 | Title | Body |
 | --- | --- |
@@ -84,7 +84,7 @@ the recovery page, not in the conversation. It follows the same language rule as
 
 A dispatch whose operation never settles is [parked](im-delivery-claim.md#parking-a-correlated-dispatch). It keeps
 custody until its ingress deadline, so later input of the same Session waits up to seven days with nothing to show
-for it. A queued input in that position gets one orange [card](#cards), placed like the offline notice:
+for it. A queued input in that position gets one red [card](#cards), placed like the offline notice:
 
 | Title | Body |
 | --- | --- |
@@ -117,8 +117,8 @@ a failure from taking more of the conversation than the work did.
 
 | Provider | Shape | Colors |
 | --- | --- | --- |
-| Feishu | `interactive` card with `update_multi`, title in `header`, body as `lark_md` | `red` failure, `orange` offline, `green` done, `grey` in progress |
-| Slack | One attachment `{color, fallback, blocks}`, title as a `header` block | `#E01E5A` failure, `#F2952F` offline, `#2EB67D` done, `#9E9EA6` in progress |
+| Feishu | `interactive` card with `update_multi`, title in `header`, body as `lark_md` | `red` failure and waiting notices, `green` done, `grey` in progress |
+| Slack | One attachment `{color, fallback, blocks}`, title as a `header` block | `#E01E5A` failure and waiting notices, `#2EB67D` done, `#9E9EA6` in progress |
 
 Slack paints the attachment bar only from a hex color: the `danger` and `good` keywords show a grey bar when the
 attachment holds blocks. The message has no top-level `text`, because Slack would show it above the card as a second
@@ -138,9 +138,9 @@ the invisible readback identity described under [Message format compatibility](#
 | Request rejected | 模型拒绝了这次请求 / The model rejected this request | 请换个说法，或去掉图片和附件后重试 |
 | Feishu or Slack connection lost | 飞书连接已失效 / Slack 连接已失效 (The Feishu/Slack connection is no longer valid) | 请在 OpenTag 重新连接 / Reconnect it in OpenTag |
 | Model account not signed in on the Computer (`model_login_missing`) | The authentication card above | |
-| Messaging tool could not be prepared (`tool_setup_failed`) | Agent 运行出错 | 消息工具准备失败，请重试 |
+| The Feishu or Slack command line, or its connection, could not be prepared (`tool_setup_failed`) | Agent 运行出错 | 飞书命令行没能准备好，请重试 / Slack 命令行没能准备好，请重试 |
 | Other credential failures (a missing Cloud model grant, or a Computer too old to name the cause) | Agent 运行出错 | 请重试 |
-| Timeout | 任务超时 / Task timed out | 回复“继续”，Agent 会接着做 / Reply "continue" and the Agent will pick it up |
+| Timeout | 任务超时未完成 / The task timed out before it finished | 回复“继续”，Agent 会接着做 / Reply "continue" and the Agent will pick it up |
 | Context limit | Agent 运行出错 / The Agent ran into an error | 对话太长，请重试 |
 | Execution limit (cut-off reply) | Agent 运行出错 | 内容太长没写完，请重试 |
 | Result too large | Agent 运行出错 | 回复太长，请重试 |

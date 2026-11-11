@@ -80,8 +80,8 @@ const FAILURES = {
   },
   tool_setup_failed: {
     cause: {
-      zh: "消息工具没能准备好，任务没有完成。",
-      en: "The messaging tool couldn't be prepared, so the task didn't finish.",
+      zh: "回复用的飞书或 Slack 命令行没能准备好，任务没有完成。",
+      en: "The Feishu or Slack command line used to reply couldn't be prepared, so the task didn't finish.",
     },
     next: NEXT.environment,
   },

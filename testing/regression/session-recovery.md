@@ -21,7 +21,7 @@ the same Session after the daemon is back, its input begins with
 With an IM test binding on a Local Computer and permission to stop its daemon:
 
 1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then within about
-   seventy-five seconds one orange card titled “Agent 所在电脑离线” with the body “电脑恢复后会自动处理” and no link. No
+   seventy-five seconds one red card titled “Agent 所在电脑离线” with the body “电脑恢复后会自动处理” and no link. No
    Computer name or person is named. In a direct message the card is not a quote reply.
 2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
    Expected: that Session gets its own single notice.
@@ -40,7 +40,7 @@ that can be arranged, or with a delivery row set to `pending` and `last_error_co
 database:
 
 1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
-   one orange card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+   one red card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one

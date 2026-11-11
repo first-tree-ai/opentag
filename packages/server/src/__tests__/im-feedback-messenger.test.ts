@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { feedbackCard, feishuCardContent, slackCardMessage, waitingCard } from "../services/im/im-feedback-card.js";
 import {
+  CONVERSATION_READBACK,
   FeedbackCooldownStorageError,
   ImFeedbackMessenger,
   SENDER_READBACK,
@@ -1032,5 +1033,68 @@ describe("cards sent to the sender's direct message", () => {
     expect(await messenger.find(t, SENDER_READBACK)).toEqual({ ids: ["D1/1.1"], cursor: `${SENDER_READBACK}p2` });
     await messenger.find(t, `${SENDER_READBACK}p2`);
     expect(mocks.slack.conversations.history.mock.calls[1]?.[0]).toMatchObject({ channel: "D1", cursor: "p2" });
+  });
+});
+
+describe("readback of a card meant for the sender", () => {
+  const quota = (provider: "slack" | "feishu"): FeedbackTarget => ({
+    ...target(provider),
+    messageFormat: "interactive_v1",
+    errorCode: "provider_quota_exceeded",
+    senderExternalId: provider === "feishu" ? "ou_sender" : "U_SENDER",
+  });
+  it("keeps the leg that started when the outer deadline ends the send", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const late = deferred<{ ok: boolean; channel: string; ts: string }>();
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    mocks.slack.chat.postMessage.mockImplementation(() => late.promise);
+    const dm = h.messenger.post(quota("slack")).catch((error: unknown) => error);
+    const lateFeishu = deferred<unknown>();
+    mocks.feishu.im.v1.message.create.mockResolvedValueOnce({ code: 230013 });
+    mocks.feishu.im.v1.message.reply.mockImplementation(() => lateFeishu.promise);
+    const fallback = h.messenger.post(quota("feishu")).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(8_001);
+      expect(await dm).toMatchObject({ knownNotApplied: false, readbackCursor: SENDER_READBACK });
+      expect(await fallback).toMatchObject({ knownNotApplied: false, readbackCursor: CONVERSATION_READBACK });
+    } finally {
+      late.resolve({ ok: true, channel: "D1", ts: "late" });
+      lateFeishu.resolve({ code: 0, data: { message_id: "late", chat_id: "channel" } });
+      await vi.runAllTimersAsync();
+    }
+  });
+  it("treats a failed Slack conversations.open as nothing sent", async () => {
+    const { messenger } = harness();
+    mocks.slack.conversations.open.mockRejectedValueOnce(new Error("socket hang up"));
+    await expect(messenger.post(quota("slack"))).rejects.toMatchObject({
+      code: "IM_FEEDBACK_SENDER_OPEN_FAILED",
+      knownNotApplied: true,
+    });
+    expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
+  it("looks in the sender's direct message first when no leg was recorded", async () => {
+    const { messenger, cooldown } = harness();
+    mocks.slack.conversations.open.mockResolvedValue({ ok: true, channel: { id: "D1" } });
+    mocks.slack.conversations.history.mockResolvedValue({ ok: true, messages: [] });
+    await messenger.find(quota("slack"));
+    expect(mocks.slack.conversations.history.mock.calls[0]?.[0]).toMatchObject({ channel: "D1" });
+    // A direct conversation, and a card that never goes to the sender, read the conversation itself.
+    mocks.slack.conversations.replies.mockResolvedValue({ ok: true, messages: [] });
+    cooldown.messageContext.mockResolvedValueOnce({ language: "en", direct: true });
+    await messenger.find(quota("slack"));
+    await messenger.find({ ...quota("slack"), errorCode: "provider_rate_limited" });
+    expect(mocks.slack.conversations.replies).toHaveBeenCalledTimes(2);
+  });
+  it("reads the conversation when the sender's direct message cannot be opened", async () => {
+    const { messenger } = harness();
+    mocks.slack.conversations.replies.mockResolvedValue({
+      ok: true,
+      messages: [],
+      response_metadata: { next_cursor: "p2" },
+    });
+    const result = await messenger.find(quota("slack"), SENDER_READBACK);
+    expect(mocks.slack.conversations.replies).toHaveBeenCalledOnce();
+    expect(result.cursor?.startsWith(CONVERSATION_READBACK)).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
+  CONVERSATION_READBACK,
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
@@ -236,8 +237,7 @@ export class ImFeedbackWorker {
       errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
       // An exhausted direct-message readback starts over there, not in the conversation.
-      reconciliationCursor:
-        cursor ?? (target.reconciliationCursor?.startsWith(SENDER_READBACK) ? SENDER_READBACK : null),
+      reconciliationCursor: cursor ?? readbackLeg(target.reconciliationCursor),
     });
   }
   async #readback(target: FeedbackTarget): Promise<{ matches: Set<string>; cursor?: string } | undefined> {
@@ -319,6 +319,12 @@ function sendFailure(
     errorCode: error.code,
     delayMs: error.retryAfterMs ?? (error.permanent ? 300_000 : feedbackRetryDelay(target.attemptCount)),
   };
+}
+
+/** An exhausted readback starts over on the same leg: the sender's direct message or the fallback conversation. */
+function readbackLeg(cursor: string | null): string | null {
+  if (cursor?.startsWith(SENDER_READBACK)) return SENDER_READBACK;
+  return cursor?.startsWith(CONVERSATION_READBACK) ? CONVERSATION_READBACK : null;
 }
 
 function feedbackRetryDelay(attempt: number): number {

@@ -42,6 +42,19 @@ class SenderUnreachable extends Error {}
 
 /** The readback cursor of a card whose direct message to the sender has an unknown outcome. */
 export const SENDER_READBACK = "sender:";
+/** The readback cursor of a card that fell back to the conversation after the sender's direct message was refused. */
+export const CONVERSATION_READBACK = "conversation:";
+
+/** Where a send's provider write actually started, so an unknown outcome is read back there. */
+interface DeliveryLeg {
+  to?: "sender" | "conversation";
+}
+
+function withReadback(failure: FeedbackProviderError, leg: DeliveryLeg): FeedbackProviderError {
+  if (failure.knownNotApplied || !leg.to) return failure;
+  const cursor = leg.to === "sender" ? SENDER_READBACK : CONVERSATION_READBACK;
+  return new FeedbackProviderError(failure.code, false, failure.permanent, failure.retryAfterMs, cursor);
+}
 /** Feishu deduplicates a request `uuid` for an hour; readback repeats the send only well inside that window. */
 const FEISHU_REQUEST_DEDUP_MS = 50 * 60_000;
 
@@ -307,20 +320,17 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     context: FeedbackMessageContext,
     signal: AbortSignal,
     toSender: boolean,
+    leg: DeliveryLeg,
     requestId?: string,
   ): Promise<string> {
     if (toSender && !context.direct) {
       try {
-        return await this.#sendToSender(target, card, context, signal, requestId);
+        return await this.#sendToSender(target, card, context, signal, leg, requestId);
       } catch (error) {
-        if (!(error instanceof SenderUnreachable)) {
-          if (error instanceof FeedbackProviderError) throw error;
-          const failure = postFailure(error);
-          throw failure.knownNotApplied
-            ? failure
-            : new FeedbackProviderError(failure.code, false, failure.permanent, failure.retryAfterMs, SENDER_READBACK);
-        }
+        // The outer boundary adds the readback cursor of the leg that started, even after its own deadline.
+        if (!(error instanceof SenderUnreachable)) throw error;
       }
+      leg.to = "conversation";
     }
     return this.#sendCard(target, card, context, signal, requestId);
   }
@@ -330,11 +340,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     card: FeedbackCard,
     context: FeedbackMessageContext,
     signal: AbortSignal,
+    leg: DeliveryLeg,
     requestId?: string,
   ): Promise<string> {
     if (target.provider === "slack") {
       const { api } = await this.#slack(target, signal);
       const channel = await this.#slackSenderChannel(target, api);
+      leg.to = "sender";
       const r = await this.#slackCall(target, () =>
         api.chat
           .postMessage({ channel, ...slackCardMessage(card, target.id, context.language) })
@@ -344,15 +356,22 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK);
       return `${channel}/${r.ts}`;
     }
-    const sent = await this.#feishuSenderCreate(target, card, context, signal, requestId);
+    const sent = await this.#feishuSenderCreate(target, card, context, signal, requestId, leg);
     if (sent === "rejected") throw new SenderUnreachable();
     return sent;
   }
 
+  /** Opening the conversation posts nothing, so any failure here is known not to have sent the card. */
   async #slackSenderChannel(target: FeedbackTarget, api: WebClient): Promise<string> {
-    const opened = await this.#slackCall(target, () =>
-      api.conversations.open({ users: target.senderExternalId }).catch(rejectedAsUnreachable),
-    );
+    let opened: Awaited<ReturnType<WebClient["conversations"]["open"]>>;
+    try {
+      opened = await this.#slackCall(target, () =>
+        api.conversations.open({ users: target.senderExternalId }).catch(rejectedAsUnreachable),
+      );
+    } catch (error) {
+      if (error instanceof SenderUnreachable || error instanceof FeedbackProviderError) throw error;
+      throw new FeedbackProviderError("IM_FEEDBACK_SENDER_OPEN_FAILED", true);
+    }
     if (!opened.channel?.id) throw new SenderUnreachable();
     return opened.channel.id;
   }
@@ -364,10 +383,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     context: FeedbackMessageContext,
     signal: AbortSignal,
     requestId?: string,
+    leg?: DeliveryLeg,
   ): Promise<string | "rejected"> {
     if (!target.senderExternalId.startsWith("ou_")) return "rejected";
     const { api } = await this.#feishu(target, signal);
     let r: Awaited<ReturnType<typeof api.im.v1.message.create>>;
+    if (leg) leg.to = "sender";
     try {
       r = await api.im.v1.message.create({
         params: { receive_id_type: "open_id" },
@@ -389,6 +410,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
 
   async post(target: FeedbackTarget, action?: FeedbackAction): Promise<string> {
+    const leg: DeliveryLeg = {};
     try {
       const context = await this.#context(target);
       return await this.#run(
@@ -400,12 +422,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
             context,
             signal,
             failureGoesToSender(target),
+            leg,
             target.providerRequestId,
           ),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      throw postFailure(error);
+      throw withReadback(postFailure(error), leg);
     }
   }
 
@@ -418,7 +441,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true),
+        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, {}),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
@@ -533,17 +556,33 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
   }
 
+  /**
+   * Bounded readback. Without a cursor (a crash or a lost acknowledgement left no record of the leg), a group card
+   * that goes to the sender is looked for in their direct message first.
+   */
   async find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }> {
+    const start =
+      cursor ?? (failureGoesToSender(target) && !(await this.#context(target)).direct ? SENDER_READBACK : undefined);
     return this.#run(
       `${target.provider}.feedback.find`,
       (signal) =>
-        cursor?.startsWith(SENDER_READBACK)
-          ? this.#findSender(target, signal, cursor.slice(SENDER_READBACK.length) || undefined)
-          : target.provider === "slack"
-            ? this.#findSlack(target, signal, cursor)
-            : this.#findFeishu(target, signal, cursor),
+        start?.startsWith(SENDER_READBACK)
+          ? this.#findSender(target, signal, start.slice(SENDER_READBACK.length) || undefined)
+          : start?.startsWith(CONVERSATION_READBACK)
+            ? this.#findFallback(target, signal, start.slice(CONVERSATION_READBACK.length) || undefined)
+            : this.#findConversation(target, signal, start),
       { maxAttempts: 1, timeoutMs: 8_000 },
     );
+  }
+  #findConversation(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    return target.provider === "slack"
+      ? this.#findSlack(target, signal, cursor)
+      : this.#findFeishu(target, signal, cursor);
+  }
+  /** The conversation, for a card that fell back there; its pages keep the fallback marker. */
+  async #findFallback(target: FeedbackTarget, signal: AbortSignal, cursor?: string) {
+    const result = await this.#findConversation(target, signal, cursor);
+    return { ids: result.ids, ...(result.cursor ? { cursor: `${CONVERSATION_READBACK}${result.cursor}` } : {}) };
   }
   /**
    * Readback in the sender's direct message. Slack reads its history for this Bot's card identity. Feishu cannot
@@ -562,17 +601,19 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         signal,
         target.providerRequestId,
       ).catch((error) => {
-        if (error instanceof FeedbackProviderError) return "rejected" as const;
+        if (error instanceof FeedbackProviderError && error.knownNotApplied) return "unknown" as const;
         throw error;
       });
-      return { ids: sent === "rejected" ? [] : [sent] };
+      // A refused direct message means the card fell back to the conversation.
+      if (sent === "rejected") return this.#findFallback(target, signal);
+      return { ids: sent === "unknown" ? [] : [sent] };
     }
     const { api, material } = await this.#slack(target, signal);
     let channel: string;
     try {
       channel = await this.#slackSenderChannel(target, api);
     } catch (error) {
-      if (error instanceof SenderUnreachable) return { ids: [] };
+      if (error instanceof SenderUnreachable) return this.#findFallback(target, signal);
       throw error;
     }
     const identity = slackCardIdentity("failure", target.id);

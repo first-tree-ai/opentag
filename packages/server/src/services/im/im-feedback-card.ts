@@ -85,6 +85,7 @@ export function feedbackCard(
       ...(target.batchSize ? { batchSize: target.batchSize } : {}),
       provider: target.provider,
       ...(runtime ? { runtime } : {}),
+      ...(target.retryAt ? { retryAt: target.retryAt } : {}),
     }),
     "failure",
     language,

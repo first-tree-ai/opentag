@@ -180,18 +180,32 @@ function runtimeCardCopy(code: string | null, runtime: FeedbackRuntime | undefin
   }
 }
 
-export function failureCardCopy(
-  reportedCode: string | null,
-  options: {
-    batchRetryBlocked?: boolean;
-    batchSize?: number;
-    workspaceBlocked?: boolean;
-    provider?: "slack" | "feishu";
-    runtime?: FeedbackRuntime;
-  } = {},
-): CardCopy {
+type FailureCardOptions = {
+  batchRetryBlocked?: boolean;
+  batchSize?: number;
+  workspaceBlocked?: boolean;
+  provider?: "slack" | "feishu";
+  runtime?: FeedbackRuntime;
+  /** When a used-up quota is available again, as the Agent's model CLI reported it. */
+  retryAt?: string;
+  now?: Date;
+};
+
+export function failureCardCopy(reportedCode: string | null, options: FailureCardOptions = {}): CardCopy {
   // A Computer with no signed-in model account gets the sign-in card, including its tool name.
   const code = reportedCode === "model_login_missing" ? "provider_authentication_failed" : reportedCode;
+  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : reasonCard(code, options);
+  // A failed batch keeps its card and says how many messages it held.
+  if (!batchSuffix(options, "zh")) return card;
+  return {
+    title: card.title,
+    body: { zh: card.body.zh + batchSuffix(options, "zh"), en: card.body.en + batchSuffix(options, "en") },
+  };
+}
+
+/** The card for one reason: the tool- or model-named card, the quota reset time, or the conversation's provider. */
+function reasonCard(code: string | null, options: FailureCardOptions): CardCopy {
+  if (code === "provider_quota_exceeded") return quotaCard(options.retryAt, options.now ?? new Date());
   const reason =
     runtimeCardCopy(code, options.runtime) ??
     (code && Object.hasOwn(FAILURE_CARDS, code)
@@ -199,20 +213,47 @@ export function failureCardCopy(
       : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
         ? (INPUT_FAILURE_CARDS[code] as CardCopy)
         : ENVIRONMENT);
-  const failure =
-    options.provider !== "slack"
-      ? reason
-      : code === "im_connection_unavailable"
-        ? { ...reason, title: SLACK_CONNECTION_TITLE }
-        : code === "tool_setup_failed"
-          ? SLACK_TOOL_SETUP
-          : reason;
-  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : failure;
-  // A failed batch keeps its card and says how many messages it held.
-  if (!batchSuffix(options, "zh")) return card;
+  return options.provider === "slack" ? slackCard(code, reason) : reason;
+}
+
+function slackCard(code: string | null, reason: CardCopy): CardCopy {
+  if (code === "im_connection_unavailable") return { ...reason, title: SLACK_CONNECTION_TITLE };
+  return code === "tool_setup_failed" ? SLACK_TOOL_SETUP : reason;
+}
+
+/** Quota resets are shown in China time, the time zone of the people using OpenTag today. */
+const RESET_TIME_ZONE = "Asia/Shanghai";
+
+/** The quota card names the time it is available again when the model CLI said so, and keeps its plain copy otherwise. */
+function quotaCard(retryAt: string | undefined, now: Date): CardCopy {
+  const at = retryAt === undefined ? Number.NaN : Date.parse(retryAt);
+  if (!Number.isFinite(at) || at <= now.getTime()) return FAILURE_CARDS.provider_quota_exceeded;
+  const parts = (date: Date) =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: RESET_TIME_ZONE,
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(date)
+        .map((part) => [part.type, part.value]),
+    );
+  const reset = parts(new Date(at));
+  const today = parts(now);
+  const time = `${reset.hour}:${reset.minute}`;
+  const sameDay = reset.month === today.month && reset.day === today.day;
+  const month = new Intl.DateTimeFormat("en-US", { timeZone: RESET_TIME_ZONE, month: "short" }).format(new Date(at));
   return {
-    title: card.title,
-    body: { zh: card.body.zh + batchSuffix(options, "zh"), en: card.body.en + batchSuffix(options, "en") },
+    title: FAILURE_CARDS.provider_quota_exceeded.title,
+    body: sameDay
+      ? { zh: `将于 ${time} 恢复`, en: `Available again at ${time} (UTC+8)` }
+      : {
+          zh: `将于 ${reset.month}月${reset.day}日 ${time} 恢复`,
+          en: `Available again on ${month} ${reset.day} at ${time} (UTC+8)`,
+        },
   };
 }
 

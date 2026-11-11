@@ -132,7 +132,7 @@ the invisible readback identity described under [Message format compatibility](#
 | --- | --- | --- |
 | Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later |
 | Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 |
-| Quota | 模型额度已用完 / Model quota used up | 额度恢复后请重试 / Try again after the quota resets |
+| Quota | 模型额度已用完 / Model quota used up | 将于 15:30 恢复 (a later day adds the date, 将于 11月12日 09:05 恢复), in China time, when the report carries a future `retryAt`; otherwise 额度恢复后请重试 / Try again after the quota resets |
 | Authentication | 模型未登录或登录已失效 / The model isn't signed in, or the sign-in expired | 请在 Agent 所在电脑登录模型账号 / Sign in to the model on the Agent's computer |
 | Access denied | 没有该模型的使用权限 / No permission to use this model | 请在 OpenTag 更换模型 / Choose another model in OpenTag |
 | Request rejected | 模型拒绝了这次请求 / The model rejected this request | 请换个说法，或去掉图片和附件后重试 |

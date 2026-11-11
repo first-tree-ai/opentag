@@ -24,6 +24,8 @@ export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
   batchRetryBlocked?: boolean;
   /** Messages in a frozen initial batch, the root included; set with `batchRetryBlocked`. */
   batchSize?: number;
+  /** A quota failure's reset time, read from the Turn report the Client sent; never stored on the target. */
+  retryAt?: string;
 };
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
 export type FeedbackAction = typeof imFeedbackActions.$inferSelect;
@@ -345,7 +347,7 @@ export class ImFeedbackStore {
         })
         .where(eq(imFeedbackTargets.id, target.id))
         .returning();
-      return claimed ? await withFrozenBatch(tx, claimed) : undefined;
+      return claimed ? await withReportedRetry(tx, await withFrozenBatch(tx, claimed)) : undefined;
     });
   }
 
@@ -412,7 +414,14 @@ export class ImFeedbackStore {
         ),
       )
       .returning();
-    return updated ? { ...updated, batchRetryBlocked: target.batchRetryBlocked, batchSize: target.batchSize } : target;
+    return updated
+      ? {
+          ...updated,
+          batchRetryBlocked: target.batchRetryBlocked,
+          batchSize: target.batchSize,
+          ...(target.retryAt ? { retryAt: target.retryAt } : {}),
+        }
+      : target;
   }
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
@@ -812,6 +821,21 @@ async function withFrozenBatch(tx: DatabaseTransaction, target: FeedbackTarget):
     );
   const members = row?.members ?? 0;
   return { ...target, batchRetryBlocked: members > 0, ...(members > 0 ? { batchSize: members + 1 } : {}) };
+}
+
+/**
+ * A quota failure card names when the quota is back if the Client said so. The time travels inside the Turn
+ * report the delivery already keeps; it is passed through to the card, not copied anywhere.
+ */
+async function withReportedRetry(tx: DatabaseTransaction, target: FeedbackTarget): Promise<FeedbackTarget> {
+  if (target.errorCode !== "provider_quota_exceeded") return target;
+  const [row] = await tx
+    .select({ report: imMessageDeliveries.turnReport })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, target.cardOwnerDeliveryId))
+    .limit(1);
+  const retryAt = row?.report?.retryAt;
+  return retryAt ? { ...target, retryAt } : target;
 }
 
 export async function hasFrozenFeedbackBatch(

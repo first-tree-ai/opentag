@@ -82,6 +82,7 @@ export function feedbackCard(
       batchRetryBlocked: target.batchRetryBlocked,
       ...(target.batchSize ? { batchSize: target.batchSize } : {}),
       provider: target.provider,
+      ...(target.retryAt ? { retryAt: target.retryAt } : {}),
     }),
     "failure",
     language,

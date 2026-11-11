@@ -619,18 +619,22 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#handleResult(message, terminal);
       return;
     }
+    if (await this.#handleBackgroundWorkFrame(type, message)) return;
+    await this.#emitProviderEvent(message);
+  }
+
+  /** The synthetic frames the process adds for background work; false for any other message. */
+  async #handleBackgroundWorkFrame(type: string, message: Readonly<Record<string, unknown>>): Promise<boolean> {
     if (type === CLAUDE_CODE_BACKGROUND_WORK_FRAME) {
       await this.requireProviderContext().emit({
         type: "background_work_changed",
         items: message.items as readonly AgentBackgroundWorkItem[],
       });
-      return;
+      return true;
     }
-    if (type === CLAUDE_CODE_BACKGROUND_FINISHED_FRAME) {
-      await this.requireProviderContext().emit(backgroundWorkFinished(message));
-      return;
-    }
-    await this.#emitProviderEvent(message);
+    if (type !== CLAUDE_CODE_BACKGROUND_FINISHED_FRAME) return false;
+    await this.requireProviderContext().emit(backgroundWorkFinished(message));
+    return true;
   }
 
   async #handleResult(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {

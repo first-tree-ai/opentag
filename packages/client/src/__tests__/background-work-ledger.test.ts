@@ -127,6 +127,29 @@ describe("BackgroundWorkLedger", () => {
     await expect(ledger.notice()).resolves.toBeUndefined();
   });
 
+  it("tells the next Run when a used-up model quota resets, if the failed turn said", async () => {
+    const ledger = new BackgroundWorkLedger(memory());
+    const quota = (retryAt?: string): AgentRuntimeEvent => ({
+      type: "run_completed",
+      runId: "run",
+      result: {
+        runId: "run",
+        status: "completed",
+        output: [],
+        followUpFailure: { code: "provider_quota_exceeded", message: "limit", ...(retryAt ? { retryAt } : {}) },
+      },
+    });
+    await ledger.apply(quota("2026-11-11T12:00:00.000Z"));
+    await expect(ledger.notice()).resolves.toContain(
+      "failed (provider_quota_exceeded), so that work may be unfinished. The model is available again at 2026-11-11T12:00:00.000Z.",
+    );
+    // A later failure without a reset time does not keep the old one.
+    await ledger.apply(quota());
+    await expect(ledger.notice()).resolves.not.toContain("available again");
+    await ledger.apply(turn);
+    await expect(ledger.notice()).resolves.toBeUndefined();
+  });
+
   it("counts a message as a model turn, for a Provider that reports no turns", async () => {
     const ledger = new BackgroundWorkLedger(memory());
     await ledger.apply(changed({ id: "a", label: "suite" }));

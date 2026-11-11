@@ -78,6 +78,54 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
+  it.each([
+    [429, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
+    [402, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
+    [429, "allowed_warning", "provider_rate_limited", undefined],
+    [503, "rejected", "provider_unavailable", undefined],
+  ])(
+    "turns a rejected usage window into a quota with its reset time (status %s, window %s)",
+    async (apiErrorStatus, status, code, retryAt) => {
+      const process = new ManualClaudeCodeProcess([
+        {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status,
+            resetsAt: Date.parse("2026-11-11T07:30:00.000Z") / 1000,
+            rateLimitType: "five_hour",
+          },
+          uuid: "33333333-3333-4333-8333-333333333333",
+          session_id: "session",
+        },
+        successResult({ is_error: true, api_error_status: apiErrorStatus }),
+      ]);
+      const runtime = await factory(process).create(createRequest(() => undefined));
+      const result = await runtime.prompt({ runId: "run-1", input: input("fail") });
+      expect(result).toMatchObject({ status: "failed", error: { code } });
+      expect(result.error?.retryAt).toBe(retryAt);
+      await runtime.close();
+    },
+  );
+
+  it.each([
+    [{}],
+    [{ rate_limit_info: "rejected" }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: "soon" } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 1e13 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 253_402_300_800 } }],
+    [{ rate_limit_info: { status: "rejected", resetsAt: 1_794_382_200_000 } }],
+  ])("ignores a rate-limit event that names no usable reset: %j", async (event) => {
+    const process = new ManualClaudeCodeProcess([
+      { type: "rate_limit_event", uuid: "44444444-4444-4444-8444-444444444444", session_id: "session", ...event },
+      successResult({ is_error: true, api_error_status: 429 }),
+    ]);
+    const runtime = await factory(process).create(createRequest(() => undefined));
+    const result = await runtime.prompt({ runId: "run-1", input: input("fail") });
+    expect(result).toMatchObject({ status: "failed", error: { code: "provider_rate_limited" } });
+    expect(result.error?.retryAt).toBeUndefined();
+    await runtime.close();
+  });
+
   it("translates complete and fallback stream shapes without duplicating lifecycle events", async () => {
     const events: AgentRuntimeEvent[] = [];
     const process = new ManualClaudeCodeProcess(comprehensiveMessages());

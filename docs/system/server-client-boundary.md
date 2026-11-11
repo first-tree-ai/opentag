@@ -63,6 +63,9 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
    restart, without starting a second Turn. Placement generation and
    connection-instance checks fence every acceptance and report.
 
+[Server-to-Client delivery](messaging/server-client-delivery.md) compares the
+IM, Session message, and scheduled message hand-offs stage by stage.
+
 What the Client does with accepted work that does not complete on a Local
 Computer is described next. Without the retry, or once it is spent, the
 outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly

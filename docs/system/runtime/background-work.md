@@ -79,7 +79,8 @@ A limit's kind appears only as the reason passed to `recordRunLimit`, so a token
 
 If a turn the Run started by itself fails after the input was answered (a 429 on a wake, say), the message is not run
 again. The result is `completed` with `followUpFailure`, the ledger tells the next Run, and the message's sender gets
-outcome `unknown` with the failure's code. An IM Turn sends no such report. A turn carrying steered input is not one of
+outcome `unknown` with the failure's code. When that turn hit a used-up model quota and the Provider said when it resets
+(Claude Code's `retryAt`), the next Run's notice includes that time. An IM Turn sends no such report. A turn carrying steered input is not one of
 these: it fails the Run.
 
 ## Interruption

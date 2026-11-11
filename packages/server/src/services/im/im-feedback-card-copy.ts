@@ -1,5 +1,6 @@
 import type { TurnFailureReason } from "@opentag/shared";
 import { batchSuffix, type FeedbackLanguage } from "./im-feedback-copy.js";
+import type { FeedbackRuntime } from "./im-feedback-store.js";
 
 type Localized = Record<FeedbackLanguage, string>;
 
@@ -124,37 +125,135 @@ const SLACK_TOOL_SETUP: CardCopy = agentError(
   "The Slack command line couldn't be prepared. Try again",
 );
 
-export function failureCardCopy(
-  reportedCode: string | null,
-  options: {
-    batchRetryBlocked?: boolean;
-    batchSize?: number;
-    workspaceBlocked?: boolean;
-    provider?: "slack" | "feishu";
-  } = {},
-): CardCopy {
+/** The tool as the Agent's settings name it; an Agent on the Cloud Computer runs the platform's model. */
+const TOOL_NAMES: Record<FeedbackRuntime["tool"], Localized> = {
+  "claude-code": { zh: "Claude Code", en: "Claude Code" },
+  codex: { zh: "Codex", en: "Codex" },
+  pi: { zh: "Pi", en: "Pi" },
+  cloud: { zh: "云端模型", en: "The cloud model" },
+};
+
+/** Chinese copy puts a space between a Latin name and the Chinese around it, and none between Chinese. */
+function zh(...parts: string[]): string {
+  return parts.reduce((text, part) =>
+    /[A-Za-z0-9]$/u.test(text) || /^[A-Za-z0-9]/u.test(part) ? `${text} ${part}` : text + part,
+  );
+}
+
+/**
+ * Cards that tell someone what to fix name the Agent's tool and model. Sign-in and start-up happen on the Agent's
+ * own computer, so a Cloud Agent keeps the generic card for those.
+ */
+function runtimeCardCopy(code: string | null, runtime: FeedbackRuntime | undefined): CardCopy | undefined {
+  if (!runtime) return;
+  const tool = TOOL_NAMES[runtime.tool];
+  const local = runtime.tool !== "cloud";
+  switch (code) {
+    case "provider_authentication_failed":
+      return local
+        ? {
+            title: { zh: zh(tool.zh, "未登录或登录已失效"), en: `${tool.en} isn't signed in, or the sign-in expired` },
+            body: { zh: zh("请在 Agent 所在电脑登录", tool.zh), en: `Sign in to ${tool.en} on the Agent's computer` },
+          }
+        : undefined;
+    case "provider_access_denied":
+      return runtime.model
+        ? {
+            title: { zh: zh("没有", runtime.model, "的使用权限"), en: `No permission to use ${runtime.model}` },
+            body: { zh: "请在 OpenTag 更换模型", en: "Choose another model in OpenTag" },
+          }
+        : undefined;
+    case "provider_process_exited":
+      return agentError(zh(tool.zh, "意外退出，请重试"), `${tool.en} exited unexpectedly. Try again`);
+    case "provider_start_failed":
+      return local
+        ? agentError(
+            zh(tool.zh, "没能启动，请检查 Agent 所在电脑上的", tool.zh, "是否已安装"),
+            `${tool.en} didn't start. Check that ${tool.en} is installed on the Agent's computer`,
+          )
+        : undefined;
+    case "provider_protocol_error":
+      return agentError(
+        zh(tool.zh, "返回了无法识别的结果，请重试"),
+        `${tool.en} returned a result it couldn't read. Try again`,
+      );
+  }
+}
+
+type FailureCardOptions = {
+  batchRetryBlocked?: boolean;
+  batchSize?: number;
+  workspaceBlocked?: boolean;
+  provider?: "slack" | "feishu";
+  runtime?: FeedbackRuntime;
+  /** When a used-up quota is available again, as the Agent's model CLI reported it. */
+  retryAt?: string;
+  now?: Date;
+};
+
+export function failureCardCopy(reportedCode: string | null, options: FailureCardOptions = {}): CardCopy {
   // A Computer with no signed-in model account gets the sign-in card, including its tool name.
   const code = reportedCode === "model_login_missing" ? "provider_authentication_failed" : reportedCode;
-  const reason =
-    code && Object.hasOwn(FAILURE_CARDS, code)
-      ? FAILURE_CARDS[code as TurnFailureReason]
-      : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
-        ? (INPUT_FAILURE_CARDS[code] as CardCopy)
-        : ENVIRONMENT;
-  const failure =
-    options.provider !== "slack"
-      ? reason
-      : code === "im_connection_unavailable"
-        ? { ...reason, title: SLACK_CONNECTION_TITLE }
-        : code === "tool_setup_failed"
-          ? SLACK_TOOL_SETUP
-          : reason;
-  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : failure;
+  const card = options.workspaceBlocked ? FAILURE_CARDS.workspace_failed : reasonCard(code, options);
   // A failed batch keeps its card and says how many messages it held.
   if (!batchSuffix(options, "zh")) return card;
   return {
     title: card.title,
     body: { zh: card.body.zh + batchSuffix(options, "zh"), en: card.body.en + batchSuffix(options, "en") },
+  };
+}
+
+/** The card for one reason: the tool- or model-named card, the quota reset time, or the conversation's provider. */
+function reasonCard(code: string | null, options: FailureCardOptions): CardCopy {
+  if (code === "provider_quota_exceeded") return quotaCard(options.retryAt, options.now ?? new Date());
+  const reason =
+    runtimeCardCopy(code, options.runtime) ??
+    (code && Object.hasOwn(FAILURE_CARDS, code)
+      ? FAILURE_CARDS[code as TurnFailureReason]
+      : code && Object.hasOwn(INPUT_FAILURE_CARDS, code)
+        ? (INPUT_FAILURE_CARDS[code] as CardCopy)
+        : ENVIRONMENT);
+  return options.provider === "slack" ? slackCard(code, reason) : reason;
+}
+
+function slackCard(code: string | null, reason: CardCopy): CardCopy {
+  if (code === "im_connection_unavailable") return { ...reason, title: SLACK_CONNECTION_TITLE };
+  return code === "tool_setup_failed" ? SLACK_TOOL_SETUP : reason;
+}
+
+/** Quota resets are shown in China time, the time zone of the people using OpenTag today. */
+const RESET_TIME_ZONE = "Asia/Shanghai";
+
+/** The quota card names the time it is available again when the model CLI said so, and keeps its plain copy otherwise. */
+function quotaCard(retryAt: string | undefined, now: Date): CardCopy {
+  const at = retryAt === undefined ? Number.NaN : Date.parse(retryAt);
+  if (!Number.isFinite(at) || at <= now.getTime()) return FAILURE_CARDS.provider_quota_exceeded;
+  const parts = (date: Date) =>
+    Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: RESET_TIME_ZONE,
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(date)
+        .map((part) => [part.type, part.value]),
+    );
+  const reset = parts(new Date(at));
+  const today = parts(now);
+  const time = `${reset.hour}:${reset.minute}`;
+  const sameDay = reset.month === today.month && reset.day === today.day;
+  const month = new Intl.DateTimeFormat("en-US", { timeZone: RESET_TIME_ZONE, month: "short" }).format(new Date(at));
+  return {
+    title: FAILURE_CARDS.provider_quota_exceeded.title,
+    body: sameDay
+      ? { zh: `将于 ${time} 恢复`, en: `Available again at ${time} (UTC+8)` }
+      : {
+          zh: `将于 ${reset.month}月${reset.day}日 ${time} 恢复`,
+          en: `Available again on ${month} ${reset.day} at ${time} (UTC+8)`,
+        },
   };
 }
 

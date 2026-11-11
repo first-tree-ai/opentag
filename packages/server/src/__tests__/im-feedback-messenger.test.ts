@@ -10,7 +10,12 @@ import {
   ImFeedbackMessenger,
   SENDER_READBACK,
 } from "../services/im/im-feedback-messenger.js";
-import type { FeedbackAction, FeedbackMessageContext, FeedbackTarget } from "../services/im/im-feedback-store.js";
+import type {
+  FeedbackAction,
+  FeedbackMessageContext,
+  FeedbackRuntime,
+  FeedbackTarget,
+} from "../services/im/im-feedback-store.js";
 import { renderFeedbackText } from "../services/im/im-feedback-text.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 import { deferred } from "./support/deferred.js";
@@ -290,6 +295,41 @@ describe("native feedback transport", () => {
     });
     // A Computer too old to name the cause, or a missing Cloud grant.
     expect(card("feishu", "credential_unavailable")).toMatchObject({ title: "Agent 运行出错", body: "请重试" });
+  });
+  it("names the Agent's tool and model on the cards that say what to fix", () => {
+    const card = (errorCode: string, runtime: FeedbackRuntime, language: "zh" | "en" = "zh") => {
+      const c = feedbackCard({ ...target("feishu"), errorCode }, undefined, language, runtime);
+      return `${c.title} / ${c.body}`;
+    };
+    const claude: FeedbackRuntime = { tool: "claude-code", model: "claude-sonnet-5-5" };
+    expect(card("provider_authentication_failed", claude)).toBe(
+      "Claude Code 未登录或登录已失效 / 请在 Agent 所在电脑登录 Claude Code",
+    );
+    expect(card("provider_access_denied", claude)).toBe("没有 claude-sonnet-5-5 的使用权限 / 请在 OpenTag 更换模型");
+    // A Computer with no signed-in model account gets the same sign-in card, naming its tool.
+    expect(card("model_login_missing", { tool: "codex", model: null })).toBe(
+      "Codex 未登录或登录已失效 / 请在 Agent 所在电脑登录 Codex",
+    );
+    expect(card("provider_process_exited", { tool: "codex", model: null })).toBe(
+      "Agent 运行出错 / Codex 意外退出，请重试",
+    );
+    expect(card("provider_start_failed", { tool: "pi", model: null })).toBe(
+      "Agent 运行出错 / Pi 没能启动，请检查 Agent 所在电脑上的 Pi 是否已安装",
+    );
+    expect(card("provider_protocol_error", { tool: "cloud", model: null })).toBe(
+      "Agent 运行出错 / 云端模型返回了无法识别的结果，请重试",
+    );
+    expect(card("provider_process_exited", claude, "en")).toBe(
+      "The Agent ran into an error / Claude Code exited unexpectedly. Try again",
+    );
+    // Without a model, or for sign-in and start-up on the Cloud Computer, the generic card stays.
+    expect(card("provider_access_denied", { tool: "codex", model: null })).toBe(
+      "没有该模型的使用权限 / 请在 OpenTag 更换模型",
+    );
+    expect(card("provider_authentication_failed", { tool: "cloud", model: "gpt-5" })).toBe(
+      "模型未登录或登录已失效 / 请在 Agent 所在电脑登录模型账号",
+    );
+    expect(card("provider_start_failed", { tool: "cloud", model: null })).toBe("Agent 运行出错 / 请重试");
   });
   it("gives a Feishu failure card a zero-width identity link for readback", async () => {
     const { messenger } = harness();

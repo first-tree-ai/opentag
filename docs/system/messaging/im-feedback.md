@@ -132,7 +132,7 @@ the invisible readback identity described under [Message format compatibility](#
 | --- | --- | --- |
 | Rate limit | 模型请求太频繁 / Too many model requests | 请稍后重试 / Try again later |
 | Service unavailable, connection failure | 模型服务暂时不可用 / Model service temporarily unavailable | 请稍后重试 |
-| Quota | 模型额度已用完 / Model quota used up | 额度恢复后请重试 / Try again after the quota resets |
+| Quota | 模型额度已用完 / Model quota used up | 将于 15:30 恢复 (a later day adds the date, 将于 11月12日 09:05 恢复), in China time, when the report carries a future `retryAt`; otherwise 额度恢复后请重试 / Try again after the quota resets |
 | Authentication | 模型未登录或登录已失效 / The model isn't signed in, or the sign-in expired | 请在 Agent 所在电脑登录模型账号 / Sign in to the model on the Agent's computer |
 | Access denied | 没有该模型的使用权限 / No permission to use this model | 请在 OpenTag 更换模型 / Choose another model in OpenTag |
 | Request rejected | 模型拒绝了这次请求 / The model rejected this request | 请换个说法，或去掉图片和附件后重试 |
@@ -154,7 +154,14 @@ the invisible readback identity described under [Message format compatibility](#
 | A frozen batch that cannot be retried, including a workspace failure | The reason's own title | The reason's own body, then （共 N 条消息） / (N messages); a legacy plain-text message edited later keeps the reason's next step with the same count |
 
 The context-limit, cut-off, too-large, outcome-unknown and workspace bodies are interim: each changes or disappears when
-its automatic recovery ships. Cards that will name the Agent's tool or model say "模型" until they can.
+its automatic recovery ships.
+
+Sign-in, access, process-exit, start-up and protocol cards name the Agent's tool and model from its settings when the
+card is rendered: `agents.runtime_provider` (Claude Code, Codex or Pi; 云端模型 / "The cloud model" for an Agent on
+the Cloud Computer) and `agent_runtime_configs.model`. Sign-in reads "{tool} 未登录或登录已失效 / 请在 Agent 所在电脑登录
+{tool}", access "没有 {model} 的使用权限", and the Agent error body "{tool} 意外退出", "{tool} 没能启动，请检查 Agent
+所在电脑上的 {tool} 是否已安装" or "{tool} 返回了无法识别的结果". Without a chosen model, and for sign-in and start-up on
+the Cloud Computer, which happen on no computer the owner controls, the card keeps the generic copy above.
 
 Retrying the save or discarding the changes happens on the details page, which owns both operations and their
 confirmations (see [Account operations](#account-operations)). Once an operation runs or the task later completes, the

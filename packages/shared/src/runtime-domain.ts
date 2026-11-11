@@ -254,7 +254,9 @@ export const CREDENTIAL_DETAIL_FAILURE_REASONS: readonly string[] = [
 ];
 
 /** Minimum negotiated capability needed to send this immutable report. */
-export function requiredTurnReportVersion(report: object): 1 | 2 | 3 | 4 {
+export function requiredTurnReportVersion(report: object): 1 | 2 | 3 | 4 | 5 {
+  // v5: when a used-up model quota becomes available again.
+  if ("retryAt" in report && report.retryAt !== undefined) return 5;
   if ("errorReason" in report && CREDENTIAL_DETAIL_FAILURE_REASONS.includes(String(report.errorReason))) return 4;
   if ("errorReason" in report && ProviderFailureReasonSchema.safeParse(report.errorReason).success) return 3;
   if ("outgoingReplies" in report && report.outgoingReplies !== undefined) return 2;
@@ -989,10 +991,18 @@ export const TurnReportRequestSchema = z
       })
       .strict(),
     outgoingReplies: TurnOutgoingReplySnapshotSchema.optional(),
+    /**
+     * Turn report v5: when the used-up model quota becomes available again, as the model CLI reported it.
+     * The Server only passes it to the failure card.
+     */
+    retryAt: z.string().datetime({ offset: true }).optional(),
     resultHash: RuntimeSha256Schema,
   })
   .strict()
   .superRefine((frame, context) => {
+    if (frame.retryAt !== undefined && frame.errorReason !== "provider_quota_exceeded") {
+      context.addIssue({ code: "custom", path: ["retryAt"], message: "Only a quota failure can say when to retry" });
+    }
     if (frame.outcome === "completed" && frame.errorReason) {
       context.addIssue({ code: "custom", path: ["errorReason"], message: "Completed reports cannot include an error" });
     }
@@ -1711,6 +1721,8 @@ export function computeTurnResultHash(input: TurnReportHashInput): string {
       }),
     );
   }
+  // Tagged so it can never be read as the replies above; reports without it keep their hash.
+  if (input.retryAt !== undefined) tuple.push(["retryAt", input.retryAt]);
   return hashTuple(tuple);
 }
 

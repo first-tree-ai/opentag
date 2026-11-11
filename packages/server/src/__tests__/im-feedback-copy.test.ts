@@ -1,5 +1,6 @@
 import { ImContentV1Schema, TurnFailureReasonSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
+import { failureCardCopy } from "../services/im/im-feedback-card-copy.js";
 import { effectsCopy, failureCopy, feedbackLanguage, messageExcerpt } from "../services/im/im-feedback-copy.js";
 
 function content(blocks: unknown[], fallbackText = "") {
@@ -80,5 +81,35 @@ describe("IM failure copy", () => {
     expect(effectsCopy("not_started", "zh")).toBe("任务没有开始，没有执行任何操作。");
     for (const effects of ["may_have_occurred", "completed", null])
       expect(effectsCopy(effects, "zh")).toBe("可能已经执行了部分操作，重发前请先检查结果。");
+  });
+
+  it("names when a used-up quota is back, in China time, only when the Client reported a future time", () => {
+    // 12:00 in Shanghai.
+    const now = new Date("2026-11-11T04:00:00.000Z");
+    const quota = (retryAt?: string) =>
+      failureCardCopy("provider_quota_exceeded", { ...(retryAt ? { retryAt } : {}), now }).body;
+    expect(quota("2026-11-11T07:30:00.000Z")).toEqual({
+      zh: "将于 15:30 恢复",
+      en: "Available again at 15:30 (UTC+8)",
+    });
+    expect(quota("2026-11-12T01:05:00.000Z")).toEqual({
+      zh: "将于 11月12日 09:05 恢复",
+      en: "Available again on Nov 12 at 09:05 (UTC+8)",
+    });
+    expect(quota()).toEqual({ zh: "额度恢复后请重试", en: "Try again after the quota resets" });
+    expect(quota("2026-11-11T03:59:00.000Z")).toEqual(quota());
+    expect(quota("not a time")).toEqual(quota());
+    expect(
+      failureCardCopy("provider_quota_exceeded", {
+        retryAt: "2026-11-11T07:30:00.000Z",
+        now,
+        batchRetryBlocked: true,
+        batchSize: 3,
+      }).body.zh,
+    ).toBe("将于 15:30 恢复（共 3 条消息）");
+    // The rate-limit card never names a time.
+    expect(failureCardCopy("provider_rate_limited", { retryAt: "2026-11-11T07:30:00.000Z", now }).body.zh).toBe(
+      "请稍后重试",
+    );
   });
 });

@@ -42,6 +42,8 @@ export interface BackgroundWorkLedgerState {
   runLimit?: BackgroundWorkRunLimit;
   /** A turn the Run started by itself failed after answering its input, so its work may be unfinished. */
   followUpFailure?: string;
+  /** When the model quota that failed that turn is available again, if the Provider said. */
+  followUpRetryAt?: string;
 }
 
 export interface BackgroundWorkLedgerStorage {
@@ -106,8 +108,12 @@ export class BackgroundWorkLedger {
       }));
     }
     if (event.type === "run_completed" && event.result.followUpFailure) {
-      const { code } = event.result.followUpFailure;
-      return this.#change((state) => ({ ...state, followUpFailure: code }));
+      const { code, retryAt } = event.result.followUpFailure;
+      return this.#change(({ followUpRetryAt: _earlier, ...state }) => ({
+        ...state,
+        followUpFailure: code,
+        ...(retryAt ? { followUpRetryAt: retryAt } : {}),
+      }));
     }
     // Model turns are optional in the event grammar (Codex reports none), so a message counts too.
     if (event.type === "model_turn_started" || event.type === "message_started") {
@@ -180,7 +186,7 @@ function renderNotice(state: BackgroundWorkLedgerState): string | undefined {
   const lines: string[] = [];
   if (state.followUpFailure) {
     lines.push(
-      `[openTag notice] Your previous Run answered its request, but the turn that should have continued its background work failed (${state.followUpFailure}), so that work may be unfinished.`,
+      `[openTag notice] Your previous Run answered its request, but the turn that should have continued its background work failed (${state.followUpFailure}), so that work may be unfinished.${state.followUpRetryAt ? ` The model is available again at ${state.followUpRetryAt}.` : ""}`,
     );
   } else if (state.runLimit) {
     lines.push(

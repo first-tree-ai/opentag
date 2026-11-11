@@ -165,6 +165,9 @@ export const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
 };
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
+  if (action.kind === "refresh") {
+    return m.onboarding_v2_setup_observation_failed();
+  }
   if (cause instanceof ApiError && cause.code === "IM_BINDING_UNBIND_REQUIRED" && cause.unbindRequired) {
     return spaceScriptBoundary(
       m.onboarding_v2_setup_messaging_switch_required({

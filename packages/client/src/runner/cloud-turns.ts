@@ -1786,6 +1786,20 @@ export class CloudTurnRunner {
     frame: RunnerCloudDeliveryVerifiedFrame,
   ): { readonly completion: TurnCompletion } | undefined {
     const now = Date.now();
+    // The deadline comes first: the model grant expires thirty seconds after it and is never reissued past
+    // it, so an expired grant is a Turn that waited past its deadline, and reports as a timeout.
+    if (delivery.deadlineAt) {
+      const deadline = Date.parse(delivery.deadlineAt);
+      if (!Number.isFinite(deadline) || deadline <= now) {
+        return {
+          completion: {
+            errorReason: "turn_timeout",
+            executionEffects: "not_started",
+            outcome: "failed",
+          },
+        };
+      }
+    }
     const model = frame.model;
     if (!model) {
       return {
@@ -1804,18 +1818,6 @@ export class CloudTurnRunner {
           outcome: "failed",
         },
       };
-    }
-    if (delivery.deadlineAt) {
-      const deadline = Date.parse(delivery.deadlineAt);
-      if (!Number.isFinite(deadline) || deadline <= now) {
-        return {
-          completion: {
-            errorReason: "turn_timeout",
-            executionEffects: "not_started",
-            outcome: "failed",
-          },
-        };
-      }
     }
     return undefined;
   }

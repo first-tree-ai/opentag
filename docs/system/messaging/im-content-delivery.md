@@ -81,4 +81,8 @@ tool boundary, or runs right after the current `result` when no tool call is lef
 reports once after the last steered input has started and produced a result. A new request
 requires fresh authority after a known starting/not-running response. An unconfirmed native result
 remains correlated through reconnect. If its Root ends before a receipt proves delivery, it becomes
-an explicit `steer_state_unknown` failure; an exact late successful receipt can still settle it. A steer the runtime refuses before sending anything (`steer_not_sent`) never reached the provider, so it answers `turn_not_running` and runs after the Turn. Any other steer failure stays unknown, since the provider may have taken the input.
+an explicit `steer_state_unknown` failure; an exact late successful receipt can still settle it.
+A steer the runtime refuses before sending anything (`steer_not_sent`) never reached the provider,
+so it answers `turn_not_running` and runs after the Turn. If failed-Root recovery already returned
+the input to the queue, the matching Local result settles the pending request without changing the
+queue. Any other steer failure stays unknown, since the provider may have taken the input.

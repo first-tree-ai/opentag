@@ -224,7 +224,7 @@ describe("steered IM delivery recovery", () => {
     },
   );
 
-  it.each(["retry", "deferred"] as const)(
+  it.each(["retry", "deferred", "turn_not_running"] as const)(
     "keeps exact uncertainty frozen after a later %s receipt and accepts exact success",
     async (disposition) => {
       const fixture = await createFixture(client.database);

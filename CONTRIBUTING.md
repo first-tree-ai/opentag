@@ -65,7 +65,7 @@ repository's first 290 commits touched `apps/web` — so in day-to-day terms mos
 human-review requirement. It is a deliberate trade for iteration speed, and CI plus after-the-fact review are what stand
 behind it.
 
-Markdown outside `apps/web` is `territory` with a wider owner pool of yuezengwu, bestony, Gandy2025, and liuchao-001,
+Markdown outside `apps/web` is `territory` owned by yuezengwu and bestony,
 except for the root policy and agent-instruction files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
 the Chinese mirrors of the last two. Those are pulled back into the gate, because agent-instruction files change what
 agents in this repository do and are behavior rather than documentation, and `CONTRIBUTING.md` is where this policy

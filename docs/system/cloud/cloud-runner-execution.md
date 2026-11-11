@@ -259,7 +259,9 @@ Distinct waiting codes ensure that a later fault is diagnosed even after repeate
 Credential and model boundary: the runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
-the execution and its lifetime is bounded by the runtime deadline. In E4,
+the execution and its lifetime is bounded by the runtime deadline: it expires thirty seconds after it and is never
+issued past it. Admission therefore checks the deadline before the grant, so a Turn that waited past its deadline
+reports `turn_timeout`, not `credential_unavailable`. In E4,
 credential and model grants are revoked when the Runner connection is lost (fail-closed,
 connection-scoped authority). Journal recovery still preserves the actual Turn outcome and never
 replays `started` work, but a transient Server or control-channel outage may fail an active
@@ -330,6 +332,14 @@ bounded recovery with changed context; partial tool calls from a failed response
 executed. This differs from replaying an identical failed call. No model failure triggers a
 whole-Turn, delivery or scheduled-occurrence replay. `CLOUD_MODEL_RATE_LIMIT` records the attempt,
 planned wait and ownership declaration without logging upstream content or credentials.
+
+A reply that stops at the output-token limit (Pi stop reason `length`) is not a failed call to replay: the
+truncated reply stays in the conversation. The worker sends the Agent a follow-up in the same conversation, telling
+it to continue exactly where it stopped; if that also hits the limit, a second follow-up tells it to finish in several
+shorter replies and file writes. Only when that one is cut off too does the Turn fail with
+`provider_execution_limit`. Each follow-up is a new Run (`<runId>-continue-<n>`) with its own model calls under the
+same proxy budget rules; usage adds up across them, and a steer that arrives during a follow-up is deferred to the
+Server (Gandy 11-10, R7). Other execution limits, such as max turns, are unchanged.
 
 The Router can report a definite pre-output Provider rate limit inside HTTP 200 SSE. The model
 proxy inspects at most 8 KiB before the first complete data event, including heartbeat comments,

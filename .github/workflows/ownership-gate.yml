@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       statuses: write
     steps:
       # Pin the default branch explicitly rather than relying on the event's

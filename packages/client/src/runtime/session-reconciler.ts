@@ -382,9 +382,67 @@ export class SessionReconciler {
     request: SessionReconcileRequest,
     resumeTurn?: SessionTurnIdentity,
   ): Promise<LocalReconcileResult> {
-    if (request.installationId !== this.#installationId) return this.#result(request, "rejected", "target_mismatch");
-
     const existingSession = this.#sessions.get(request.sessionId);
+    const targetRejection = this.#validateSessionTarget(request, existingSession);
+    if (targetRejection) return targetRejection;
+
+    const activity = this.#activities.get(request.sessionId);
+    if (activity) {
+      return this.#reconcileActiveTurn(request, existingSession, activity);
+    }
+    const recovered = await this.#recoveryResult(request, resumeTurn);
+    if (recovered) return recovered;
+
+    if (request.desired === "stopped") {
+      return this.#stopDesiredSession(request, existingSession);
+    }
+
+    const snapshot = request.runtime;
+    if (!snapshot) return this.#result(request, "rejected", "runtime_missing");
+    const policyReason = this.#localPolicy?.validate(snapshot);
+    if (policyReason) return this.#result(request, "rejected", policyReason);
+    const hashes = computeRuntimeSnapshotHashes(snapshot);
+    const existingAgent = this.#agents.get(request.agentId);
+
+    const revisionRejection = this.#validateIdleRevisions(
+      request,
+      snapshot,
+      hashes,
+      existingAgent,
+      existingSession,
+      resumeTurn,
+    );
+    if (revisionRejection) return revisionRejection;
+
+    const shouldPrepareAgent = !existingAgent || snapshot.revision.agent.sequence > existingAgent.revisionSequence;
+    // A resumed Turn always follows a restart, so its Session has no prepared entry yet.
+    const shouldPrepareSession = this.#shouldPrepareSession(request, hashes, existingSession);
+    const prepared = await this.#prepareOrReject(
+      request,
+      snapshot,
+      hashes,
+      shouldPrepareAgent,
+      shouldPrepareSession,
+      resumeTurn,
+    );
+    if ("rejected" in prepared) return prepared.rejected;
+    const preparedSession = prepared.value;
+
+    this.#recordPreparedState(request, snapshot, hashes, existingSession, shouldPrepareAgent);
+    if (preparedSession?.unresolvedTurn) {
+      return this.#resolveUnresolvedTurn(request, preparedSession.unresolvedTurn, resumeTurn);
+    }
+    return {
+      ...this.#result(request, "ready"),
+      ...this.#inlineMessageReadiness(request, hashes, existingSession, shouldPrepareAgent || shouldPrepareSession),
+    };
+  }
+
+  #validateSessionTarget(
+    request: SessionReconcileRequest,
+    existingSession: SessionRuntimeState | undefined,
+  ): LocalReconcileResult | undefined {
+    if (request.installationId !== this.#installationId) return this.#result(request, "rejected", "target_mismatch");
     if (existingSession && request.placementGeneration < existingSession.placementGeneration) {
       return this.#result(request, "rejected", "stale_generation");
     }
@@ -398,70 +456,111 @@ export class SessionReconciler {
     ) {
       return this.#result(request, "rejected", "session_binding_conflict");
     }
-    const activity = this.#activities.get(request.sessionId);
-    if (activity) {
-      if (
-        request.desired === "stopped" ||
-        !existingSession ||
-        request.placementGeneration !== existingSession.placementGeneration
-      ) {
-        return this.#result(request, "busy", "active_turn");
-      }
-      const snapshot = request.runtime;
-      if (!snapshot) return this.#result(request, "busy", "active_turn");
-      const hashes = computeRuntimeSnapshotHashes(snapshot);
-      // A running Session finishes on the Agent configuration it started with.
-      const agentComparison = compareRevision(
-        snapshot.revision.agent.sequence,
-        snapshot.revision.agent.id,
-        hashes.agentConfigHash,
-        existingSession.agentRevisionSequence,
-        existingSession.agentRevisionId,
-        existingSession.agentConfigHash,
-      );
-      if (agentComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
-      if (agentComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
-      if (agentComparison === "newer") return this.#result(request, "busy", "agent_configuration_busy");
-      const sessionComparison = compareRevision(
-        snapshot.revision.session.sequence,
-        snapshot.revision.session.id,
-        hashes.sessionConfigHash,
-        existingSession.revisionSequence,
-        existingSession.revisionId,
-        existingSession.sessionConfigHash,
-      );
-      if (sessionComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
-      if (sessionComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
-      if (sessionComparison === "newer") return this.#result(request, "busy", "active_turn");
-      const status = activity.phase === "running" ? "running" : "reporting";
-      return {
-        ...this.#result(request, status),
-        turn: { turnId: activity.turnId, deliveryId: activity.deliveryId },
-        ...this.#inlineMessageReadiness(request, hashes, existingSession),
-      };
-    }
-    const recovered = await this.#recoveryResult(request, resumeTurn);
-    if (recovered) return recovered;
+    return undefined;
+  }
 
-    if (request.desired === "stopped") {
-      await this.#preparation.stopSession(request.sessionId, request.placementGeneration);
-      if (existingSession) {
-        this.#sessions.set(request.sessionId, {
-          ...existingSession,
-          placementGeneration: request.placementGeneration,
-          status: "stopped",
-        });
-      }
-      return this.#result(request, "stopped");
+  async #stopDesiredSession(
+    request: SessionReconcileRequest,
+    existingSession: SessionRuntimeState | undefined,
+  ): Promise<LocalReconcileResult> {
+    await this.#preparation.stopSession(request.sessionId, request.placementGeneration);
+    if (existingSession) {
+      this.#sessions.set(request.sessionId, {
+        ...existingSession,
+        placementGeneration: request.placementGeneration,
+        status: "stopped",
+      });
     }
+    return this.#result(request, "stopped");
+  }
 
+  #shouldPrepareSession(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    existingSession: SessionRuntimeState | undefined,
+  ): boolean {
+    return (
+      !existingSession ||
+      request.placementGeneration > existingSession.placementGeneration ||
+      hashes.effectiveSnapshotHash !== existingSession.effectiveSnapshotHash ||
+      existingSession.status === "stopped" ||
+      this.#preparation.requiresSessionPreparation?.(request, hashes) === true
+    );
+  }
+
+  async #resolveUnresolvedTurn(
+    request: SessionReconcileRequest,
+    unresolvedTurn: SessionTurnIdentity,
+    resumeTurn: SessionTurnIdentity | undefined,
+  ): Promise<LocalReconcileResult> {
+    const recovery = {
+      deliveryId: unresolvedTurn.deliveryId,
+      turnId: unresolvedTurn.turnId,
+    };
+    if (await this.#resumed(request.sessionId, recovery, resumeTurn)) {
+      return { ...this.#result(request, "running"), turn: recovery };
+    }
+    this.setRecovery(request.sessionId, recovery);
+    return {
+      ...this.#result(request, "recovery_required", "unresolved_turn"),
+      turn: recovery,
+    };
+  }
+
+  #reconcileActiveTurn(
+    request: SessionReconcileRequest,
+    existingSession: SessionRuntimeState | undefined,
+    activity: SessionActivity,
+  ): LocalReconcileResult {
+    if (
+      request.desired === "stopped" ||
+      !existingSession ||
+      request.placementGeneration !== existingSession.placementGeneration
+    ) {
+      return this.#result(request, "busy", "active_turn");
+    }
     const snapshot = request.runtime;
-    if (!snapshot) return this.#result(request, "rejected", "runtime_missing");
-    const policyReason = this.#localPolicy?.validate(snapshot);
-    if (policyReason) return this.#result(request, "rejected", policyReason);
+    if (!snapshot) return this.#result(request, "busy", "active_turn");
     const hashes = computeRuntimeSnapshotHashes(snapshot);
-    const existingAgent = this.#agents.get(request.agentId);
+    // A running Session finishes on the Agent configuration it started with.
+    const agentComparison = compareRevision(
+      snapshot.revision.agent.sequence,
+      snapshot.revision.agent.id,
+      hashes.agentConfigHash,
+      existingSession.agentRevisionSequence,
+      existingSession.agentRevisionId,
+      existingSession.agentConfigHash,
+    );
+    if (agentComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
+    if (agentComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
+    if (agentComparison === "newer") return this.#result(request, "busy", "agent_configuration_busy");
+    const sessionComparison = compareRevision(
+      snapshot.revision.session.sequence,
+      snapshot.revision.session.id,
+      hashes.sessionConfigHash,
+      existingSession.revisionSequence,
+      existingSession.revisionId,
+      existingSession.sessionConfigHash,
+    );
+    if (sessionComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
+    if (sessionComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
+    if (sessionComparison === "newer") return this.#result(request, "busy", "active_turn");
+    const status = activity.phase === "running" ? "running" : "reporting";
+    return {
+      ...this.#result(request, status),
+      turn: { turnId: activity.turnId, deliveryId: activity.deliveryId },
+      ...this.#inlineMessageReadiness(request, hashes, existingSession),
+    };
+  }
 
+  #validateIdleRevisions(
+    request: SessionReconcileRequest,
+    snapshot: EffectiveRuntimeSnapshot,
+    hashes: RuntimeSnapshotHashes,
+    existingAgent: AgentRuntimeState | undefined,
+    existingSession: SessionRuntimeState | undefined,
+    resumeTurn: SessionTurnIdentity | undefined,
+  ): SessionReconcileResult | undefined {
     const agentConflict =
       existingAgent &&
       (existingAgent.provider !== snapshot.provider || existingAgent.workspaceId !== snapshot.workspace.workspaceId);
@@ -494,26 +593,16 @@ export class SessionReconciler {
       if (comparison === "stale") return this.#result(request, "rejected", "stale_configuration");
       if (comparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
     }
+    return undefined;
+  }
 
-    const shouldPrepareAgent = !existingAgent || snapshot.revision.agent.sequence > existingAgent.revisionSequence;
-    // A resumed Turn always follows a restart, so its Session has no prepared entry yet.
-    const shouldPrepareSession =
-      !existingSession ||
-      request.placementGeneration > existingSession.placementGeneration ||
-      hashes.effectiveSnapshotHash !== existingSession.effectiveSnapshotHash ||
-      existingSession.status === "stopped" ||
-      this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
-    const prepared = await this.#prepareOrReject(
-      request,
-      snapshot,
-      hashes,
-      shouldPrepareAgent,
-      shouldPrepareSession,
-      resumeTurn,
-    );
-    if ("rejected" in prepared) return prepared.rejected;
-    const preparedSession = prepared.value;
-
+  #recordPreparedState(
+    request: SessionReconcileRequest,
+    snapshot: EffectiveRuntimeSnapshot,
+    hashes: RuntimeSnapshotHashes,
+    existingSession: SessionRuntimeState | undefined,
+    shouldPrepareAgent: boolean,
+  ): void {
     if (shouldPrepareAgent) {
       this.#agents.set(request.agentId, {
         ...hashes,
@@ -538,24 +627,6 @@ export class SessionReconciler {
       status: "ready",
       workspaceId: snapshot.workspace.workspaceId,
     });
-    if (preparedSession?.unresolvedTurn) {
-      const recovery = {
-        deliveryId: preparedSession.unresolvedTurn.deliveryId,
-        turnId: preparedSession.unresolvedTurn.turnId,
-      };
-      if (await this.#resumed(request.sessionId, recovery, resumeTurn)) {
-        return { ...this.#result(request, "running"), turn: recovery };
-      }
-      this.setRecovery(request.sessionId, recovery);
-      return {
-        ...this.#result(request, "recovery_required", "unresolved_turn"),
-        turn: recovery,
-      };
-    }
-    return {
-      ...this.#result(request, "ready"),
-      ...this.#inlineMessageReadiness(request, hashes, existingSession, shouldPrepareAgent || shouldPrepareSession),
-    };
   }
 
   #inlineMessageReadiness(

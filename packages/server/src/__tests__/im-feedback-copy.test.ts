@@ -1,6 +1,6 @@
 import { ImContentV1Schema, TurnFailureReasonSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
-import { effectsCopy, failureCopy, feedbackLanguage } from "../services/im/im-feedback-copy.js";
+import { effectsCopy, failureCopy, feedbackLanguage, messageExcerpt } from "../services/im/im-feedback-copy.js";
 
 function content(blocks: unknown[], fallbackText = "") {
   return ImContentV1Schema.parse({ version: 1, fallbackText, blocks });
@@ -65,6 +65,15 @@ describe("IM failure copy", () => {
     expect(failureCopy("provider_failed", "zh", { batchRetryBlocked: true, batchSize: 2 }).next).not.toContain(
       "这批消息",
     );
+  });
+
+  it("keeps the first twenty characters of what the sender wrote", () => {
+    const content = (text: string) =>
+      ImContentV1Schema.parse({ version: 1, fallbackText: text, blocks: [{ type: "text", text }] });
+    expect(messageExcerpt(content("帮我把这周的周报整理一下，然后发到产品群里给大家看看"))).toBe(
+      "帮我把这周的周报整理一下，然后发到产品群…",
+    );
+    expect(messageExcerpt(content("short\n  text"))).toBe("short text");
   });
 
   it("only claims nothing ran on authoritative not-started evidence", () => {

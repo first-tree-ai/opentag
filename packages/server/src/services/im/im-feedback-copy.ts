@@ -14,6 +14,25 @@ export function feedbackLanguage(content: ImContentV1): FeedbackLanguage {
   return textLanguage(written || content.fallbackText);
 }
 
+/** The first twenty characters of what the sender wrote, for a card sent away from the conversation. */
+export function messageExcerpt(content: ImContentV1): string {
+  const written = content.blocks
+    .flatMap((block) => (block.type === "text" || block.type === "quote" || block.type === "code" ? [block.text] : []))
+    .join(" ");
+  const text = (written || content.fallbackText).replace(/\s+/gu, " ").trim();
+  const chars = [...text];
+  return chars.length > 20 ? `${chars.slice(0, 20).join("")}…` : text;
+}
+
+/**
+ * The line above a card sent to the sender's direct message, naming the group and the message it is about. Shown
+ * as plain text, so a group name or message cannot carry markup.
+ */
+export function originLine(language: FeedbackLanguage, excerpt: string, groupName?: string): string {
+  if (language === "zh") return groupName ? `你在「${groupName}」发的：${excerpt}` : `你在群里发的：${excerpt}`;
+  return groupName ? `Your message in "${groupName}": ${excerpt}` : `Your message in the group: ${excerpt}`;
+}
+
 /** Chinese when the text contains Chinese, otherwise English. */
 export function textLanguage(text: string): FeedbackLanguage {
   return /\p{Script=Han}/u.test(text) ? "zh" : "en";
@@ -80,8 +99,8 @@ const FAILURES = {
   },
   tool_setup_failed: {
     cause: {
-      zh: "消息工具没能准备好，任务没有完成。",
-      en: "The messaging tool couldn't be prepared, so the task didn't finish.",
+      zh: "回复用的飞书或 Slack 命令行没能准备好，任务没有完成。",
+      en: "The Feishu or Slack command line used to reply couldn't be prepared, so the task didn't finish.",
     },
     next: NEXT.environment,
   },

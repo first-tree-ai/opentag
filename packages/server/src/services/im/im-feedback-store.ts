@@ -18,7 +18,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
-import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
+import { type FeedbackLanguage, feedbackLanguage, messageExcerpt } from "./im-feedback-copy.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
   batchRetryBlocked?: boolean;
@@ -41,6 +41,8 @@ export interface FeedbackSettlement {
 export interface FeedbackMessageContext {
   language: FeedbackLanguage;
   direct: boolean;
+  /** The start of what the sender wrote, for a card sent to their direct message. */
+  excerpt?: string;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -561,6 +563,7 @@ export class ImFeedbackStore {
       .limit(1);
     return {
       language: message ? feedbackLanguage(message.content) : "en",
+      ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
       direct: session?.conversationKind === "dm",
     };
   }

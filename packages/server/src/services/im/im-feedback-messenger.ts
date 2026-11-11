@@ -14,7 +14,7 @@ import {
   slackCardMessage,
   waitingCard,
 } from "./im-feedback-card.js";
-import type { FeedbackLanguage, WaitingNoticeReason } from "./im-feedback-copy.js";
+import { type FeedbackLanguage, originLine, type WaitingNoticeReason } from "./im-feedback-copy.js";
 import type {
   FeedbackAction,
   FeedbackMessageContext,
@@ -64,6 +64,7 @@ function withReadback(failure: FeedbackProviderError, leg: DeliveryLeg): Feedbac
   const cursor = leg.to === "sender" ? SENDER_READBACK : CONVERSATION_READBACK;
   return new FeedbackProviderError(failure.code, false, failure.permanent, failure.retryAfterMs, cursor);
 }
+const GROUP_NAME_TIMEOUT_MS = 2_000;
 /** Feishu deduplicates a request `uuid` for an hour; readback repeats the send only well inside that window. */
 const FEISHU_REQUEST_DEDUP_MS = 50 * 60_000;
 
@@ -352,6 +353,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     leg: DeliveryLeg,
     requestId?: string,
   ): Promise<string> {
+    card = await this.#withOrigin(target, card, context, signal);
     if (target.provider === "slack") {
       const { api } = await this.#slack(target, signal);
       const channel = await this.#slackSenderChannel(target, api);
@@ -368,6 +370,53 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     const sent = await this.#feishuSenderCreate(target, card, context, signal, requestId, leg);
     if (sent === "rejected") throw new SenderUnreachable();
     return sent;
+  }
+
+  /** Names the group and message a card is about, since the sender reads it away from that group. */
+  async #withOrigin(
+    target: FeedbackTarget,
+    card: FeedbackCard,
+    context: FeedbackMessageContext,
+    signal: AbortSignal,
+  ): Promise<FeedbackCard> {
+    if (context.excerpt === undefined) return card;
+    const groupName = await this.#groupNameWithin(target, signal);
+    return { ...card, origin: originLine(context.language, context.excerpt, groupName) };
+  }
+
+  /**
+   * The name is a courtesy: a slow, hung or failed lookup gives up after two seconds, leaving the send most of its
+   * deadline, and the card says "in the group" instead.
+   */
+  async #groupNameWithin(target: FeedbackTarget, signal: AbortSignal): Promise<string | undefined> {
+    const limit = new AbortController();
+    const timer = setTimeout(() => limit.abort(), GROUP_NAME_TIMEOUT_MS);
+    try {
+      return await this.#groupName(target, AbortSignal.any([signal, limit.signal]), limit.signal);
+    } catch (error) {
+      // A cooldown that could not be stored must stop the worker like any other feedback call.
+      if (error instanceof FeedbackCooldownStorageError) throw error;
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+      limit.abort();
+    }
+  }
+
+  /**
+   * Only the provider read races the courtesy limit. Once Slack answers with a rate limit, the cooldown it records
+   * is awaited to the end, so a failure to store it still reaches the worker.
+   */
+  async #groupName(target: FeedbackTarget, signal: AbortSignal, limit: AbortSignal): Promise<string | undefined> {
+    const within = <T>(read: Promise<T>) => Promise.race([read, untilAborted(limit)]);
+    if (target.provider === "slack") {
+      const { api } = await this.#slack(target, signal);
+      const r = await this.#slackCall(target, () => within(api.conversations.info({ channel: target.channelId })));
+      return r?.channel?.name || undefined;
+    }
+    const { api } = await this.#feishu(target, signal);
+    const r = await within(api.im.v1.chat.get({ path: { chat_id: target.channelId } }));
+    return r?.code === 0 ? r.data?.name || undefined : undefined;
   }
 
   /** Opening the conversation posts nothing, so any failure here is known not to have sent the card. */
@@ -446,15 +495,16 @@ export class ImFeedbackMessenger implements FeedbackTransport {
    * message, and Feishu would swallow that later message as a duplicate of this one.
    */
   async postOfflineNotice(target: FeedbackTarget, reason: WaitingNoticeReason = "offline"): Promise<void> {
+    const leg: DeliveryLeg = {};
     try {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, {}),
+        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, leg),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      throw postFailure(error);
+      throw withReadback(postFailure(error), leg);
     }
   }
 
@@ -621,7 +671,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       const sent = await this.#feishuSenderCreate(
         target,
-        feedbackCard(target, undefined, context.language),
+        await this.#withOrigin(target, feedbackCard(target, undefined, context.language), context, signal),
         context,
         signal,
         target.providerRequestId,
@@ -752,6 +802,14 @@ function rejectedAsUnreachable(error: unknown): never {
 }
 
 /** The Feishu error code of an HTTP error response, which means Feishu answered and refused the call. */
+/** Resolves with nothing once the signal aborts: the end of an optional read's time. */
+function untilAborted(signal: AbortSignal): Promise<undefined> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve(undefined);
+    else signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
+}
+
 function feishuErrorCode(error: unknown): number | undefined {
   if (!error || typeof error !== "object" || !("response" in error)) return;
   const data = (error as { response?: { data?: { code?: unknown } } }).response?.data;

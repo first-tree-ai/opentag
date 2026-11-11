@@ -47,6 +47,31 @@ export const RUNTIME_PROVIDER_ORIGIN_HEADER = "x-opentag-provider-origin" as con
  */
 export const FEISHU_TENANT_TOKEN_LOCAL_SENTINEL = "opentag-local-handle-tenant-token" as const;
 
+/** Feishu's application rate limit, which it can answer with any HTTP status. */
+export const FEISHU_RATE_LIMIT_CODE = 99991400;
+
+/**
+ * Feishu error codes that permanently reject app credentials, tenant tokens, or app configuration
+ * (invalid app_id/app_secret, app not installed/suspended/forbidden, IP allowlist rejection,
+ * invalid/expired/revoked access token).
+ */
+export const FEISHU_CREDENTIAL_REJECTED_CODES: ReadonlySet<number> = new Set([
+  10003, 10005, 10012, 10013, 10014, 10015, 20002, 99991401, 99991543, 99991661, 99991662, 99991663, 99991664, 99991665,
+  99991668, 99991671, 99991672, 99991673, 99991677,
+]);
+
+export function isFeishuRateLimitCode(code: unknown): boolean {
+  if (typeof code === "number") return code === FEISHU_RATE_LIMIT_CODE;
+  if (typeof code === "string") return code === String(FEISHU_RATE_LIMIT_CODE);
+  return false;
+}
+
+export function isFeishuCredentialRejectedCode(code: unknown): boolean {
+  if (typeof code === "number") return FEISHU_CREDENTIAL_REJECTED_CODES.has(code);
+  if (typeof code === "string" && /^\d+$/.test(code)) return FEISHU_CREDENTIAL_REJECTED_CODES.has(Number(code));
+  return false;
+}
+
 export const RUNTIME_CREDENTIAL_PROVIDERS = ["github", "slack", "feishu"] as const;
 export const RuntimeCredentialProviderSchema = z.enum(RUNTIME_CREDENTIAL_PROVIDERS);
 export type RuntimeCredentialProvider = z.infer<typeof RuntimeCredentialProviderSchema>;

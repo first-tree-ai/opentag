@@ -333,14 +333,6 @@ executed. This differs from replaying an identical failed call. No model failure
 whole-Turn, delivery or scheduled-occurrence replay. `CLOUD_MODEL_RATE_LIMIT` records the attempt,
 planned wait and ownership declaration without logging upstream content or credentials.
 
-A reply that stops at the output-token limit (Pi stop reason `length`) is not a failed call to replay: the
-truncated reply stays in the conversation. The worker sends the Agent a follow-up in the same conversation, telling
-it to continue exactly where it stopped; if that also hits the limit, a second follow-up tells it to finish in several
-shorter replies and file writes. Only when that one is cut off too does the Turn fail with
-`provider_execution_limit`. Each follow-up is a new Run (`<runId>-continue-<n>`) with its own model calls under the
-same proxy budget rules; usage adds up across them, and a steer that arrives during a follow-up is deferred to the
-Server (Gandy 11-10, R7). Other execution limits, such as max turns, are unchanged.
-
 The Router can report a definite pre-output Provider rate limit inside HTTP 200 SSE. The model
 proxy inspects at most 8 KiB before the first complete data event, including heartbeat comments,
 and normalizes an initial `rate_limit_exceeded` envelope only when the Router sets

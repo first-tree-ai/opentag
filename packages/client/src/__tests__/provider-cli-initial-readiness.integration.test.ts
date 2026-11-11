@@ -101,7 +101,7 @@ describe("provider CLI initial readiness", () => {
     expect(harness.modelStarts).toBe(0);
     expect(harness.reports[0]).toMatchObject({
       outcome: "failed",
-      errorReason: "credential_unavailable",
+      errorReason: "tool_setup_failed",
       executionEffects: "not_started",
     });
     expect(harness.logs.some((log) => log.fields.errorCode === "selection_invalid")).toBe(true);
@@ -148,7 +148,7 @@ describe("provider CLI initial readiness", () => {
     expect(harness.modelStarts).toBe(0);
     expect(harness.reports).toHaveLength(2);
     expect(
-      harness.reports.every((report) => report.outcome === "failed" && report.errorReason === "credential_unavailable"),
+      harness.reports.every((report) => report.outcome === "failed" && report.errorReason === "tool_setup_failed"),
     ).toBe(true);
     expect(harness.logs.every((log) => log.fields.errorCode === "selection_invalid")).toBe(true);
   });

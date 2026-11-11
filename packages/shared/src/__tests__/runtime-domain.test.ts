@@ -88,6 +88,7 @@ describe("runtime domain contract", () => {
   it("keeps legacy report capability requirements", () => {
     expect(requiredTurnReportVersion({ errorReason: "im_connection_unavailable" })).toBe(4);
     expect(requiredTurnReportVersion({ errorReason: "model_login_missing" })).toBe(4);
+    expect(requiredTurnReportVersion({ errorReason: "tool_setup_failed" })).toBe(4);
     expect(requiredTurnReportVersion({ errorReason: "credential_unavailable" })).toBe(1);
     expect(requiredTurnReportVersion({})).toBe(1);
     expect(requiredTurnReportVersion(turnReport())).toBe(1);

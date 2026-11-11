@@ -734,11 +734,7 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
-  function joinHarness(
-    sessionKind: "internal" | "visible",
-    results: string[] = [],
-    checkpoint?: () => Promise<void>,
-  ) {
+  function joinHarness(sessionKind: "internal" | "visible", results: string[] = [], checkpoint?: () => Promise<void>) {
     const root = sessionMessage();
     const outboxContext = {
       provider: "feishu",

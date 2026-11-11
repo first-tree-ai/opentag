@@ -1620,7 +1620,8 @@ export class CloudTurnRunner {
     const received = await this.#options.journal.requeueUnstartedJoin(started);
     active.imJoins.delete(entry.deliveryId);
     forgetJoin(active, entry.deliveryId);
-    if (next.generation !== this.#channelGeneration) this.#reverifyJoined([{ kind: "delivery", entry: received, queued: next }]);
+    if (next.generation !== this.#channelGeneration)
+      this.#reverifyJoined([{ kind: "delivery", entry: received, queued: next }]);
     else this.#afterRefusedJoin(active, steering, next, result);
     return false;
   }

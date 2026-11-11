@@ -551,6 +551,9 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     const target = await h.target();
     expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
+    expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
+    expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);
     expect(await h.store.messageContext({ messageId: randomUUID(), sessionId: randomUUID() })).toEqual({
       language: "en",
       direct: false,

@@ -476,7 +476,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (signal) =>
           this.#deliver(
             target,
-            feedbackCard(target, action, context.language),
+            feedbackCard(target, action, context.language, context.runtime),
             context,
             signal,
             failureGoesToSender(target),
@@ -561,12 +561,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const messageId = target.cardMessageId;
     if (!messageId) return;
-    const { language } = await this.#context(target);
+    const { language, runtime } = await this.#context(target);
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         if (target.messageFormat === "text_v1") return this.#updateText(target, messageId, action, language, signal);
-        const card = feedbackCard(target, action, language);
+        const card = feedbackCard(target, action, language, runtime);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>

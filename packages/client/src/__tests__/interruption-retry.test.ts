@@ -30,7 +30,6 @@ import {
   TurnRetryStore,
   trackRunTime,
   turnRetryRecord,
-  UNAVAILABLE_RETRY_DELAY_MS,
 } from "../runtime/interruption-retry.js";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
@@ -52,9 +51,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
     realSetTimeout(
       handler,
-      ms === RATE_LIMIT_RETRY_DELAY_MS || ms === START_FAILURE_RETRY_DELAY_MS || ms === UNAVAILABLE_RETRY_DELAY_MS
-        ? rateLimitDelayMs
-        : ms,
+      ms === RATE_LIMIT_RETRY_DELAY_MS || ms === START_FAILURE_RETRY_DELAY_MS ? rateLimitDelayMs : ms,
       ...(rest as []),
     )) as typeof setTimeout);
 });
@@ -67,14 +64,7 @@ afterEach(async () => {
 
 describe("interruption classification and continuation", () => {
   it("retries only the recoverable classes", () => {
-    for (const reason of [
-      "provider_rate_limited",
-      "provider_start_failed",
-      "provider_unavailable",
-      "provider_connection_failed",
-      "client_shutdown",
-      "daemon_crash",
-    ]) {
+    for (const reason of ["provider_rate_limited", "provider_start_failed", "client_shutdown", "daemon_crash"]) {
       expect(recoverableFailure(reason)).toBe(reason);
     }
     for (const reason of [
@@ -398,48 +388,6 @@ describe("AgentTurnRunner automatic retry", () => {
         executionEffects: "not_started",
         errorReason: "provider_start_failed",
       }),
-      3,
-    );
-  });
-
-  it.each(["provider_unavailable", "provider_connection_failed"] as const)(
-    "retries a Turn that hit %s before the model produced anything (R2)",
-    async (code) => {
-      const h = runnerHarness();
-      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-      h.prompt
-        .mockImplementationOnce(async () => ({
-          runId: "turn-1",
-          status: "failed",
-          output: [],
-          error: { code, message: "503" },
-        }))
-        .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
-      h.runner.start(owner(h.request));
-      await h.runner.settled();
-      expect(h.prompt).toHaveBeenCalledTimes(2);
-      expect(promptItems(h.prompt, 1)[0]?.text).toContain("before answering (automatic retry)");
-      expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
-    },
-  );
-
-  it.each([
-    { type: "message_delta", messageId: "m", delta: "partial" },
-    { type: "tool_started", toolCallId: "t", name: "Bash", input: {} },
-  ])("reports an unavailable model without a retry once the attempt produced output ($type)", async (event) => {
-    const h = runnerHarness();
-    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-    h.prompt.mockImplementation(async () => {
-      h.emit({ type: "run_started", runId: "turn-1" });
-      h.emit(event);
-      await new Promise((resolve) => realSetTimeout(resolve, 1));
-      return { runId: "turn-1", status: "failed", output: [], error: { code: "provider_unavailable", message: "529" } };
-    });
-    h.runner.start(owner(h.request));
-    await h.runner.settled();
-    expect(h.prompt).toHaveBeenCalledOnce();
-    expect(h.create).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ outcome: "failed", errorReason: "provider_unavailable" }),
       3,
     );
   });

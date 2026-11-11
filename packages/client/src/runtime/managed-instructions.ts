@@ -177,6 +177,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSchedules(context),
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
@@ -251,6 +252,21 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
         ]
       : []),
+  ];
+}
+
+function renderSchedules(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) return [];
+  const cli = context.cliCommand;
+  return [
+    "",
+    "## Schedules",
+    "",
+    `Manage schedules pinned to this Session with \`${cli} self schedule\`:`,
+    `- \`${cli} self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]\``,
+    `- \`${cli} self schedule <list|show|update|pause|resume|delete|preview> ...\` (pass \`--help\` for flags).`,
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first. If a required command needs approval under Ask for approval, or if an MCP Server or credential is unauthorized, guide the user to complete authorization or add the required command rules in the Agent's Model settings first.",
   ];
 }
 

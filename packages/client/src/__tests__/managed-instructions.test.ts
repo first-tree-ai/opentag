@@ -622,3 +622,32 @@ it("describes one-code Slack provisioning for visible managed Sessions without g
     "agent provision-slack",
   );
 });
+
+it("includes schedule self-management and permission pre-verification instructions when the Session CLI is available", () => {
+  const localPrompt = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
+  expect(localPrompt).toContain("## Schedules");
+  expect(localPrompt).toContain(
+    "`opentag-dev self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]`",
+  );
+  expect(localPrompt).toContain(
+    "`opentag-dev self schedule <list|show|update|pause|resume|delete|preview> ...` (pass `--help` for flags).",
+  );
+  expect(localPrompt).toContain(
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+  );
+  expect(localPrompt).toContain(
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first.",
+  );
+  expect(localPrompt).not.toContain("verify and exercise");
+
+  const cloudPrompt = renderManagedSystemPrompt(snapshot, cloudSession);
+  expect(cloudPrompt).toContain("## Schedules");
+  expect(cloudPrompt).toContain("`opentag self schedule create");
+  expect(cloudPrompt).toContain(
+    "using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update",
+  );
+
+  const withoutCli = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
+  expect(withoutCli).not.toContain("## Schedules");
+  expect(withoutCli).not.toContain("self schedule");
+});

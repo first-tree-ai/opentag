@@ -191,6 +191,17 @@ A Local Agent's Sessions run concurrently, and a configuration change doesn't wa
 6. With 10 chats running, send a message in an 11th. It waits with no error, then runs once a slot opens. A follow-up in a
    running chat still joins its Turn while the Agent is at the limit.
 
+## Authorization command layout and clipboard
+
+1. Render the real `SlackAutoConnect` component in a browser with a fixed 1000 × 650 viewport and a 650 px
+   parent. Stub `autoSetupSlack` to return `authorization_required` and a synthetic 240-character ticket.
+2. Set the parent width to 320 px, then back to 650 px. The read-only **Paste into Slack** field wraps the whole
+   command, grows and shrinks with the parent, and does not cause horizontal page overflow. Do not resize the viewport
+   or dispatch a window resize event.
+3. Try both short and long tickets. Tab to the field and confirm it selects the full command and rejects edits.
+   **Copy** must put the exact command on the clipboard. With clipboard writes denied, confirm **Copy manually.**
+   appears, the entire command is selected, and the challenge code is preserved.
+
 ## Cloud Agent `/slackauthticket` automatic setup
 
 1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) with fresh browser state and choose

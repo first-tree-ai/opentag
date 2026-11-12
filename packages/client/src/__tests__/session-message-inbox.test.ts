@@ -754,6 +754,44 @@ describe("SessionMessageInbox", () => {
     });
   });
 
+  it("warns from the deadline already running, not from the budget, when preparing the Run took time", async () => {
+    let now = Date.parse("2026-11-07T10:00:00.000Z");
+    let scheduled = 0;
+    const prompt = vi.fn(async (_request: { durationLimitInMs?: number }) => ({ status: "completed", output: [] }));
+    const request = delivery();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        ...credentialEnvironment(),
+        mode: "proxy",
+        prepare: vi.fn(async () => ({ signal: new AbortController().signal, executionId: "e" })),
+      } as never,
+      imCredentialGrantVersion: () => 2,
+      now: () => now,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      timeoutScheduler: {
+        schedule(delay) {
+          scheduled = delay;
+          return { cancel: () => undefined };
+        },
+      },
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => {
+          now += 3 * 60_000;
+          return { waitForIdle: vi.fn(async () => undefined), prompt } as never;
+        }),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await inbox.accept(request);
+    await inbox.settled();
+    const [call] = prompt.mock.calls[0] as unknown as [{ durationLimitInMs: number }];
+    expect(call.durationLimitInMs).toBe(scheduled - 3 * 60_000);
+    inbox.stop();
+  });
+
   it("retries a Run whose Provider process exited, and fails it when its retries run out", async () => {
     const prompt = vi.fn(async () => ({
       status: "failed",

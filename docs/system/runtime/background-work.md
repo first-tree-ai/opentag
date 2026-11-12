@@ -19,7 +19,7 @@ ends:
 
 | Provider | What counts as live | How the model is woken |
 | --- | --- | --- |
-| Claude Code | `background_tasks_changed`, plus timers confirmed live in the process (`ScheduleWakeup`, a `CronCreate` job that is not `durable`) | Claude Code wakes itself |
+| Claude Code | `background_tasks_changed`, plus a pending `ScheduleWakeup` | Claude Code wakes itself |
 | Codex | A `commandExecution` still open when its turn completes | The adapter starts a turn with the exit code and output tail. Codex reports the end on the old turn's id and does not wake the model |
 | Pi | Work started with `background_bash`, a tool from OpenTag's own Pi extension, reported over `setStatus` | The extension calls `sendMessage` with `triggerTurn` |
 
@@ -28,8 +28,12 @@ every Run to its limit. A process a Provider cannot see holds nothing open. On P
 escapes to its own process group: the Run ends as usual, and it keeps running on Local and stops with the sandbox on
 Cloud. The extension's prompt guideline tells the model to use `background_bash`.
 
-A recurring timer that is not `durable` holds the Run until its limit: it only exists in the process. A cron firing names
-no job, so it retires every one-shot job already due.
+## Recurring work
+
+Each firing of recurring work is a new Run with its own limit, through an OpenTag Schedule (`opentag agent self schedule`).
+The Server holds the Schedule, so between firings there is no process, no Run and no sandbox. Claude Code's native cron tools
+are disabled: a job lives in the process, so it would either hold the Run to its limit or vanish with it. A one-shot
+`ScheduleWakeup` stays, and counts within its Run.
 
 Only a result for the Run's own input can complete it. On `--resume`, Claude Code reports a result for a notice it
 generated itself, with no model turn, and that never ends the Run.
@@ -58,6 +62,18 @@ The signal is output only: the output file's size and modification time on Claud
 Timers are not watched. CPU time is not read, so a silent computation gets a notice, which costs one model turn. A notice
 that goes wrong is a turn the Run started by itself, so it follows the rule below.
 
+## Before the limit
+
+A Run is told before its duration limit stops it: a tenth of the time it has left, at most 5 minutes, and no notice when that
+would be under a minute. It is one `[openTag notice]` and no extra time. It joins a running turn, or starts one during a wait.
+A retried Run counts from what is left of its budget. A token or tool-call limit would warn at 90% of the limit, but no such
+limit exists yet.
+
+## The Agent's guide
+
+The managed instructions tell every Session, on every Provider, that background work uses the machine's resources, and that a
+plain wait uses a Schedule rather than a background process.
+
 ## The ledger
 
 No Provider can be relied on to tell a later Run what happened. Codex and Pi say nothing on resume. Claude Code says
@@ -70,8 +86,9 @@ the Pi binding in the Session workspace on Cloud, which is what outlives the san
 - Claude Code's `stopped` counts only for a task the same process listed.
 
 Every Run reads the ledger first, whatever its input, and starts with an `[openTag notice]` if there is anything to tell.
-It covers a limit the last Run reached and the work it left. Entries leave once a model turn has started, so a crash
-before that tells the next Run again.
+It covers a limit the last Run reached and the work it left. What a model turn was shown leaves once that Run
+completes, so a crash or a Run that did not complete tells the next Run again. A turn start alone is not enough: Claude
+Code reports an API error (a 429, for example) as an assistant message the model never wrote. Work that ended after the Run's last model turn started stays for the next Run.
 
 A limit's kind appears only as the reason passed to `recordRunLimit`, so a token or tool-call limit adds a reason.
 
@@ -88,12 +105,19 @@ these: it fails the Run.
 `provider_process_exited` is recoverable, under the same rule as a daemon stop and a 429: at most two automatic retries in
 a row, reset once a retry actually ran for five minutes. It retries at once, without the wait a 429 has. The retried Run
 gets the continuation notice and the ledger. A new process cannot take over the old process's work, so the Session starts
-it again if it still needs it. Cloud Turns do not use these automatic retries; their next Run reads the ledger.
+it again if it still needs it.
+
+On Cloud the worker retries in place, under the same rule: the same Turn, deadline and Session on disk, so the Server sees one
+Run. Steered input the Server settled with the Run goes into the retry, and a steer between attempts is left with the Server.
+A Session message steered into an attempt that exited goes into the retry too, and the Turn's result settles it, so the
+Runner never queues it to run a second time. A Session message offered between attempts stays in the Runner's queue.
+A crash of the worker itself is not retried: its parent reports the result as unknown.
 
 A model CLI that fails to start (`provider_start_failed`, `not_started`) is retried once the same way, after its short
-wait and counted when it fails. Nothing ran, so the ledger is unchanged: the retry reads the same notice. The sender
-hears the outcome once, when the retry settles. A turn the Run started by itself after answering its input is a
-`followUpFailure`, not a start failure, and is never retried.
+wait and counted when it fails. A failed attempt, like a 429, removes nothing from the ledger, so the retry reads the
+same notice, and an entry leaves only once the retried Run completes. The sender hears the outcome once, when the retry
+settles. A turn the Run started by itself after answering its input is a `followUpFailure`, not a start failure, and is
+never retried.
 
 ## What survives a stop
 

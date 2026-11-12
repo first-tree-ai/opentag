@@ -21,6 +21,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
+import { runBudgetTimer, scheduleUnrefTimeout } from "../agent-runtime/run-budget-timer.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -68,7 +69,6 @@ import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration, providerSupportsMcpGateway } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
-import { runBudgetTimer, scheduleUnrefTimeout } from "./run-budget-timer.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedMcpGatewayLaunch,
@@ -772,6 +772,7 @@ export class AgentTurnRunner {
          */
         input,
         signal: runSignal,
+        durationLimitInMs: Math.max(1, Date.parse(turn.expiresAt as string) - this.#now()),
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
          * one, so a runtime manager with nothing to inject is never consulted at all.

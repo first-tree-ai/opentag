@@ -35,6 +35,32 @@ const cloudSession: ManagedSessionContext = {
   selfConfigurationEnabled: true,
 };
 
+describe("renderManagedSystemPrompt background work", () => {
+  it("gives every Provider and Session kind one guide: real work may run, a plain wait uses a schedule", () => {
+    const guide = "Do not keep a background process just to wait";
+    const prompts = [
+      renderManagedSystemPrompt(snapshot, session),
+      renderManagedSystemPrompt({ ...snapshot, provider: "pi" }, session),
+      renderManagedSystemPrompt({ ...snapshot, provider: "claude-code" }, session),
+      renderManagedSystemPrompt(snapshot, { ...session, sessionKind: "internal" }),
+      renderManagedSystemPrompt({ ...snapshot, provider: "pi" }, cloudSession),
+    ];
+    for (const prompt of prompts) {
+      expect(prompt).toContain(guide);
+      expect(prompt).toContain("uses this machine's resources");
+    }
+    // The schedule command is described once, in the Schedules section.
+    for (const prompt of [prompts[0], prompts[3]]) {
+      expect(prompt).toContain("use a schedule instead (see Schedules)");
+      expect(prompt).toContain("needs no process between firings");
+      expect(prompt?.split("self schedule create --name").length).toBe(2);
+    }
+    const noCli = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
+    expect(noCli).toContain(guide);
+    expect(noCli).not.toContain("self schedule");
+  });
+});
+
 describe("renderManagedSystemPrompt Agent Home", () => {
   it("describes native configuration only for Local Codex, independently of Server self-configuration", () => {
     const prompt = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
@@ -157,7 +183,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     const disabled = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
     expect(disabled).not.toContain("## Self-configuration");
     expect(disabled).not.toContain("## MCP");
-    expect(disabled).not.toContain("agent self");
+    expect(disabled).not.toContain("agent self update");
 
     const disabledUnavailable = renderManagedSystemPrompt(snapshot, {
       ...session,
@@ -493,7 +519,7 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).not.toContain("## Skills");
     expect(prompt).not.toContain("skill push");
     expect(prompt).not.toContain("## Self-configuration");
-    expect(prompt).not.toContain("agent self");
+    expect(prompt).not.toContain("agent self update");
     expect(prompt).toContain("## MCP");
     expect(prompt).toContain("Branch on the operation before you search or add.");
     expect(prompt).toContain("Do not search the catalog and do not run add.");

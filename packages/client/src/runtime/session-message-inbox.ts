@@ -8,6 +8,7 @@ import {
   type SessionMessageDeliveryResult,
   SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
+import { type RunBudgetTimer, runBudgetTimer } from "../agent-runtime/run-budget-timer.js";
 import type {
   AgentInput,
   AgentRunError,
@@ -42,7 +43,6 @@ import {
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
-import { type RunBudgetTimer, runBudgetTimer } from "./run-budget-timer.js";
 import type {
   PreparedRuntimeCredentialEnvironment,
   RuntimeCredentialEnvironmentManager,
@@ -1124,6 +1124,8 @@ export class SessionMessageInbox {
           ),
         ),
         signal: ensureRunSignal(),
+        // The budget is running here: it pauses only during a quota wait inside the prompt.
+        durationLimitInMs: Math.max(1, (timer?.expiresAt ?? this.#now()) - this.#now()),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
       await settleRunTime();

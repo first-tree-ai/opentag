@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runBudgetTimer, scheduleUnrefTimeout } from "../runtime/run-budget-timer.js";
+import { runBudgetTimer, scheduleUnrefTimeout } from "../agent-runtime/run-budget-timer.js";
 
 describe("runBudgetTimer", () => {
   it("stands still while paused and expires once the rest of the budget has run", async () => {

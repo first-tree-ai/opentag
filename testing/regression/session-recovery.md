@@ -275,7 +275,13 @@ Codex and Pi (on Pi with `background_bash`).
    naming the command.
 4. Kill the Provider process (only it, not the daemon) during the wait. Expected: the message is retried with the
    continuation notice, and it names the command as possibly still running.
-5. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+5. Give a Run a 20-minute `maxDurationMs` and keep it busy. Expected: about 2 minutes before the limit the Session reads
+   `[openTag notice] This Run reaches its duration limit`, and the Run stops at the limit with no extra time.
+6. Ask a Session to check something in 30 minutes. Expected: it creates a Schedule and no background process, and the firing
+   is a new Run.
+7. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
+   Sandbox with the continuation notice, and reports one result.
+8. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
    and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
    after that reply.
 

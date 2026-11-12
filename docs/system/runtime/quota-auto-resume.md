@@ -36,7 +36,8 @@ plain 429 is a rate limit, not a quota wait.
 While a Run is waiting:
 
 - The Run's duration budget stands still, for an IM Turn and for a Session message alike, so a wait of hours does
-  not end in `turn_timeout`. The budget resumes with what was left when the wait ends.
+  not end in `turn_timeout`. The budget resumes with what was left when the wait ends, and so does the
+  notice before the Run's limit.
 - The wait is not run time: it is not recorded toward the budget or the 5-minute retry-count reset.
 - Cancelling the Turn on the Web or `session stop` ends the Run and the wait as usual.
 - 529 and other capacity retries are not quota waits; the budget keeps running through them.

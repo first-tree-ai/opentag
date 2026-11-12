@@ -40,6 +40,7 @@ import {
   completionForResult,
   type TurnCompletion,
 } from "../runtime/agent-turn-runner.js";
+import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
 import {
   beginChannelTurn,
   ChannelActivityStore,
@@ -140,6 +141,7 @@ const TURN_POLICY = {
 /** Pi conversation/binding subtree inside the Session workspace; survives a native reset. */
 export const CLOUD_TURN_CONTINUITY_SUBDIRECTORY = ".opentag/pi-session";
 const BINDING_FILE_NAME = "pi-binding.json";
+const BACKGROUND_WORK_FILE_NAME = "background-work.json";
 
 const ProxyEnvironmentManifestSchema = {
   parse(value: unknown): { executionId: string; environment: Record<string, string> } {
@@ -510,6 +512,9 @@ export async function runCloudTurnWorker(
     await mkdir(piHome, { recursive: true, mode: 0o700 });
     await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const bindingFile = join(continuityDirectory, BINDING_FILE_NAME);
+    const backgroundWork = new BackgroundWorkLedger(
+      fileLedgerStorage(join(continuityDirectory, BACKGROUND_WORK_FILE_NAME)),
+    );
 
     // Per-execution proxy material published by the trusted Runner (read-only mount).
     const proxyStartStarted = performance.now();
@@ -616,6 +621,7 @@ export async function runCloudTurnWorker(
       configuration,
       eventSink: async (event: AgentRuntimeEvent) => {
         if (event.type === "binding_changed") await persistBinding(bindingFile, event.binding);
+        await backgroundWork.apply(event);
       },
       policy: TURN_POLICY,
       systemPrompt: renderManagedSystemPrompt(
@@ -662,7 +668,7 @@ export async function runCloudTurnWorker(
         runId: randomTurnRunId(request),
         configuration,
         ...(await channelTurn.begin()),
-        input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
+        input: await backgroundWork.prefix(cloudWorkerInput(request, new Date(options.now?.() ?? Date.now()))),
         signal: execution.signal,
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
@@ -680,6 +686,7 @@ export async function runCloudTurnWorker(
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }
+    await recordRunLimit(backgroundWork, completion, options);
     return finishWorkerSteers(completion, sessionSteers, imJoins);
   } finally {
     registerRunnerSignalCleanup(undefined);
@@ -814,6 +821,34 @@ async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding |
     throw error;
   }
   return PersistedBindingSchema.parse(JSON.parse(raw));
+}
+
+async function recordRunLimit(
+  ledger: BackgroundWorkLedger,
+  completion: TurnCompletion,
+  options: CloudTurnWorkerRunOptions,
+): Promise<void> {
+  if (completion.errorReason !== "turn_timeout") return;
+  await ledger.recordRunLimit({ reason: "turn_timeout", at: new Date(options.now?.() ?? Date.now()).toISOString() });
+}
+
+/** The sandbox is recycled with the Run, so the ledger lives beside the binding, in what survives it. */
+function fileLedgerStorage(path: string): BackgroundWorkLedgerStorage {
+  return {
+    read: async () => {
+      const raw = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      return raw === undefined ? undefined : JSON.parse(raw);
+    },
+    write: async (state) => {
+      const temporary = `${path}.${process.pid}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+      await rename(temporary, path);
+    },
+    remove: () => rm(path, { force: true }),
+  };
 }
 
 /** Atomic binding persistence: the next Turn resumes exactly this provider binding. */

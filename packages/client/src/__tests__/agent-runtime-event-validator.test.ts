@@ -115,6 +115,28 @@ describe("AgentRunEventValidator", () => {
     ).toThrow();
   });
 
+  it("accepts background work and rejects what it cannot read", () => {
+    const validator = new AgentRunEventValidator();
+    validator.accept({ type: "background_work_changed", items: [{ id: "a", label: "suite", outputPath: "/a" }] });
+    validator.accept({ type: "background_work_changed", items: [{ id: "a", label: "suite" }] });
+    validator.accept({ type: "background_work_finished", id: "a", status: "stopped" });
+    validator.accept({
+      type: "background_work_finished",
+      id: "a",
+      status: "completed",
+      detail: "ok",
+      outputPath: "/a",
+    });
+    for (const event of [
+      { type: "background_work_changed", items: "none" },
+      { type: "background_work_finished", id: "a", status: "running" },
+    ]) {
+      expect(() => validator.accept(event as never)).toThrow(
+        expect.objectContaining({ code: "provider_protocol_error" }),
+      );
+    }
+  });
+
   it("rejects an invalid tool completion status without consuming the active lifecycle", () => {
     const validator = new AgentRunEventValidator();
     validator.accept({ type: "tool_started", toolCallId: "tool", name: "read" });

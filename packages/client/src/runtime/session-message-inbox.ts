@@ -1631,7 +1631,9 @@ export class SessionMessageInbox {
     retryAt: string | undefined,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
     const now = this.#now();
-    const waits = (record.retryRanMs ?? 0) >= RETRY_RESET_AFTER_MS ? 1 : (record.quotaWaits ?? 0) + 1;
+    // A run long enough starts both counts over: the quota waits and the automatic retries.
+    const productive = (record.retryRanMs ?? 0) >= RETRY_RESET_AFTER_MS;
+    const waits = productive ? 1 : (record.quotaWaits ?? 0) + 1;
     if (waits > MAX_QUOTA_WAITS) return undefined;
     const resumeAt = quotaResumeAt(retryAt, waits, now);
     const failure = durableFailureFromUnknown(record.payload.requestId, phase, error, "provider_failed");
@@ -1639,7 +1641,15 @@ export class SessionMessageInbox {
     const interruption: Interruption = { reason: "provider_quota_exceeded", at: new Date(now).toISOString() };
     try {
       const retryable = await this.#transition(
-        { ...record, quotaWaits: waits, retryRanMs: 0, lastError: failure, interruption, updatedAt: now },
+        {
+          ...record,
+          ...(productive ? { attempts: 0 } : {}),
+          quotaWaits: waits,
+          retryRanMs: 0,
+          lastError: failure,
+          interruption,
+          updatedAt: now,
+        },
         "retryable",
         { nextAttemptAt: Date.parse(resumeAt) },
       );

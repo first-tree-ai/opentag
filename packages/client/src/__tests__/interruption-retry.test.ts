@@ -807,6 +807,22 @@ describe("AgentTurnRunner automatic retry", () => {
     await h.runner.settled();
   });
 
+  it("starts the automatic retries over after a 5-minute run that ended in a quota wait", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, {
+      ...turnRetryRecord(h.request, "turn-1"),
+      retries: MAX_AUTOMATIC_RETRIES,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({ retries: 0, quotaWaits: 1, retryRanMs: 0 });
+    h.runner.stop();
+    await h.runner.settled();
+  });
+
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
     const h = runnerHarness({ restartRetry: true });

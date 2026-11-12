@@ -4,7 +4,7 @@ import {
   type TaskTurn,
   type TurnFailureReason,
 } from "@opentag/shared/browser";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type Ref, useCallback, useEffect, useRef, useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Icon, StatusIndicator, Text, Tooltip } from "../ui/design-system.js";
@@ -47,6 +47,7 @@ export function TaskActivity({
     taskEntryVisible(entry, task.source.provider, capturedFeedSupplied),
   );
   const sectionRef = useRef<HTMLElement>(null);
+  const latestEntryRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrolledTaskIdRef = useRef<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -102,6 +103,7 @@ export function TaskActivity({
       target.scrollTop = target.scrollHeight;
     }
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    latestEntryRef.current?.focus({ preventScroll: true });
     setShowJumpToLatest(false);
   };
 
@@ -120,9 +122,14 @@ export function TaskActivity({
         {pagination}
         {entries.length > 0 ? (
           <div className="grid grid-cols-1">
-            {entries.map((entry) => (
+            {entries.map((entry, index) => (
               <div key={entry.id} className="py-4 first:pt-0 last:pb-0">
-                <TaskEntry capturedFeedSupplied={capturedFeedSupplied} task={task} entry={entry} />
+                <TaskEntry
+                  capturedFeedSupplied={capturedFeedSupplied}
+                  task={task}
+                  entry={entry}
+                  ref={index === entries.length - 1 ? latestEntryRef : undefined}
+                />
               </div>
             ))}
           </div>
@@ -265,22 +272,28 @@ function InternalSessionStatus({ session }: { session: TaskInternalSessionItem }
   );
 }
 
+const entryFocusClassName = "rounded-sm focus-visible:outline-2 focus-visible:outline-kumo-focus";
+
 function TaskEntry({
   task,
   entry,
   capturedFeedSupplied,
+  ref,
 }: {
   task: TaskSummary;
   entry: TaskTimelineEntry;
   capturedFeedSupplied: boolean;
+  ref?: Ref<HTMLElement>;
 }) {
-  if (entry.kind === "captured") return <TaskCapturedReplyEntry task={task} entry={entry} />;
+  if (entry.kind === "captured") return <TaskCapturedReplyEntry task={task} entry={entry} ref={ref} />;
   const turn = entry.turn;
-  if (entry.kind === "request") return <TaskRequest turn={turn} id={entry.id} />;
+  if (entry.kind === "request") return <TaskRequest turn={turn} id={entry.id} ref={ref} />;
   const compact = entry.kind === "report" && entry.hasReplies;
   return (
     <article
-      className={compact ? "grid gap-2 pl-11" : "grid grid-cols-[2rem_minmax(0,1fr)] gap-3"}
+      ref={ref}
+      tabIndex={-1}
+      className={`${compact ? "grid gap-2 pl-11" : "grid grid-cols-[2rem_minmax(0,1fr)] gap-3"} ${entryFocusClassName}`}
       data-ui="task-message-agent"
       data-task-entry-id={entry.id}
     >
@@ -329,12 +342,14 @@ function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
   return null;
 }
 
-function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
+function TaskRequest({ turn, id, ref }: { turn: TaskTurn; id: string; ref?: Ref<HTMLElement> }) {
   const author = turn.message.authorDisplayName ?? taskAuthorLabel(turn.message.authorKind);
   const attachments = turn.message.attachments ?? [];
   return (
     <article
-      className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3"
+      ref={ref}
+      tabIndex={-1}
+      className={`grid grid-cols-[2rem_minmax(0,1fr)] gap-3 ${entryFocusClassName}`}
       aria-label={m.tasks_message_sent_at({ time: formatDateTime(turn.message.occurredAt) })}
       data-ui="task-message-request"
       data-task-entry-id={id}
@@ -463,13 +478,17 @@ function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
 function TaskCapturedReplyEntry({
   task,
   entry,
+  ref,
 }: {
   task: TaskSummary;
   entry: TaskTimelineEntry & { kind: "captured" };
+  ref?: Ref<HTMLElement>;
 }) {
   return (
     <article
-      className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3"
+      ref={ref}
+      tabIndex={-1}
+      className={`grid grid-cols-[2rem_minmax(0,1fr)] gap-3 ${entryFocusClassName}`}
       data-ui="task-message-agent"
       data-task-entry-id={entry.id}
     >

@@ -179,6 +179,15 @@ Thread Session never compacts.
    an unreported `ready`/`stopped` response still diagnoses the current missing report; no input is
    redispatched. Cancellation and failed reconcile completion preserve custody and still accept
    the authentic report through its normal path.
+5. Keep an obsolete report for a root IM Turn on a Client that negotiates Turn Report v6. Steer
+   a child input into that Turn, then have the Server record a different terminal outcome of
+   `unknown` before the Client can submit its report. Exercise both live custody and replay
+   from disk, including a completed report retained with its input receipt. Expected: the
+   Server's terminal result is preserved, the root is deduplicated, and the requeued child
+   starts new work instead of being absorbed by the terminal Turn.
+6. Repeat with a different Server report whose outcome is `completed`. Expected: the obsolete
+   report is retired and the child keeps its steer receipt. Receipts for other Turns are
+   preserved in both cases.
 
 ## Retries run out
 
@@ -252,15 +261,29 @@ to it with `opentag session send`. Confirm the message is still queued or joined
   request timeout; the Run ends after the daemon resumes (`SIGCONT`).
 - On Cloud, the same stop answers `execution=requested` and the Run settles as cancelled, without a notice.
 
-## Background work at the end of a Run
+## Background work
 
-Needs a real Claude Code: the Lab's scripted Claude does not start background tasks.
+Needs a real Provider CLI: the Lab's scripted Claude does not start background tasks. Run steps 1 to 4 on Claude Code,
+Codex and Pi (on Pi with `background_bash`).
 
-1. Send an internal Session a message telling it to start a long background shell and end its Turn. It gets
-   `[openTag notice] This Run is about to end.` in the same Run. If it leaves the shell running, the record is `succeeded`
-   and the message's sender gets a notice with reason `background_work_possibly_stopped`.
-2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
-   assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
+1. Send an internal Session a message telling it to start a short background command and end its Turn. Expected: the Run
+   stays `running` after the Turn ends, the Session gets the result without another message, and the record is `succeeded`
+   only after that turn.
+2. Send it a message while it waits. Expected: the message joins the Run and is answered at once, and the Run still waits.
+3. Give it a short `maxDurationMs` and a background command that outlives it. Expected: the sender gets `timed_out`, the
+   command stops, and the next message's Run starts with `[openTag notice] Your previous Run reached its duration limit`,
+   naming the command.
+4. Kill the Provider process (only it, not the daemon) during the wait. Expected: the message is retried with the
+   continuation notice, and it names the command as possibly still running.
+5. Give a Run a 20-minute `maxDurationMs` and keep it busy. Expected: about 2 minutes before the limit the Session reads
+   `[openTag notice] This Run reaches its duration limit`, and the Run stops at the limit with no extra time.
+6. Ask a Session to check something in 30 minutes. Expected: it creates a Schedule and no background process, and the firing
+   is a new Run.
+7. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
+   Sandbox with the continuation notice, and reports one result.
+8. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+   and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
+   after that reply.
 
 ## Schedules on an internal Session
 

@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { RunnerCloudWorkerRequest } from "@opentag/shared";
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
+  AgentInput,
   AgentPromptRequest,
   AgentRunResult,
   AgentRuntimeBinding,
@@ -40,6 +41,7 @@ import {
   completionForResult,
   type TurnCompletion,
 } from "../runtime/agent-turn-runner.js";
+import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
 import {
   beginChannelTurn,
   ChannelActivityStore,
@@ -47,6 +49,7 @@ import {
   isChannelOutbox,
 } from "../runtime/channel-idle-compaction.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
+import { buildContinuationNotice, type Interruption, nextRetry } from "../runtime/interruption-retry.js";
 import {
   type ManagedSessionContext,
   managedAgentSlug,
@@ -140,6 +143,7 @@ const TURN_POLICY = {
 /** Pi conversation/binding subtree inside the Session workspace; survives a native reset. */
 export const CLOUD_TURN_CONTINUITY_SUBDIRECTORY = ".opentag/pi-session";
 const BINDING_FILE_NAME = "pi-binding.json";
+const BACKGROUND_WORK_FILE_NAME = "background-work.json";
 
 const ProxyEnvironmentManifestSchema = {
   parse(value: unknown): { executionId: string; environment: Record<string, string> } {
@@ -378,18 +382,24 @@ export interface CloudTurnWorkerRunOptions {
 interface TurnExecutionContext {
   readonly signal: AbortSignal;
   readonly stopReason: () => "client_shutdown" | "turn_timeout" | undefined;
+  /** What is left before the deadline fixed when the worker started, so preparation time is not given back. */
+  readonly remainingMs: () => number;
 }
 
 function createTurnExecutionContext(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
 ): TurnExecutionContext {
-  const deadline = AbortSignal.timeout(Math.max(1, cloudWorkerTimeout(request, options.now?.() ?? Date.now())));
+  const now = () => options.now?.() ?? Date.now();
+  const startedAt = now();
+  const timeoutMs = Math.max(1, cloudWorkerTimeout(request, startedAt));
+  const deadline = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   return {
     signal,
     // Distinguish a caller stop from the Turn deadline at the moment a stop is observed.
     stopReason: () => (options.signal?.aborted ? "client_shutdown" : deadline.aborted ? "turn_timeout" : undefined),
+    remainingMs: () => Math.max(1, startedAt + timeoutMs - now()),
   };
 }
 
@@ -468,6 +478,8 @@ function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory
 
 export interface CloudWorkerCompletion extends TurnCompletion {
   readonly sessionSteers?: Readonly<Record<string, AgentSteerOutcome>>;
+  /** IM deliveries that joined this Session message Turn, keyed by delivery id. */
+  readonly imJoins?: Readonly<Record<string, AgentSteerOutcome>>;
 }
 
 export async function runCloudTurnWorker(
@@ -508,6 +520,9 @@ export async function runCloudTurnWorker(
     await mkdir(piHome, { recursive: true, mode: 0o700 });
     await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const bindingFile = join(continuityDirectory, BINDING_FILE_NAME);
+    const backgroundWork = new BackgroundWorkLedger(
+      fileLedgerStorage(join(continuityDirectory, BACKGROUND_WORK_FILE_NAME)),
+    );
 
     // Per-execution proxy material published by the trusted Runner (read-only mount).
     const proxyStartStarted = performance.now();
@@ -614,6 +629,7 @@ export async function runCloudTurnWorker(
       configuration,
       eventSink: async (event: AgentRuntimeEvent) => {
         if (event.type === "binding_changed") await persistBinding(bindingFile, event.binding);
+        await backgroundWork.apply(event);
       },
       policy: TURN_POLICY,
       systemPrompt: renderManagedSystemPrompt(
@@ -628,11 +644,12 @@ export async function runCloudTurnWorker(
       ),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
-    const persisted = await readPersistedBinding(bindingFile);
-    const activeRuntime = persisted
-      ? await factory.resume({ ...common, binding: persisted })
-      : await factory.create(common);
-    runtime = activeRuntime;
+    const openRuntime = async () => {
+      const persisted = await readPersistedBinding(bindingFile);
+      runtime = persisted ? await factory.resume({ ...common, binding: persisted }) : await factory.create(common);
+      return runtime;
+    };
+    const firstRuntime = await openRuntime();
     emitPiDiagnostic(options.onDiagnostic, {
       phase: "worker_preparation",
       event: "end",
@@ -644,38 +661,70 @@ export async function runCloudTurnWorker(
 
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
-    let completion: TurnCompletion;
-    let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
-    const sessionSteers = new Map<string, AgentSteerReceipt>();
-    const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
-    try {
-      steering = await openWorkerSteering(request, activeRuntime, sessionSteers, options).catch((error: unknown) => {
+    const attempts: CloudRunAttempts = { steered: [], live: firstRuntime, number: 0 };
+    const sessionSteers = new Map<string, CloudSessionSteer>();
+    const imJoins = new Map<string, CloudSessionSteer>();
+    const steering = await openWorkerSteering(request, attempts, { sessionSteers, imJoins }, options).catch(
+      (error: unknown) => {
         diagnostics.failure(error);
         return undefined;
-      });
-      const result = await activeRuntime.prompt({
-        runId: randomTurnRunId(request),
-        configuration,
-        ...(await channelTurn.begin()),
-        input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
-        signal: execution.signal,
-      });
-      // A completed result is preserved; a stop/timeout that raced a failed result maps true.
-      completion =
-        result.status === "completed"
-          ? completionForResult(result, undefined)
-          : completionForResult(result, execution.stopReason());
+      },
+    );
+    let completion: TurnCompletion;
+    const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
+    try {
+      completion = await runAttempts(
+        attempts,
+        firstRuntime,
+        openRuntime,
+        async (activeRuntime, interruption) => {
+          let attempt: TurnCompletion;
+          try {
+            const result = await activeRuntime.prompt({
+              runId: randomTurnRunId(request),
+              configuration,
+              // A retry continues the Turn that already compacted or found the Session active.
+              ...(interruption ? {} : await channelTurn.begin()),
+              input: await backgroundWork.prefix(
+                withInterruption(
+                  cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
+                  interruption,
+                  attempts.steered,
+                ),
+              ),
+              signal: execution.signal,
+              // A retry keeps the deadline fixed when the worker started, so its warning still comes in time.
+              durationLimitInMs: execution.remainingMs(),
+            });
+            // A completed result is preserved; a stop/timeout that raced a failed result maps true.
+            attempt =
+              result.status === "completed"
+                ? completionForResult(result, undefined)
+                : completionForResult(result, execution.stopReason());
+          } catch (error) {
+            diagnostics.failure(error);
+            attempt = completionForError(error, execution.stopReason());
+          } finally {
+            attempts.live = undefined;
+            await activeRuntime.close().catch(() => undefined);
+            terminateTrackedProcesses(pids);
+          }
+          return attempt;
+        },
+        options.now ?? Date.now,
+      );
     } catch (error) {
+      // Only reopening the runtime for a retry can get here; the attempt that led to it is already over.
       diagnostics.failure(error);
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
       await channelTurn.end();
       await steering?.close().catch((error: unknown) => diagnostics.failure(error));
-      await activeRuntime.close().catch(() => undefined);
-      terminateTrackedProcesses(pids);
     }
-    return finishWorkerSteers(completion, sessionSteers);
+    completion = withEarlierEffects(completion, attempts);
+    await recordRunLimit(backgroundWork, completion, options);
+    return finishWorkerSteers(completion, { sessionSteers, imJoins }, attempts);
   } finally {
     registerRunnerSignalCleanup(undefined);
     await rm(scratch, { recursive: true, force: true });
@@ -811,6 +860,106 @@ async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding |
   return PersistedBindingSchema.parse(JSON.parse(raw));
 }
 
+/** What outlives one attempt of a Run: its input may be steered in any of them. */
+interface CloudRunAttempts {
+  /** Steered input the Server settled with this Run, so a retry must carry it. */
+  readonly steered: AgentInput[];
+  /** Undefined between attempts, when a steer is left with the Server. */
+  live: CloudTurnPiRuntime | undefined;
+  /** Which attempt is running, from 0; a Session message steered into an earlier one is carried into the next. */
+  number: number;
+  /** An attempt that exited may have changed the workspace, whatever later attempts do. */
+  effectsMayHaveOccurred?: boolean;
+}
+
+/**
+ * A Provider process that exits is retried in place, under the shared rule: the same Turn, the same
+ * deadline and the same Session on disk, so the Server sees one Run and needs no change. A crash of the
+ * worker itself is not covered: its parent reports that as unknown.
+ */
+async function runAttempts(
+  attempts: CloudRunAttempts,
+  firstRuntime: CloudTurnPiRuntime,
+  openRuntime: () => Promise<CloudTurnPiRuntime>,
+  attempt: (runtime: CloudTurnPiRuntime, interruption: Interruption | undefined) => Promise<TurnCompletion>,
+  now: () => number,
+): Promise<TurnCompletion> {
+  let count = 0;
+  let activeRuntime = firstRuntime;
+  let interruption: Interruption | undefined;
+  while (true) {
+    const startedAt = now();
+    const completion = await attempt(activeRuntime, interruption);
+    if (completion.errorReason !== "provider_process_exited") return completion;
+    attempts.effectsMayHaveOccurred ||= completion.executionEffects !== "not_started";
+    const next = nextRetry({ count, ranMs: Math.max(0, now() - startedAt) });
+    if (next.exhausted) return completion;
+    count = next.count;
+    interruption = { reason: "provider_process_exited", at: new Date(now()).toISOString() };
+    activeRuntime = await openRuntime();
+    attempts.number += 1;
+    attempts.live = activeRuntime;
+  }
+}
+
+/** A later attempt that never started says nothing about what an earlier one already did to the workspace. */
+function withEarlierEffects(completion: TurnCompletion, attempts: CloudRunAttempts): TurnCompletion {
+  return attempts.effectsMayHaveOccurred && completion.executionEffects === "not_started"
+    ? { ...completion, executionEffects: "may_have_occurred" }
+    : completion;
+}
+
+function withInterruption(
+  input: AgentInput,
+  interruption: Interruption | undefined,
+  steered: readonly AgentInput[],
+): AgentInput {
+  if (!interruption) return input;
+  return {
+    items: [
+      { type: "text", text: buildContinuationNotice(interruption) },
+      ...input.items,
+      ...(steered.length > 0
+        ? [
+            {
+              type: "text" as const,
+              text: "Messages that arrived during the interrupted turn, in order (they may also be in your history):",
+            },
+            ...steered.flatMap((message) => message.items),
+          ]
+        : []),
+    ],
+  };
+}
+
+async function recordRunLimit(
+  ledger: BackgroundWorkLedger,
+  completion: TurnCompletion,
+  options: CloudTurnWorkerRunOptions,
+): Promise<void> {
+  if (completion.errorReason !== "turn_timeout") return;
+  await ledger.recordRunLimit({ reason: "turn_timeout", at: new Date(options.now?.() ?? Date.now()).toISOString() });
+}
+
+/** The sandbox is recycled with the Run, so the ledger lives beside the binding, in what survives it. */
+function fileLedgerStorage(path: string): BackgroundWorkLedgerStorage {
+  return {
+    read: async () => {
+      const raw = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      return raw === undefined ? undefined : JSON.parse(raw);
+    },
+    write: async (state) => {
+      const temporary = `${path}.${process.pid}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+      await rename(temporary, path);
+    },
+    remove: () => rm(path, { force: true }),
+  };
+}
+
 /** Atomic binding persistence: the next Turn resumes exactly this provider binding. */
 async function persistBinding(path: string, binding: AgentRuntimeBinding): Promise<void> {
   const temporary = `${path}.${process.pid}.tmp`;
@@ -856,13 +1005,50 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
   }
 }
 
+/** A Session message steered into the Run, and the attempt it was steered into. */
+interface CloudSessionSteer {
+  readonly receipt: AgentSteerReceipt;
+  readonly attempt: number;
+}
+
+/**
+ * A message steered into an attempt that exited was carried into the next attempt's input, so the Turn's
+ * own result is its outcome. Its first receipt only speaks for the attempt that exited, and a `not_started`
+ * there would have the Runner run it a second time.
+ */
 async function finishWorkerSteers(
   completion: TurnCompletion,
-  steers: Map<string, AgentSteerReceipt>,
+  receipts: { sessionSteers: Map<string, CloudSessionSteer>; imJoins: Map<string, CloudSessionSteer> },
+  attempts: CloudRunAttempts,
 ): Promise<CloudWorkerCompletion> {
-  if (steers.size === 0) return completion;
-  const outcomes = await Promise.all([...steers].map(async ([id, receipt]) => [id, await receipt.outcome] as const));
-  return { ...completion, sessionSteers: Object.fromEntries(outcomes) };
+  const carried: AgentSteerOutcome = completion.outcome === "completed" ? "processed" : "interrupted";
+  const outcomes = async (steers: Map<string, CloudSessionSteer>) =>
+    Object.fromEntries(
+      await Promise.all(
+        [...steers].map(
+          async ([id, { receipt, attempt }]) =>
+            [id, attempt < attempts.number ? carried : await receipt.outcome] as const,
+        ),
+      ),
+    );
+  return {
+    ...completion,
+    ...(receipts.sessionSteers.size > 0 ? { sessionSteers: await outcomes(receipts.sessionSteers) } : {}),
+    ...(receipts.imJoins.size > 0 ? { imJoins: await outcomes(receipts.imJoins) } : {}),
+  };
+}
+
+/**
+ * The attempt's runtime when it can take a Session message now. Between attempts no runtime is live, and the
+ * message waits in the Runner's queue for the next one.
+ */
+function sessionSteerRuntime(
+  runtime: CloudTurnPiRuntime | undefined,
+  pending: boolean,
+): (CloudTurnPiRuntime & Required<Pick<CloudTurnPiRuntime, "steer">>) | CloudSessionSteerResult {
+  if (runtime && !runtime.steer) return "refused";
+  if (pending || !runtime?.steer || !runtime.steerReady) return "retry";
+  return runtime as CloudTurnPiRuntime & Required<Pick<CloudTurnPiRuntime, "steer">>;
 }
 
 function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
@@ -874,10 +1060,11 @@ function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
 
 async function openWorkerSteering(
   request: RunnerCloudWorkerRequest,
-  activeRuntime: CloudTurnPiRuntime,
-  sessionSteers: Map<string, AgentSteerReceipt>,
+  attempts: CloudRunAttempts,
+  receipts: { sessionSteers: Map<string, CloudSessionSteer>; imJoins: Map<string, CloudSessionSteer> },
   options: CloudTurnWorkerRunOptions,
 ) {
+  const { sessionSteers, imJoins } = receipts;
   const steering = request.steering;
   if (!steering) return undefined;
   const root = request.kind === "turn" ? request.delivery : request.message;
@@ -913,30 +1100,60 @@ async function openWorkerSteering(
         input.placementGeneration !== root.placementGeneration
       )
         return cloudSteerResult(input, "rejected", "target_mismatch");
+      const activeRuntime = attempts.live;
+      if (!activeRuntime) return cloudSteerResult(input, "deferred", "steer_state_unknown");
       if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
       try {
-        await activeRuntime.steer({
-          expectedRunId: runId,
-          input: buildAgentInput(input, undefined, request.delivery.runtime, now()),
-        });
+        const steered = buildAgentInput(input, undefined, request.delivery.runtime, now());
+        await activeRuntime.steer({ expectedRunId: runId, input: steered });
+        attempts.steered.push(steered);
         return cloudSteerResult(input, "steered");
       } catch {
         return cloudSteerResult(input, "deferred", "steer_state_unknown");
       }
     },
-    steerSession: async (input) => {
-      const { message } = input;
-      if (!matchesSession(input) || (sessionKind === "visible" && !context) || !activeRuntime.steer) return "refused";
-      if (sessionSteers.has(message.messageId)) return "accepted";
-      if (sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
-      if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
+    joinIm: async ({ expectedTurnId, delivery }) => {
+      // Only a visible Session message Turn of the same Session and placement can take an IM delivery.
+      if (
+        request.kind === "turn" ||
+        !context ||
+        expectedTurnId !== steering.turnId ||
+        delivery.sessionId !== sessionId ||
+        delivery.agentId !== root.agentId ||
+        delivery.placementGeneration !== root.placementGeneration
+      )
+        return "refused";
+      if (imJoins.has(delivery.deliveryId)) return "accepted";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      const activeRuntime = sessionSteerRuntime(attempts.live, sessionSteerPending);
+      if (typeof activeRuntime === "string") return activeRuntime;
       sessionSteerPending = true;
       try {
-        const receipt = await activeRuntime.steer({
-          expectedRunId: runId,
-          input: buildSessionMessageInput(message, "opentag", context, now()),
-        });
-        sessionSteers.set(message.messageId, receipt);
+        // Carried into a retry's input like a steered Session message, so a Provider exit does not lose it.
+        const joined = buildAgentInput(delivery, undefined, undefined, now());
+        const receipt = await activeRuntime.steer({ expectedRunId: runId, input: joined });
+        imJoins.set(delivery.deliveryId, { receipt, attempt: attempts.number });
+        attempts.steered.push(joined);
+        return "accepted";
+      } catch (error) {
+        return sessionSteerRefusal(error);
+      } finally {
+        sessionSteerPending = false;
+      }
+    },
+    steerSession: async (input) => {
+      const { message } = input;
+      if (!matchesSession(input) || (sessionKind === "visible" && !context)) return "refused";
+      if (sessionSteers.has(message.messageId)) return "accepted";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      const activeRuntime = sessionSteerRuntime(attempts.live, sessionSteerPending);
+      if (typeof activeRuntime === "string") return activeRuntime;
+      sessionSteerPending = true;
+      try {
+        const steered = buildSessionMessageInput(message, "opentag", context, now());
+        const receipt = await activeRuntime.steer({ expectedRunId: runId, input: steered });
+        sessionSteers.set(message.messageId, { receipt, attempt: attempts.number });
+        attempts.steered.push(steered);
         return "accepted";
       } catch (error) {
         return sessionSteerRefusal(error);

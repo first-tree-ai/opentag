@@ -14,6 +14,8 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   Provider-neutral execution contract and Provider support.
 - **[Runtime protocol compatibility](runtime-protocol.md)** — protocol,
   schema, and capability versions between Client and Server.
+- **[Background work](background-work.md)** — how a Run waits for background work,
+  stops at its limit, and tells the Session what became of the work.
 - **[Agent permissions](agent-permissions.md)** — permission modes, command
   rules, and IM approval requests.
 - **[Platform access during a Turn](platform-access-during-a-turn.md)** — what a

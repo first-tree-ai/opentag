@@ -43,6 +43,8 @@ export interface TurnReportOwnerOptions {
 
 export type TurnReportTerminalStatus = "conflict" | "stale_generation";
 
+type ConfirmTurnReport = (supersedingOutcome?: TurnReportRequest["outcome"]) => Promise<void> | void;
+
 export interface TurnReportSubmitOptions {
   /** Reconcile joins active delivery without bypassing its retry timer or in-flight send. */
   resume?: boolean;
@@ -56,7 +58,7 @@ export type TurnReportRearmClaim = Pick<
 
 interface PendingReport {
   capabilityRejected: boolean;
-  confirm?: () => Promise<void> | void;
+  confirm?: ConfirmTurnReport;
   confirming: boolean;
   settling: boolean;
   promise: Promise<void>;
@@ -169,7 +171,7 @@ export class TurnReportOwner {
 
   submit(
     reportInput: TurnReportRequest,
-    confirm: () => Promise<void> | void,
+    confirm: ConfirmTurnReport,
     options: TurnReportSubmitOptions = {},
   ): Promise<void> {
     if (this.#stopped) return Promise.reject(new TurnReportOwnerStoppedError());
@@ -189,7 +191,7 @@ export class TurnReportOwner {
   #reusePending(
     existing: PendingReport,
     report: TurnReportRequest,
-    confirm: () => Promise<void> | void,
+    confirm: ConfirmTurnReport,
     options: TurnReportSubmitOptions,
   ): Promise<void> {
     if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
@@ -214,7 +216,7 @@ export class TurnReportOwner {
 
   #createPending(
     report: TurnReportRequest,
-    confirm: () => Promise<void> | void,
+    confirm: ConfirmTurnReport,
     options: TurnReportSubmitOptions,
     stored?: DurableWorkRecord<TurnReportRequest>,
   ): Promise<void> {
@@ -267,6 +269,12 @@ export class TurnReportOwner {
     const pending = this.#pending.get(result.turnId);
     if (!pending) return false;
     if (result.requestId !== pending.report.requestId || result.resultHash !== pending.report.resultHash) return false;
+    if (
+      result.status === "superseded" &&
+      (this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1) < 6
+    ) {
+      return false;
+    }
     if (result.status === "unsupported_capability") {
       pending.capabilityRejected = true;
       this.#clearRetry(pending);
@@ -276,7 +284,7 @@ export class TurnReportOwner {
       return this.#handleTerminalResult(pending, result.status);
     }
     if (pending.confirming || !pending.confirm) return true;
-    return this.#confirmResult(pending);
+    return this.#confirmResult(pending, result.status === "superseded" ? result.terminalOutcome : undefined);
   }
 
   async #handleTerminalResult(pending: PendingReport, status: TurnReportTerminalStatus): Promise<boolean> {
@@ -304,13 +312,13 @@ export class TurnReportOwner {
     return true;
   }
 
-  async #confirmResult(pending: PendingReport): Promise<boolean> {
+  async #confirmResult(pending: PendingReport, supersedingOutcome?: TurnReportRequest["outcome"]): Promise<boolean> {
     const confirm = pending.confirm;
     if (!confirm) return true;
     pending.confirming = true;
     this.#clearRetry(pending);
     try {
-      await confirm();
+      await confirm(supersedingOutcome);
       pending.confirming = false;
       // Keep the pending identity fenced until #persist publishes succeeded to #records.
       pending.settling = true;

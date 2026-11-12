@@ -210,6 +210,28 @@ describe("RuntimeConfigurationForm", () => {
     });
   });
 
+  it.each([
+    { isComposing: true, keyCode: 13 },
+    { isComposing: false, keyCode: 229 },
+  ])("waits for an ordinary Enter to add a command after IME confirmation ($keyCode)", (event) => {
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+    const input = screen.getByRole("textbox", { name: "Command to allow" });
+    fireEvent.change(input, { target: { value: "git status" } });
+
+    expect(fireEvent.keyDown(input, { key: "Enter", ...event })).toBe(false);
+
+    expect(input).toHaveProperty("value", "git status");
+    expect(screen.queryByRole("list", { name: "Additional allowed commands" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+
+    expect(input).toHaveProperty("value", "");
+    expect(screen.getAllByRole("button", { name: "Remove git status" })).toHaveLength(1);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("rejects shell syntax and duplicate commands in the simple editor", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="execution" />);
     const input = screen.getByRole("textbox", { name: "Command to allow" });

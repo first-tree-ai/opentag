@@ -95,6 +95,10 @@ function verify(options) {
       "app/pi-extensions/web-tools.mjs.map",
       "app/cli/pi-extensions/web-tools.mjs",
       "app/cli/pi-extensions/web-tools.mjs.map",
+      "app/pi-extensions/background-work.mjs",
+      "app/pi-extensions/background-work.mjs.map",
+      "app/cli/pi-extensions/background-work.mjs",
+      "app/cli/pi-extensions/background-work.mjs.map",
       `${APP_ENTRY}.map`,
     ]) {
       if (!existsSync(join(artifactDir, relativePath))) fail(`extracted artifact is missing ${relativePath}`);

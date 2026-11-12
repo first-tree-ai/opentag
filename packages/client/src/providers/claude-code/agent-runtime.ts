@@ -8,7 +8,11 @@ import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
-import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import {
+  answeredWithFollowUpFailure,
+  providerFailureCode,
+  providerProcessFailureCode,
+} from "../../agent-runtime/provider-failure.js";
 import {
   isNonNegativeNumber,
   parseHttpMcpGateway,
@@ -25,10 +29,12 @@ import {
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
+  type AgentBackgroundWorkItem,
   type AgentHostedTools,
   type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
+  type AgentProviderRunEvent,
   type AgentProviderRunResult,
   type AgentProviderSteerCustody,
   type AgentRunConfiguration,
@@ -64,6 +70,8 @@ import {
   startClaudeCodeHostedToolBridge,
 } from "./hosted-tool-bridge.js";
 import {
+  CLAUDE_CODE_BACKGROUND_FINISHED_FRAME,
+  CLAUDE_CODE_BACKGROUND_WORK_FRAME,
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
   ClaudeCodeProcessError,
@@ -293,7 +301,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       this.#process = process;
       this.#processReady?.resolve(process);
-      let { abandonedBackgroundWork } = await process.execute(
+      let { followUpFailed } = await process.execute(
         claudeCodeInput(request),
         (message, terminal) => this.#enqueue(message, terminal),
         context.signal,
@@ -302,14 +310,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const missing = missingConversation(resumed, this.#terminal);
       if (missing !== undefined) {
         await process.close().catch(logCloseFailure);
-        ({ abandonedBackgroundWork } = await this.#runNewConversation(request, context, hostedToolBridge, missing));
+        ({ followUpFailed } = await this.#runNewConversation(request, context, hostedToolBridge, missing));
       }
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return {
-        ...claudeCodeRunResult(this.#terminal, this.#assistantError, this.#quotaResetAt),
-        ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
-      };
+      return claudeCodeRunOutcome(this.#terminal, this.#assistantError, followUpFailed, this.#quotaResetAt);
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -443,6 +448,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
   }
 
+  protected override async tellProvider(text: string): Promise<void> {
+    await this.#process?.notice?.(text);
+  }
+
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     await this.#process?.interrupt();
@@ -500,6 +509,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
+      // A native cron job lives in this process, which ends with the Run. Recurring work is an OpenTag Schedule.
+      "--disallowedTools",
+      "CronCreate,CronDelete,CronList",
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       ...(this.#systemPromptSnapshotOff ? ["--system-prompt-snapshot", "off"] : []),
@@ -610,7 +622,22 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#handleResult(message, terminal);
       return;
     }
+    if (await this.#handleBackgroundWorkFrame(type, message)) return;
     await this.#emitProviderEvent(message);
+  }
+
+  /** The synthetic frames the process adds for background work; false for any other message. */
+  async #handleBackgroundWorkFrame(type: string, message: Readonly<Record<string, unknown>>): Promise<boolean> {
+    if (type === CLAUDE_CODE_BACKGROUND_WORK_FRAME) {
+      await this.requireProviderContext().emit({
+        type: "background_work_changed",
+        items: message.items as readonly AgentBackgroundWorkItem[],
+      });
+      return true;
+    }
+    if (type !== CLAUDE_CODE_BACKGROUND_FINISHED_FRAME) return false;
+    await this.requireProviderContext().emit(backgroundWorkFinished(message));
+    return true;
   }
 
   async #handleResult(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
@@ -1413,6 +1440,17 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
   };
 }
 
+/** The Run's result. A failure of a turn Claude Code started itself, after the input was answered, does not fail it. */
+function claudeCodeRunOutcome(
+  terminal: ClaudeCodeTerminal,
+  assistantError: string | undefined,
+  followUpFailed: boolean | undefined,
+  quotaResetAt: string | undefined,
+): AgentProviderRunResult {
+  const result = claudeCodeRunResult(terminal, assistantError, quotaResetAt);
+  return followUpFailed && result.status === "failed" ? answeredWithFollowUpFailure(result) : result;
+}
+
 /**
  * Claude Code reports each subscription usage window in a `rate_limit_event` (2.1.319): `rate_limit_info` holds its
  * `status` and `resetsAt` in Unix seconds. A `rejected` window is a used-up quota, and its reset is when to try again.
@@ -1516,4 +1554,16 @@ function toJsonValue(value: unknown): JsonValue {
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
   return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
+}
+
+/** Claude Code's `killed` and `stopped` both mean something stopped the task; anything unrecognized is not a success. */
+function backgroundWorkFinished(frame: Readonly<Record<string, unknown>>): AgentProviderRunEvent {
+  const status = frame.status === "completed" ? "completed" : frame.status === "failed" ? "failed" : "stopped";
+  return {
+    type: "background_work_finished",
+    id: requireString(frame.id, "Claude Code background task has no id"),
+    status,
+    ...(typeof frame.detail === "string" ? { detail: frame.detail } : {}),
+    ...(typeof frame.outputPath === "string" ? { outputPath: frame.outputPath } : {}),
+  };
 }

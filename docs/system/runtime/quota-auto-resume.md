@@ -67,6 +67,11 @@ An IM Turn whose Run failed on a used-up window keeps its accepted delivery and 
   input. Nothing is reported while it waits.
 - After a daemon restart the startup scan finds the record, and the request to recover its Session is sent at
   `resumeAt`, not at once; the Turn stays pending until then.
+- A message steered into the Turn while it waits joins it, as the issue's D2 decided: with no Provider process to
+  take it, the Client adds it to the retry record and records its steer receipt, up to the limit of 16 steered
+  messages, and the resumed attempt runs it once with the original input. Past the limit, or when it cannot be
+  recorded, the steer is `deferred` and the Server delivers it after the Turn. So is a steer that arrives while the
+  Turn is pending after a daemon restart, since no Turn is live in the daemon then.
 
 A Session message, a scheduled one included, waits the same way in the inbox: its record becomes `retryable` with
 `nextAttemptAt` at the resume time, the interruption `provider_quota_exceeded` and a local `quotaWaits` count, under
@@ -78,9 +83,7 @@ until the message ends.
 > **Planned — not yet implemented.** Tracking: #1519
 
 Codex takes the reset
-from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff. A new message that reaches a
-Session while its work waits is merged into the waiting item like a steer, and runs with it once; until then such a
-message is delivered after the waiting Turn.
+from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff.
 
 ## Notice
 

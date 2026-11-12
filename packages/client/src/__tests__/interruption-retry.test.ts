@@ -823,6 +823,63 @@ describe("AgentTurnRunner automatic retry", () => {
     await h.runner.settled();
   });
 
+  it("lets a message steered during a quota wait join the retry, which runs it once", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.retries.appendSteer = async (steer) => {
+      const record = h.records.get(h.request.sessionId);
+      if (!record || !steer) return "missing";
+      h.records.set(h.request.sessionId, { ...record, steers: [...record.steers, steer] });
+      return "appended";
+    };
+    h.prompt
+      .mockImplementationOnce(async () => quotaUsedUp(undefined))
+      .mockImplementationOnce(async () => ({
+        runId: "turn-1",
+        status: "completed",
+        output: [],
+      }));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(h.runner.steer(steerRequest(h.request, "while waiting"))).resolves.toMatchObject({
+      status: "steered",
+    });
+    // No Provider process takes it now: the receipt makes it part of the Turn.
+    expect(h.runtime.steer).not.toHaveBeenCalled();
+    expect(h.recordSteer).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(17 * 60_000);
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(promptItems(h.prompt, 1)[0]?.text).toContain("the model quota was used up");
+    expect(promptItems(h.prompt, 1).at(-1)?.text).toContain("while waiting");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it.each([
+    ["past the steer limit", "full", undefined, "steer_unsupported"],
+    ["when its receipt cannot be recorded", "appended", new Error("disk"), "turn_not_running"],
+  ] as const)(
+    "leaves a message steered during a quota wait with the Server %s",
+    async (_name, capture, receiptError, reason) => {
+      vi.useFakeTimers();
+      const h = runnerHarness();
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      h.retries.appendSteer = async () => capture;
+      if (receiptError) h.recordSteer.mockRejectedValueOnce(receiptError);
+      h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+      h.runner.start(owner(h.request));
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(h.runner.steer(steerRequest(h.request, "while waiting"))).resolves.toMatchObject({
+        status: "deferred",
+        reason,
+      });
+      if (receiptError) expect(h.retries.removeSteer).toHaveBeenCalledOnce();
+      h.runner.stop();
+      await h.runner.settled();
+    },
+  );
+
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
     const h = runnerHarness({ restartRetry: true });

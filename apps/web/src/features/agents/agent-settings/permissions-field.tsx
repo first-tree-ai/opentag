@@ -94,10 +94,12 @@ export function PermissionsField({
                 setError("");
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  addCommand(draft);
-                }
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                const { isComposing, keyCode } = event.nativeEvent;
+                // An IME confirmation can report 229 after compositionend.
+                if (isComposing || keyCode === 229) return;
+                addCommand(draft);
               }}
               placeholder={m.agent_settings_command_input_placeholder()}
               value={draft}

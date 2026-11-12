@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { deferred } from "../agent-runtime/provider-utils.js";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import {
   CodexAgentRuntime,
@@ -352,8 +353,46 @@ describe("CodexAgentRuntime", () => {
       status: "completed",
     });
     expect(client.serverResponses).toEqual([{ id: "approval-1", result: { decision: "acceptForSession" } }]);
+    expect(client.call("turn/steer")).toBeUndefined();
     expect(events.map((event) => event.type)).toContain("interaction_requested");
     expect(events.map((event) => event.type)).toContain("interaction_resolved");
+    await runtime.close();
+  });
+
+  it("declines a Codex approval without waiting for the same-turn explanation", async () => {
+    const client = new ScriptedCodexClient("interaction");
+    const request = client.request.bind(client);
+    const steer = deferred<unknown>();
+    const requests = vi
+      .spyOn(client, "request")
+      .mockImplementation((method, params, signal) =>
+        method === "turn/steer" ? steer.promise : request(method, params, signal),
+      );
+    const reason = "No human approval route is available.";
+    let runtime: CodexAgentRuntime;
+    runtime = await codexFactory(client).create(
+      createRequest(async (event) => {
+        if (event.type !== "interaction_requested") return;
+        await runtime.respond({
+          kind: "approval",
+          expectedRunId: event.runId,
+          requestId: event.request.requestId,
+          decision: "decline",
+          reason,
+        });
+      }),
+    );
+
+    await expect(runtime.prompt({ runId: "run-1", input: input("run command") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(client.serverResponses).toEqual([{ id: "approval-1", result: { decision: "decline" } }]);
+    expect(requests.mock.calls.find(([method]) => method === "turn/steer")?.[1]).toMatchObject({
+      threadId: "thread-1",
+      expectedTurnId: "turn-1",
+      input: [{ type: "text", text: `[OpenTag approval notice]\n${reason}` }],
+    });
+    steer.resolve({ turnId: "turn-1" });
     await runtime.close();
   });
 

@@ -297,7 +297,8 @@ command outside the Agent's command rules, such as `ps -ax -o pid,command | grep
 3. Repeat and deny. Expected: the child is told the action was declined and replies that it needs approval.
 4. Repeat and leave the card alone. Expected: after 10 minutes the card shows the request expired, the child is told
    nobody answered, and the Run ends normally instead of waiting for its duration limit.
-5. Repeat 1 to 3 on Codex. Expected: the same, except a decline reaches Codex without the explanation text.
+5. Repeat 1 to 3 on Codex. Expected: the same; on a decline the reason appears as an OpenTag approval notice on the
+   active turn alongside the native decline.
 6. Have a Schedule start the chain in a conversation with no earlier human message. Expected: no card; the request is
    declined at once and the child says the step needs approval.
 7. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card for the

@@ -92,9 +92,9 @@ the human who sent the last message that visible Session received before the Ses
 [Runtime protocol](runtime-protocol.md#session-message-approvals)). The decision goes back to the asking Run. When
 nobody answers within 10 minutes, the Client declines the request.
 
-The model is always told why an action was declined. Claude Code receives the reason as the deny message: the
-person asked declined it or nobody could be asked, nobody answered within 10 minutes, or nobody could approve it at
-all. Codex receives a plain decline. The Client declines at once, without a card, when the Server lacks the
+The model is always told why an action was declined: the person asked declined it or nobody could be asked, nobody
+answered within 10 minutes, or nobody could approve it at all. Claude Code receives the reason in the decline itself;
+Codex receives it as an OpenTag notice on the active turn alongside the native decline. The Client declines at once, without a card, when the Server lacks the
 capability, when the Run is not a Session message's own Run, or when the request cannot be shown. The Server
 declines at once when it finds nobody to ask, for example a chain started by a Schedule with no earlier human
 message. A question dialog in such a Run is cancelled. A Session message that joins a running IM Turn uses that

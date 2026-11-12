@@ -101,6 +101,7 @@ import type { RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-ad
 import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
+import { SessionMessageApprovals } from "./session-message-approvals.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
 import { SessionReconciler } from "./session-reconciler.js";
@@ -918,6 +919,7 @@ export async function createClientRuntime(
   let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    approvals: new SessionMessageApprovals({ runtimeManager, logger: moduleLogger("session-message-approvals") }),
     backgroundWork,
     channelActivity,
     cliCommand: options.cliCommand ?? "opentag",

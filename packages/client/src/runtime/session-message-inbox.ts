@@ -61,6 +61,7 @@ import {
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
 } from "./scheduled-message-input.js";
+import type { SessionMessageApprovals } from "./session-message-approvals.js";
 import {
   conversationIdentity,
   SessionMessageRun,
@@ -95,6 +96,8 @@ export interface JoinableRuns {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  /** Answers the approval requests of this inbox's Runs; without it they are left unanswered. */
+  approvals?: Pick<SessionMessageApprovals, "watch">;
   /** What the Session's earlier Runs left to tell it; a Run reads it first and reports its limit there. */
   backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   /** Without one, Channel Sessions never compact on idle. */
@@ -187,6 +190,7 @@ export class SessionMessageInbox {
   readonly #sessionCollaborationVersion: SessionMessageInboxOptions["sessionCollaborationVersion"];
   readonly #reconciler: SessionMessageInboxOptions["reconciler"];
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
+  readonly #approvals: SessionMessageInboxOptions["approvals"];
   readonly #steerRetryMs: number;
   readonly #joinableRuns: JoinableRuns | undefined;
   /** Joined messages whose Turn ran out of retries; each keeps its queue place until its failure commits. */
@@ -246,6 +250,7 @@ export class SessionMessageInbox {
     this.#sessionCollaborationVersion = options.sessionCollaborationVersion;
     this.#reconciler = options.reconciler;
     this.#runtimeManager = options.runtimeManager;
+    this.#approvals = options.approvals;
     this.#steerRetryMs = positive(options.steerRetryMs ?? 1_000, "steerRetryMs");
     this.#joinableRuns = options.joinableRuns;
     this.#readyPromise = this.#hydrate();
@@ -1022,6 +1027,7 @@ export class SessionMessageInbox {
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
     let runTime: RunTimeTracker | undefined;
     let ranIn: AgentRuntime | undefined;
+    let stopApprovals: (() => void) | undefined;
     const settleRunTime = async () => {
       // Once per Run: a returned failure reaches this again on its way to the failure path.
       if (!runTime) return;
@@ -1081,6 +1087,7 @@ export class SessionMessageInbox {
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
       ranIn = runtime;
+      stopApprovals = this.#approvals?.watch(sessionId, runId, runtime);
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
       channelTurn.channel = isChannelOutbox(outboxContext);
@@ -1139,6 +1146,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (current) outcome = await this.#settleFailedAttempt(current, next.hash, run, phase, error, { stop, timedOut });
     } finally {
+      stopApprovals?.();
       this.#runStops.delete(sessionId);
       timer?.cancel();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());

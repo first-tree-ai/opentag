@@ -1087,7 +1087,7 @@ export class SessionMessageInbox {
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
       ranIn = runtime;
-      stopApprovals = this.#approvals?.watch(sessionId, runId, runtime);
+      stopApprovals = this.#approvals?.watch(sessionId, runId, runtime, next.request.placementGeneration);
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
       channelTurn.channel = isChannelOutbox(outboxContext);

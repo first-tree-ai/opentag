@@ -85,19 +85,20 @@ New QR registrations include this callback; existing Apps need it enabled in the
 
 Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender if posting in the originating conversation fails) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand using read-only checks or dry runs.
 A Run started by a Session message (an internal Session's task, a message from another Session, or a steered
-message's own Run) has no IM input of its own. When its Provider asks for an approval or a question, the Client
-declines the approval, or cancels the question, at once. The model is told that nobody could approve the action
-and that it should continue without it or report that the step needs a person. Claude Code receives the reason
-in the decline itself. Codex receives it as an OpenTag notice on the active turn alongside the native decline.
-A Session message that joins a running IM Turn uses that Turn's approval flow.
+message's own Run) has no IM input of its own. When its Provider asks for an approval, the Client sends the request
+to the Server (with `runtime.sessionMessageApproval`). The Server climbs the target Session's creation chain to the top
+visible Session and posts the same approval card in that conversation, naming the Session that asks. The approver is
+the human who sent the last message that visible Session received before the Session message was created (see
+[Runtime protocol](runtime-protocol.md#session-message-approvals)). The decision goes back to the asking Run. When
+nobody answers within 10 minutes, the Client declines the request.
 
-> **Planned — not yet implemented.** Tracking: #1533
-
-Session message Runs will route approvals to a person. The Server climbs the target Session's creation chain to
-the top visible Session and posts the same approval card in that conversation, naming the child Session and the
-action. The approver is the human who sent the latest message delivered to that visible Session. The decision goes
-back to the child Session's Run. A request that gets no answer in about 10 minutes is declined automatically and
-the model is told why. Clients and Servers without this capability keep the immediate decline above.
+The model is always told why an action was declined: the person asked declined it or nobody could be asked, nobody
+answered within 10 minutes, or nobody could approve it at all. Claude Code receives the reason in the decline itself;
+Codex receives it as an OpenTag notice on the active turn alongside the native decline. The Client declines at once, without a card, when the Server lacks the
+capability, when the Run is not a Session message's own Run, or when the request cannot be shown. The Server
+declines at once when it finds nobody to ask, for example a chain started by a Schedule with no earlier human
+message. A question dialog in such a Run is cancelled. A Session message that joins a running IM Turn uses that
+Turn's approval flow.
 
 Cards show the requester mention, reason, and action, without provider transport metadata.
 Both cards include a small footer with the requester mention and "Whitelist command or disable approvals in Agent Model Settings".

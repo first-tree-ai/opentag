@@ -34,12 +34,16 @@ export interface SessionMessageApprovalsOptions {
   };
   readonly logger?: Pick<ClientLogger, "debug">;
   readonly timeoutMs?: number;
+  readonly now?: () => number;
 }
 
 interface Pending {
   readonly runtime: AgentRuntime;
   readonly runId: string;
+  readonly request: AgentInteractionRequest;
   readonly providerRequestId: string;
+  /** The absolute deadline; a decision at or after it is declined even if the timer has not fired yet. */
+  readonly expiresAt: number;
   readonly sessionId: string;
   readonly placementGeneration: number;
   readonly timer: ReturnType<typeof setTimeout>;
@@ -57,6 +61,10 @@ export class SessionMessageApprovals {
 
   constructor(options: SessionMessageApprovalsOptions) {
     this.#options = options;
+  }
+
+  #now(): number {
+    return (this.#options.now ?? Date.now)();
   }
 
   /** Watches one Run's requests until the returned function is called; requests still open then go stale. */
@@ -99,6 +107,11 @@ export class SessionMessageApprovals {
       return { ...identity, type: "approval:result", status: "stale" };
     this.#pending.delete(decision.requestId);
     clearTimeout(pending.timer);
+    if (this.#now() >= pending.expiresAt) {
+      // A delayed timer must not let a late approval through: the request has already expired.
+      this.#answer(pending.runtime, pending.runId, pending.request, SESSION_MESSAGE_APPROVAL_EXPIRED);
+      return { ...identity, type: "approval:result", status: "stale" };
+    }
     try {
       await pending.runtime.respond({
         expectedRunId: pending.runId,
@@ -135,6 +148,7 @@ export class SessionMessageApprovals {
     }
     const requestId = randomUUID();
     const timeoutMs = this.#options.timeoutMs ?? SESSION_MESSAGE_APPROVAL_TIMEOUT_MS;
+    const expiresAt = this.#now() + timeoutMs;
     const timer = setTimeout(() => {
       if (!this.#pending.delete(requestId)) return;
       this.#answer(run.runtime, run.runId, request, SESSION_MESSAGE_APPROVAL_EXPIRED);
@@ -143,7 +157,9 @@ export class SessionMessageApprovals {
     this.#pending.set(requestId, {
       runtime: run.runtime,
       runId: run.runId,
+      request,
       providerRequestId: request.requestId,
+      expiresAt,
       sessionId: run.sessionId,
       placementGeneration: run.placementGeneration,
       timer,
@@ -160,7 +176,7 @@ export class SessionMessageApprovals {
         title: request.title.slice(0, 256),
         description: redactSensitive(description),
         ...approvalCommandPresentation(request.details, request.message),
-        expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
+        expiresAt: new Date(expiresAt).toISOString(),
       });
     } catch (error) {
       if (!this.#pending.delete(requestId)) return;

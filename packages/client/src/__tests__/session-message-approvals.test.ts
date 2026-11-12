@@ -13,7 +13,9 @@ import {
 const MESSAGE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = `session-message-${MESSAGE_ID}`;
 
-function harness(options: { observeError?: Error; capability?: number; connection?: boolean } = {}) {
+function harness(
+  options: { observeError?: Error; capability?: number; connection?: boolean; now?: () => number } = {},
+) {
   let sink: ((event: AgentRuntimeEvent) => Promise<void>) | undefined;
   const stop = vi.fn();
   const runtimeManager = {
@@ -38,6 +40,7 @@ function harness(options: { observeError?: Error; capability?: number; connectio
   const approvals = new SessionMessageApprovals({
     runtimeManager,
     logger,
+    ...(options.now ? { now: options.now } : {}),
     ...(options.connection === false ? {} : { connection }),
   });
   const emit = async (event: AgentRuntimeEvent) => {
@@ -196,6 +199,23 @@ describe("SessionMessageApprovals routed to a person", () => {
     await expect(
       h.approvals.respondToApproval(decision(h.sent[0] as RuntimeApprovalRequest, "accept")),
     ).resolves.toMatchObject({ status: "stale" });
+  });
+
+  it("declines a decision that arrives after the deadline even before the timer fires", async () => {
+    let now = 1_000_000;
+    const h = harness({ capability: 1, now: () => now });
+    h.approvals.watch("session-1", RUN_ID, h.runtime, 3);
+    await h.emit(request("approval", "p1"));
+    const sent = h.sent[0] as RuntimeApprovalRequest;
+    expect(Date.parse(sent.expiresAt)).toBe(now + SESSION_MESSAGE_APPROVAL_TIMEOUT_MS);
+    // The event loop was busy: the deadline has passed, but the timer callback has not run.
+    now += SESSION_MESSAGE_APPROVAL_TIMEOUT_MS;
+    await expect(h.approvals.respondToApproval(decision(sent, "accept"))).resolves.toMatchObject({ status: "stale" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(h.respond).toHaveBeenCalledTimes(1);
+    expect(h.respond).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "p1", decision: "decline", reason: SESSION_MESSAGE_APPROVAL_EXPIRED }),
+    );
   });
 
   it("declines when the request cannot be sent, and forgets open requests when the Run ends", async () => {

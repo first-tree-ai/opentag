@@ -193,6 +193,15 @@ describe("runtime domain contract", () => {
     ).toBe(false);
     expect(RuntimeApprovalDecisionSchema.parse(decision)).toEqual(decision);
     expect(RuntimeApprovalResultSchema.parse(result)).toEqual(result);
+    // A Session message Run's request names its source, and its decision and result echo it.
+    for (const frame of [request, decision, result]) {
+      const fromSessionMessage = { ...frame, source: "session-message" };
+      expect(
+        ClientRuntimeBusinessFrameSchema.safeParse(fromSessionMessage).success ||
+          ServerRuntimeBusinessFrameSchema.safeParse(fromSessionMessage).success,
+      ).toBe(true);
+      expect(RuntimeApprovalRequestSchema.safeParse({ ...request, source: "im" }).success).toBe(false);
+    }
     for (const frame of [request, decision, result]) {
       expect(RuntimeFrameEnvelopeSchema.parse(frame).requestId).toBe(identity.requestId);
     }

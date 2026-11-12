@@ -53,6 +53,7 @@ export const RUNTIME_CAPABILITY = {
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   approvalPresentation: "runtime.approvalPresentation",
+  sessionMessageApproval: "runtime.sessionMessageApproval",
   channelTarget: "runtime.channelTarget",
   selfCheckHeartbeat: "runtime.selfCheckHeartbeat",
   imDelivery: "runtime.imDelivery",
@@ -84,6 +85,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.approvalPresentation]: { min: 1, max: 1 },
+  // v1: `approval:request` may come from a Session message Run (`source: "session-message"`).
+  [RUNTIME_CAPABILITY.sessionMessageApproval]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.selfCheckHeartbeat]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 3 },

@@ -226,6 +226,36 @@ describe("Runtime approvals", () => {
     },
   );
 
+  it("names the asking Session on a Session message Run's card and echoes the source in its decision", async () => {
+    const s = setup();
+    const request: RuntimeApprovalRequest = {
+      ...s.request,
+      turnId: `session-message-${s.request.deliveryId}`,
+      source: "session-message",
+      commandPresentation: { command: "ps -ax", reason: "List processes?" },
+    };
+    await s.owner.businessOptions().handle(request, s.context);
+    const origin = `Asked by Session ${request.sessionId} while it handles a Session message.`;
+    expect(s.row().request).toMatchObject({
+      source: "session-message",
+      description: `${origin}\n\ngit push`,
+      commandPresentation: { command: "ps -ax", reason: `${origin}\n\nList processes?` },
+    });
+    expect(s.messenger.post).toHaveBeenCalledWith(
+      expect.objectContaining({ request: expect.objectContaining({ description: `${origin}\n\ngit push` }) }),
+    );
+    expect(await s.owner.decide({ ...s.action(), decision: "decline" })).toBe("recorded");
+    await s.owner.poll();
+    expect(
+      RuntimeApprovalDecisionSchema.parse(ServerRuntimeBusinessFrameSchema.parse(s.registry.send.mock.calls[0]?.[2])),
+    ).toMatchObject({ source: "session-message", deliveryId: request.deliveryId, decision: "decline" });
+    expect(s.owner.businessOptions().failureResult(request)).toMatchObject({ source: "session-message" });
+    // A request without a command presentation keeps only the prefixed description.
+    const plain = setup();
+    await plain.owner.businessOptions().handle({ ...request, commandPresentation: undefined }, plain.context);
+    expect(plain.row().request.commandPresentation).toBeUndefined();
+  });
+
   it("accepts the callback at a different server replica", async () => {
     const s = setup();
     await s.owner.request(s.request, s.context);

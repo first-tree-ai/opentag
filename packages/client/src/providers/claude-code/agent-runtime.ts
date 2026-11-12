@@ -1613,7 +1613,7 @@ function claudeCodeRunResult(
 function withQuotaReset(error: AgentRunError, quotaResetAt: string | undefined): AgentRunError {
   if (!quotaResetAt || (error.code !== "provider_rate_limited" && error.code !== "provider_quota_exceeded"))
     return error;
-  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt };
+  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt, quotaKind: "usage_window" };
 }
 
 function parseUsage(

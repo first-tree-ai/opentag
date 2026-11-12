@@ -162,6 +162,11 @@ export interface AgentRunError {
   readonly message: string;
   /** When a used-up model quota is available again, as the model CLI reported it. */
   readonly retryAt?: string;
+  /**
+   * What kind of `provider_quota_exceeded` this is: a subscription window that resets by itself, or billing
+   * (no balance or credit). Only a `usage_window` failure waits for the reset; without a kind, none does.
+   */
+  readonly quotaKind?: "usage_window" | "billing";
 }
 
 export interface AgentRunResult {

@@ -279,7 +279,9 @@ Codex and Pi (on Pi with `background_bash`).
    `[openTag notice] This Run reaches its duration limit`, and the Run stops at the limit with no extra time.
 6. Ask a Session to check something in 30 minutes. Expected: it creates a Schedule and no background process, and the firing
    is a new Run.
-7. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+7. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
+   Sandbox with the continuation notice, and reports one result.
+8. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
    and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
    after that reply.
 

@@ -1368,7 +1368,8 @@ export class RuntimeDomainOwner {
     }
     const acknowledgeSuperseded = (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] ?? 1) >= 6;
     const status = await this.#custody.recordTurn(report, context, { acknowledgeSuperseded });
-    return status ? { ...base, status } : undefined;
+    if (!status) return undefined;
+    return { ...base, ...(typeof status === "string" ? { status } : status) };
   }
 
   #matchingDeliveryAttempt(

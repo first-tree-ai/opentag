@@ -420,7 +420,7 @@ export class SessionBindingStore {
     sessionId: string,
     turnId: string,
     resultHash: string,
-    disposition?: "superseded",
+    supersedingOutcome?: TurnReportRequest["outcome"],
   ): Promise<LocalSessionBinding> {
     return this.#withSessionLock(sessionId, async () => {
       RuntimeSha256Schema.parse(resultHash);
@@ -430,7 +430,7 @@ export class SessionBindingStore {
         (entry): entry is RecordedTurnInput => entry.kind === "turn" && entry.turnId === turnId,
       );
       if (alreadyRecorded) {
-        const updated = confirmRecordedInput(binding, alreadyRecorded, resultHash, disposition);
+        const updated = confirmRecordedInput(binding, alreadyRecorded, resultHash, supersedingOutcome);
         if (updated !== binding) await this.#writeBinding(path, updated);
         return updated;
       }
@@ -441,7 +441,8 @@ export class SessionBindingStore {
       if (unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {
         throw new SessionBindingConflictError("conflict", "The recorded result does not match the unresolved turn");
       }
-      const report = disposition === "superseded" ? undefined : unresolved.report;
+      const outcome = supersedingOutcome ?? unresolved.report?.outcome;
+      const report = supersedingOutcome === undefined ? unresolved.report : undefined;
       const recorded: RecordedTurnInput = {
         kind: "turn",
         deliveryId: unresolved.deliveryId,
@@ -455,7 +456,7 @@ export class SessionBindingStore {
         ...binding.recentRecordedInputs.filter(
           (entry) =>
             entry.deliveryId !== recorded.deliveryId &&
-            !failedTargetSteerReceipt(entry, unresolved.deliveryId, unresolved.turnId, report),
+            !failedTargetSteerReceipt(entry, unresolved.deliveryId, unresolved.turnId, outcome),
         ),
         recorded,
       ].slice(-this.#recordedInputLimit);
@@ -871,12 +872,12 @@ function failedTargetSteerReceipt(
   entry: RecordedInput,
   targetDeliveryId: string,
   targetTurnId: string,
-  report: TurnReportRequest | undefined,
+  outcome: TurnReportRequest["outcome"] | undefined,
 ): boolean {
   return (
     entry.kind === "steer" &&
-    report !== undefined &&
-    report.outcome !== "completed" &&
+    outcome !== undefined &&
+    outcome !== "completed" &&
     entry.rootDeliveryId === targetDeliveryId &&
     entry.turnId === targetTurnId
   );
@@ -886,16 +887,18 @@ function confirmRecordedInput(
   binding: LocalSessionBinding,
   recorded: RecordedTurnInput,
   resultHash: string,
-  disposition?: "superseded",
+  supersedingOutcome?: TurnReportRequest["outcome"],
 ): LocalSessionBinding {
   if (recorded.resultHash !== resultHash) {
     throw new SessionBindingConflictError("conflict", "The recorded result hash cannot be replaced");
   }
-  if (disposition !== "superseded" || !recorded.report) return binding;
+  if (supersedingOutcome === undefined || !recorded.report) return binding;
   const { report: _report, ...receipt } = recorded;
   return {
     ...binding,
-    recentRecordedInputs: binding.recentRecordedInputs.map((entry) => (entry === recorded ? receipt : entry)),
+    recentRecordedInputs: binding.recentRecordedInputs
+      .filter((entry) => !failedTargetSteerReceipt(entry, recorded.deliveryId, recorded.turnId, supersedingOutcome))
+      .map((entry) => (entry === recorded ? receipt : entry)),
   };
 }
 

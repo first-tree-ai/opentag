@@ -201,7 +201,7 @@ export class MvpTurnReportRecovery {
     else batch.pendingSends -= 1;
   }
 
-  async #confirm(report: TurnReportRequest, disposition?: "superseded"): Promise<void> {
+  async #confirm(report: TurnReportRequest, supersedingOutcome?: TurnReportRequest["outcome"]): Promise<void> {
     const live = this.#custody?.getTurn(report.turnId);
     if (live) {
       if (
@@ -212,7 +212,7 @@ export class MvpTurnReportRecovery {
       ) {
         throw new Error("The retained Report does not match its live custody owner");
       }
-      await this.#custody?.recordResult(report.turnId, report.resultHash, disposition);
+      await this.#custody?.recordResult(report.turnId, report.resultHash, supersedingOutcome);
     } else {
       await this.#reconciler.withAgentLock(report.agentId, async () => {
         await this.#bindingStore.recordResult(
@@ -220,7 +220,7 @@ export class MvpTurnReportRecovery {
           report.sessionId,
           report.turnId,
           report.resultHash,
-          disposition,
+          supersedingOutcome,
         );
         this.#reconciler.clearRecovery(report.sessionId, report.turnId);
       });
@@ -273,7 +273,7 @@ export class MvpTurnReportRecovery {
           reportTerminal = () => resolve("terminal");
         });
         const submitted = this.#reportOwner
-          .submit(report, (disposition) => this.#confirm(report, disposition), {
+          .submit(report, (supersedingOutcome) => this.#confirm(report, supersedingOutcome), {
             resume: true,
             onTerminal: () => reportTerminal?.(),
           })

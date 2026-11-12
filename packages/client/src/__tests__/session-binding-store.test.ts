@@ -319,13 +319,45 @@ describe("SessionBindingStore", () => {
     },
   );
 
-  it.each(["live", "restarted", "retained"])(
-    "retires a superseded %s report without dropping input deduplication",
-    async (mode) => {
+  it.each([
+    { mode: "live", terminalOutcome: "unknown", localOutcome: "completed" },
+    { mode: "restarted", terminalOutcome: "unknown", localOutcome: "cancelled" },
+    { mode: "retained", terminalOutcome: "unknown", localOutcome: "completed" },
+    { mode: "live", terminalOutcome: "completed", localOutcome: "cancelled" },
+    { mode: "retained", terminalOutcome: "completed", localOutcome: "completed" },
+  ] as const)(
+    "reconciles a $mode $localOutcome report superseded by $terminalOutcome",
+    async ({ mode, terminalOutcome, localOutcome }) => {
       const fixture = await bindingFixture();
       const request = delivery(fixture.runtime, 1);
-      const report = turnReport(request, "old-turn");
+      const completed = turnReport(request, "old-turn");
+      const cancelled = {
+        ...completed,
+        outcome: "cancelled" as const,
+        errorReason: "provider_failed" as const,
+        executionEffects: "may_have_occurred" as const,
+      };
+      const report =
+        localOutcome === "completed" ? completed : { ...cancelled, resultHash: computeTurnResultHash(cancelled) };
       const inputHash = computeDirectInputHash(request);
+      const steer = steerRequest("delivery-2", report.turnId);
+      const child = {
+        ...delivery(fixture.runtime, 2),
+        imMessageId: steer.imMessageId,
+        content: steer.content,
+      };
+      const prior = delivery(fixture.runtime, 3);
+      const priorSteer = { ...steerRequest("delivery-4", "prior-turn"), rootDeliveryId: prior.deliveryId };
+      const priorHash = sha256("prior-result");
+      await fixture.store.recordAccepted(prior, computeDirectInputHash(prior), priorSteer.expectedTurnId);
+      const unrelatedReceipt = await fixture.store.recordSteer(
+        priorSteer,
+        computeRuntimeImMessageSemanticHash(priorSteer),
+      );
+      await fixture.store.updateUnresolved(prior.agentId, prior.sessionId, priorSteer.expectedTurnId, "reporting", {
+        resultHash: priorHash,
+      });
+      await fixture.store.recordResult(prior.agentId, prior.sessionId, priorSteer.expectedTurnId, priorHash);
       const reconciler = new SessionReconciler({ installationId: fixture.computerId, preparation: fixture.workspace });
       const ready = () => ({ ...fixture.reconcile, requestId: randomUUID() });
       await reconciler.reconcile(ready());
@@ -333,9 +365,11 @@ describe("SessionBindingStore", () => {
       if (mode === "live") {
         const decision = await custody.accept(request);
         await decision.onAcceptedSent?.();
+        await fixture.store.recordSteer(steer, computeRuntimeImMessageSemanticHash(steer));
         await custody.markReporting(report.turnId, report);
       } else {
         await fixture.store.recordAccepted(request, inputHash, report.turnId);
+        await fixture.store.recordSteer(steer, computeRuntimeImMessageSemanticHash(steer));
         await fixture.store.updateUnresolved(request.agentId, request.sessionId, report.turnId, "reporting", {
           report,
           resultHash: report.resultHash,
@@ -367,6 +401,7 @@ describe("SessionBindingStore", () => {
           turnId: report.turnId,
           resultHash: report.resultHash,
           status: "superseded" as const,
+          terminalOutcome,
         };
         await expect(reportOwner.handleResult(acknowledgement)).resolves.toBe(false);
         version = 6;
@@ -375,16 +410,15 @@ describe("SessionBindingStore", () => {
 
         const binding = await fixture.store.read(request.agentId, request.sessionId);
         expect(binding?.unresolvedTurn).toBeUndefined();
-        expect(binding?.recentRecordedInputs).toEqual([
-          {
-            kind: "turn",
-            deliveryId: request.deliveryId,
-            inputHash,
-            requestId: request.requestId,
-            turnId: report.turnId,
-            resultHash: report.resultHash,
-          },
-        ]);
+        expect(binding?.recentRecordedInputs).toContainEqual(unrelatedReceipt);
+        expect(binding?.recentRecordedInputs).toContainEqual({
+          kind: "turn",
+          deliveryId: request.deliveryId,
+          inputHash,
+          requestId: request.requestId,
+          turnId: report.turnId,
+          resultHash: report.resultHash,
+        });
         expect(custody.liveTurnCount).toBe(0);
         expect(custody.admission.get(request.sessionId)).toBeUndefined();
         const next = ready();
@@ -394,6 +428,15 @@ describe("SessionBindingStore", () => {
         await expect(fixture.store.recordAccepted(request, inputHash, report.turnId)).resolves.toMatchObject({
           status: "recorded",
         });
+        const redelivery = await fixture.store.recordAccepted(child, computeDirectInputHash(child), "child-turn");
+        if (terminalOutcome === "completed") {
+          expect(redelivery).toMatchObject({ status: "absorbed", recorded: { turnId: report.turnId } });
+        } else {
+          expect(redelivery).toMatchObject({
+            status: "committed",
+            unresolvedTurn: { deliveryId: child.deliveryId, turnId: "child-turn" },
+          });
+        }
       } finally {
         reportOwner.stop();
         await reportOwner.settled();

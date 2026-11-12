@@ -43,7 +43,7 @@ export interface TurnReportOwnerOptions {
 
 export type TurnReportTerminalStatus = "conflict" | "stale_generation";
 
-type ConfirmTurnReport = (disposition?: "superseded") => Promise<void> | void;
+type ConfirmTurnReport = (supersedingOutcome?: TurnReportRequest["outcome"]) => Promise<void> | void;
 
 export interface TurnReportSubmitOptions {
   /** Reconcile joins active delivery without bypassing its retry timer or in-flight send. */
@@ -284,7 +284,7 @@ export class TurnReportOwner {
       return this.#handleTerminalResult(pending, result.status);
     }
     if (pending.confirming || !pending.confirm) return true;
-    return this.#confirmResult(pending, result.status === "superseded" ? "superseded" : undefined);
+    return this.#confirmResult(pending, result.status === "superseded" ? result.terminalOutcome : undefined);
   }
 
   async #handleTerminalResult(pending: PendingReport, status: TurnReportTerminalStatus): Promise<boolean> {
@@ -312,13 +312,13 @@ export class TurnReportOwner {
     return true;
   }
 
-  async #confirmResult(pending: PendingReport, disposition?: "superseded"): Promise<boolean> {
+  async #confirmResult(pending: PendingReport, supersedingOutcome?: TurnReportRequest["outcome"]): Promise<boolean> {
     const confirm = pending.confirm;
     if (!confirm) return true;
     pending.confirming = true;
     this.#clearRetry(pending);
     try {
-      await confirm(disposition);
+      await confirm(supersedingOutcome);
       pending.confirming = false;
       // Keep the pending identity fenced until #persist publishes succeeded to #records.
       pending.settling = true;

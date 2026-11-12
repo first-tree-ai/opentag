@@ -973,6 +973,8 @@ export const AgentTraceBatchSchema = z
     }
   });
 
+const TurnReportOutcomeSchema = z.enum(["completed", "failed", "cancelled", "unknown"]);
+
 export const TurnReportRequestSchema = z
   .object({
     type: z.literal("turn:report"),
@@ -982,7 +984,7 @@ export const TurnReportRequestSchema = z
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
-    outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+    outcome: TurnReportOutcomeSchema,
     executionEffects: z.enum(["not_started", "may_have_occurred", "completed"]),
     finalText: byteString(RUNTIME_FINAL_TEXT_MAX_BYTES, "Final text exceeds the 48 KiB limit", 1).optional(),
     errorReason: TurnFailureReasonSchema.optional(),
@@ -1017,22 +1019,24 @@ export const TurnReportRequestSchema = z
     }
   });
 
-export const TurnReportResultSchema = z
+const TurnReportResultBaseSchema = z
   .object({
     type: z.literal("turn:report:result"),
     requestId: RuntimeRequestIdSchema,
     turnId: RuntimeOpaqueIdSchema,
-    status: z.enum([
-      "recorded",
-      "already_recorded",
-      "superseded",
-      "conflict",
-      "stale_generation",
-      "unsupported_capability",
-    ]),
     resultHash: RuntimeSha256Schema,
   })
   .strict();
+
+export const TurnReportResultSchema = z.discriminatedUnion("status", [
+  TurnReportResultBaseSchema.extend({
+    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation", "unsupported_capability"]),
+  }),
+  TurnReportResultBaseSchema.extend({
+    status: z.literal("superseded"),
+    terminalOutcome: TurnReportOutcomeSchema,
+  }),
+]);
 
 export const AgentRuntimeOptionsRequestFrameSchema = z
   .object({

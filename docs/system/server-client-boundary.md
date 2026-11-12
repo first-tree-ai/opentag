@@ -100,9 +100,12 @@ terminal settlement before accepting a report.
 With `runtime.turnReport` v6, the Server can acknowledge a report as
 `superseded` after verifying that the same delivery and Turn already have a
 different terminal report in the current placement. The Server preserves its
-terminal result. The Client releases the exact Turn's local custody, keeps the
-input receipt for deduplication, and removes the obsolete report from replay.
-An ordinary conflict or stale placement leaves local custody fenced.
+terminal result and includes its outcome in the acknowledgement. The Client
+releases the exact Turn's local custody, keeps the root input receipt for
+deduplication, and removes the obsolete report from replay. If the Server's
+outcome is unsuccessful, the Client also removes the matching steer receipts
+so the Server can deliver those inputs again. A completed outcome preserves
+them. An ordinary conflict or stale placement leaves local custody fenced.
 
 ### Automatic retry of accepted work
 

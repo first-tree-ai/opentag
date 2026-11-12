@@ -424,6 +424,7 @@ describe("PostgresRuntimeCustodyStore", () => {
         requestId: late.requestId,
         turnId: late.turnId,
         status: "superseded",
+        terminalOutcome: terminal.outcome,
         resultHash: late.resultHash,
       });
       await expect(owner.handle(late, { ...context, instanceId: randomUUID() })).resolves.toMatchObject({

@@ -125,8 +125,11 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
     options?: RecordTurnOptions,
-  ): Promise<TurnReportResult["status"] | undefined>;
+  ): Promise<RecordTurnResult | undefined>;
 }
+
+type SupersededTurnReport = Pick<Extract<TurnReportResult, { status: "superseded" }>, "status" | "terminalOutcome">;
+type RecordTurnResult = Exclude<TurnReportResult["status"], "superseded"> | SupersededTurnReport;
 
 export interface RecordTurnOptions {
   acknowledgeSuperseded?: boolean;
@@ -791,7 +794,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
     options: RecordTurnOptions = {},
-  ): Promise<TurnReportResult["status"] | undefined> {
+  ): Promise<RecordTurnResult | undefined> {
     const terminalizedIds: string[] = [];
     const status = await this.#database.transaction(async (transaction) => {
       /*
@@ -1090,7 +1093,7 @@ function recordedReportStatus(
   delivery: Pick<typeof imMessageDeliveries.$inferSelect, "turnReport" | "reportedAt" | "resultHash">,
   report: TurnReportRequest,
   acknowledgeSuperseded = false,
-): "already_recorded" | "superseded" | "conflict" | undefined {
+): "already_recorded" | SupersededTurnReport | "conflict" | undefined {
   if (!delivery.turnReport) return undefined;
   if (delivery.resultHash === report.resultHash && sameReport(delivery.turnReport, report)) {
     return "already_recorded";
@@ -1101,7 +1104,7 @@ function recordedReportStatus(
     delivery.resultHash &&
     delivery.resultHash !== report.resultHash
   ) {
-    return "superseded";
+    return { status: "superseded", terminalOutcome: delivery.turnReport.outcome };
   }
   return "conflict";
 }

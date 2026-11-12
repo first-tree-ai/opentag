@@ -179,6 +179,15 @@ Thread Session never compacts.
    an unreported `ready`/`stopped` response still diagnoses the current missing report; no input is
    redispatched. Cancellation and failed reconcile completion preserve custody and still accept
    the authentic report through its normal path.
+5. Keep an obsolete report for a root IM Turn on a Client that negotiates Turn Report v6. Steer
+   a child input into that Turn, then have the Server record a different terminal outcome of
+   `unknown` before the Client can submit its report. Exercise both live custody and replay
+   from disk, including a completed report retained with its input receipt. Expected: the
+   Server's terminal result is preserved, the root is deduplicated, and the requeued child
+   starts new work instead of being absorbed by the terminal Turn.
+6. Repeat with a different Server report whose outcome is `completed`. Expected: the obsolete
+   report is retired and the child keeps its steer receipt. Receipts for other Turns are
+   preserved in both cases.
 
 ## Retries run out
 

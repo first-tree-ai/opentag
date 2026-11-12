@@ -620,7 +620,7 @@ export class AgentTurnRunner {
     }
     await this.#cleanupOutgoingReplies(turnPlanInput, owner.turnId);
     void this.#reportOwner
-      .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
+      .submit(report, (disposition) => this.#custody.recordResult(owner.turnId, report.resultHash, disposition))
       .catch((error: unknown) => {
         this.#logger.warn(
           {

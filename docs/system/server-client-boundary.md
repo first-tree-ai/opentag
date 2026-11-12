@@ -97,6 +97,13 @@ These paths resend the original report and never run the completed model task ag
 The Server still checks current ownership, connection instance, placement and
 terminal settlement before accepting a report.
 
+With `runtime.turnReport` v6, the Server can acknowledge a report as
+`superseded` after verifying that the same delivery and Turn already have a
+different terminal report in the current placement. The Server preserves its
+terminal result. The Client releases the exact Turn's local custody, keeps the
+input receipt for deduplication, and removes the obsolete report from replay.
+An ordinary conflict or stale placement leaves local custody fenced.
+
 ### Automatic retry of accepted work
 
 Automatic retry of accepted work belongs to the Local Client daemon; the Server

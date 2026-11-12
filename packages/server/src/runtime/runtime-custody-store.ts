@@ -129,6 +129,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
 }
 
 export interface RecordTurnOptions {
+  acknowledgeSuperseded?: boolean;
   /**
    * Maintenance only: refuse the write unless the authority that justified a synthetic report is
    * still absent. The transaction locks the Agent and the binding first, in the order the binding
@@ -806,7 +807,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!scope) return undefined;
       if (!recordTurnIdentityMatches(scope, report)) return "conflict";
       if (!placementMatches(scope, context.computerId, report.placementGeneration)) return "stale_generation";
-      const replay = recordedReportStatus(scope.delivery, report);
+      const replay = recordedReportStatus(scope.delivery, report, options.acknowledgeSuperseded);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
       // Reloaded under every lock now held: the authority, and the identities it was locked for.
@@ -1086,13 +1087,23 @@ function recordTurnIdentityMatches(scope: DeliveryScope, report: TurnReportReque
 }
 
 function recordedReportStatus(
-  delivery: { turnReport: unknown; resultHash: string | null },
+  delivery: Pick<typeof imMessageDeliveries.$inferSelect, "turnReport" | "reportedAt" | "resultHash">,
   report: TurnReportRequest,
-): "already_recorded" | "conflict" | undefined {
+  acknowledgeSuperseded = false,
+): "already_recorded" | "superseded" | "conflict" | undefined {
   if (!delivery.turnReport) return undefined;
-  return delivery.resultHash === report.resultHash && sameReport(delivery.turnReport as TurnReportRequest, report)
-    ? "already_recorded"
-    : "conflict";
+  if (delivery.resultHash === report.resultHash && sameReport(delivery.turnReport, report)) {
+    return "already_recorded";
+  }
+  if (
+    acknowledgeSuperseded &&
+    delivery.reportedAt &&
+    delivery.resultHash &&
+    delivery.resultHash !== report.resultHash
+  ) {
+    return "superseded";
+  }
+  return "conflict";
 }
 
 /** The authority a synthetic report was decided on, rechecked under the locks of the write; a real report has none. */

@@ -415,7 +415,13 @@ export class SessionBindingStore {
     });
   }
 
-  recordResult(agentId: string, sessionId: string, turnId: string, resultHash: string): Promise<LocalSessionBinding> {
+  recordResult(
+    agentId: string,
+    sessionId: string,
+    turnId: string,
+    resultHash: string,
+    disposition?: "superseded",
+  ): Promise<LocalSessionBinding> {
     return this.#withSessionLock(sessionId, async () => {
       RuntimeSha256Schema.parse(resultHash);
       const path = sessionBindingPath(this.#home, agentId, sessionId);
@@ -424,8 +430,9 @@ export class SessionBindingStore {
         (entry): entry is RecordedTurnInput => entry.kind === "turn" && entry.turnId === turnId,
       );
       if (alreadyRecorded) {
-        if (alreadyRecorded.resultHash === resultHash) return binding;
-        throw new SessionBindingConflictError("conflict", "The recorded result hash cannot be replaced");
+        const updated = confirmRecordedInput(binding, alreadyRecorded, resultHash, disposition);
+        if (updated !== binding) await this.#writeBinding(path, updated);
+        return updated;
       }
       const unresolved = binding.unresolvedTurn;
       if (!unresolved) {
@@ -434,12 +441,13 @@ export class SessionBindingStore {
       if (unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {
         throw new SessionBindingConflictError("conflict", "The recorded result does not match the unresolved turn");
       }
+      const report = disposition === "superseded" ? undefined : unresolved.report;
       const recorded: RecordedTurnInput = {
         kind: "turn",
         deliveryId: unresolved.deliveryId,
         inputHash: unresolved.inputHash,
         requestId: unresolved.requestId,
-        ...(unresolved.report ? { report: unresolved.report } : {}),
+        ...(report ? { report } : {}),
         resultHash,
         turnId,
       };
@@ -447,7 +455,7 @@ export class SessionBindingStore {
         ...binding.recentRecordedInputs.filter(
           (entry) =>
             entry.deliveryId !== recorded.deliveryId &&
-            !failedTargetSteerReceipt(entry, unresolved.deliveryId, unresolved.turnId, unresolved.report),
+            !failedTargetSteerReceipt(entry, unresolved.deliveryId, unresolved.turnId, report),
         ),
         recorded,
       ].slice(-this.#recordedInputLimit);
@@ -872,6 +880,23 @@ function failedTargetSteerReceipt(
     entry.rootDeliveryId === targetDeliveryId &&
     entry.turnId === targetTurnId
   );
+}
+
+function confirmRecordedInput(
+  binding: LocalSessionBinding,
+  recorded: RecordedTurnInput,
+  resultHash: string,
+  disposition?: "superseded",
+): LocalSessionBinding {
+  if (recorded.resultHash !== resultHash) {
+    throw new SessionBindingConflictError("conflict", "The recorded result hash cannot be replaced");
+  }
+  if (disposition !== "superseded" || !recorded.report) return binding;
+  const { report: _report, ...receipt } = recorded;
+  return {
+    ...binding,
+    recentRecordedInputs: binding.recentRecordedInputs.map((entry) => (entry === recorded ? receipt : entry)),
+  };
 }
 
 function phaseOrder(phase: UnresolvedTurnPhase): number {

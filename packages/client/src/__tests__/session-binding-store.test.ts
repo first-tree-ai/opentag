@@ -11,6 +11,7 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
+  RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
   type SessionReconcileRequest,
   type TurnReportRequest,
@@ -22,6 +23,8 @@ import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import { agentRuntimePaths, deriveRuntimeKey, sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
+import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
+import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 
 const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
@@ -313,6 +316,88 @@ describe("SessionBindingStore", () => {
       expect(submit.mock.calls.every(([report]) => report.resultHash === submit.mock.calls[0]?.[0].resultHash)).toBe(
         true,
       );
+    },
+  );
+
+  it.each(["live", "restarted", "retained"])(
+    "retires a superseded %s report without dropping input deduplication",
+    async (mode) => {
+      const fixture = await bindingFixture();
+      const request = delivery(fixture.runtime, 1);
+      const report = turnReport(request, "old-turn");
+      const inputHash = computeDirectInputHash(request);
+      const reconciler = new SessionReconciler({ installationId: fixture.computerId, preparation: fixture.workspace });
+      const ready = () => ({ ...fixture.reconcile, requestId: randomUUID() });
+      await reconciler.reconcile(ready());
+      const custody = new TurnCustodyOwner({ bindingStore: fixture.store, id: () => report.turnId, reconciler });
+      if (mode === "live") {
+        const decision = await custody.accept(request);
+        await decision.onAcceptedSent?.();
+        await custody.markReporting(report.turnId, report);
+      } else {
+        await fixture.store.recordAccepted(request, inputHash, report.turnId);
+        await fixture.store.updateUnresolved(request.agentId, request.sessionId, report.turnId, "reporting", {
+          report,
+          resultHash: report.resultHash,
+        });
+        if (mode === "retained") {
+          await fixture.store.recordResult(request.agentId, request.sessionId, report.turnId, report.resultHash);
+        }
+      }
+      const send = vi.fn(async () => undefined);
+      let version = 5;
+      const reportOwner = new TurnReportOwner({
+        connection: {
+          state: "registered",
+          send,
+          subscribeState: () => () => {},
+          capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.turnReport ? version : undefined),
+        },
+      });
+      const recovery = new MvpTurnReportRecovery({ bindingStore: fixture.store, custody, reconciler, reportOwner });
+      try {
+        const reconcile = ready();
+        const prepared = await recovery.prepare(reconcile, await reconciler.reconcile(reconcile));
+        expect(prepared.retainedReports).toMatchObject([{ turnId: report.turnId, resultHash: report.resultHash }]);
+        recovery.afterReconciled(reconcile, prepared);
+        await vi.waitFor(() => expect(send).toHaveBeenCalledWith(report, { priority: "report" }));
+        const acknowledgement = {
+          type: "turn:report:result" as const,
+          requestId: report.requestId,
+          turnId: report.turnId,
+          resultHash: report.resultHash,
+          status: "superseded" as const,
+        };
+        await expect(reportOwner.handleResult(acknowledgement)).resolves.toBe(false);
+        version = 6;
+        await expect(reportOwner.handleResult({ ...acknowledgement, resultHash: "a".repeat(64) })).resolves.toBe(false);
+        await expect(reportOwner.handleResult(acknowledgement)).resolves.toBe(true);
+
+        const binding = await fixture.store.read(request.agentId, request.sessionId);
+        expect(binding?.unresolvedTurn).toBeUndefined();
+        expect(binding?.recentRecordedInputs).toEqual([
+          {
+            kind: "turn",
+            deliveryId: request.deliveryId,
+            inputHash,
+            requestId: request.requestId,
+            turnId: report.turnId,
+            resultHash: report.resultHash,
+          },
+        ]);
+        expect(custody.liveTurnCount).toBe(0);
+        expect(custody.admission.get(request.sessionId)).toBeUndefined();
+        const next = ready();
+        const nextResult = await reconciler.reconcile(next);
+        expect(nextResult.status).toBe("ready");
+        expect((await recovery.prepare(next, nextResult)).retainedReports).toBeUndefined();
+        await expect(fixture.store.recordAccepted(request, inputHash, report.turnId)).resolves.toMatchObject({
+          status: "recorded",
+        });
+      } finally {
+        reportOwner.stop();
+        await reportOwner.settled();
+      }
     },
   );
 

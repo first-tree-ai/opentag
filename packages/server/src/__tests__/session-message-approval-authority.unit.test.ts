@@ -1,8 +1,7 @@
 import type { RuntimeApprovalRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createDatabaseClient } from "../../db/client.js";
+import { bootstrapInitialAdmin } from "../admin/bootstrap.js";
 import {
   computers,
   imBindings,
@@ -11,22 +10,21 @@ import {
   sessionMessages,
   sessionPlacements,
   sessions,
-} from "../../db/schema/index.js";
-import { loadApprovalAuthority } from "../../runtime/approval-authority.js";
-import { AgentService } from "../../services/agents/index.js";
-import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
+} from "../db/schema/index.js";
+import { loadApprovalAuthority } from "../runtime/approval-authority.js";
+import { AgentService } from "../services/agents/index.js";
+import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
-let testDatabase: MigratedTestDatabase;
+let db: UnitDatabase;
 
 beforeAll(async () => {
-  testDatabase = await startMigratedTestDatabase();
-}, 120_000);
-afterAll(async () => testDatabase.stop());
-beforeEach(async () => testDatabase.reset());
+  db = await createUnitDatabase();
+}, 60_000);
+afterAll(async () => db.close());
+beforeEach(async () => db.reset());
 
 async function fixture() {
-  const client = createDatabaseClient(testDatabase.databaseUrl);
-  const { database } = client;
+  const { database } = db;
   const admin = await bootstrapInitialAdmin(database, { displayName: "Admin", email: "admin@example.com" });
   const instanceId = crypto.randomUUID();
   const [computer] = await database
@@ -128,79 +126,75 @@ async function fixture() {
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     source: "session-message",
   });
-  return { ...client, binding, computer, context, humanMessage, request, session, sessionMessage };
+  return { database, binding, computer, context, humanMessage, request, session, sessionMessage };
 }
 
 describe("Session message approval authority", () => {
   it("routes a grandchild's request to the sender of the top visible Session's last message before it", async () => {
     const f = await fixture();
-    try {
-      const t0 = new Date(Date.now() - 60_000);
-      const visible = await f.session({});
-      await f.humanMessage(visible.id, "om_first", "ou_alice", new Date(t0.getTime() - 2_000));
-      await f.humanMessage(visible.id, "om_second", "ou_bob", new Date(t0.getTime() - 1_000));
-      const child = await f.session({ kind: "internal", createdBySessionId: visible.id });
-      const grandchild = await f.session({ kind: "internal", createdBySessionId: child.id });
-      const messageId = await f.sessionMessage(child.id, grandchild.id, t0);
-      // A message after the Session message does not change who decides.
-      await f.humanMessage(visible.id, "om_later", "ou_carol", new Date(t0.getTime() + 1_000));
+    const t0 = new Date(Date.now() - 60_000);
+    const visible = await f.session({});
+    await f.humanMessage(visible.id, "om_first", "ou_alice", new Date(t0.getTime() - 2_000));
+    await f.humanMessage(visible.id, "om_second", "ou_bob", new Date(t0.getTime() - 1_000));
+    const child = await f.session({ kind: "internal", createdBySessionId: visible.id });
+    const grandchild = await f.session({ kind: "internal", createdBySessionId: child.id });
+    const messageId = await f.sessionMessage(child.id, grandchild.id, t0);
+    // A message after the Session message does not change who decides.
+    await f.humanMessage(visible.id, "om_later", "ou_carol", new Date(t0.getTime() + 1_000));
 
-      const scope = await loadApprovalAuthority(f.database, f.request(grandchild.id, messageId), f.context);
-      expect(scope).toMatchObject({
-        imBindingId: f.binding.id,
-        visibleSessionId: visible.id,
-        authority: {
-          senderExternalId: "ou_bob",
-          provider: "feishu",
-          channelId: "oc_dm",
-          externalMessageId: "om_second",
-          generation: 1,
-        },
-      });
-      expect(scope?.deadlineAt.getTime()).toBe(t0.getTime() + 24 * 60 * 60 * 1000);
+    const scope = await loadApprovalAuthority(f.database, f.request(grandchild.id, messageId), f.context);
+    expect(scope).toMatchObject({
+      imBindingId: f.binding.id,
+      visibleSessionId: visible.id,
+      authority: {
+        senderExternalId: "ou_bob",
+        provider: "feishu",
+        channelId: "oc_dm",
+        externalMessageId: "om_second",
+        generation: 1,
+      },
+    });
+    expect(scope?.deadlineAt.getTime()).toBe(t0.getTime() + 24 * 60 * 60 * 1000);
 
-      // A visible target is its own conversation.
-      const toVisible = await f.sessionMessage(child.id, visible.id, t0);
-      expect(
-        (await loadApprovalAuthority(f.database, f.request(visible.id, toVisible), f.context))?.authority,
-      ).toMatchObject({ senderExternalId: "ou_bob" });
-    } finally {
-      await f.sql.end();
-    }
+    // A visible target is its own conversation.
+    const toVisible = await f.sessionMessage(child.id, visible.id, t0);
+    expect(
+      (await loadApprovalAuthority(f.database, f.request(visible.id, toVisible), f.context))?.authority,
+    ).toMatchObject({ senderExternalId: "ou_bob" });
   });
 
   it("refuses requests that are not the live Run of an accepted message on this connection", async () => {
     const f = await fixture();
-    try {
-      const t0 = new Date(Date.now() - 60_000);
-      const visible = await f.session({});
-      await f.humanMessage(visible.id, "om_first", "ou_alice", new Date(t0.getTime() - 1_000));
-      const child = await f.session({ kind: "internal", createdBySessionId: visible.id });
-      const messageId = await f.sessionMessage(visible.id, child.id, t0);
-      const valid = f.request(child.id, messageId);
-      expect(await loadApprovalAuthority(f.database, valid, f.context)).toBeDefined();
+    const t0 = new Date(Date.now() - 60_000);
+    const visible = await f.session({});
+    await f.humanMessage(visible.id, "om_first", "ou_alice", new Date(t0.getTime() - 1_000));
+    const child = await f.session({ kind: "internal", createdBySessionId: visible.id });
+    const messageId = await f.sessionMessage(visible.id, child.id, t0);
+    const valid = f.request(child.id, messageId);
+    expect(await loadApprovalAuthority(f.database, valid, f.context)).toBeDefined();
 
-      const refused = [
-        { ...valid, turnId: "session-message-other" },
-        { ...valid, deliveryId: "not-a-uuid", turnId: "session-message-not-a-uuid" },
-        { ...valid, sessionId: visible.id },
-        { ...valid, placementGeneration: 2 },
-      ];
-      for (const request of refused)
-        expect(await loadApprovalAuthority(f.database, request, f.context)).toBeUndefined();
-      expect(
-        await loadApprovalAuthority(f.database, valid, { ...f.context, connectionId: "socket-2" }),
-      ).toBeUndefined();
+    const refused = [
+      { ...valid, turnId: "session-message-other" },
+      { ...valid, deliveryId: "not-a-uuid", turnId: "session-message-not-a-uuid" },
+      { ...valid, sessionId: visible.id },
+      { ...valid, placementGeneration: 2 },
+    ];
+    for (const request of refused) expect(await loadApprovalAuthority(f.database, request, f.context)).toBeUndefined();
+    expect(await loadApprovalAuthority(f.database, valid, { ...f.context, connectionId: "socket-2" })).toBeUndefined();
 
-      // No human message before the Session message: nobody to ask.
-      const early = await f.sessionMessage(visible.id, child.id, new Date(t0.getTime() - 5_000));
-      expect(await loadApprovalAuthority(f.database, f.request(child.id, early), f.context)).toBeUndefined();
+    // No human message before the Session message: nobody to ask.
+    const early = await f.sessionMessage(visible.id, child.id, new Date(t0.getTime() - 5_000));
+    expect(await loadApprovalAuthority(f.database, f.request(child.id, early), f.context)).toBeUndefined();
 
-      // An ended Session on the chain leaves nobody to ask.
-      await f.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, visible.id));
-      expect(await loadApprovalAuthority(f.database, valid, f.context)).toBeUndefined();
-    } finally {
-      await f.sql.end();
-    }
+    // A creation chain that loops gives up at the depth bound instead of spinning.
+    const grandchild = await f.session({ kind: "internal", createdBySessionId: child.id });
+    const toGrandchild = await f.sessionMessage(child.id, grandchild.id, t0);
+    await f.database.update(sessions).set({ createdBySessionId: grandchild.id }).where(eq(sessions.id, child.id));
+    expect(await loadApprovalAuthority(f.database, f.request(grandchild.id, toGrandchild), f.context)).toBeUndefined();
+    await f.database.update(sessions).set({ createdBySessionId: visible.id }).where(eq(sessions.id, child.id));
+
+    // An ended Session on the chain leaves nobody to ask.
+    await f.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, visible.id));
+    expect(await loadApprovalAuthority(f.database, valid, f.context)).toBeUndefined();
   });
 });

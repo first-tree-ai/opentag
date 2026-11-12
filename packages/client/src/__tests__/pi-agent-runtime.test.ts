@@ -107,6 +107,220 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
+  describe("background work", () => {
+    const status = (live: { id: string; label: string; outputPath: string }[], finished?: Record<string, unknown>) => ({
+      type: "extension_ui_request",
+      id: "ui",
+      method: "setStatus",
+      statusKey: "opentag-background-work",
+      statusText: JSON.stringify({ live, ...(finished ? { finished } : {}) }),
+    });
+    const job = { id: "job", label: "suite", outputPath: "/job.log" };
+
+    async function holding(
+      policy: Partial<CreateAgentRuntimeRequest["policy"]> = { fileSystem: "unrestricted", network: "enabled" },
+    ) {
+      const client = new ScriptedPiClient("hold");
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await new PiAgentRuntimeFactory({
+        createClient: (_cwd, args) => {
+          client.args = args;
+          return client;
+        },
+        createSessionId: () => SESSION_ID,
+      }).create({
+        ...createRequest((event) => {
+          events.push(event);
+        }),
+        policy: { ...basePolicy(), ...policy },
+      });
+      const controller = new AbortController();
+      const run = runtime.prompt({ runId: "bg", input: input("work"), signal: controller.signal });
+      await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+      const background = () => events.filter((event) => event.type.startsWith("background_work"));
+      return { client, events, runtime, controller, run, background };
+    }
+
+    it("loads its extension only where the model may run commands", async () => {
+      const writable = await holding();
+      expect(writable.client.args.join(" ")).toContain("pi-extensions/background-work");
+      writable.client.complete();
+      await writable.run;
+      await writable.runtime.close();
+      const readOnly = await holding({ fileSystem: "read-only" });
+      expect(readOnly.client.args.join(" ")).not.toContain("background-work");
+      readOnly.client.complete();
+      await readOnly.run;
+      await readOnly.runtime.close();
+    });
+
+    it("keeps the Run open past agent_settled while work is live, and ends it at the turn after the work ended", async () => {
+      const { client, run, runtime, background } = await holding();
+      let settled = false;
+      void run.then(() => {
+        settled = true;
+      });
+      client.emit(status([job]));
+      client.complete();
+      await new Promise((resolve) => setImmediate(resolve));
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      expect(settled).toBe(false);
+      expect(runtime.state).toMatchObject({ phase: "running", activeRunId: "bg" });
+      client.emit(status([], { id: "job", status: "completed", detail: "exit code 0", outputPath: "/job.log" }));
+      client.completeAgain();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      expect(background()).toEqual([
+        { type: "background_work_changed", runId: "bg", items: [job] },
+        {
+          type: "background_work_finished",
+          runId: "bg",
+          id: "job",
+          status: "completed",
+          detail: "exit code 0",
+          outputPath: "/job.log",
+        },
+        { type: "background_work_changed", runId: "bg", items: [] },
+      ]);
+      await runtime.close();
+    });
+
+    it("turns input steered during the wait into a prompt, since Pi is idle", async () => {
+      const { client, run, runtime } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(client.commands.at(-1)?.type).toBe("prompt"));
+      await new Promise((resolve) => setImmediate(resolve));
+      // Cloud steers Session messages only into a runtime that says it is ready, so the wait must say so.
+      expect(runtime.steerReady).toBe(true);
+      await runtime.steer({ expectedRunId: "bg", input: input("while waiting") });
+      expect(client.commands.at(-1)).toEqual({
+        type: "prompt",
+        message: "while waiting",
+        streamingBehavior: "steer",
+      });
+      expect(client.commands.some((command) => command.type === "steer")).toBe(false);
+      client.completeAgain();
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit(status([]));
+      client.completeAgain();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      expect(runtime.steerReady).toBe(false);
+      await runtime.close();
+    });
+
+    it("closes Pi to stop a Run during the wait, since there is no agent run to abort, and says the work stopped", async () => {
+      const { client, controller, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort("limit");
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.closed).toBe(true);
+      expect(client.commands.some((command) => command.type === "abort")).toBe(false);
+      expect(background().slice(1)).toEqual([
+        { type: "background_work_finished", runId: "bg", id: "job", status: "stopped" },
+        { type: "background_work_changed", runId: "bg", items: [] },
+      ]);
+      await runtime.close();
+    });
+
+    it("ends the Run on a model failure even with work live", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.fail();
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      expect(background()).toContainEqual(
+        expect.objectContaining({ type: "background_work_finished", id: "job", status: "stopped" }),
+      );
+      await runtime.close();
+    });
+
+    it("does not fail an answered Run when the agent run that reports the work fails", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit(status([], { id: "job", status: "completed", detail: "exit code 0", outputPath: "/job.log" }));
+      client.fail();
+      await expect(run).resolves.toMatchObject({ status: "completed", followUpFailure: { code: expect.any(String) } });
+      await runtime.close();
+    });
+
+    it("fails the Run when the agent run carrying steered input fails", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.steer({ expectedRunId: "bg", input: input("while waiting") });
+      client.fail();
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await runtime.close();
+    });
+
+    it("fails the Run when input steered into a running wake fails with it", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({ type: "agent_start" });
+      await new Promise((resolve) => setImmediate(resolve));
+      const receipt = await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      expect(client.commands.at(-1)).toEqual({ type: "steer", message: "a new request" });
+      client.fail();
+      const result = await run;
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result.followUpFailure).toBeUndefined();
+      await expect(receipt.outcome).resolves.toBe("interrupted");
+      await runtime.close();
+    });
+
+    it("carries a process exit during the wait out of the Run", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({ type: "opentag/process_error", error: new PiRpcError("exited", "Pi RPC exited") });
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
+      await runtime.close();
+    });
+
+    it("tells the model with a prompt, and that agent run's failure is a follow-up failure", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await (
+        runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> }
+      ).tellProviderAboutBackgroundWork("quiet for a while");
+      expect(client.commands.at(-1)).toEqual({
+        type: "prompt",
+        message: "quiet for a while",
+        streamingBehavior: "steer",
+      });
+      client.fail();
+      await expect(run).resolves.toMatchObject({ status: "completed", followUpFailure: { code: expect.any(String) } });
+      await runtime.close();
+    });
+
+    it.each(["not json", "{}", undefined])("fails the Run on an unreadable status: %s", async (statusText) => {
+      const { client, run, runtime } = await holding();
+      client.emit({
+        type: "extension_ui_request",
+        method: "setStatus",
+        statusKey: "opentag-background-work",
+        statusText,
+      });
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await runtime.close();
+    });
+  });
+
   it("does not guess command completion from an idle legacy prompt acknowledgement", async () => {
     const client = new ScriptedPiClient("hold");
     client.nativeStreaming = false;
@@ -1498,6 +1712,15 @@ class ScriptedPiClient implements PiRpcClient {
 
   complete(): void {
     this.#emitRun("stop", true);
+  }
+
+  fail(): void {
+    this.#emitRun("error");
+  }
+
+  /** One more agent run in the same process, as a wake or a prompt during a wait starts. */
+  completeAgain(): void {
+    this.#emitRun("stop");
   }
 
   /** Emit one raw Pi event, for scenarios the canned sequences do not cover (e.g. compaction). */

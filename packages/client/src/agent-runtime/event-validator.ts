@@ -1,6 +1,6 @@
 import { createLogger } from "../observability/logger.js";
 import { AgentProviderError } from "./errors.js";
-import type { AgentProviderRunEvent, AgentProviderRunResult, AgentUsage } from "./types.js";
+import type { AgentBackgroundWorkItem, AgentProviderRunEvent, AgentProviderRunResult, AgentUsage } from "./types.js";
 import { AGENT_RUNTIME_TEXT_MAX_BYTES } from "./types.js";
 import { assertIdentifier, assertJsonValue } from "./validation.js";
 
@@ -9,6 +9,7 @@ interface ToolLifecycle {
 }
 
 const TOOL_COMPLETION_STATUSES: ReadonlySet<unknown> = new Set(["completed", "failed", "declined"]);
+const BACKGROUND_WORK_END_STATUSES: ReadonlySet<unknown> = new Set(["completed", "failed", "stopped"]);
 const logger = createLogger("agent-runtime-event-validator");
 
 /**
@@ -89,6 +90,12 @@ export class AgentRunEventValidator {
       case "usage_updated":
         assertUsage(event.usage);
         return;
+      case "background_work_changed":
+        assertBackgroundWorkList(event.items);
+        return;
+      case "background_work_finished":
+        assertBackgroundWorkEnd(event);
+        return;
       case "provider_warning":
         assertIdentifier(event.code, "provider warning code");
         assertText(event.message, "provider warning message");
@@ -147,4 +154,27 @@ function assertUsage(usage: AgentUsage): void {
 
 function protocolError(message: string): AgentProviderError {
   return new AgentProviderError("provider_protocol_error", message);
+}
+
+function assertBackgroundWorkList(items: readonly AgentBackgroundWorkItem[]): void {
+  if (!Array.isArray(items)) throw protocolError("provider emitted an invalid background work list");
+  for (const item of items) {
+    assertIdentifier(item.id, "background work id");
+    assertText(item.label, "background work label");
+    if (item.outputPath !== undefined) assertText(item.outputPath, "background work output path");
+  }
+}
+
+function assertBackgroundWorkEnd(event: {
+  readonly id: string;
+  readonly status: unknown;
+  readonly detail?: string;
+  readonly outputPath?: string;
+}): void {
+  assertIdentifier(event.id, "background work id");
+  if (!BACKGROUND_WORK_END_STATUSES.has(event.status)) {
+    throw protocolError("provider emitted an invalid background work status");
+  }
+  if (event.detail !== undefined) assertText(event.detail, "background work detail");
+  if (event.outputPath !== undefined) assertText(event.outputPath, "background work output path");
 }

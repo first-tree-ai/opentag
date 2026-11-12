@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
+  AgentRuntimeEvent,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -89,6 +90,287 @@ it("continues the Turn and closes Pi when the optional steering socket cannot op
   expect(close).toHaveBeenCalledOnce();
   await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
   expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
+
+it("tells a Turn what the last one left, from a file that outlives the sandbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-ledger-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "ledger");
+  const prompts: AgentPromptRequest[] = [];
+  const sinks: ((event: AgentRuntimeEvent) => Promise<void>)[] = [];
+  const results: Partial<Record<number, "aborted">> = { 0: "aborted" };
+  const prompt = async (input: AgentPromptRequest) => {
+    prompts.push(input);
+    const sink = sinks.at(-1) as (event: AgentRuntimeEvent) => Promise<void>;
+    if (results[prompts.length - 1] === "aborted") {
+      await sink({ type: "background_work_changed", runId: input.runId, items: [{ id: "job", label: "the suite" }] });
+      await new Promise((resolve) => input.signal?.addEventListener("abort", resolve, { once: true }));
+      return { runId: input.runId, output: [], status: "aborted" as const };
+    }
+    await sink({ type: "model_turn_started", runId: input.runId, modelTurnId: "m" });
+    return { runId: input.runId, output: [{ text: "done", type: "text" as const }], status: "completed" as const };
+  };
+  const createPiFactory = () => ({
+    create: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+    resume: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+  });
+  const options = {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+    createPiFactory,
+  };
+  const timedOut = turnRequest(executionDir);
+  timedOut.delivery = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 500).toISOString() });
+  await expect(runCloudTurnWorker(timedOut, options as never)).resolves.toMatchObject({ errorReason: "turn_timeout" });
+  expect(JSON.stringify(prompts[0]?.input)).not.toContain("openTag notice");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(prompts[1]?.input.items[0]?.text).toContain("reached its duration limit");
+  expect(prompts[1]?.input.items[0]?.text).toContain("- the suite (status unknown");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(JSON.stringify(prompts[2]?.input)).not.toContain("openTag notice");
+});
+
+describe("a Pi process that exits during a Cloud Run", () => {
+  const exited = (runId: string) => ({
+    runId,
+    output: [],
+    status: "failed" as const,
+    error: { code: "provider_process_exited" as const, message: "Pi RPC exited" },
+  });
+  const answered = (runId: string) => ({
+    runId,
+    output: [{ text: "done", type: "text" as const }],
+    status: "completed" as const,
+  });
+
+  async function run(
+    results: ((input: AgentPromptRequest) => Promise<unknown>)[],
+    extra: { steering?: boolean; failReopen?: boolean; now?: () => number } = {},
+  ) {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const request = turnRequest(await fixtureExecution(root, "retry"));
+    const prompts: AgentPromptRequest[] = [];
+    const closes = vi.fn(async () => undefined);
+    let opened = 0;
+    const open = async () => {
+      opened += 1;
+      if (extra.failReopen && opened > 1) throw new Error("reopen failed");
+      return {
+        close: closes,
+        prompt: async (input: AgentPromptRequest) => {
+          prompts.push(input);
+          return (results.shift() as (input: AgentPromptRequest) => Promise<unknown>)(input);
+        },
+      } as never;
+    };
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+      createPiFactory: () => ({ create: open, resume: open }),
+      ...(extra.now ? { now: extra.now } : {}),
+    } as never);
+    return { completion, prompts, closes, opened: () => opened };
+  }
+
+  it("retries in place, telling the retry what happened, and reports only the final result", async () => {
+    const { completion, prompts, closes, opened } = await run([
+      async (input) => exited(input.runId),
+      async (input) => answered(input.runId),
+    ]);
+    expect(completion).toMatchObject({ outcome: "completed", finalText: "done" });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]?.input.items[0]?.text).not.toContain("exited unexpectedly");
+    expect(prompts[1]?.input.items[0]?.text).toContain("the Provider process exited unexpectedly");
+    expect(prompts[1]?.input.items.length).toBeGreaterThan(1);
+    expect(opened()).toBe(2);
+    expect(closes).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after the shared two retries and reports the exit", async () => {
+    const { completion, prompts } = await run([
+      async (input) => exited(input.runId),
+      async (input) => exited(input.runId),
+      async (input) => exited(input.runId),
+    ]);
+    expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_process_exited" });
+    expect(prompts).toHaveLength(3);
+  });
+
+  describe("the reset after a retry that really ran", () => {
+    const FIVE_MINUTES = 5 * 60_000;
+    /** Each attempt moves the clock on by its duration, then exits; the last one answers. */
+    async function attemptsLasting(durations: number[]) {
+      let clock = Date.now();
+      const results = durations.map((ms, index) => async (input: AgentPromptRequest) => {
+        clock += ms;
+        return index === durations.length - 1 ? answered(input.runId) : exited(input.runId);
+      });
+      return run(results, { now: () => clock });
+    }
+
+    it("counts a long second retry, so the Run gets more retries", async () => {
+      const { completion, prompts } = await attemptsLasting([1_000, 1_000, FIVE_MINUTES, 1_000]);
+      expect(completion).toMatchObject({ outcome: "completed" });
+      expect(prompts).toHaveLength(4);
+    });
+
+    it("does not let a long first attempt earn an extra retry for the short ones after it", async () => {
+      const { completion, prompts } = await attemptsLasting([FIVE_MINUTES, 1_000, 1_000, 1_000]);
+      expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_process_exited" });
+      expect(prompts).toHaveLength(3);
+    });
+  });
+
+  it("keeps what an exited attempt may have done when the retry never starts", async () => {
+    const started = await run([
+      async (input) => exited(input.runId),
+      async (input) => ({
+        runId: input.runId,
+        output: [],
+        status: "failed" as const,
+        error: { code: "provider_start_failed" as const, message: "spawn failed" },
+      }),
+    ]);
+    expect(started.completion).toMatchObject({
+      errorReason: "provider_start_failed",
+      executionEffects: "may_have_occurred",
+    });
+    const reopened = await run([async (input) => exited(input.runId)], { failReopen: true });
+    expect(reopened.completion).toMatchObject({ executionEffects: "may_have_occurred" });
+  });
+
+  it("compacts an idle Channel Session at most once, not again for the retry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-idle-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const start = Date.parse("2026-11-07T00:00:00.000Z");
+    const runAt = async (name: string, at: number, exitsFirst: boolean) => {
+      const request = turnRequest(await fixtureExecution(root, name));
+      request.delivery.sessionId = "channel-session";
+      request.delivery.deadlineAt = new Date(at + 60_000).toISOString();
+      request.outboxContext = { provider: "feishu", sessionKind: "channel", chatId: "chat" };
+      const seen: AgentPromptRequest[] = [];
+      const open = async () =>
+        ({
+          close: async () => undefined,
+          prompt: async (input: AgentPromptRequest) => {
+            seen.push(input);
+            return exitsFirst && seen.length === 1 ? exited(input.runId) : answered(input.runId);
+          },
+        }) as never;
+      await runCloudTurnWorker(request, {
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+        now: () => at,
+        createPiFactory: () => ({ create: open, resume: open }),
+      } as never);
+      return seen.map((input) => input.compactContext);
+    };
+    await runAt("before", start, false);
+    await expect(runAt("idle", start + 9 * 60 * 60 * 1000, true)).resolves.toEqual([true, undefined]);
+  });
+
+  it("does not retry any other failure", async () => {
+    const { completion, prompts } = await run([
+      async (input) => ({
+        runId: input.runId,
+        output: [],
+        status: "failed" as const,
+        error: { code: "provider_context_limit" as const, message: "too long" },
+      }),
+    ]);
+    expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_context_limit" });
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("reports a failure when the runtime cannot be reopened", async () => {
+    const { completion, prompts } = await run([async (input) => exited(input.runId)], { failReopen: true });
+    expect(completion.outcome).not.toBe("completed");
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("carries steered input into the retry, and leaves a steer with the Server between attempts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-steer-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const request = turnRequest(await fixtureExecution(root, "retry-steer"));
+    const steering = { turnId: randomUUID(), token: randomUUID() };
+    request.steering = steering;
+    const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+    const steer = (text: string) => {
+      const { runtime: _runtime, ...delivery } = request.delivery as typeof request.delivery & { runtime: unknown };
+      const message = {
+        ...delivery,
+        type: "im:steer",
+        deliveryId: randomUUID(),
+        imMessageId: randomUUID(),
+        rootDeliveryId: request.delivery.deliveryId,
+        expectedTurnId: steering.turnId,
+        content: { ...request.delivery.content, text },
+      };
+      return new Promise<{ status: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [
+          "-e",
+          CLOUD_STEER_RELAY_SOURCE,
+          cloudSteerSocketPath(request.delivery.deliveryId),
+        ]);
+        let output = "";
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+        });
+        child.on("error", reject).on("close", () => resolve(JSON.parse(output)));
+        child.stdin.end(JSON.stringify({ token: steering.token, request: message }));
+      });
+    };
+    const prompts: AgentPromptRequest[] = [];
+    let opened = 0;
+    const results: { status: string }[] = [];
+    const open = async () => {
+      opened += 1;
+      // The second open is the gap between attempts: no runtime can take input.
+      if (opened === 2) results.push(await steer("sent in the gap"));
+      return {
+        close: async () => undefined,
+        steer: async () => undefined,
+        prompt: async (input: AgentPromptRequest) => {
+          prompts.push(input);
+          if (prompts.length > 1) return answered(input.runId);
+          results.push(await steer("steered first"));
+          return exited(input.runId);
+        },
+      } as never;
+    };
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+      createPiFactory: () => ({ create: open, resume: open }),
+    } as never);
+    expect(completion).toMatchObject({ outcome: "completed" });
+    expect(results.map((result) => result.status)).toEqual(["steered", "deferred"]);
+    const retried = JSON.stringify(prompts[1]?.input);
+    expect(retried).toContain("steered first");
+    expect(retried).not.toContain("sent in the gap");
+  });
 });
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {
@@ -1760,6 +2042,80 @@ it("injects authenticated input through the native socket before the Cloud promp
   }
 });
 
+it("carries a Session steer into the retry when its attempt exits, and settles it by the Turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-steer-retry-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const request = sessionRequest(await fixtureExecution(root, "steer-session-retry"), { steering });
+  const rootKey = request.message.messageId;
+  const steerInput = (text: string): CloudSessionSteerRequest => ({
+    type: "session:message:steer",
+    expectedTurnId: steering.turnId,
+    sessionKind: "internal",
+    message: {
+      ...sessionRequest(root).message,
+      agentId: request.message.agentId,
+      runtime: request.message.runtime,
+      placementGeneration: request.message.placementGeneration,
+      targetSessionId: request.message.targetSessionId,
+      content: { kind: "text", text },
+    },
+  });
+  const relay = (payload: CloudSessionSteerRequest) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(rootKey)]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+    });
+  const first = steerInput("Steered before the exit.");
+  const gap = steerInput("Sent between attempts.");
+  const prompts: AgentPromptRequest[] = [];
+  const relayed: string[] = [];
+  let opened = 0;
+  const open = async () => {
+    opened += 1;
+    // The second open is the gap between attempts: the message stays with the Runner.
+    if (opened === 2) relayed.push(JSON.parse(await relay(gap)));
+    return {
+      steerReady: true,
+      // The worst first receipt: it would have the Runner run the message again.
+      steer: async () => ({ outcome: Promise.resolve("not_started" as const) }),
+      close: async () => undefined,
+      prompt: async (input: AgentPromptRequest) => {
+        prompts.push(input);
+        if (prompts.length > 1)
+          return { runId: input.runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        relayed.push(JSON.parse(await relay(first)));
+        return {
+          runId: input.runId,
+          output: [],
+          status: "failed",
+          error: { code: "provider_process_exited", message: "Pi RPC exited" },
+        };
+      },
+    } as never;
+  };
+  const completion = await runCloudTurnWorker(request, {
+    createPiFactory: () => ({ create: open, resume: open }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  expect(relayed).toEqual(["accepted", "retry"]);
+  expect(JSON.stringify(prompts[1]?.input)).toContain(first.message.content.text);
+  expect(JSON.stringify(prompts[1]?.input)).not.toContain(gap.message.content.text);
+  expect(completion).toMatchObject({
+    outcome: "completed",
+    sessionSteers: { [first.message.messageId]: "processed" },
+  });
+});
+
 it.each(["session-message", "turn"] as const)(
   "binds a Session steer to the running %s and returns its receipt with the worker completion",
   async (kind) => {
@@ -1976,6 +2332,77 @@ it("lets an IM delivery join a running visible Session message Turn and returns 
     imJoins: { [delivery.deliveryId]: "processed" },
   });
   expect((await completion).sessionSteers).toBeUndefined();
+}, 12_000);
+
+it("carries an IM join into the retry when its attempt exits, and settles it by the Turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-im-join-retry-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const outboxContext = {
+    provider: "feishu",
+    sessionKind: "thread",
+    chatId: "oc_visible",
+    threadId: "omt_visible",
+  } satisfies RuntimeImOutboxContext;
+  const request = sessionRequest(await fixtureExecution(root, "im-join-retry"), {
+    steering,
+    outboxContext,
+    sessionKind: "visible",
+  });
+  const base = cloudDeliveryFixture();
+  const delivery = cloudDeliveryFixture({
+    sessionId: request.message.targetSessionId,
+    agentId: request.message.agentId,
+    placementGeneration: request.message.placementGeneration,
+    runtime: request.message.runtime,
+    content: { ...base.content, text: "Joined before the exit." },
+  });
+  const relay = (payload: CloudImJoinRequest) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        CLOUD_STEER_RELAY_SOURCE,
+        cloudSteerSocketPath(request.message.messageId),
+      ]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+    });
+  const prompts: AgentPromptRequest[] = [];
+  const relayed: string[] = [];
+  const open = async () =>
+    ({
+      steerReady: true,
+      // The worst first receipt: it would have the Runner run the IM delivery again.
+      steer: async () => ({ outcome: Promise.resolve("not_started" as const) }),
+      close: async () => undefined,
+      prompt: async (input: AgentPromptRequest) => {
+        prompts.push(input);
+        if (prompts.length > 1)
+          return { runId: input.runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        relayed.push(JSON.parse(await relay({ type: "im:join", expectedTurnId: steering.turnId, delivery })));
+        return {
+          runId: input.runId,
+          output: [],
+          status: "failed",
+          error: { code: "provider_process_exited", message: "Pi RPC exited" },
+        };
+      },
+    }) as never;
+  const completion = await runCloudTurnWorker(request, {
+    createPiFactory: () => ({ create: open, resume: open }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  expect(relayed).toEqual(["accepted"]);
+  expect(JSON.stringify(prompts[1]?.input)).toContain("Joined before the exit.");
+  expect(completion).toMatchObject({ outcome: "completed", imJoins: { [delivery.deliveryId]: "processed" } });
 }, 12_000);
 
 it("refuses an IM join into an internal Session message Turn", async () => {

@@ -215,10 +215,20 @@ export class TurnCustodyOwner {
     });
   }
 
-  async recordResult(turnId: string, resultHash: string): Promise<void> {
+  async recordResult(
+    turnId: string,
+    resultHash: string,
+    supersedingOutcome?: TurnReportRequest["outcome"],
+  ): Promise<void> {
     const owner = this.#requireTurn(turnId);
     await this.#reconciler.withAgentLock(owner.request.agentId, async () => {
-      await this.#bindingStore.recordResult(owner.request.agentId, owner.request.sessionId, turnId, resultHash);
+      await this.#bindingStore.recordResult(
+        owner.request.agentId,
+        owner.request.sessionId,
+        turnId,
+        resultHash,
+        supersedingOutcome,
+      );
       await this.#retries?.remove(owner.request.sessionId, turnId).catch(() => undefined);
       owner.reservation.release();
       this.#reconciler.clearActivity(owner.request.sessionId, turnId);

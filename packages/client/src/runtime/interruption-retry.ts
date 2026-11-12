@@ -27,18 +27,29 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
+ * - `provider_process_exited`: the Provider's process died under a live daemon (crash, out of memory).
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited" | "provider_start_failed";
+export type InterruptionReason =
+  | "daemon_crash"
+  | "client_shutdown"
+  | "provider_rate_limited"
+  | "provider_start_failed"
+  | "provider_process_exited";
 
 const REASONS = new Set<InterruptionReason>([
   "daemon_crash",
   "client_shutdown",
   "provider_rate_limited",
   "provider_start_failed",
+  "provider_process_exited",
 ]);
 
 /** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
-const IN_PLACE = new Set<InterruptionReason>(["provider_rate_limited", "provider_start_failed"]);
+const IN_PLACE = new Set<InterruptionReason>([
+  "provider_rate_limited",
+  "provider_start_failed",
+  "provider_process_exited",
+]);
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -158,6 +169,8 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model API rate-limited the request (HTTP 429)";
     case "provider_start_failed":
       return "the model CLI failed to start before doing any work";
+    case "provider_process_exited":
+      return "the Provider process exited unexpectedly";
   }
 }
 

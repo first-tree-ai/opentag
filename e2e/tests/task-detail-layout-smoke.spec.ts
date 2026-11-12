@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TaskReply } from "@opentag/shared/browser";
 import type { Page } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
@@ -33,7 +34,11 @@ async function createAgent(page: Page): Promise<string> {
 async function installTask(
   page: Page,
   agentId: string,
-  { turnCount = 0, internalSessionCount = 0 }: { turnCount?: number; internalSessionCount?: number } = {},
+  {
+    turnCount = 0,
+    internalSessionCount = 0,
+    latestReply = false,
+  }: { turnCount?: number; internalSessionCount?: number; latestReply?: boolean } = {},
 ): Promise<void> {
   const at = new Date(Date.now() - 60_000).toISOString();
   const task = {
@@ -112,6 +117,24 @@ async function installTask(
     ...internalSession,
     id: `50000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
   }));
+  const replies: TaskReply[] = latestReply
+    ? [
+        {
+          id: "60000000-0000-4000-8000-0000000000aa",
+          provider: "feishu",
+          channelId: task.source.channelId,
+          externalMessageId: "layout-latest-reply",
+          authorKind: "bot",
+          authorDisplayName: null,
+          messageType: "text",
+          contentAvailable: true,
+          fallbackText: "Latest reply: [Read the result](https://example.com/result)",
+          truncated: false,
+          occurredAt: new Date().toISOString(),
+          timeSource: "provider",
+        },
+      ]
+    : [];
   const json = (body: unknown) => ({ contentType: "application/json", body: JSON.stringify(body) });
   await page.route(`**/api/v1/sessions/${taskId}/detail?**`, (route) =>
     route.fulfill(json({ task, turns: { items: [...extraTurns, shortTurn, turn], nextCursor: null } })),
@@ -120,7 +143,7 @@ async function installTask(
     route.fulfill(json({ items: [internalSession, untitledInternalSession, ...extraSessions], nextCursor: null })),
   );
   await page.route(`**/api/v1/sessions/${taskId}/replies**`, (route) =>
-    route.fulfill(json({ items: [], nextCursor: null })),
+    route.fulfill(json({ items: replies, nextCursor: null })),
   );
 }
 
@@ -193,6 +216,57 @@ for (const width of [390, 1024, 1440, 2000]) {
       await expect(row).toBeVisible();
       await expectContentNotScrolledSideways(page);
     });
+  });
+}
+
+for (const [activation, width] of [
+  ["Enter", 1440],
+  ["Space", 390],
+  ["pointer", 390],
+] as const) {
+  test(`jumps to the latest Task entry and keeps focus with ${activation} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const agentId = await createAgent(page);
+    await installTask(page, agentId, { turnCount: 30, latestReply: true });
+    await page.goto(`/agents/${agentId}/tasks/${taskId}`, { waitUntil: "networkidle" });
+
+    const content = page.locator('[data-ui="content"]');
+    const resultLink = page.getByRole("link", { name: "Read the result" });
+    const latestEntry = page.locator("[data-task-entry-id]").last();
+    const jump = page.getByRole("button", { name: "Jump to latest" });
+    await expect(latestEntry).toContainText("Latest reply");
+    await content.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await expect(latestEntry).toBeInViewport({ ratio: 1 });
+
+    const scrollIntoHistory = () =>
+      content.evaluate((element) => {
+        element.scrollTop -= 600;
+      });
+    await scrollIntoHistory();
+    await expect(latestEntry).not.toBeInViewport();
+    await expect(jump).toBeInViewport();
+
+    if (activation === "pointer") {
+      await jump.click();
+    } else {
+      await jump.focus();
+      await expect(jump).toBeFocused();
+      await page.keyboard.press(activation);
+    }
+
+    await expect(jump).toHaveCount(0);
+    await expect
+      .poll(() => content.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop))
+      .toBeLessThanOrEqual(1);
+    await expect(latestEntry).toBeInViewport({ ratio: 1 });
+    await expect(latestEntry).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(resultLink).toBeFocused();
+
+    await scrollIntoHistory();
+    await expect(jump).toBeInViewport();
   });
 }
 

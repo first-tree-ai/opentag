@@ -815,6 +815,47 @@ describe("AgentTurnRunner", () => {
     }
   });
 
+  it("pauses the Run budget while the Provider waits in-process for a quota reset", async () => {
+    vi.useFakeTimers();
+    const h = outgoingHarness();
+    try {
+      h.request.runtime.budget = { maxDurationMs: 60_000 };
+      h.request.deadlineAt = undefined;
+      let onQuotaWait: ((waiting: boolean) => void) | undefined;
+      h.prompt.mockImplementation(async (...args: unknown[]) => {
+        const { signal, onQuotaWaitChanged } = args[0] as {
+          signal: AbortSignal;
+          onQuotaWaitChanged?: (waiting: boolean) => void;
+        };
+        onQuotaWait = onQuotaWaitChanged;
+        return new Promise<AgentRunResult>((resolve) => {
+          signal.addEventListener("abort", () => resolve({ runId: "turn-1", status: "aborted", output: [] }));
+        });
+      });
+      h.runner.start(liveOwner(h.request));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.prompt).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10_000);
+      onQuotaWait?.(true);
+      // Hours of waiting use none of the budget.
+      await vi.advanceTimersByTimeAsync(5 * 60 * 60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(h.create).not.toHaveBeenCalled();
+      onQuotaWait?.(false);
+      await vi.advanceTimersByTimeAsync(49_999);
+      expect(h.create).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await h.runner.settled();
+      expect(h.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+        2,
+      );
+    } finally {
+      h.runner.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("reports an expired deadline without starting Provider execution", async () => {
     const h = outgoingHarness();
     h.request.deadlineAt = new Date(Date.now() - 1).toISOString();

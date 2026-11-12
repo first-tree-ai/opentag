@@ -62,6 +62,11 @@ export interface AgentPromptRequest {
   /** How long until the Run's duration limit stops it, so the Session can be warned before that. */
   readonly durationLimitInMs?: number;
   /**
+   * Told when the Provider starts or stops waiting in-process for a used-up quota window to reset
+   * (`quota_wait_changed`), so the caller can stop the Run's budget during the wait. Never persisted.
+   */
+  readonly onQuotaWaitChanged?: (waiting: boolean) => void;
+  /**
    * Compact the existing native conversation before this input, keeping its identity. A failed
    * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.
    */
@@ -326,6 +331,11 @@ export type AgentProviderRunEvent =
       readonly outputPath?: string;
     }
   | { readonly type: "provider_warning"; readonly code: string; readonly message: string }
+  /**
+   * The provider is holding the Run open while it waits for a used-up usage window to reset, then retries by
+   * itself. The Run's duration budget does not run while `waiting` is true.
+   */
+  | { readonly type: "quota_wait_changed"; readonly waiting: boolean; readonly resetsAt?: string }
   | {
       readonly type: "provider_event";
       readonly providerId: string;

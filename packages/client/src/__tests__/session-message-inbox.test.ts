@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import {
   type InputRejectReason,
   RUNTIME_CAPABILITY,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageOutcomeReport,
@@ -877,6 +878,54 @@ describe("SessionMessageInbox", () => {
     // A redelivery of the same message is answered from memory and never reruns it.
     expect((await inbox.accept(request)).status).toBe("rejected");
     expect(prompt).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
+  it("pauses the Run budget while the Provider waits in-process for a quota reset", async () => {
+    let clock = Date.parse("2026-11-12T10:00:00.000Z");
+    const scheduled: Array<{ delay: number; cancelled: boolean }> = [];
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(delay) {
+        const entry = { delay, cancelled: false };
+        scheduled.push(entry);
+        return {
+          cancel: () => {
+            entry.cancelled = true;
+          },
+        };
+      },
+    };
+    const prompt = vi.fn(async (input: { runId: string; onQuotaWaitChanged?: (waiting: boolean) => void }) => {
+      clock += 1_000;
+      input.onQuotaWaitChanged?.(true);
+      clock += 5 * 60 * 60_000;
+      input.onQuotaWaitChanged?.(false);
+      return { runId: input.runId, status: "completed", output: [] };
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => clock,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      timeoutScheduler,
+    });
+    const request = delivery();
+    const budget = request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS;
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)).toMatchObject({ status: "succeeded" });
+    expect(scheduled).toEqual([
+      { delay: budget, cancelled: true },
+      { delay: budget - 1_000, cancelled: true },
+    ]);
     inbox.stop();
   });
 

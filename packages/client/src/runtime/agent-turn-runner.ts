@@ -21,6 +21,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
+import { runBudgetTimer, scheduleUnrefTimeout } from "../agent-runtime/run-budget-timer.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -695,11 +696,22 @@ export class AgentTurnRunner {
       ? remainingBudgetMs(owner.request.runtime.budget?.maxDurationMs, await this.#ranMs(turn))
       : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
-    const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
-    timer.unref();
+    const budget = runBudgetTimer(scheduleUnrefTimeout, this.#now, timeoutMs, () => timeout.abort("turn_timeout"));
     const runTime = trackRunTime(this.#now, (ranMs) =>
       this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
     );
+    // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+    const onQuotaWait = (waiting: boolean): void => {
+      if (waiting) {
+        budget.pause();
+        runTime.pause();
+        return;
+      }
+      budget.resume();
+      runTime.resume();
+      /* v8 ignore next -- a resumed budget always has an expiry. */
+      if (budget.expiresAt !== undefined) turn.expiresAt = new Date(budget.expiresAt).toISOString();
+    };
     if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -747,6 +759,7 @@ export class AgentTurnRunner {
          */
         input,
         signal: runSignal,
+        onQuotaWaitChanged: onQuotaWait,
         durationLimitInMs: Math.max(1, Date.parse(turn.expiresAt as string) - this.#now()),
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
@@ -789,7 +802,7 @@ export class AgentTurnRunner {
         /* v8 ignore next -- credential teardown is best-effort. */
         await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
       }
-      clearTimeout(timer);
+      budget.cancel();
       turn.unrecordedRunMs = await runTime.finish();
     }
     await this.#recordRunLimit(owner.request.sessionId, completion);

@@ -1,3 +1,5 @@
+import { type RunBudgetTimer, runBudgetTimer, scheduleUnrefTimeout } from "./run-budget-timer.js";
+
 const MINUTE_MS = 60_000;
 
 /** A warning needs time to act on, and a share of the Run so it does not arrive at the very start of a short one. */
@@ -22,10 +24,14 @@ export function runLimitNotice(leadMs: number): string {
 export function scheduleRunLimitNotice(
   remainingMs: number | undefined,
   notify: (text: string) => Promise<void>,
-): ReturnType<typeof setTimeout> | undefined {
+): RunBudgetTimer | undefined {
   const leadMs = remainingMs === undefined ? undefined : runLimitNoticeLeadMs(remainingMs);
   if (remainingMs === undefined || leadMs === undefined) return undefined;
-  const timer = setTimeout(() => void notify(runLimitNotice(leadMs)).catch(() => undefined), remainingMs - leadMs);
-  timer.unref();
-  return timer;
+  // Pauses with the Run budget while the Provider waits for a quota reset.
+  return runBudgetTimer(
+    scheduleUnrefTimeout,
+    Date.now,
+    remainingMs - leadMs,
+    () => void notify(runLimitNotice(leadMs)).catch(() => undefined),
+  );
 }

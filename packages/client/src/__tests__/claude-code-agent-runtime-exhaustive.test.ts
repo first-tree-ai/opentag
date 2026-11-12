@@ -14,6 +14,7 @@ import type {
 import {
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
+  claudeCodeQuotaWaitEnvironment,
 } from "../providers/claude-code/agent-runtime.js";
 import {
   type ClaudeCodeProcessClient,
@@ -124,6 +125,90 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     expect(result).toMatchObject({ status: "failed", error: { code: "provider_rate_limited" } });
     expect(result.error?.retryAt).toBeUndefined();
     await runtime.close();
+  });
+
+  it("reports Claude Code's in-process wait for a rejected usage window to reset", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const rejected = (resetsAt: string) => ({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: Date.parse(resetsAt) / 1000, rateLimitType: "five_hour" },
+      session_id: "session",
+    });
+    const apiRetry = (status: number) => ({ type: "system", subtype: "api_retry", error_status: status });
+    const process = new ManualClaudeCodeProcess([
+      // A capacity retry is not a quota wait.
+      apiRetry(529),
+      rejected("2026-11-11T07:30:00.000Z"),
+      apiRetry(429),
+      apiRetry(429),
+      rejected("2026-11-11T08:00:00.000Z"),
+      apiRetry(429),
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed" }, session_id: "session" },
+      // The window opened again: a later 429 is a rate limit, not a quota wait.
+      apiRetry(429),
+      // A capacity retry during a quota wait ends the wait.
+      rejected("2026-11-11T09:00:00.000Z"),
+      apiRetry(429),
+      apiRetry(529),
+      successResult(),
+    ]);
+    const runtime = await factory(process).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    await expect(runtime.prompt({ runId: "run-1", input: input("wait") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(events.filter((event) => event.type === "quota_wait_changed")).toEqual([
+      { type: "quota_wait_changed", runId: "run-1", waiting: true, resetsAt: "2026-11-11T07:30:00.000Z" },
+      { type: "quota_wait_changed", runId: "run-1", waiting: true, resetsAt: "2026-11-11T08:00:00.000Z" },
+      { type: "quota_wait_changed", runId: "run-1", waiting: false },
+      { type: "quota_wait_changed", runId: "run-1", waiting: true, resetsAt: "2026-11-11T09:00:00.000Z" },
+      { type: "quota_wait_changed", runId: "run-1", waiting: false },
+    ]);
+    await runtime.close();
+  });
+
+  it("starts Claude Code in unattended retry mode unless the daemon's environment sets it", async () => {
+    const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+    const launch = async (env: NodeJS.ProcessEnv) => {
+      const runtime = await new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        process: {
+          env,
+          spawnProcess: (_command, _args, options) => {
+            environments.push(options.env);
+            return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
+          },
+        },
+      }).create({ ...createRequest(() => undefined), workspace: { cwd: process.cwd() } });
+      await runtime.prompt({ runId: "env-check", input: input("hello") });
+      await runtime.close();
+    };
+    await launch({ PATH: process.env.PATH });
+    await launch({ PATH: process.env.PATH, CLAUDE_CODE_RETRY_WATCHDOG: "0" });
+    // The default 30-minute budget and a 30-minute margin leave 23 hours of the 24-hour execution for waiting.
+    expect(environments[0]).toMatchObject({
+      CLAUDE_CODE_RETRY_WATCHDOG: "1",
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: "82800000",
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: "82800000",
+    });
+    expect(environments[1]).toMatchObject({ CLAUDE_CODE_RETRY_WATCHDOG: "0" });
+  });
+
+  it("fits every quota wait inside the Run's 24-hour credential execution", () => {
+    const hour = 60 * 60_000;
+    expect(claudeCodeQuotaWaitEnvironment(2 * hour)).toEqual({
+      CLAUDE_CODE_RETRY_WATCHDOG: "1",
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: String(21.5 * hour),
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(21.5 * hour),
+    });
+    expect(claudeCodeQuotaWaitEnvironment(22.5 * hour)).toMatchObject({
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(hour),
+    });
+    // No room for a wait worth holding the process for: the mode stays off.
+    expect(claudeCodeQuotaWaitEnvironment(23 * hour)).toEqual({});
   });
 
   it("translates complete and fallback stream shapes without duplicating lifecycle events", async () => {

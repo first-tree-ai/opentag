@@ -2,6 +2,7 @@ import { createLogger } from "../observability/logger.js";
 import { BackgroundWorkWatch } from "./background-work-watch.js";
 import { AgentProviderError, AgentRuntimeError } from "./errors.js";
 import { AgentRunEventValidator } from "./event-validator.js";
+import type { RunBudgetTimer } from "./run-budget-timer.js";
 import { scheduleRunLimitNotice } from "./run-limit-notice.js";
 import type {
   AgentAbortRequest,
@@ -54,6 +55,7 @@ interface RunRecord {
   abortPromise?: Promise<void>;
   providerTerminalClaimed?: boolean;
   backgroundWorkWatch?: BackgroundWorkWatch;
+  limitNotice?: RunBudgetTimer;
 }
 
 interface OutstandingInteraction {
@@ -304,7 +306,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     record.backgroundWorkWatch = new BackgroundWorkWatch({
       notify: (text) => this.tellProvider(text),
     });
-    const limitNotice = scheduleRunLimitNotice(record.request.durationLimitInMs, (text) => this.tellProvider(text));
+    record.limitNotice = scheduleRunLimitNotice(record.request.durationLimitInMs, (text) => this.tellProvider(text));
     try {
       await this.#dispatch({ type: "run_started", runId: record.request.runId });
       const providerExecution = Promise.resolve().then(() => this.executeRun(record.request, this.#context(record)));
@@ -315,7 +317,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       result = this.#resultForThrownError(record, error);
     }
     record.backgroundWorkWatch.stop();
-    clearTimeout(limitNotice);
+    record.limitNotice?.cancel();
     record.state = "settling";
     this.#interactions.clear();
     if (!this.#sinkFailure) {
@@ -354,6 +356,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         record.eventValidator.accept(event);
         const dispatched = { ...event, runId: record.request.runId } as AgentRuntimeEvent;
         record.backgroundWorkWatch?.observe(dispatched);
+        if (event.type === "quota_wait_changed") {
+          if (event.waiting) record.limitNotice?.pause();
+          else record.limitNotice?.resume();
+          record.request.onQuotaWaitChanged?.(event.waiting);
+        }
         await this.#dispatch(dispatched);
       },
       updateBinding: async (binding: AgentRuntimeBinding) => {
@@ -697,6 +704,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
     ...(request.durationLimitInMs !== undefined ? { durationLimitInMs: request.durationLimitInMs } : {}),
+    ...(request.onQuotaWaitChanged ? { onQuotaWaitChanged: request.onQuotaWaitChanged } : {}),
     ...(request.compactContext ? { compactContext: true } : {}),
   });
 }

@@ -36,6 +36,7 @@ describe("the notice before a Run's limit", () => {
 
   class HoldingRuntime extends BaseAgentRuntime {
     finish: () => void = () => undefined;
+    context?: AgentProviderRunContext;
     readonly told: string[] = [];
     constructor() {
       super({
@@ -51,8 +52,9 @@ describe("the notice before a Run's limit", () => {
     }
     protected async executeRun(
       _request: AgentPromptRequest,
-      _context: AgentProviderRunContext,
+      context: AgentProviderRunContext,
     ): Promise<AgentProviderRunResult> {
+      this.context = context;
       await new Promise<void>((resolve) => {
         this.finish = resolve;
       });
@@ -79,5 +81,29 @@ describe("the notice before a Run's limit", () => {
     await second;
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(runtime.told).toHaveLength(1);
+  });
+
+  it("stands still while the Provider waits for a quota reset, and tells the caller", async () => {
+    vi.useFakeTimers();
+    const runtime = new HoldingRuntime();
+    const waits: boolean[] = [];
+    const run = runtime.prompt({
+      runId: "a",
+      input: { items: [{ type: "text", text: "go" }] },
+      durationLimitInMs: 20 * MINUTE,
+      onQuotaWaitChanged: (waiting) => waits.push(waiting),
+    });
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    await runtime.context?.emit({ type: "quota_wait_changed", waiting: true });
+    await vi.advanceTimersByTimeAsync(5 * 60 * MINUTE);
+    expect(runtime.told).toEqual([]);
+    await runtime.context?.emit({ type: "quota_wait_changed", waiting: false });
+    await vi.advanceTimersByTimeAsync(8 * MINUTE - 1);
+    expect(runtime.told).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runtime.told).toEqual([expect.stringContaining("in about 2 min")]);
+    expect(waits).toEqual([true, false]);
+    runtime.finish();
+    await run;
   });
 });

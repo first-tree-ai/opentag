@@ -124,7 +124,9 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
 - The Run's duration limit counts actual running time across retries and resumes.
-  A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
+  A resume keeps what is left of the budget. A Provider waiting in-process for a
+  used-up quota window to reset is not running, so its budget stands still
+  ([Quota auto-resume](runtime/quota-auto-resume.md)). Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.
 
 Run time is recorded durably about once a minute while a Run works, so a crash

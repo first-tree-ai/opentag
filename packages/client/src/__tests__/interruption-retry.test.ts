@@ -858,6 +858,8 @@ describe("AgentTurnRunner automatic retry", () => {
 
   it.each([
     ["past the steer limit", "full", undefined, "steer_unsupported"],
+    ["when the Turn's record is gone", "missing", undefined, "turn_not_running"],
+    ["when it cannot be captured", "throw", undefined, "turn_not_running"],
     ["when its receipt cannot be recorded", "appended", new Error("disk"), "turn_not_running"],
   ] as const)(
     "leaves a message steered during a quota wait with the Server %s",
@@ -865,8 +867,14 @@ describe("AgentTurnRunner automatic retry", () => {
       vi.useFakeTimers();
       const h = runnerHarness();
       h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-      h.retries.appendSteer = async () => capture;
-      if (receiptError) h.recordSteer.mockRejectedValueOnce(receiptError);
+      h.retries.appendSteer = async () => {
+        if (capture === "throw") throw new Error("disk");
+        return capture;
+      };
+      if (receiptError) {
+        h.recordSteer.mockRejectedValueOnce(receiptError);
+        h.retries.removeSteer.mockRejectedValueOnce(new Error("disk"));
+      }
       h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
       h.runner.start(owner(h.request));
       await vi.advanceTimersByTimeAsync(0);

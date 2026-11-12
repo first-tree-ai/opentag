@@ -88,7 +88,13 @@ these: it fails the Run.
 `provider_process_exited` is recoverable, under the same rule as a daemon stop and a 429: at most two automatic retries in
 a row, reset once a retry actually ran for five minutes. It retries at once, without the wait a 429 has. The retried Run
 gets the continuation notice and the ledger. A new process cannot take over the old process's work, so the Session starts
-it again if it still needs it. Cloud Turns do not use these automatic retries; their next Run reads the ledger.
+it again if it still needs it.
+
+On Cloud the worker retries in place, under the same rule: the same Turn, deadline and Session on disk, so the Server sees one
+Run. Steered input the Server settled with the Run goes into the retry, and a steer between attempts is left with the Server.
+A Session message steered into an attempt that exited goes into the retry too, and the Turn's result settles it, so the
+Runner never queues it to run a second time. A Session message offered between attempts stays in the Runner's queue.
+A crash of the worker itself is not retried: its parent reports the result as unknown.
 
 A model CLI that fails to start (`provider_start_failed`, `not_started`) is retried once the same way, after its short
 wait and counted when it fails. Nothing ran, so the ledger is unchanged: the retry reads the same notice. The sender

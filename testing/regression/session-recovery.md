@@ -285,6 +285,21 @@ Codex and Pi (on Pi with `background_bash`).
    and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
    after that reply.
 
+## Approval requests in Session message Runs
+
+Needs a real Local Claude Code Agent and a real Local Codex Agent with approvals on (the default `on-request`), and a
+command outside the Agent's command rules, such as `ps -ax -o pid,command | grep -c node || echo none`.
+
+1. On Claude Code, have a visible Session create an internal Session whose message asks it to run that command and
+   reply with the output. Expected: no approval card appears. Within seconds the transcript shows the Bash call
+   answered with "No one could approve this action: this Run was started by a Session message, and nobody is
+   reviewing it. ...", the child replies that the step needs a person's approval, and the record is `succeeded`.
+   The Run does not wait for its duration limit.
+2. Repeat step 1 on Codex. Expected: the same, except the command is declined without that text; the child still
+   replies and the record is `succeeded` within seconds.
+3. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card appears for
+   the sender, unchanged.
+
 ## Schedules on an internal Session
 
 1. Have an internal Session run `opentag agent self schedule create`. The result's `target` is that Session, with

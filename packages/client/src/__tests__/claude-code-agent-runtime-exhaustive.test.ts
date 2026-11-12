@@ -104,6 +104,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       const result = await runtime.prompt({ runId: "run-1", input: input("fail") });
       expect(result).toMatchObject({ status: "failed", error: { code } });
       expect(result.error?.retryAt).toBe(retryAt);
+      expect(result.error?.quotaKind).toBe(retryAt ? "usage_window" : undefined);
       await runtime.close();
     },
   );

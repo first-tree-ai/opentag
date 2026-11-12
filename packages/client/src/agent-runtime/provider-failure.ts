@@ -92,8 +92,13 @@ export function piProviderFailureCode(message: string | undefined): ProviderFail
 /** No balance, credit or budget: waiting does not help. Checked first, since some of these texts say "limit". */
 const PI_BILLING_PATTERN =
   /insufficient_quota|insufficient_credit|billing|available balance|out of budget|credit balance/i;
-/** A subscription window that resets by itself (ChatGPT, OpenCode Go and free-tier usage limits). */
-const PI_USAGE_WINDOW_PATTERN = /usage_limit_reached|usage limit|GoUsageLimitError|FreeUsageLimitError/i;
+/**
+ * A subscription window that resets by itself, by its own error code (ChatGPT, OpenCode Go and free-tier usage
+ * limits), or pi-ai's ChatGPT text with the reset it took from that code's `resets_at`. The same text without a
+ * reset is no evidence: pi-ai writes it for every HTTP 429 and for `usage_not_included`, billing and access included.
+ */
+const PI_USAGE_WINDOW_PATTERN =
+  /usage_limit_reached|GoUsageLimitError|FreeUsageLimitError|usage limit\b[^.]*\.\s*Try again in ~\d+ min/i;
 
 /**
  * Pi reports a model failure as text, often `<status>: <JSON error>`. A used-up subscription window is a

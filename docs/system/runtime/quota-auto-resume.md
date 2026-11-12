@@ -89,9 +89,11 @@ Codex and Pi have no in-process wait, so a used-up window ends the Run and the p
   A later update without a used-up window does not clear it. Without one, the backoff applies.
 - **Pi:** Pi reports a model failure as text, often `<status>: <JSON error>`. Billing text (`insufficient_quota`,
   `insufficient_credit`, `billing`, `available balance`, `out of budget`, `credit balance`, or HTTP 402) is a `billing`
-  quota and is reported at once. A subscription usage limit (`usage_limit_reached`, "usage limit", OpenCode
-  `GoUsageLimitError` / `FreeUsageLimitError`) is a `usage_window` quota. Its reset is taken from `resets_at`,
-  `resets_in_seconds` or "Try again in ~N min" when present; otherwise the backoff applies. A plain rate limit keeps
+  quota and is reported at once. A subscription usage limit is a `usage_window` quota: the code `usage_limit_reached` or OpenCode's
+  `GoUsageLimitError` / `FreeUsageLimitError`, or pi-ai's "You have hit your ChatGPT usage limit … Try again in ~N
+  min". pi-ai writes the same text without the reset for every ChatGPT HTTP 429 and for `usage_not_included`,
+  billing and access included, so that text alone keeps its ordinary classification. The reset is taken from
+  `resets_at`, `resets_in_seconds` or "Try again in ~N min" when present; otherwise the backoff applies. A plain rate limit keeps
   its ordinary 429 retry.
 
 ## Notice

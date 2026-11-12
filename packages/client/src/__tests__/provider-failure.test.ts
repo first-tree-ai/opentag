@@ -104,10 +104,15 @@ describe("piQuotaFailure", () => {
     expect(failure?.retryAt).toBe(retryAt);
   });
 
-  it.each([undefined, "", '429: {"code":"rate_limit_exceeded"}', "500: server error"])(
-    "leaves any other failure alone: %s",
-    (message) => {
-      expect(piQuotaFailure(message, now)).toBeUndefined();
-    },
-  );
+  it.each([
+    undefined,
+    "",
+    '429: {"code":"rate_limit_exceeded"}',
+    "500: server error",
+    // pi-ai writes this for every ChatGPT 429 and for usage_not_included: without a reset it proves nothing.
+    "You have hit your ChatGPT usage limit (plus plan).",
+    "You have hit your ChatGPT usage limit.",
+  ])("leaves any other failure alone: %s", (message) => {
+    expect(piQuotaFailure(message, now)).toBeUndefined();
+  });
 });

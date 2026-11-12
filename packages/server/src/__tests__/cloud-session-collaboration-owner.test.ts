@@ -238,7 +238,7 @@ async function attachRunner(
     executionEligible?: boolean;
     onFrame?: (frame: RunnerServerFrame) => void;
     sessionCollaborationEligible?: boolean;
-    sessionCollaborationVersion?: 1 | 2 | 3;
+    sessionCollaborationVersion?: 1 | 2;
   } = {},
 ): Promise<{ connection: CloudConnectionRecord; sent: RunnerServerFrame[]; socket: RunnerControlSocket }> {
   const sent: RunnerServerFrame[] = [];
@@ -659,70 +659,6 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(outcome).toEqual({ status: "unreachable", code: "runtime_not_ready" });
     expect(sent.filter((frame) => frame.type.startsWith("session:message"))).toEqual([]);
     expect(sent.some((frame) => frame.type === "delivery:verified")).toBe(false);
-  });
-
-  it("refuses a cross-conversation message on a connection below v4, and sends it on v4", async () => {
-    const provenance = {
-      source: { sessionKind: "channel" as const, conversationKind: "dm" as const, channelId: "D1" },
-      initiatorSessionId: randomUUID(),
-      initiator: { sessionKind: "channel" as const, conversationKind: "dm" as const, channelId: "D1" },
-      forwards: 0,
-      crossConversation: true,
-    };
-    const older = await seedCloudSession();
-    const olderStack = makeStack(older);
-    const olderRunner = await attachRunner(olderStack, older, { sessionCollaborationVersion: 3 });
-    const refused = await olderStack.owner.deliver(
-      {
-        ...(await deliveryInput(older, randomUUID())),
-        provenance,
-        requireProvenance: true,
-      } as CloudSessionDeliveryInput,
-      allowAdmission,
-    );
-    expect(refused).toEqual({ status: "unreachable", code: "unsupported_cross_conversation" });
-    expect(olderRunner.sent.filter((frame) => frame.type === "session:message:run")).toEqual([]);
-  });
-
-  it("refuses a message of unknown origin on a connection below v4 when it must carry provenance", async () => {
-    const fixture = await seedCloudSession();
-    const stack = makeStack(fixture);
-    const { sent } = await attachRunner(stack, fixture, { sessionCollaborationVersion: 3 });
-    const provenance = {
-      source: { sessionKind: "channel" as const, conversationKind: "channel" as const, channelId: "G1" },
-      forwards: 1,
-      crossConversation: false,
-    };
-    const outcome = await stack.owner.deliver(
-      {
-        ...(await deliveryInput(fixture, randomUUID())),
-        provenance,
-        requireProvenance: true,
-      } as CloudSessionDeliveryInput,
-      allowAdmission,
-    );
-    expect(outcome).toEqual({ status: "unreachable", code: "unsupported_cross_conversation" });
-    expect(sent.filter((frame) => frame.type === "session:message:run")).toEqual([]);
-  });
-
-  it("omits same-conversation provenance on a connection below v4", async () => {
-    const fixture = await seedCloudSession();
-    const stack = makeStack(fixture);
-    const { sent } = await attachRunner(stack, fixture, { sessionCollaborationVersion: 3 });
-    const provenance = {
-      source: { sessionKind: "channel" as const, conversationKind: "dm" as const, channelId: "D1" },
-      forwards: 0,
-      crossConversation: false,
-    };
-    void stack.owner
-      .deliver(
-        { ...(await deliveryInput(fixture, randomUUID())), provenance } as CloudSessionDeliveryInput,
-        allowAdmission,
-      )
-      .catch(() => undefined);
-    await vi.waitFor(() => expect(sent.some((frame) => frame.type === "session:message:run")).toBe(true));
-    const run = sent.find((frame) => frame.type === "session:message:run") as { message: object };
-    expect(run.message).not.toHaveProperty("provenance");
   });
 
   it("refuses a scheduled origin on a v1 connection before sending a frame", async () => {

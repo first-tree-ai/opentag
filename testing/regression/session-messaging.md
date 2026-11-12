@@ -8,10 +8,11 @@ its owner, each with a Session.
 1. In the direct message, ask the Agent to run `session list --agent`.
    Expected: both chats' Sessions are listed with their conversations, the current one marked, and no ended Session.
 2. Ask it to send the group's Session a message that needs no IM reply.
-   Expected: `accepted`. The group's Session runs, nothing appears in either chat, and the group's Session has the sender
-   and initiator in its message context.
-3. Have the group's Session forward to one of the direct message's internal Sessions.
-   Expected: that Session sees the group as the direct sender and the direct message as the initiator.
+   Expected: `accepted`. The group's Session runs, nothing appears in either chat, and its message context names the
+   source Session and conversation and the target Session and conversation. The message text says the owner asked for
+   it in the direct message and what it needs back.
+3. Have the group's Session pass something on to one of the direct message's internal Sessions.
+   Expected: that Session sees the group's Session as the source, and the text says where the request came from.
 
 ## Sharing
 
@@ -25,6 +26,7 @@ its owner, each with a Session.
 1. Send to a Session of another Agent. Expected: `rejected` with `scope_mismatch`.
 2. Send to an ended Session. Expected: `rejected` with `target_unavailable`.
 3. Ask two chats' Sessions to keep confirming to each other.
-   Expected: they stop instead of acknowledging forever, and the Server log shows `forwards` stops growing.
+   Expected: they stop instead of acknowledging forever; the Server's `session.message.cross_conversation` records
+   between the two Sessions stop.
 4. Make a Run fail while handling a message from another chat.
    Expected: the sender gets one notice, the failed Session gets none, and no error card appears for the message.

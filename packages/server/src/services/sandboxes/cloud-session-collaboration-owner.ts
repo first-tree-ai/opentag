@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  crossesConversation,
   type EffectiveRuntimeSnapshot,
   RUNNER_SESSION_COLLABORATION_V4,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
@@ -502,7 +503,7 @@ class CloudSessionDispatchUnavailableError extends Error {
   }
 }
 
-/** The connection was current but negotiated only the ordinary-message v1 contract. */
+/** The connection is too old to show where a message from another conversation comes from. */
 class CloudCrossConversationUnsupportedError extends Error {
   constructor() {
     super("The Runner connection does not understand Session message provenance");
@@ -510,6 +511,7 @@ class CloudCrossConversationUnsupportedError extends Error {
   }
 }
 
+/** The connection was current but negotiated only the ordinary-message v1 contract. */
 class CloudScheduledOriginUnsupportedError extends Error {
   readonly code = "unsupported_schedule_origin";
 
@@ -536,7 +538,6 @@ export interface CloudSessionTargetEnvelope {
   readonly outboxContext?: RuntimeImOutboxContext;
 }
 
-/** The owner and dispatcher share one Cloud delivery input contract. */
 /** The outcome of a dispatch the Runner connection refused or never answered; undefined for anything else. */
 function cloudDispatchRefusal(error: unknown): CloudSessionMessageOutcome | undefined {
   if (error instanceof CloudSessionDispatchUnavailableError)
@@ -551,6 +552,7 @@ function cloudDispatchRefusal(error: unknown): CloudSessionMessageOutcome | unde
   return undefined;
 }
 
+/** The owner and dispatcher share one Cloud delivery input contract. */
 export type CloudSessionDeliveryInput = CloudSessionMessageDeliveryInput;
 
 function isScheduledCloudDelivery(
@@ -769,7 +771,10 @@ export class CloudSessionCollaborationOwner {
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
-    const requirement = { scheduled, requireProvenance: !scheduled && input.requireProvenance === true };
+    const requirement = {
+      scheduled,
+      requireProvenance: !scheduled && input.provenance !== undefined && crossesConversation(input.provenance),
+    };
     const request: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt

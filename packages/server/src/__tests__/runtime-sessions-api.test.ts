@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HTTP_PATHS, SESSION_CLI_PROOF_HEADER, SESSION_CLI_RUN_INPUTS_HEADER } from "@opentag/shared";
+import { HTTP_PATHS, SESSION_CLI_PROOF_HEADER } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { SessionCliProofError } from "../services/sessions/index.js";
@@ -16,103 +16,6 @@ const source = {
 };
 
 describe("Runtime Session CLI routes", () => {
-  it("takes what a Run names from its header, and nothing from a malformed one", async () => {
-    const send = vi.fn(async (input: { messageId: string; targetSessionId: string }) => ({
-      messageId: input.messageId,
-      status: "accepted" as const,
-      sessionId: input.targetSessionId,
-    }));
-    const app = createApp({
-      runtimeSessions: {
-        collaboration: { create: vi.fn(), send, stop: vi.fn() },
-        proofs: { authenticate: vi.fn(async () => source) },
-        sessions: { listAgentSessions: vi.fn(), listInternalSessions: vi.fn() },
-      },
-    });
-    const post = (header: string) =>
-      app.inject({
-        method: "POST",
-        url: HTTP_PATHS.runtimeSessionMessages,
-        headers: { [SESSION_CLI_PROOF_HEADER]: "proof", [SESSION_CLI_RUN_INPUTS_HEADER]: header },
-        payload: { messageId: randomUUID(), targetSessionId: randomUUID(), message: "hello" },
-      });
-    const [messageId, deliveryId] = [randomUUID(), randomUUID()];
-    await post(`m:${messageId},d:${deliveryId}`);
-    expect(send.mock.calls[0]?.[1 as never]).toMatchObject({
-      runInputs: [
-        { kind: "session-message", messageId },
-        { kind: "delivery", deliveryId },
-      ],
-    });
-    await post(`m:${messageId},nonsense`);
-    expect(send.mock.calls[1]?.[1 as never]).not.toHaveProperty("runInputs");
-    await app.close();
-  });
-
-  it("lets shutdown wait for the Agent's Session list to finish authenticating", async () => {
-    let finish: (value: typeof source) => void = () => undefined;
-    const authenticate = vi.fn(
-      () =>
-        new Promise<typeof source>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const listAgentSessions = vi.fn(async () => ({ items: [] }));
-    const app = createApp({
-      runtimeSessions: {
-        collaboration: { create: vi.fn(), send: vi.fn(), stop: vi.fn() },
-        proofs: { authenticate },
-        sessions: { listAgentSessions, listInternalSessions: vi.fn() },
-      },
-    });
-    const response = app.inject({
-      method: "GET",
-      url: HTTP_PATHS.runtimeAgentSessions,
-      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
-    });
-    await vi.waitFor(() => expect(authenticate).toHaveBeenCalledOnce());
-    let closed = false;
-    const closing = app.close().then(() => {
-      closed = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(closed).toBe(false);
-    finish(source);
-    await closing;
-    await response.catch(() => undefined);
-    expect(closed).toBe(true);
-  });
-
-  it("authenticates the Agent's Session list in the route options", async () => {
-    const listAgentSessions = vi.fn(async () => ({ items: [] }));
-    const authenticate = vi.fn(async (proof: string) => {
-      if (proof === "") throw new SessionCliProofError("invalid_proof", "invalid");
-      return source;
-    });
-    const app = createApp({
-      runtimeSessions: {
-        collaboration: { create: vi.fn(), send: vi.fn(), stop: vi.fn() },
-        proofs: { authenticate },
-        sessions: { listAgentSessions, listInternalSessions: vi.fn() },
-      },
-    });
-    const refused = await app.inject({
-      method: "GET",
-      url: `${HTTP_PATHS.runtimeAgentSessions}?limit=not-a-number`,
-    });
-    expect(refused.statusCode).toBe(401);
-    expect(listAgentSessions).not.toHaveBeenCalled();
-    const listed = await app.inject({
-      method: "GET",
-      url: `${HTTP_PATHS.runtimeAgentSessions}?limit=5&visibleOnly=true`,
-      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
-    });
-    expect(listed.statusCode).toBe(200);
-    expect(listed.headers["cache-control"]).toBe("no-store");
-    expect(listAgentSessions).toHaveBeenCalledWith(source.sessionId, { limit: 5, visibleOnly: true });
-    await app.close();
-  });
-
   it("derives source identity only from proof and validates bounded list input", async () => {
     const create = vi.fn(async () => ({
       messageId: randomUUID(),
@@ -126,12 +29,13 @@ describe("Runtime Session CLI routes", () => {
       execution: "stopped" as const,
     }));
     const listInternalSessions = vi.fn(async () => ({ items: [] }));
+    const listAgentSessions = vi.fn(async () => ({ items: [] }));
     const authenticate = vi.fn(async () => source);
     const app = createApp({
       runtimeSessions: {
         collaboration: { create, send, stop },
         proofs: { authenticate },
-        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions },
+        sessions: { listAgentSessions, listInternalSessions },
       },
     });
     const messageId = randomUUID();
@@ -164,6 +68,15 @@ describe("Runtime Session CLI routes", () => {
     expect(listed.statusCode).toBe(200);
     expect(listed.headers["cache-control"]).toBe("no-store");
     expect(listInternalSessions).toHaveBeenCalledWith(source.sessionId, { recursive: true, limit: 100 });
+
+    const agentListed = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeAgentSessions}?visibleOnly=true&limit=5`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(agentListed.statusCode).toBe(200);
+    expect(agentListed.headers["cache-control"]).toBe("no-store");
+    expect(listAgentSessions).toHaveBeenCalledWith(source.sessionId, { visibleOnly: true, limit: 5 });
 
     const nonRecursive = await app.inject({
       method: "GET",
@@ -216,7 +129,7 @@ describe("Runtime Session CLI routes", () => {
       runtimeSessions: {
         collaboration: { create: vi.fn(), send: vi.fn(), stop },
         proofs: { authenticate },
-        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions },
+        sessions: { listAgentSessions: vi.fn(), listInternalSessions },
       },
     });
     const stopped = await app.inject({
@@ -257,7 +170,7 @@ describe("Runtime Session CLI routes", () => {
             throw new SessionCliProofError("invalid_proof", "invalid");
           },
         },
-        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions: vi.fn() },
+        sessions: { listAgentSessions: vi.fn(), listInternalSessions: vi.fn() },
       },
     });
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });

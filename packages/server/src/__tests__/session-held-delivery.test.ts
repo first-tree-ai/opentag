@@ -41,7 +41,6 @@ type Answer = "accepted" | "client_busy" | "session_recovery_required" | "target
 async function stack(
   options: {
     recovery?: boolean;
-    collaborationVersion?: number;
     now?: () => number;
     sendBudgetMs?: number;
     heldLimits?: { perTarget: number; perComputer: number };
@@ -143,10 +142,7 @@ async function stack(
   };
   const registry = {
     currentInstanceId: vi.fn(() => (state.connected ? instanceId : undefined)),
-    // A current Client: session collaboration v5 understands provenance. Everything else answers 2.
-    capabilityVersion: vi.fn((_c: string, _i: string, capability: string) =>
-      capability === RUNTIME_CAPABILITY.sessionCollaboration ? (options.collaborationVersion ?? 5) : 2,
-    ),
+    capabilityVersion: vi.fn(() => 2),
     supportsCapability: vi.fn(
       (_c: string, _i: string, capability: string) =>
         capability !== RUNTIME_CAPABILITY.sessionRecovery || options.recovery !== false,
@@ -410,45 +406,6 @@ describe("Server-held Session message delivery", () => {
 
     expect(s.frames.filter((frame) => frame.targetSessionId === low)).toHaveLength(1);
     expect(s.frames.filter((frame) => frame.targetSessionId === high)).toHaveLength(1);
-  });
-
-  it("carries provenance on redelivery, and an older Client refuses a held message of unknown origin", async () => {
-    const insertHeld = async (s: Awaited<ReturnType<typeof stack>>, initiatorSessionId: string | null) => {
-      const id = randomUUID();
-      await db.database.insert(sessionMessages).values({
-        id,
-        sourceSessionId: s.senderSessionId,
-        targetSessionId: s.targetSessionId,
-        initiatorSessionId,
-        forwardCount: 2,
-        content: "held",
-        contentHash: "a".repeat(64),
-        lastOutcome: "unknown",
-        lastErrorCode: "delivery_held",
-        attemptCount: 1,
-        lastAttemptAt: new Date(),
-        createdAt: new Date(Date.now() - 60_000),
-      });
-      return id;
-    };
-    const current = await stack();
-    await insertHeld(current, current.senderSessionId);
-    current.frames.length = 0;
-    await current.worker.flush(current.computerId);
-    expect(current.frames).toHaveLength(1);
-    expect(current.frames[0]).toMatchObject({
-      provenance: { initiatorSessionId: current.senderSessionId, forwards: 2 },
-    });
-
-    const older = await stack({ collaborationVersion: 4 });
-    const unknown = await insertHeld(older, null);
-    older.frames.length = 0;
-    await older.worker.flush(older.computerId);
-    expect(older.frames).toEqual([]);
-    expect(await older.row(unknown)).toMatchObject({
-      lastOutcome: "unreachable",
-      lastErrorCode: "unsupported_cross_conversation",
-    });
   });
 
   it("delivers a target's messages in order across more than one page", async () => {

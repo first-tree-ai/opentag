@@ -51,16 +51,20 @@ describe("RuntimeDomainOwner", () => {
       return true;
     });
     const sessions = {
-      resolveRunOutcomeNotice: vi.fn(async () => ({
-        recipientSessionId: targetSessionId,
-        installationId: h.computerId,
-      })),
-      resolveMessageProvenance: vi.fn(async () => ({
-        source: { sessionKind: "internal", conversationKind: "channel", channelId: "C1" },
-        initiatorSessionId: childSessionId,
-        initiator: { sessionKind: "internal", conversationKind: "channel", channelId: "C1" },
-        forwards: 0,
-        crossConversation: false,
+      resolveRunOutcomeNotice: vi.fn(async () => ({ creatorSessionId: targetSessionId, installationId: h.computerId })),
+      resolveMessageProvenance: vi.fn(async (message: { sourceSessionId: string; targetSessionId: string }) => ({
+        source: {
+          sessionId: message.sourceSessionId,
+          sessionKind: "internal",
+          conversationKind: "channel",
+          channelId: "C1",
+        },
+        target: {
+          sessionId: message.targetSessionId,
+          sessionKind: "internal",
+          conversationKind: "channel",
+          channelId: "C1",
+        },
       })),
       authorizeAndRecordMessage: vi.fn(async (input: { messageId: string; content: string }) => ({
         attemptCount: 1,

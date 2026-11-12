@@ -11,13 +11,11 @@ import type {
   SessionCliListQuery,
   SessionCliListResponse,
   SessionKind,
-  SessionMessageConversation,
+  SessionMessageEndpoint,
   SessionMessageProvenance,
   SessionMessageScheduledOrigin,
   SessionPlacement,
-  SessionRunInput,
 } from "@opentag/shared";
-import { RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -66,21 +64,6 @@ interface LockedCollaborationAuthority {
   computers: AuthorityComputer[];
 }
 
-function sessionConversation(session: SessionScope & { kind: SessionKind }): SessionMessageConversation {
-  return {
-    sessionKind: session.kind,
-    conversationKind: session.conversationKind,
-    channelId: session.channelId,
-    ...(session.threadKey ? { threadKey: session.threadKey } : {}),
-  };
-}
-
-/** A schedule has no sending Session: its chain starts where it was asked for, or else where it runs. */
-function scheduledChainStart(message: { userTaskSource: unknown }, targetSessionId: string): string {
-  const recorded = RuntimeUserTaskSourceSchema.safeParse(message.userTaskSource);
-  return recorded.success ? recorded.data.sessionId : targetSessionId;
-}
-
 function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
   return (
     left.imBindingId === right.imBindingId &&
@@ -88,6 +71,18 @@ function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
     left.conversationKind === right.conversationKind &&
     left.threadKey === right.threadKey
   );
+}
+
+function sessionEndpoint(
+  session: Pick<SessionRow, "id" | "kind" | "conversationKind" | "channelId" | "threadKey">,
+): SessionMessageEndpoint {
+  return {
+    sessionId: session.id,
+    sessionKind: session.kind,
+    conversationKind: session.conversationKind,
+    channelId: session.channelId,
+    ...(session.threadKey ? { threadKey: session.threadKey } : {}),
+  };
 }
 
 interface ActiveSessionAuthority {
@@ -126,10 +121,6 @@ export interface EnsureChatSessionInTransactionInput {
 
 export interface CreateInternalSessionWithMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
-  /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
-  runInputs?: readonly SessionRunInput[];
-  /** The sender's Client is too old to name its Run's inputs, on the connection this request came through. */
-  legacySource?: boolean;
   creatorSessionId: string;
   creatorInstallationId: string;
   creatorConnectionInstanceId: string;
@@ -174,10 +165,6 @@ export interface StoppedInternalSession {
 
 export interface AuthorizeAndRecordSessionMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
-  /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
-  runInputs?: readonly SessionRunInput[];
-  /** The sender's Client is too old to name its Run's inputs, on the connection this request came through. */
-  legacySource?: boolean;
   messageId: string;
   sourceSessionId: string;
   sourceInstallationId: string;
@@ -225,10 +212,6 @@ export interface HeldSessionMessage {
   attemptCount: number;
   createdAt: Date;
   lastAttemptAt: Date | null;
-  /** Fixed when the message was recorded; a redelivery carries the same provenance. */
-  initiatorSessionId: string | null;
-  forwardCount: number;
-  legacyLocalSend: boolean;
 }
 
 export interface HeldSweepMessage extends HeldSessionMessage {
@@ -250,9 +233,6 @@ const HELD_ROW = sql`${sessionMessages.lastOutcome} = 'unknown' and ${sessionMes
 const HELD_MESSAGE_COLUMNS = {
   id: sessionMessages.id,
   sourceSessionId: sessionMessages.sourceSessionId,
-  initiatorSessionId: sessionMessages.initiatorSessionId,
-  forwardCount: sessionMessages.forwardCount,
-  legacyLocalSend: sessionMessages.legacyLocalSend,
   scheduledOrigin: sessionMessages.scheduledOrigin,
   targetSessionId: sessionMessages.targetSessionId,
   targetCreatorSessionId: sessions.createdBySessionId,
@@ -552,14 +532,12 @@ export class SessionService {
         })
         .returning();
       if (!placement) throw new Error("Session placement insert did not return a row");
-      const chain = await this.#messageChain(transaction, input.creatorSessionId, input, true);
       const [message] = await transaction
         .insert(sessionMessages)
         .values({
           id: input.messageId,
           sourceSessionId: input.creatorSessionId,
           userTaskSource: input.userTaskSource ?? null,
-          ...chain,
           targetSessionId: created.id,
           content: input.initialMessage,
           contentHash,
@@ -663,19 +641,12 @@ export class SessionService {
       } else {
         if (!input.serverDerivedId) assertOrdinaryMessageIdFree(input.messageId);
         const now = this.#now();
-        const chain = await this.#messageChain(
-          transaction,
-          input.sourceSessionId,
-          input,
-          sameSessionScope(source.session, target.session),
-        );
         [message] = await transaction
           .insert(sessionMessages)
           .values({
             id: input.messageId,
             sourceSessionId: input.sourceSessionId,
             userTaskSource: input.userTaskSource ?? null,
-            ...chain,
             targetSessionId: input.targetSessionId,
             content: input.content,
             contentHash: hashSessionMessage(input.content),
@@ -828,7 +799,6 @@ export class SessionService {
       if (isRunOutcomeNotice(message) || isDeliveryFailureNotice(message)) continue;
       const recorded = await this.#insertDeliveryFailureNotice(transaction, {
         noticeId: deliveryFailureNoticeMessageId(message.id),
-        failedMessageId: message.id,
         failedTargetSessionId: message.targetSessionId,
         senderSessionId: sender,
         content: renderDeliveryFailureNotice({
@@ -1212,7 +1182,6 @@ export class SessionService {
    */
   async recordDeliveryFailureNotice(input: {
     noticeId: string;
-    failedMessageId: string;
     failedTargetSessionId: string;
     senderSessionId: string;
     content: string;
@@ -1246,21 +1215,11 @@ export class SessionService {
 
   async #insertDeliveryFailureNotice(
     transaction: DatabaseTransaction,
-    input: {
-      noticeId: string;
-      failedMessageId: string;
-      failedTargetSessionId: string;
-      senderSessionId: string;
-      content: string;
-    },
+    input: { noticeId: string; failedTargetSessionId: string; senderSessionId: string; content: string },
   ): Promise<{ computerId: string } | undefined> {
     const [sender] = await transaction
       .select({
         endedAt: sessions.endedAt,
-        imBindingId: sessions.imBindingId,
-        channelId: sessions.channelId,
-        conversationKind: sessions.conversationKind,
-        threadKey: sessions.threadKey,
         computerId: sessionPlacements.computerId,
         computerKind: computers.kind,
       })
@@ -1270,30 +1229,12 @@ export class SessionService {
       .where(eq(sessions.id, input.senderSessionId))
       .limit(1);
     if (!sender || sender.endedAt !== null || sender.computerKind !== "local") return undefined;
-    const [failedTarget] = await transaction
-      .select({
-        imBindingId: sessions.imBindingId,
-        channelId: sessions.channelId,
-        conversationKind: sessions.conversationKind,
-        threadKey: sessions.threadKey,
-      })
-      .from(sessions)
-      .where(eq(sessions.id, input.failedTargetSessionId))
-      .limit(1);
-    // The notice continues the chain of the message that failed, like a Run outcome notice.
-    const chain = await this.#messageChain(
-      transaction,
-      input.failedTargetSessionId,
-      { runInputs: [{ kind: "session-message", messageId: input.failedMessageId }] },
-      failedTarget !== undefined && sameSessionScope(failedTarget, sender),
-    );
     const now = this.#now();
     const [message] = await transaction
       .insert(sessionMessages)
       .values({
         id: input.noticeId,
         sourceSessionId: input.failedTargetSessionId,
-        ...chain,
         targetSessionId: input.senderSessionId,
         content: input.content,
         contentHash: hashSessionMessage(input.content),
@@ -1793,70 +1734,10 @@ export class SessionService {
     return { admitted: false, reason };
   }
 
-  async listInternalSessions(sourceSessionId: string, query: SessionCliListQuery): Promise<SessionCliListResponse> {
-    const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
-    const since = query.since ? new Date(query.since) : undefined;
-    type ListRow = {
-      sessionId: string;
-      parentSessionId: string;
-      createdAt: Date | string;
-      lastMessageAt: Date | string;
-      lastMessageId: string;
-      lastDeliveryOutcome: SessionCliListItem["lastDeliveryOutcome"];
-      taskPreview: string;
-      stoppedAt: Date | string | null;
-    };
-    // Stopped Sessions are history the active indexes do not carry on purpose: asking for them sorts this
-    // ancestor's closure rows, read through the primary key, which stays bounded by its own descendants.
-    const rows = await this.#database.execute<ListRow>(sql`
-      select
-        link.descendant_session_id as "sessionId",
-        child.created_by_session_id as "parentSessionId",
-        child.created_at as "createdAt",
-        link.last_message_created_at as "lastMessageAt",
-        link.last_message_id as "lastMessageId",
-        link.last_delivery_outcome as "lastDeliveryOutcome",
-        link.task_preview as "taskPreview",
-        child.ended_at as "stoppedAt"
-      from session_descendants link
-      inner join sessions child on child.id = link.descendant_session_id
-      where link.ancestor_session_id = ${sourceSessionId}::uuid
-        ${
-          // An older binary ends a Session without maintaining the closure flag. The derived predicate
-          // keeps that row out of the page and bounds the extra work to the drift, not to the history.
-          query.includeStopped ? sql`` : sql`and link.descendant_active and child.ended_at is null`
-        }
-        ${query.recursive ? sql`` : sql`and link.depth = 1`}
-        ${since ? sql`and link.last_message_created_at >= ${since.toISOString()}::timestamptz` : sql``}
-        ${
-          cursor
-            ? sql`and (link.last_message_created_at, link.last_message_id, link.descendant_session_id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.messageId}::uuid, ${cursor.sessionId}::uuid)`
-            : sql``
-        }
-      order by link.last_message_created_at desc, link.last_message_id desc, link.descendant_session_id desc
-      limit ${query.limit + 1}
-    `);
-    const page = [...rows].slice(0, query.limit);
-    const last = page.at(-1);
-    return {
-      items: page.map((row) => ({
-        sessionId: row.sessionId,
-        parentSessionId: row.parentSessionId,
-        createdAt: new Date(row.createdAt).toISOString(),
-        lastMessageAt: new Date(row.lastMessageAt).toISOString(),
-        lastDeliveryOutcome: row.lastDeliveryOutcome,
-        taskPreview: truncateUtf8(row.taskPreview, 256),
-        ...(query.includeStopped && row.stoppedAt ? { stoppedAt: new Date(row.stoppedAt).toISOString() } : {}),
-      })),
-      ...(rows.length > query.limit && last
-        ? { nextCursor: encodeListCursor(new Date(last.lastMessageAt), last.lastMessageId, last.sessionId) }
-        : {}),
-    };
-  }
-
   /**
-   * The live Sessions of the source's Agent. Keyset-paged over the Agent's own Sessions: the page reads this
-   * binding's rows through its scope index and sorts them, so its cost is bounded by one Agent's Sessions.
+   * The live Sessions of the source's Agent, newest first. Keyset-paged by creation time and ID over this binding's
+   * Sessions, read through the existing scope index; no index serves this order, so a page sorts one Agent's
+   * live Sessions.
    */
   async listAgentSessions(
     sourceSessionId: string,
@@ -1917,99 +1798,65 @@ export class SessionService {
     };
   }
 
-  /**
-   * Where a recorded message comes from, read for its dispatch. The initiator and forward count were fixed
-   * when the message was recorded, and a Session's scope never changes, so every dispatch of one message says
-   * the same thing whatever else has happened since.
-   */
-  async resolveMessageProvenance(
-    message: Pick<SessionMessageRow, "sourceSessionId" | "targetSessionId" | "initiatorSessionId" | "forwardCount">,
-  ): Promise<SessionMessageProvenance> {
-    const ids = [message.sourceSessionId, message.targetSessionId, message.initiatorSessionId].filter(
-      (id): id is string => id !== null,
-    );
-    const rows = await this.#database
-      .select({
-        id: sessions.id,
-        imBindingId: sessions.imBindingId,
-        channelId: sessions.channelId,
-        conversationKind: sessions.conversationKind,
-        threadKey: sessions.threadKey,
-        kind: sessions.kind,
-      })
-      .from(sessions)
-      .where(inArray(sessions.id, [...new Set(ids)]));
-    const source = rows.find((row) => row.id === message.sourceSessionId);
-    const target = rows.find((row) => row.id === message.targetSessionId);
-    if (!source || !target) throw new Error("A recorded Session message lost its Sessions");
-    const found = rows.find((row) => row.id === message.initiatorSessionId);
-    // A Session from another binding belongs to the Agent's past; it cannot speak for this one.
-    const initiator = found?.imBindingId === target.imBindingId ? found : undefined;
-    return {
-      source: sessionConversation(source),
-      ...(initiator ? { initiatorSessionId: initiator.id, initiator: sessionConversation(initiator) } : {}),
-      forwards: message.forwardCount,
-      crossConversation:
-        !sameSessionScope(source, target) || (initiator ? !sameSessionScope(initiator, target) : false),
+  async listInternalSessions(sourceSessionId: string, query: SessionCliListQuery): Promise<SessionCliListResponse> {
+    const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
+    const since = query.since ? new Date(query.since) : undefined;
+    type ListRow = {
+      sessionId: string;
+      parentSessionId: string;
+      createdAt: Date | string;
+      lastMessageAt: Date | string;
+      lastMessageId: string;
+      lastDeliveryOutcome: SessionCliListItem["lastDeliveryOutcome"];
+      taskPreview: string;
+      stoppedAt: Date | string | null;
     };
-  }
-
-  /**
-   * The chain a new message continues, from what its Run says it is working on. Each input must really be
-   * addressed to the source Session. A Run working for more than one initiator, because something was steered
-   * into it, cannot say whose behalf a send is on, so that send has none. Nothing here is inferred: no inputs,
-   * or any input that does not check out, means no known initiator.
-   */
-  async #messageChain(
-    transaction: DatabaseTransaction,
-    sourceSessionId: string,
-    sender: { runInputs?: readonly SessionRunInput[]; legacySource?: boolean },
-    staysInConversation: boolean,
-  ): Promise<{ initiatorSessionId: string | null; forwardCount: number; legacyLocalSend: boolean }> {
-    const inputs = sender.runInputs ?? [];
-    if (inputs.length === 0) {
-      return {
-        initiatorSessionId: null,
-        forwardCount: 0,
-        legacyLocalSend: staysInConversation && sender.legacySource === true,
-      };
-    }
-    const unknown = { initiatorSessionId: null, forwardCount: 0, legacyLocalSend: false };
-    const messageIds = inputs.flatMap((input) => (input.kind === "session-message" ? [input.messageId] : []));
-    const deliveryIds = inputs.flatMap((input) => (input.kind === "delivery" ? [input.deliveryId] : []));
-    const messages = messageIds.length
-      ? await transaction
-          .select({
-            id: sessionMessages.id,
-            initiatorSessionId: sessionMessages.initiatorSessionId,
-            forwardCount: sessionMessages.forwardCount,
-            legacyLocalSend: sessionMessages.legacyLocalSend,
-            scheduledOrigin: sessionMessages.scheduledOrigin,
-            userTaskSource: sessionMessages.userTaskSource,
-          })
-          .from(sessionMessages)
-          .where(and(inArray(sessionMessages.id, messageIds), eq(sessionMessages.targetSessionId, sourceSessionId)))
-      : [];
-    const deliveries = deliveryIds.length
-      ? await transaction
-          .select({ id: imMessageDeliveries.id })
-          .from(imMessageDeliveries)
-          .where(and(inArray(imMessageDeliveries.id, deliveryIds), eq(imMessageDeliveries.sessionId, sourceSessionId)))
-      : [];
-    if (messages.length !== new Set(messageIds).size || deliveries.length !== new Set(deliveryIds).size) return unknown;
-    const initiators = new Set<string | null>(deliveries.map(() => sourceSessionId));
-    let forwardCount = 0;
-    for (const message of messages) {
-      initiators.add(
-        message.scheduledOrigin ? scheduledChainStart(message, sourceSessionId) : message.initiatorSessionId,
-      );
-      forwardCount = Math.max(forwardCount, message.forwardCount + 1);
-    }
-    const [initiatorSessionId, ...others] = initiators;
-    if (initiatorSessionId && others.length === 0) return { initiatorSessionId, forwardCount, legacyLocalSend: false };
-    // A notice about a local legacy message is local too; anything mixed in ends that.
-    const allLocal = deliveries.length === 0 && messages.every((message) => message.legacyLocalSend);
-    return { initiatorSessionId: null, forwardCount, legacyLocalSend: staysInConversation && allLocal };
+    // Stopped Sessions are history the active indexes do not carry on purpose: asking for them sorts this
+    // ancestor's closure rows, read through the primary key, which stays bounded by its own descendants.
+    const rows = await this.#database.execute<ListRow>(sql`
+      select
+        link.descendant_session_id as "sessionId",
+        child.created_by_session_id as "parentSessionId",
+        child.created_at as "createdAt",
+        link.last_message_created_at as "lastMessageAt",
+        link.last_message_id as "lastMessageId",
+        link.last_delivery_outcome as "lastDeliveryOutcome",
+        link.task_preview as "taskPreview",
+        child.ended_at as "stoppedAt"
+      from session_descendants link
+      inner join sessions child on child.id = link.descendant_session_id
+      where link.ancestor_session_id = ${sourceSessionId}::uuid
+        ${
+          // An older binary ends a Session without maintaining the closure flag. The derived predicate
+          // keeps that row out of the page and bounds the extra work to the drift, not to the history.
+          query.includeStopped ? sql`` : sql`and link.descendant_active and child.ended_at is null`
+        }
+        ${query.recursive ? sql`` : sql`and link.depth = 1`}
+        ${since ? sql`and link.last_message_created_at >= ${since.toISOString()}::timestamptz` : sql``}
+        ${
+          cursor
+            ? sql`and (link.last_message_created_at, link.last_message_id, link.descendant_session_id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.messageId}::uuid, ${cursor.sessionId}::uuid)`
+            : sql``
+        }
+      order by link.last_message_created_at desc, link.last_message_id desc, link.descendant_session_id desc
+      limit ${query.limit + 1}
+    `);
+    const page = [...rows].slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => ({
+        sessionId: row.sessionId,
+        parentSessionId: row.parentSessionId,
+        createdAt: new Date(row.createdAt).toISOString(),
+        lastMessageAt: new Date(row.lastMessageAt).toISOString(),
+        lastDeliveryOutcome: row.lastDeliveryOutcome,
+        taskPreview: truncateUtf8(row.taskPreview, 256),
+        ...(query.includeStopped && row.stoppedAt ? { stoppedAt: new Date(row.stoppedAt).toISOString() } : {}),
+      })),
+      ...(rows.length > query.limit && last
+        ? { nextCursor: encodeListCursor(new Date(last.lastMessageAt), last.lastMessageId, last.sessionId) }
+        : {}),
+    };
   }
 
   async #recordSessionActivity(
@@ -2142,6 +1989,30 @@ export class SessionService {
       .for("update", { of: agents });
     if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
     return source;
+  }
+
+  /**
+   * Which Session, in which conversation, sent a recorded message to which. Read from the two Sessions for each
+   * dispatch; a Session's conversation never changes, so every dispatch of one message says the same thing.
+   */
+  async resolveMessageProvenance(
+    message: Pick<SessionMessageRow, "sourceSessionId" | "targetSessionId">,
+  ): Promise<SessionMessageProvenance> {
+    if (!message.sourceSessionId) throw new Error("A scheduled Session message has no source Session");
+    const rows = await this.#database
+      .select({
+        id: sessions.id,
+        kind: sessions.kind,
+        channelId: sessions.channelId,
+        conversationKind: sessions.conversationKind,
+        threadKey: sessions.threadKey,
+      })
+      .from(sessions)
+      .where(inArray(sessions.id, [message.sourceSessionId, message.targetSessionId]));
+    const source = rows.find((row) => row.id === message.sourceSessionId);
+    const target = rows.find((row) => row.id === message.targetSessionId);
+    if (!source || !target) throw new Error("A recorded Session message lost its Sessions");
+    return { source: sessionEndpoint(source), target: sessionEndpoint(target) };
   }
 
   async #lockCollaborationAuthority(

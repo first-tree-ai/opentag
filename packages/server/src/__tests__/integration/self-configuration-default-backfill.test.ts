@@ -17,7 +17,7 @@ import { startPostgresTestContainer } from "./postgres-test-container.js";
  */
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const THROUGH_0071_IDX = 71;
-const CURRENT_MIGRATION_COUNT = 77;
+const CURRENT_MIGRATION_COUNT = 76;
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const ACCOUNT = "00000000-0000-4000-8000-000000000501";
 

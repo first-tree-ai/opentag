@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import {
-  type OpenTagApi,
-  OpenTagApiError,
-  readComputerIdentity,
-  readSessionCliProofFile,
-  readSessionRunInputsHeader,
-} from "@opentag/client";
+import { type OpenTagApi, OpenTagApiError, readComputerIdentity, readSessionCliProofFile } from "@opentag/client";
 import {
   SESSION_CLI_DEFAULT_LIMIT,
   SessionCliAgentListQuerySchema,
@@ -46,7 +40,7 @@ export class SessionCommandRequestError extends Error {
 
 export async function resolveSessionProofContext(
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<{ api: OpenTagApi; proof: string; serverUrl: string; executionId?: string; runInputs?: string }> {
+): Promise<{ api: OpenTagApi; proof: string; serverUrl: string; executionId?: string }> {
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
@@ -54,8 +48,6 @@ export async function resolveSessionProofContext(
     );
   }
   const executionId = await currentSessionExecutionId(environment);
-  const runInputs = await readSessionRunInputsHeader(proofPath);
-  const runFacts = { ...(executionId ? { executionId } : {}), ...(runInputs ? { runInputs } : {}) };
   const serverUrl = environment.OPENTAG_SESSION_SERVER_URL;
   if (serverUrl) {
     // E8 Cloud Session: the trusted Runner publishes the exact Server endpoint alongside the
@@ -64,7 +56,7 @@ export async function resolveSessionProofContext(
     const proof = await readSessionCliProofFile(proofPath);
     const cloudContext = await resolveCommandContext({ environment, serverUrl });
     if (!cloudContext.api) throw new Error("Command context did not resolve an API");
-    return { api: cloudContext.api, serverUrl, proof: proof.token, ...runFacts };
+    return { api: cloudContext.api, serverUrl, proof: proof.token, ...(executionId ? { executionId } : {}) };
   }
   const context = await resolveCommandContext({ environment });
   const home = context.home;
@@ -81,20 +73,7 @@ export async function resolveSessionProofContext(
     api: apiContext.api,
     serverUrl: identity.serverUrl,
     proof: proof.token,
-    ...runFacts,
-  };
-}
-
-type RunFacts = { executionId?: string; runInputs?: string };
-
-function hasRunFacts(runtime: RunFacts): boolean {
-  return Boolean(runtime.executionId || runtime.runInputs);
-}
-
-function runFacts(runtime: RunFacts): RunFacts {
-  return {
-    ...(runtime.executionId ? { executionId: runtime.executionId } : {}),
-    ...(runtime.runInputs ? { runInputs: runtime.runInputs } : {}),
+    ...(executionId ? { executionId } : {}),
   };
 }
 
@@ -111,8 +90,8 @@ export async function runSessionCreate(
   });
   const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () =>
-    hasRunFacts(runtime)
-      ? runtime.api.createInternalSession(runtime.proof, input, runFacts(runtime))
+    runtime.executionId
+      ? runtime.api.createInternalSession(runtime.proof, input, { executionId: runtime.executionId })
       : runtime.api.createInternalSession(runtime.proof, input),
   );
 }
@@ -129,8 +108,8 @@ export async function runSessionSend(
   });
   const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () =>
-    hasRunFacts(runtime)
-      ? runtime.api.sendSessionMessage(runtime.proof, input, runFacts(runtime))
+    runtime.executionId
+      ? runtime.api.sendSessionMessage(runtime.proof, input, { executionId: runtime.executionId })
       : runtime.api.sendSessionMessage(runtime.proof, input),
   );
 }
@@ -146,8 +125,8 @@ export async function requestWithRetryKey<T>(messageId: string, request: () => P
 export async function runSessionStop(targetSessionId: string): Promise<SessionCliStopResponse> {
   const input = SessionCliStopRequestSchema.parse({ targetSessionId });
   const runtime = await resolveSessionProofContext();
-  return hasRunFacts(runtime)
-    ? runtime.api.stopSession(runtime.proof, input, runFacts(runtime))
+  return runtime.executionId
+    ? runtime.api.stopSession(runtime.proof, input, { executionId: runtime.executionId })
     : runtime.api.stopSession(runtime.proof, input);
 }
 
@@ -181,6 +160,23 @@ export async function runSessionAgentList(options: {
   });
   const runtime = await resolveSessionProofContext();
   return runtime.api.listAgentSessions(runtime.proof, input);
+}
+
+export function formatSessionAgentList(result: SessionCliAgentListResponse): string {
+  const text = (value: string | undefined) => (value ?? "-").replaceAll("\t", " ").replaceAll("\n", " ");
+  const rows = result.items.map((item) =>
+    [
+      `${item.sessionId}${item.current ? " (this Session)" : ""}`,
+      item.sessionKind,
+      item.conversationKind,
+      item.channelId,
+      item.threadKey ?? "-",
+      item.parentSessionId ?? "-",
+      text(item.title ?? item.taskPreview),
+    ].join("\t"),
+  );
+  if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);
+  return ["SESSION ID\tKIND\tCONVERSATION\tCHANNEL\tTHREAD\tPARENT SESSION\tTITLE OR TASK", ...rows].join("\n");
 }
 
 export function formatSessionCommandResult(result: SessionCliCommandResponse): string {
@@ -243,23 +239,6 @@ export function formatSessionList(result: SessionCliListResponse): string {
   );
   if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);
   return [header, ...rows].join("\n");
-}
-
-export function formatSessionAgentList(result: SessionCliAgentListResponse): string {
-  const text = (value: string | undefined) => (value ?? "-").replaceAll("\t", " ").replaceAll("\n", " ");
-  const rows = result.items.map((item) =>
-    [
-      `${item.sessionId}${item.current ? " (this Session)" : ""}`,
-      item.sessionKind,
-      item.conversationKind,
-      item.channelId,
-      item.threadKey ?? "-",
-      item.parentSessionId ?? "-",
-      text(item.title ?? item.taskPreview),
-    ].join("\t"),
-  );
-  if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);
-  return ["SESSION ID\tKIND\tCONVERSATION\tCHANNEL\tTHREAD\tPARENT SESSION\tTITLE OR TASK", ...rows].join("\n");
 }
 
 async function resolveMessage(options: SessionMessageOptions): Promise<string> {

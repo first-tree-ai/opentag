@@ -464,31 +464,6 @@ Then query traces for the incident time window:
 
 No `im.inbound.process` span means openTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 
-## Cross-conversation Session messages
-
-Messages between an Agent's conversations are on trial, so their volume stays visible without a new metric. Two sources
-answer different questions.
-
-The database has every message since the trial began, and is the place to read volume. Its scope comparison uses the rows
-of the two Sessions:
-
-```sql
-select date_trunc('day', m.created_at) as day, m.last_outcome, count(*)
-from session_messages m
-join sessions s on s.id = m.source_session_id
-join sessions t on t.id = m.target_session_id
-where (s.channel_id, s.conversation_kind, coalesce(s.thread_key, ''))
-  is distinct from (t.channel_id, t.conversation_kind, coalesce(t.thread_key, ''))
-group by 1, 2 order by 1 desc;
-```
-
-The Server's stdout has one `info` record per dispatch attempt that leaves the target's conversation or has no known initiator
-(`initiatorSessionId: null`), with
-`operation: session.message.cross_conversation`, `agentId`, `messageId`, `sourceSessionId`, `targetSessionId`,
-`initiatorSessionId`, `forwards`, `outcome`, and `code` when there is one. A growing `forwards` between the same two Sessions
-is a reply loop. A send refused for another Agent logs `operation: session.message.other_agent`. Neither carries message
-content. Both are below `WARNING`, so they do not reach Cloud Logging; read them on the Server.
-
 ## Production monitoring on Google Cloud
 
 The production Server runs on one Compute Engine VM with a dedicated Cloud SQL instance, both in the production Google

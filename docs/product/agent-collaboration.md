@@ -36,7 +36,8 @@ final result stays one self-contained message. See
 
 An Agent's Sessions can message each other across conversations, so its work in one
 chat can reach its work in another without a person relaying it. Each message
-names the conversation it started in. Nothing is posted to IM on its own, and each
+shows which Session and conversation sent it, and says in its text whether a
+person asked for it and what it is for. Nothing is posted to IM on its own, and each
 Session replies only in its own conversation. Content from one conversation is not
 repeated to people who could not see it; this rests on the Agent's judgement, not
 on isolation.

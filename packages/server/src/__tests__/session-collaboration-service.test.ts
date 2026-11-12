@@ -5,7 +5,6 @@ import {
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
-  type SessionMessageProvenance,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import Fastify from "fastify";
@@ -22,14 +21,6 @@ import {
   sessionStoppedNoticeMessageId,
 } from "../services/sessions/session-run-outcome-notice.js";
 import { SessionServiceError } from "../services/sessions/session-service.js";
-
-const SAME_CONVERSATION_PROVENANCE: SessionMessageProvenance = {
-  source: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
-  initiatorSessionId: "00000000-0000-4000-8000-000000000001",
-  initiator: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
-  forwards: 0,
-  crossConversation: false,
-};
 
 describe("SessionCollaborationService", () => {
   describe("internal Session Run outcome notices", () => {
@@ -845,234 +836,6 @@ describe("SessionCollaborationService", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
-  describe("message provenance", () => {
-    const crossing: SessionMessageProvenance = {
-      source: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
-      initiatorSessionId: "00000000-0000-4000-8000-000000000002",
-      initiator: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
-      forwards: 2,
-      crossConversation: true,
-    };
-
-    it("sends provenance to a peer that negotiated version 5", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(5);
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "accepted",
-      });
-      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).toMatchObject({ provenance: crossing });
-    });
-
-    it("keeps the frozen frame for a same-conversation message to an older peer", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "accepted",
-      });
-      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).not.toHaveProperty("provenance");
-    });
-
-    it("refuses a cross-conversation message to an older peer before any frame", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "unreachable",
-        code: "unsupported_cross_conversation",
-      });
-      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
-    });
-
-    it("carries provenance in the reconcile when it delivers the message inline", async () => {
-      const inlineAt = (collaboration: number) => {
-        const fixture = serviceFixture();
-        fixture.registry.capabilityVersion.mockImplementation(
-          (_computer: string, _instance: string, capability: string) =>
-            capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? 1 : collaboration,
-        );
-        return fixture;
-      };
-      const current = inlineAt(5);
-      current.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
-      await current.service.send(sendRequest(current), current.source);
-      expect(current.domain.requestReconcile.mock.calls[0]?.[2]).toMatchObject({
-        sessionMessage: { provenance: crossing },
-      });
-      const older = inlineAt(4);
-      await older.service.send(sendRequest(older), older.source);
-      expect(older.domain.requestReconcile.mock.calls[0]?.[2]).toMatchObject({ sessionMessage: expect.any(Object) });
-      expect(older.domain.requestReconcile.mock.calls[0]?.[2].sessionMessage).not.toHaveProperty("provenance");
-    });
-
-    it("does not deliver a message whose provenance cannot be read", async () => {
-      const fixture = serviceFixture();
-      fixture.sessions.resolveMessageProvenance.mockRejectedValue(new Error("database"));
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "unreachable",
-        code: "runtime_unavailable",
-      });
-      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
-    });
-
-    it("records each cross-conversation attempt without its content, and only those", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(5);
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.logger.info).not.toHaveBeenCalled();
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      const [bindings] = fixture.logger.info.mock.calls[0] ?? [];
-      expect(bindings).toMatchObject({
-        operation: "session.message.cross_conversation",
-        initiatorSessionId: crossing.initiatorSessionId,
-        forwards: 2,
-        outcome: "accepted",
-      });
-      expect(JSON.stringify(bindings)).not.toContain(sendRequest(fixture).message);
-    });
-
-    it("records a message with no known initiator, so its rate can be read", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(5);
-      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.logger.info).toHaveBeenCalledWith(
-        expect.objectContaining({ operation: "session.message.cross_conversation", initiatorSessionId: null }),
-        expect.any(String),
-      );
-    });
-
-    const unproved = (() => {
-      const { initiatorSessionId: _id, initiator: _initiator, ...rest } = SAME_CONVERSATION_PROVENANCE;
-      return rest;
-    })();
-
-    it("goes by what was recorded, not the source's version at dispatch", async () => {
-      // Recorded by a current Client, then retried after that Client rolled back: still refused.
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "unreachable",
-        code: "unsupported_cross_conversation",
-      });
-      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
-    });
-
-    it("lets a message recorded as provably local reach an older peer", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
-      Object.assign(fixture.attempt.message, { legacyLocalSend: true });
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "accepted",
-      });
-      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).not.toHaveProperty("provenance");
-    });
-
-    it("tells Cloud the same: an unprovably local message needs provenance", async () => {
-      const fixture = serviceFixture({ targetComputerKind: "cloud" });
-      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
-      fixture.cloud.deliver.mockResolvedValue({ status: "accepted" });
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.cloud.deliver.mock.calls[0]?.[0]).toMatchObject({ requireProvenance: true });
-      Object.assign(fixture.attempt.message, { legacyLocalSend: true });
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.cloud.deliver.mock.calls[1]?.[0]).toMatchObject({ requireProvenance: false });
-    });
-
-    it("reads the sender's version when recording, on its own connection", async () => {
-      const fixture = serviceFixture();
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ legacySource: true }),
-      );
-      expect(fixture.registry.capabilityVersion).toHaveBeenCalledWith(
-        fixture.source.computerId,
-        fixture.source.connectionInstanceId,
-        RUNTIME_CAPABILITY.sessionCollaboration,
-      );
-      fixture.registry.capabilityVersion.mockReturnValue(5);
-      await fixture.service.send(sendRequest(fixture), fixture.source);
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ legacySource: false }),
-      );
-      fixture.registry.capabilityVersion.mockReturnValue(4);
-      await fixture.service.send(sendRequest(fixture), { ...fixture.source, computerKind: "cloud" });
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ legacySource: false }),
-      );
-    });
-
-    it("uses what the Run names plus what its execution proves", async () => {
-      const fixture = serviceFixture();
-      const named = { kind: "session-message" as const, messageId: randomUUID() };
-      const deliveryId = randomUUID();
-      const userTaskSource = {
-        sessionId: fixture.source.sessionId,
-        source: { kind: "delivery" as const, deliveryId, turnId: "turn" },
-      };
-      await fixture.service.send(sendRequest(fixture), { ...fixture.source, runInputs: [named], userTaskSource });
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ runInputs: [named, { kind: "delivery", deliveryId }] }),
-      );
-    });
-
-    it("does not take a Local execution's starting input for the whole Run when the list is missing", async () => {
-      const fixture = serviceFixture();
-      const messageId = randomUUID();
-      await fixture.service.send(sendRequest(fixture), {
-        ...fixture.source,
-        computerKind: "local",
-        userTaskSource: { sessionId: fixture.source.sessionId, source: { kind: "session-message", messageId } },
-      });
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ runInputs: [] }),
-      );
-      await fixture.service.send(sendRequest(fixture), {
-        ...fixture.source,
-        computerKind: "cloud",
-        userTaskSource: { sessionId: fixture.source.sessionId, source: { kind: "session-message", messageId } },
-      });
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
-        expect.objectContaining({ runInputs: [{ kind: "session-message", messageId }] }),
-      );
-    });
-
-    it("records a Run outcome notice as continuing the message it reports on", async () => {
-      const fixture = serviceFixture();
-      const reported = randomUUID();
-      await fixture.service.notifyRunOutcome({
-        childSessionId: fixture.targetSessionId,
-        messageId: reported,
-        outcome: "failed",
-        reason: "runtime_failed",
-        source: { computerId: "computer", connectionInstanceId: "instance", placementGeneration: 1 },
-      });
-      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ runInputs: [{ kind: "session-message", messageId: reported }] }),
-      );
-    });
-
-    it("records a refused send to another Agent", async () => {
-      const fixture = serviceFixture();
-      fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
-        new SessionServiceError("SESSION_SCOPE_MISMATCH", "another Agent"),
-      );
-      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-        status: "rejected",
-        code: "scope_mismatch",
-      });
-      expect(fixture.logger.info).toHaveBeenCalledWith(
-        expect.objectContaining({ operation: "session.message.other_agent", code: "scope_mismatch" }),
-        expect.any(String),
-      );
-    });
-  });
-
   it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
     const fixture = serviceFixture({ targetSessionKind: "channel" });
     fixture.registry.capabilityVersion.mockReturnValue(1);
@@ -1145,7 +908,7 @@ describe("SessionCollaborationService", () => {
     registerRuntimeSessionRoutes(app, {
       collaboration: fixture.service,
       proofs: { authenticate: async () => fixture.source },
-      sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions: vi.fn() },
+      sessions: { listAgentSessions: vi.fn(), listInternalSessions: vi.fn() },
     });
     try {
       const result = await app.inject({
@@ -1283,7 +1046,6 @@ function serviceFixture(
     attemptCount: options.attemptCount === undefined ? 1 : options.attemptCount,
   };
   const sessions = {
-    resolveMessageProvenance: vi.fn(async () => SAME_CONVERSATION_PROVENANCE),
     authorizeAndRecordMessage: vi.fn().mockImplementation(async (input: { content: string; messageId: string }) => ({
       ...attempt,
       message: { ...attempt.message, id: input.messageId, content: input.content },
@@ -1300,6 +1062,20 @@ function serviceFixture(
     hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
+    resolveMessageProvenance: vi.fn(async (message: { sourceSessionId: string | null; targetSessionId: string }) => ({
+      source: {
+        sessionId: message.sourceSessionId ?? randomUUID(),
+        sessionKind: "channel" as const,
+        conversationKind: "channel" as const,
+        channelId: "C-same",
+      },
+      target: {
+        sessionId: message.targetSessionId,
+        sessionKind: "internal" as const,
+        conversationKind: "channel" as const,
+        channelId: "C-same",
+      },
+    })),
     stopInternalSession: vi.fn(),
     resolveRunOutcomeNotice: vi
       .fn()
@@ -1325,9 +1101,9 @@ function serviceFixture(
   };
   const diagnosticLogger = { error: vi.fn() };
   const onDiagnostic = vi.fn(createServerDiagnosticReporter(() => diagnosticLogger as never));
-  const logger = { error: vi.fn(), info: vi.fn() };
+  const logger = { error: vi.fn() };
   const registry = {
-    capabilityVersion: vi.fn((_computer: string, _instance: string, capability: string): number | undefined =>
+    capabilityVersion: vi.fn((_computer: string, _instance: string, capability: string) =>
       capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
     ),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),

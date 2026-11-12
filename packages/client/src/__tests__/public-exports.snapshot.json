@@ -251,7 +251,6 @@
   "readProviderCliTurnPlan",
   "readSecureFile",
   "readSessionCliProofFile",
-  "readSessionRunInputsHeader",
   "reconcileProviderCliLauncher",
   "reconcileProviderCliShim",
   "redactAcceptanceRecord",

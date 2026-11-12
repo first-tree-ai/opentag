@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  crossesConversation,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
   RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
@@ -19,7 +20,6 @@ import {
   type SessionMessageScheduledOrigin,
   type SessionReconcileRequest,
   type SessionReconcileResult,
-  type SessionRunInput,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
@@ -84,9 +84,8 @@ export type CloudSessionMessageDeliveryInput =
   | {
       route: AuthorizedSessionMessageRoute;
       message: { id: string; content: string };
+      /** Where the message comes from; a Runner below Session collaboration v4 is refused a cross-conversation one. */
       provenance?: SessionMessageProvenance;
-      /** An older Runner cannot be given this message, because it would present it as local work. */
-      requireProvenance?: boolean;
       runtime: EffectiveRuntimeSnapshot;
       /** The durable attempt fencing token from the authorization transaction. */
       attemptCount: number;
@@ -297,6 +296,12 @@ type LocalHandOff =
   | { kind: "refused"; code: string }
   | { kind: "aborted" };
 
+interface LocalHandOffGate {
+  instanceId: string;
+  /** Present only when the Client can show it. */
+  provenance?: SessionMessageProvenance;
+}
+
 interface LocalHandOffInput {
   route: AuthorizedHeldMessageRoute;
   messageId: string;
@@ -305,10 +310,8 @@ interface LocalHandOffInput {
   creatorSessionId: string | null;
   /** Offer the message inside the reconcile frame when the Client negotiated that. */
   inlineMessage?: boolean;
-  /** Where the message comes from; sent to a Client that negotiated session collaboration v5. */
-  provenance?: SessionMessageProvenance;
-  /** A Client too old to show provenance would present this message as its conversation's own work. */
-  requireProvenance?: boolean;
+  /** Sent only to a Client that negotiated session collaboration v5; one below it never gets a cross-conversation message. */
+  provenance: SessionMessageProvenance;
 }
 
 const UNCONFIRMED_HAND_OFF: LocalHandOff = { kind: "temporary", code: "delivery_timeout" };
@@ -399,9 +402,9 @@ export interface SessionCollaborationServiceOptions {
     | "readPreviousScheduledOutcome"
     | "recordDeliveryFailureNotice"
     | "recordMessageOutcome"
-    | "resolveMessageProvenance"
     | "resolveRunOutcomeNotice"
     | "recentlyEndedInternalSessions"
+    | "resolveMessageProvenance"
     | "resolveScheduledMessageRoute"
     | "stopInternalSession"
     | "withCollaborationDispatchAdmission"
@@ -988,8 +991,6 @@ export class SessionCollaborationService {
       const attempt = await this.#sessions.createInternalSessionWithMessage({
         creatorSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
-        runInputs: sourceRunInputs(source),
-        legacySource: this.#isLegacySource(source),
         creatorInstallationId: source.installationId,
         creatorConnectionInstanceId: source.connectionInstanceId,
         creatorComputerId: source.computerId,
@@ -1014,8 +1015,6 @@ export class SessionCollaborationService {
         messageId: input.messageId,
         sourceSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
-        runInputs: sourceRunInputs(source),
-        legacySource: this.#isLegacySource(source),
         sourceInstallationId: source.installationId,
         sourceComputerId: source.computerId,
         sourceConnectionInstanceId: source.connectionInstanceId,
@@ -1025,21 +1024,7 @@ export class SessionCollaborationService {
       });
       return await this.#deliver(attempt, input.targetSessionId, { inlineLocalMessage: true });
     } catch (error) {
-      const result = this.#failure(input.messageId, error);
-      if (result.code === "scope_mismatch") {
-        this.#logger?.info?.(
-          {
-            operation: "session.message.other_agent",
-            agentId: source.agentId,
-            sourceSessionId: source.sessionId,
-            targetSessionId: input.targetSessionId,
-            outcome: result.status,
-            code: result.code,
-          },
-          "Session message to another Agent refused",
-        );
-      }
-      return result;
+      return this.#failure(input.messageId, error);
     }
   }
 
@@ -1134,8 +1119,6 @@ export class SessionCollaborationService {
         targetSessionId: target.creatorSessionId,
         content: renderSessionStoppedNotice(target.sessionId, descendantCount),
         serverDerivedId: true,
-        runInputs: sourceRunInputs(source),
-        legacySource: this.#isLegacySource(source),
       });
     } catch (error) {
       this.#logStopNoticeFailure(target, noticeId, this.#failure(noticeId, error).code);
@@ -1228,8 +1211,6 @@ export class SessionCollaborationService {
         targetSessionId: notice.recipientSessionId,
         content: renderRunOutcomeNotice(input),
         serverDerivedId: true,
-        // It continues the message it reports on, whatever the Session took on since.
-        runInputs: [{ kind: "session-message", messageId: input.messageId }],
       });
       if (attempt.attemptCount === null) {
         return this.#runOutcomeNoticeStatus(
@@ -1294,27 +1275,58 @@ export class SessionCollaborationService {
       );
     }
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
-    const attemptCount = attempt.attemptCount;
-    // A message that cannot say where it came from is not delivered: the receiver would take it as local.
-    const provenance = await this.#resolveProvenance(attempt);
+    const provenance = await this.#resolveProvenance(attempt.message);
     if (!provenance) {
-      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"), attemptCount);
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"),
+        attempt.attemptCount,
+      );
     }
-    const result = await this.#deliverWithProvenance({ ...attempt, attemptCount }, sessionId, provenance, {
-      inlineLocalMessage,
-      ...(signal ? { signal } : {}),
-    });
-    if (provenance.crossConversation || !provenance.initiatorSessionId) {
-      this.#logCrossConversation(attempt, provenance, result);
+    const result = await this.#deliverWithProvenance(
+      { ...attempt, attemptCount: attempt.attemptCount },
+      sessionId,
+      provenance,
+      { signal, inlineLocalMessage },
+    );
+    if (crossesConversation(provenance)) {
+      // The record of what crosses conversations; never the content.
+      this.#logger?.info?.(
+        {
+          operation: "session.message.cross_conversation",
+          agentId: attempt.route.agentId,
+          messageId: attempt.message.id,
+          sourceSessionId: provenance.source.sessionId,
+          targetSessionId: provenance.target.sessionId,
+          outcome: result.status,
+          ...(result.code ? { code: result.code } : {}),
+        },
+        "Cross-conversation Session message",
+      );
     }
     return result;
+  }
+
+  async #resolveProvenance(message: {
+    id: string;
+    sourceSessionId: string | null;
+    targetSessionId: string;
+  }): Promise<SessionMessageProvenance | undefined> {
+    try {
+      return await this.#sessions.resolveMessageProvenance(message);
+    } catch {
+      this.#logInternalFailure("SESSION_COLLABORATION_PROVENANCE_FAILED", {
+        messageId: message.id,
+        targetSessionId: message.targetSessionId,
+      });
+      return undefined;
+    }
   }
 
   async #deliverWithProvenance(
     attempt: SessionMessageAttempt & { attemptCount: number },
     sessionId: string,
     provenance: SessionMessageProvenance,
-    { signal, inlineLocalMessage }: { signal?: AbortSignal; inlineLocalMessage: boolean },
+    { signal, inlineLocalMessage }: { signal: AbortSignal | undefined; inlineLocalMessage: boolean },
   ): Promise<SessionCliCommandResponse> {
     const local = attempt.route.targetComputerKind !== "cloud";
     if (
@@ -1361,54 +1373,6 @@ export class SessionCollaborationService {
    * marked held first, so a Server that stops now still delivers, and the hand-off keeps going. A failure
    * it finds later reaches the sender as a notice, because the sender has already been told `accepted`.
    */
-  async #resolveProvenance(attempt: SessionMessageAttempt): Promise<SessionMessageProvenance | undefined> {
-    try {
-      return await this.#sessions.resolveMessageProvenance(attempt.message);
-    } catch {
-      this.#logInternalFailure("SESSION_COLLABORATION_PROVENANCE_FAILED", {
-        messageId: attempt.message.id,
-        targetSessionId: attempt.route.targetSessionId,
-      });
-      return undefined;
-    }
-  }
-
-  /** The trial's record of what crosses conversations, what has no known start, and how long chains get. */
-  #logCrossConversation(
-    attempt: SessionMessageAttempt,
-    provenance: SessionMessageProvenance,
-    result: SessionCliCommandResponse,
-  ): void {
-    this.#logger?.info?.(
-      {
-        operation: "session.message.cross_conversation",
-        agentId: attempt.route.agentId,
-        messageId: attempt.message.id,
-        sourceSessionId: attempt.route.sourceSessionId,
-        targetSessionId: attempt.route.targetSessionId,
-        initiatorSessionId: provenance.initiatorSessionId ?? null,
-        forwards: provenance.forwards,
-        outcome: result.status,
-        ...(result.code ? { code: result.code } : {}),
-      },
-      "Cross-conversation Session message",
-    );
-  }
-
-  /**
-   * Whether the sender's Client is too old to name its Run's inputs, on the connection this request came through.
-   * Read once, when the message is recorded; a later retry goes by what was recorded.
-   */
-  #isLegacySource(source: SessionCliSourceContext): boolean {
-    if (source.computerKind === "cloud") return false;
-    const version = this.#registry.capabilityVersion(
-      source.computerId,
-      source.connectionInstanceId,
-      RUNTIME_CAPABILITY.sessionCollaboration,
-    );
-    return version !== undefined && version < RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
-  }
-
   async #deliverLocalWithinBudget(
     attempt: SessionMessageAttempt,
     sessionId: string,
@@ -1477,9 +1441,6 @@ export class SessionCollaborationService {
         attemptCount,
         createdAt: attempt.message.createdAt,
         lastAttemptAt: attempt.message.lastAttemptAt,
-        initiatorSessionId: attempt.message.initiatorSessionId,
-        forwardCount: attempt.message.forwardCount,
-        legacyLocalSend: attempt.message.legacyLocalSend,
       },
       result.code ?? "target_unavailable",
     );
@@ -1505,7 +1466,6 @@ export class SessionCollaborationService {
         creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
         inlineMessage: inlineLocalMessage,
         provenance,
-        requireProvenance: requiresProvenance(attempt.message, provenance),
       },
       runtime,
       (operation) =>
@@ -1540,20 +1500,22 @@ export class SessionCollaborationService {
     admission: DispatchAdmission,
     signal?: AbortSignal,
   ): Promise<LocalHandOff> {
-    const gate = this.#localHandOffGate(input.route, input.requireProvenance === true);
+    const gate = this.#localHandOffGate(input.route, input.provenance);
     if ("code" in gate) return { kind: "temporary", code: gate.code };
-    // Carry provenance only to a Client that understands it; the gate already refused one that must have it.
-    const offered: LocalHandOffInput = gate.provenanceSupported ? input : { ...input, provenance: undefined };
-    const answered = await this.#reconcileForHandOff(offered, gate.instanceId, runtime, admission, signal);
+    const answered = await this.#reconcileForHandOff(input, gate, runtime, admission, signal);
     if (answered) return answered;
     if (signal?.aborted) return { kind: "aborted" };
-    return this.#offerLocal(offered, gate.instanceId, runtime, admission, signal);
+    return this.#offerLocal(input, gate, runtime, admission, signal);
   }
 
+  /**
+   * A Client below session collaboration v5 would present a message from another conversation as its own
+   * conversation's work, so it is refused one. A same-conversation message keeps the frame it always had.
+   */
   #localHandOffGate(
     route: AuthorizedHeldMessageRoute,
-    requireProvenance: boolean,
-  ): { instanceId: string; provenanceSupported: boolean } | { code: string } {
+    provenance: SessionMessageProvenance,
+  ): LocalHandOffGate | { code: string } {
     const instanceId = this.#registry.currentInstanceId(route.targetComputerId);
     if (
       !instanceId ||
@@ -1570,15 +1532,15 @@ export class SessionCollaborationService {
     const collaboration =
       this.#registry.capabilityVersion(route.targetComputerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration) ??
       0;
-    const provenanceSupported = collaboration >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
-    if (requireProvenance && !provenanceSupported) return { code: "unsupported_cross_conversation" };
-    return { instanceId, provenanceSupported };
+    if (collaboration >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION) return { instanceId, provenance };
+    if (crossesConversation(provenance)) return { code: "unsupported_cross_conversation" };
+    return { instanceId };
   }
 
   /** Answers undefined when the message still needs its own delivery frame. */
   async #reconcileForHandOff(
     input: LocalHandOffInput,
-    instanceId: string,
+    { instanceId, provenance }: LocalHandOffGate,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
     signal?: AbortSignal,
@@ -1611,7 +1573,7 @@ export class SessionCollaborationService {
               sessionMessage: {
                 messageId: input.messageId,
                 sourceSessionId: input.sourceSessionId,
-                ...(input.provenance ? { provenance: input.provenance } : {}),
+                ...(provenance ? { provenance } : {}),
                 content: { kind: "text" as const, text: input.content },
               },
             }
@@ -1672,7 +1634,7 @@ export class SessionCollaborationService {
 
   async #offerLocal(
     input: LocalHandOffInput,
-    instanceId: string,
+    { instanceId, provenance }: LocalHandOffGate,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
     signal?: AbortSignal,
@@ -1683,7 +1645,7 @@ export class SessionCollaborationService {
       requestId: randomUUID(),
       messageId: input.messageId,
       sourceSessionId: input.sourceSessionId,
-      ...(input.provenance ? { provenance: input.provenance } : {}),
+      ...(provenance ? { provenance } : {}),
       targetSessionId: route.targetSessionId,
       agentId: route.agentId,
       placementGeneration: route.targetPlacementGeneration,
@@ -1784,7 +1746,7 @@ export class SessionCollaborationService {
     attemptCount: number,
   ): Promise<"held" | "settled"> {
     if (!message.sourceSessionId) return "held";
-    const provenance = await this.#sessions.resolveMessageProvenance(message).catch(() => undefined);
+    const provenance = await this.#resolveProvenance(message);
     if (!provenance) return "held";
     const runtime = await this.#assembleHeldRuntime(message);
     if (!runtime) return "held";
@@ -1796,7 +1758,6 @@ export class SessionCollaborationService {
         content: message.content,
         creatorSessionId: message.targetCreatorSessionId,
         provenance,
-        requireProvenance: requiresProvenance(message, provenance),
       },
       runtime,
       (operation) => this.#sessions.withHeldDispatchAdmission(route, operation),
@@ -1983,7 +1944,6 @@ export class SessionCollaborationService {
     }
     const recorded = await this.#sessions.recordDeliveryFailureNotice({
       noticeId: deliveryFailureNoticeMessageId(message.id),
-      failedMessageId: message.id,
       failedTargetSessionId: message.targetSessionId,
       senderSessionId: message.sourceSessionId,
       content: renderDeliveryFailureNotice({ messageId: message.id, targetSessionId: message.targetSessionId, code }),
@@ -2041,7 +2001,6 @@ export class SessionCollaborationService {
           route: attempt.route,
           message: { id: attempt.message.id, content: attempt.message.content },
           provenance,
-          requireProvenance: requiresProvenance(attempt.message, provenance),
           runtime,
           attemptCount,
         },
@@ -2093,33 +2052,6 @@ export class SessionCollaborationService {
     this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
     return response(messageId, "unreachable", undefined, "runtime_unavailable");
   }
-}
-
-/**
- * What the source Run is working on. The Client's list is complete by construction. Without it, a Local Run's
- * execution proves only how the Run started, not what was steered in since, so that send has no known inputs.
- * A Cloud Run takes no steered input, so there its execution is the whole answer.
- */
-/**
- * Whether a target too old to show provenance must refuse this message, since it would present it as its
- * conversation's own work. That covers a message from elsewhere, and one with no known initiator, which may have
- * come from elsewhere, unless the message was recorded as provably local.
- */
-function requiresProvenance(message: { legacyLocalSend: boolean }, provenance: SessionMessageProvenance): boolean {
-  if (provenance.crossConversation) return true;
-  return !provenance.initiatorSessionId && !message.legacyLocalSend;
-}
-
-function sourceRunInputs(source: SessionCliSourceContext): SessionRunInput[] {
-  const executed = source.userTaskSource?.source;
-  const proved: SessionRunInput[] =
-    executed?.kind === "delivery"
-      ? [{ kind: "delivery", deliveryId: executed.deliveryId }]
-      : executed?.kind === "session-message"
-        ? [{ kind: "session-message", messageId: executed.messageId }]
-        : [];
-  if (source.runInputs?.length) return [...source.runInputs, ...proved];
-  return source.computerKind === "cloud" ? proved : [];
 }
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {

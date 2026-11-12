@@ -6,11 +6,7 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
-import {
-  RUNTIME_CAPABILITY,
-  RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
-  SESSION_RUN_OUTCOME_NOTICE_HEADER,
-} from "@opentag/shared";
+import { RUNTIME_CAPABILITY, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
@@ -830,23 +826,19 @@ describe("Session collaboration authority", () => {
           content: "stale",
         }),
       ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_STALE" });
-      const crossScope = await fixture.sessions.authorizeAndRecordMessage({
-        messageId: randomUUID(),
-        sourceSessionId: source.session.id,
-        sourceInstallationId: fixture.installationId,
-        sourceConnectionInstanceId: fixture.connectionInstanceId,
-        sourceComputerId: fixture.computerId,
-        sourcePlacementGeneration: 1,
-        targetSessionId: otherScope.session.id,
-        content: "cross scope",
-      });
-      expect(crossScope.route.targetSessionId).toBe(otherScope.session.id);
-      // This request names no Run input, so it has no initiator to prove.
-      expect(crossScope.message.initiatorSessionId).toBeNull();
-      await expect(fixture.sessions.resolveMessageProvenance(crossScope.message)).resolves.toMatchObject({
-        forwards: 0,
-        crossConversation: true,
-      });
+      const crossScopeId = randomUUID();
+      await expect(
+        fixture.sessions.authorizeAndRecordMessage({
+          messageId: crossScopeId,
+          sourceSessionId: source.session.id,
+          sourceInstallationId: fixture.installationId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
+          sourceComputerId: fixture.computerId,
+          sourcePlacementGeneration: 1,
+          targetSessionId: otherScope.session.id,
+          content: "cross scope",
+        }),
+      ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
       await fixture.database
         .update(sessions)
         .set({ endedAt: new Date() })
@@ -886,7 +878,7 @@ describe("Session collaboration authority", () => {
           content: "owner mismatch",
         }),
       ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
-      for (const messageId of [staleId, endedId, ownerMismatchId]) {
+      for (const messageId of [staleId, crossScopeId, endedId, ownerMismatchId]) {
         expect(await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId))).toEqual(
           [],
         );
@@ -1479,12 +1471,8 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
-        capabilityVersion: (_computer: string, _instance: string, capability: string) => {
-          if (capability === RUNTIME_CAPABILITY.sessionMessageReconcile) return options.inlineMessages ? 1 : undefined;
-          return capability === RUNTIME_CAPABILITY.sessionCollaboration
-            ? RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION
-            : 2;
-        },
+        capabilityVersion: (_computer, _instance, capability) =>
+          capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },

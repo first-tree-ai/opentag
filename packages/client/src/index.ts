@@ -597,7 +597,6 @@ export {
 } from "./runtime/session-binding-store.js";
 export {
   readSessionCliProofFile,
-  readSessionRunInputsHeader,
   SessionCliProofManager,
   type StoredSessionCliProof,
 } from "./runtime/session-cli-proof-manager.js";

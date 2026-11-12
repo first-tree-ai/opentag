@@ -271,9 +271,10 @@ const SessionMessageContentSchema = z
   })
   .strict();
 
-/** One Session's conversation as a message's receiver sees it. Never an authorization input. */
-export const SessionMessageConversationSchema = z
+/** One Session and its conversation, as a message's receiver sees it. Never an authorization input. */
+export const SessionMessageEndpointSchema = z
   .object({
+    sessionId: z.string().uuid(),
     sessionKind: z.enum(["channel", "thread", "internal"]),
     conversationKind: ImConversationKindSchema,
     channelId: z.string().min(1).max(512),
@@ -282,32 +283,24 @@ export const SessionMessageConversationSchema = z
   .strict();
 
 /**
- * Session-collaboration v5: where an ordinary message comes from, written by the Server; a sender cannot
- * supply it. `source` is the direct sender's conversation. The initiator is the Session where the chain started,
- * fixed when the message was recorded and the same across forwards. It is absent when it could not be proved,
- * which a receiver treats as coming from an unknown conversation. Like the scheduled display metadata, none of
- * this takes part in the semantic conflict hash.
+ * Session-collaboration v5: which Session, in which conversation, sent an ordinary message to which Session in
+ * which conversation. The Server reads both from the Sessions when it dispatches; a sender cannot supply it, and
+ * nothing about the chain the message belongs to is recorded or derived. Like the scheduled display metadata,
+ * it takes no part in the semantic conflict hash.
  */
 export const SessionMessageProvenanceSchema = z
-  .object({
-    source: SessionMessageConversationSchema,
-    initiatorSessionId: z.string().uuid().optional(),
-    initiator: SessionMessageConversationSchema.optional(),
-    /** How many Session messages came before this one in the chain. */
-    forwards: z.number().int().min(0),
-    /** True when the source or a known initiator is outside the target's conversation. */
-    crossConversation: z.boolean(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if ((value.initiatorSessionId === undefined) !== (value.initiator === undefined)) {
-      context.addIssue({
-        code: "custom",
-        path: ["initiator"],
-        message: "An initiator needs both its id and conversation",
-      });
-    }
-  });
+  .object({ source: SessionMessageEndpointSchema, target: SessionMessageEndpointSchema })
+  .strict();
+
+/** Whether two endpoints are in different conversations. An internal Session belongs to its creator's. */
+export function crossesConversation(provenance: SessionMessageProvenance): boolean {
+  const { source, target } = provenance;
+  return (
+    source.conversationKind !== target.conversationKind ||
+    source.channelId !== target.channelId ||
+    source.threadKey !== target.threadKey
+  );
+}
 
 export const SessionReconcileRequestSchema = z
   .object({
@@ -1549,7 +1542,7 @@ export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSche
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
-export type SessionMessageConversation = z.infer<typeof SessionMessageConversationSchema>;
+export type SessionMessageEndpoint = z.infer<typeof SessionMessageEndpointSchema>;
 export type SessionMessageProvenance = z.infer<typeof SessionMessageProvenanceSchema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
 export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;

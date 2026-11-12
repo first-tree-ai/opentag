@@ -50,10 +50,6 @@ export const sessions = pgTable(
       .on(table.imBindingId, table.channelId, table.threadKey)
       .where(sql`${table.kind} = 'thread' and ${table.endedAt} is null`),
     index("sessions_im_binding_scope_idx").on(table.imBindingId, table.channelId, table.threadKey),
-    // `session list --agent` pages an Agent's live Sessions newest first.
-    index("sessions_im_binding_live_created_idx")
-      .on(table.imBindingId, table.createdAt, table.id)
-      .where(sql`${table.endedAt} is null`),
     index("sessions_creator_created_idx").on(table.createdBySessionId, table.createdAt, table.id),
     check(
       "sessions_shape_check",

@@ -1,8 +1,6 @@
 import {
   HTTP_PATHS,
-  parseSessionRunInputs,
   SESSION_CLI_PROOF_HEADER,
-  SESSION_CLI_RUN_INPUTS_HEADER,
   SessionCliAgentListQuerySchema,
   SessionCliAgentListResponseSchema,
   SessionCliCommandResponseSchema,
@@ -14,10 +12,7 @@ import {
   SessionCliStopResponseSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type {
-  SessionCliProofService,
-  SessionCliSourceContext,
-} from "../services/sessions/session-cli-proof-service.js";
+import type { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 import type { SessionService } from "../services/sessions/session-service.js";
 import { parseRequest } from "./request-validation.js";
@@ -70,14 +65,9 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });
 
-  const agentListSources = new WeakMap<FastifyRequest, SessionCliSourceContext>();
-  const authenticateAgentList = async (request: FastifyRequest) => {
-    agentListSources.set(request, await authenticate(request, options.proofs));
-  };
-  app.get(HTTP_PATHS.runtimeAgentSessions, { onRequest: authenticateAgentList }, async (request, reply) => {
+  app.get(HTTP_PATHS.runtimeAgentSessions, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
-    const source = agentListSources.get(request);
-    if (!source) throw new Error("The agent Session list ran without its authenticated source");
+    const source = await authenticate(request, options.proofs);
     const raw = (request.query ?? {}) as Record<string, unknown>;
     const query = parseRequest(SessionCliAgentListQuerySchema, {
       visibleOnly: queryFlag(raw.visibleOnly),
@@ -102,10 +92,5 @@ async function authenticate(request: FastifyRequest, proofs: RuntimeSessionRoute
   const header = request.headers[SESSION_CLI_PROOF_HEADER];
   if (typeof header !== "string") return proofs.authenticate("");
   const execution = request.headers["x-opentag-execution-id"];
-  const source = await (typeof execution === "string"
-    ? proofs.authenticate(header, execution)
-    : proofs.authenticate(header));
-  const named = request.headers[SESSION_CLI_RUN_INPUTS_HEADER];
-  const runInputs = parseSessionRunInputs(typeof named === "string" ? named : undefined);
-  return runInputs.length > 0 ? { ...source, runInputs } : source;
+  return typeof execution === "string" ? proofs.authenticate(header, execution) : proofs.authenticate(header);
 }

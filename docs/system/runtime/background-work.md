@@ -70,8 +70,9 @@ the Pi binding in the Session workspace on Cloud, which is what outlives the san
 - Claude Code's `stopped` counts only for a task the same process listed.
 
 Every Run reads the ledger first, whatever its input, and starts with an `[openTag notice]` if there is anything to tell.
-It covers a limit the last Run reached and the work it left. Entries leave once a model turn has started, so a crash
-before that tells the next Run again.
+It covers a limit the last Run reached and the work it left. What a model turn was shown leaves once that Run
+completes, so a crash or a Run that did not complete tells the next Run again. A turn start alone is not enough: Claude
+Code reports an API error (a 429, for example) as an assistant message the model never wrote. Work that ended after the Run's last model turn started stays for the next Run.
 
 A limit's kind appears only as the reason passed to `recordRunLimit`, so a token or tool-call limit adds a reason.
 
@@ -88,12 +89,19 @@ these: it fails the Run.
 `provider_process_exited` is recoverable, under the same rule as a daemon stop and a 429: at most two automatic retries in
 a row, reset once a retry actually ran for five minutes. It retries at once, without the wait a 429 has. The retried Run
 gets the continuation notice and the ledger. A new process cannot take over the old process's work, so the Session starts
-it again if it still needs it. Cloud Turns do not use these automatic retries; their next Run reads the ledger.
+it again if it still needs it.
+
+On Cloud the worker retries in place, under the same rule: the same Turn, deadline and Session on disk, so the Server sees one
+Run. Steered input the Server settled with the Run goes into the retry, and a steer between attempts is left with the Server.
+A Session message steered into an attempt that exited goes into the retry too, and the Turn's result settles it, so the
+Runner never queues it to run a second time. A Session message offered between attempts stays in the Runner's queue.
+A crash of the worker itself is not retried: its parent reports the result as unknown.
 
 A model CLI that fails to start (`provider_start_failed`, `not_started`) is retried once the same way, after its short
-wait and counted when it fails. Nothing ran, so the ledger is unchanged: the retry reads the same notice. The sender
-hears the outcome once, when the retry settles. A turn the Run started by itself after answering its input is a
-`followUpFailure`, not a start failure, and is never retried.
+wait and counted when it fails. A failed attempt, like a 429, removes nothing from the ledger, so the retry reads the
+same notice, and an entry leaves only once the retried Run completes. The sender hears the outcome once, when the retry
+settles. A turn the Run started by itself after answering its input is a `followUpFailure`, not a start failure, and is
+never retried.
 
 ## What survives a stop
 

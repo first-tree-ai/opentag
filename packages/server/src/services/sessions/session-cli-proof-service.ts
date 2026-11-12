@@ -1,10 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import {
-  RUNTIME_CAPABILITY,
-  type RuntimeUserTaskSource,
-  type SessionReconcileRequest,
-  type SessionRunInput,
-} from "@opentag/shared";
+import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
 import { and, eq, exists, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -53,12 +48,8 @@ type ProofSourceRow = Awaited<ReturnType<typeof proofSourceQuery>>[number];
 export interface SessionCliSourceContext {
   proofId: string;
   userTaskSource?: RuntimeUserTaskSource;
-  /** What the sending Run says it is working on; the Server accepts only inputs addressed to this Session. */
-  runInputs?: readonly SessionRunInput[];
   agentId: string;
   computerId: string;
-  /** Where the source runs. A Cloud Run takes no steered input, so its execution names all it works on. */
-  computerKind?: "local" | "cloud";
   connectionInstanceId: string;
   creatorSessionId?: string;
   installationId: string;
@@ -516,7 +507,6 @@ export class SessionCliProofService {
       agentId: row.agentId,
       ...(userTaskSource ? { userTaskSource } : {}),
       computerId: row.computerId,
-      computerKind: row.computerKind,
       connectionInstanceId: row.connectionInstanceId,
       ...(row.creatorSessionId ? { creatorSessionId: row.creatorSessionId } : {}),
       installationId: row.installationId,

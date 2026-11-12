@@ -8,7 +8,6 @@ import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import * as sessionCore from "../core/session/index.js";
 import {
-  formatSessionAgentList,
   formatSessionCommandError,
   formatSessionCommandResult,
   formatSessionList,
@@ -166,40 +165,6 @@ describe("session CLI", () => {
     });
   });
 
-  it("formats the Agent's Sessions with their conversations", () => {
-    const text = formatSessionAgentList({
-      items: [
-        {
-          sessionId: "11111111-1111-4111-8111-111111111111",
-          sessionKind: "channel",
-          conversationKind: "channel",
-          channelId: "oc_group",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          title: "line\tone",
-          current: true,
-        },
-        {
-          sessionId: "22222222-2222-4222-8222-222222222222",
-          sessionKind: "internal",
-          conversationKind: "dm",
-          channelId: "oc_dm",
-          threadKey: "omt_1",
-          parentSessionId: "33333333-3333-4333-8333-333333333333",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          taskPreview: "task",
-        },
-      ],
-      nextCursor: "next",
-    });
-    expect(text).toContain(
-      "11111111-1111-4111-8111-111111111111 (this Session)\tchannel\tchannel\toc_group\t-\t-\tline one",
-    );
-    expect(text).toContain(
-      "22222222-2222-4222-8222-222222222222\tinternal\tdm\toc_dm\tomt_1\t33333333-3333-4333-8333-333333333333\ttask",
-    );
-    expect(text).toContain("Next cursor: next");
-  });
-
   it("formats accepted and rejected command results and tabular list rows", () => {
     expect(formatSessionCommandResult({ status: "accepted", messageId: "m1", sessionId: "s1", code: "queued" })).toBe(
       "status=accepted messageId=m1 sessionId=s1 code=queued",
@@ -334,24 +299,6 @@ describe("session CLI", () => {
         status: "stopped",
       });
       expect(stop).toHaveBeenCalledWith("p".repeat(40), { targetSessionId: "33333333-3333-4333-8333-333333333333" });
-      const runInput = "m:55555555-5555-4555-8555-555555555555";
-      await writeFile(`${proofPath}.run-inputs`, JSON.stringify({ inputs: [runInput] }));
-      await runSessionSend("33333333-3333-4333-8333-333333333333", {
-        message: "from a tracked Run",
-        messageId: "66666666-6666-4666-8666-666666666666",
-      });
-      expect(send).toHaveBeenLastCalledWith(
-        "p".repeat(40),
-        expect.objectContaining({ message: "from a tracked Run" }),
-        { runInputs: runInput },
-      );
-      await runSessionStop("33333333-3333-4333-8333-333333333333");
-      expect(stop).toHaveBeenLastCalledWith(
-        "p".repeat(40),
-        { targetSessionId: "33333333-3333-4333-8333-333333333333" },
-        { runInputs: runInput },
-      );
-      await rm(`${proofPath}.run-inputs`);
       await expect(runSessionStop("not-a-uuid")).rejects.toThrow();
       await expect(
         runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),

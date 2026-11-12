@@ -30,10 +30,10 @@ import type {
   AgentRuntimeEvent,
   AgentSteerOutcome,
   AgentSteerReceipt,
-  JsonValue,
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import { approvalCommandPresentation, approvalDescription } from "./approval-presentation.js";
 import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import {
   beginChannelTurn,
@@ -540,15 +540,7 @@ export class AgentTurnRunner {
   ): Promise<void> {
     const owner = turn.owner;
     const details = request.details;
-    const action =
-      details && typeof details === "object" && !Array.isArray(details)
-        ? (details.command ?? details.permissions ?? details.grantRoot ?? details)
-        : details;
-    const description = [
-      ...new Set([request.message, action ? describeApprovalAction(redactSensitive(action)) : undefined]),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const description = approvalDescription(request);
     if (request.kind !== "approval" || description.length === 0 || description.length > 6000) {
       // Cancel unsupported dialogs and refuse requests without a reviewable action.
       const response =
@@ -1484,46 +1476,6 @@ export function completionForError(error: unknown, abortReason: unknown, expired
   }
   if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
-}
-
-function approvalCommandPresentation(details: JsonValue | undefined, message: string | undefined) {
-  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
-  if (typeof details.command !== "string" || details.command.length === 0) return {};
-  return {
-    commandPresentation: {
-      command: redactSensitive(details.command),
-      reason: message && message !== details.command ? redactSensitive(message) : "",
-    },
-  };
-}
-
-function describeApprovalAction(value: JsonValue): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(describeApprovalAction).join("\n");
-  if (value && typeof value === "object") {
-    return Object.entries(value)
-      .filter(
-        ([key]) =>
-          ![
-            "threadId",
-            "turnId",
-            "itemId",
-            "approvalId",
-            "environmentId",
-            "reason",
-            "cwd",
-            "commandActions",
-            "availableDecisions",
-            "proposedExecpolicyAmendment",
-          ].includes(key),
-      )
-      .map(
-        ([key, entry]) =>
-          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${key === "arguments" ? JSON.stringify(entry, null, 2) : describeApprovalAction(entry)}`,
-      )
-      .join("\n");
-  }
-  return String(value);
 }
 
 /**

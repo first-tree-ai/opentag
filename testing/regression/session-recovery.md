@@ -290,15 +290,18 @@ Codex and Pi (on Pi with `background_bash`).
 Needs a real Local Claude Code Agent and a real Local Codex Agent with approvals on (the default `on-request`), and a
 command outside the Agent's command rules, such as `ps -ax -o pid,command | grep -c node || echo none`.
 
-1. On Claude Code, have a visible Session create an internal Session whose message asks it to run that command and
-   reply with the output. Expected: no approval card appears. Within seconds the transcript shows the Bash call
-   answered with "No one could approve this action: this Run was started by a Session message, and nobody is
-   reviewing it. ...", the child replies that the step needs a person's approval, and the record is `succeeded`.
-   The Run does not wait for its duration limit.
-2. Repeat step 1 on Codex. Expected: the same, except the command is declined without that text; the child still
-   replies and the record is `succeeded` within seconds.
-3. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card appears for
-   the sender, unchanged.
+1. On Claude Code, send a visible Session a request to create an internal Session whose message asks it to run that
+   command and reply with the output. Expected: within seconds an approval card appears in that visible Session's
+   conversation, naming the internal Session and the command, with the sender of your request as the approver.
+2. Approve. Expected: the command runs, the child replies with its output, and the record is `succeeded`.
+3. Repeat and deny. Expected: the child is told the action was declined and replies that it needs approval.
+4. Repeat and leave the card alone. Expected: after 10 minutes the card shows the request expired, the child is told
+   nobody answered, and the Run ends normally instead of waiting for its duration limit.
+5. Repeat 1 to 3 on Codex. Expected: the same, except a decline reaches Codex without the explanation text.
+6. Have a Schedule start the chain in a conversation with no earlier human message. Expected: no card; the request is
+   declined at once and the child says the step needs approval.
+7. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card for the
+   sender, unchanged.
 
 ## Schedules on an internal Session
 

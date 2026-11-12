@@ -1051,6 +1051,52 @@ describe("SessionMessageInbox", () => {
     resumed.stop();
   });
 
+  it("starts the quota waits over after a 5-minute run, whatever ended it", async () => {
+    vi.useFakeTimers();
+    const tasks: Array<() => void> = [];
+    const results: Array<{ code: string; quotaKind?: string; ranMs?: number }> = [
+      ...Array.from({ length: 3 }, () => ({ code: "provider_quota_exceeded", quotaKind: "usage_window" })),
+      { code: "provider_rate_limited", ranMs: 300_000 },
+      { code: "provider_quota_exceeded", quotaKind: "usage_window" },
+    ];
+    const prompt = vi.fn(async () => {
+      const { ranMs = 0, ...error } = results.shift() ?? {};
+      // Run time is sampled every minute, so the clock moves in steps.
+      if (ranMs > 0) await vi.advanceTimersByTimeAsync(ranMs + 1);
+      return { runId: "run", status: "failed" as const, output: [], error: { message: "failed", ...error } };
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (_delay, task) => {
+          tasks.push(task);
+          return { cancel: () => undefined };
+        },
+      },
+      timeoutScheduler: { schedule: () => ({ cancel: () => undefined }) },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await vi.waitFor(() => expect(tasks).toHaveLength(attempt));
+      tasks[attempt - 1]?.();
+    }
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(tasks).toHaveLength(5));
+    expect(inbox.getState(request.messageId)).toMatchObject({ status: "retryable", quotaWaits: 1 });
+    inbox.stop();
+    vi.useRealTimers();
+  });
+
   it.each([
     ["billing", { quotaKind: "billing" }],
     ["no known kind", {}],

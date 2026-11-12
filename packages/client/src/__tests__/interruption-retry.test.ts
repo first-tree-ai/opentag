@@ -791,6 +791,22 @@ describe("AgentTurnRunner automatic retry", () => {
     }
   });
 
+  it("starts the quota waits over after a 5-minute run that ended with another retry", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, {
+      ...turnRetryRecord(h.request, "turn-1"),
+      quotaWaits: MAX_QUOTA_WAITS,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    h.prompt.mockImplementationOnce(rateLimited);
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({ quotaWaits: 0, retryRanMs: 0 });
+    h.runner.stop();
+    await h.runner.settled();
+  });
+
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
     const h = runnerHarness({ restartRetry: true });
@@ -1443,6 +1459,21 @@ describe("InterruptedWorkRecovery", () => {
     expect(f.sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(f.sent).toEqual([expect.objectContaining({ type: "session:recover", turnId: "turn-1" })]);
+    f.recovery.stop();
+  });
+
+  it("starts the quota waits over at a restart after a 5-minute run", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      quotaWaits: MAX_QUOTA_WAITS,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    const f = recoveryFixture(records);
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    expect(records.get(request.sessionId)).toMatchObject({ quotaWaits: 0, retryRanMs: 0 });
     f.recovery.stop();
   });
 

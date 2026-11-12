@@ -52,6 +52,7 @@ import {
   MAX_RECORDED_STEERS,
   nextRetry,
   quotaResumeAt,
+  quotaWaitsAfterRun,
   RETRY_RESET_AFTER_MS,
   recoverableFailure,
   retryDelayMs,
@@ -880,7 +881,7 @@ export class AgentTurnRunner {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
         const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
-        return { ...ran, retries: count, retryRanMs: 0, interruption };
+        return { ...ran, retries: count, retryRanMs: 0, ...quotaWaitsAfterRun(ran), interruption };
       });
     } catch {
       return undefined;

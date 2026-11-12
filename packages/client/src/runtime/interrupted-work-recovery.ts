@@ -7,6 +7,7 @@ import {
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   nextRetry,
+  quotaWaitsAfterRun,
   type TurnRetryRecord,
   type TurnRetryStore,
 } from "./interruption-retry.js";
@@ -280,7 +281,14 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     const { count, exhausted } = counted
       ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });
-    const spent: TurnRetryRecord = { ...record, interruption, retries: count, retryRanMs: 0, retryNotStarted: true };
+    const spent: TurnRetryRecord = {
+      ...record,
+      interruption,
+      retries: count,
+      retryRanMs: 0,
+      ...quotaWaitsAfterRun(record),
+      retryNotStarted: true,
+    };
     try {
       await this.#options.retries.write(spent);
     } catch {

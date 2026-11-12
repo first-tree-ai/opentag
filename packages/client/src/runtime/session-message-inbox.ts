@@ -34,6 +34,7 @@ import {
   MAX_QUOTA_WAITS,
   nextRetry,
   quotaResumeAt,
+  quotaWaitsAfterRun,
   RATE_LIMIT_RETRY_DELAY_MS,
   RETRY_RESET_AFTER_MS,
   type RetryCount,
@@ -616,12 +617,10 @@ export class SessionMessageInbox {
       if (await this.#holdFailingJoined(next)) continue;
       // Withdrawn by a Session stop during that wait. From here to the Run starting nothing yields.
       if (this.#queues.get(sessionId)?.[0] !== next) continue;
-      // Waiting for the Server to prepare the Session is not a failure: after a restart nothing has
-      // prepared it yet. The message runs once a ready reconcile arrives.
-      if (this.#runtimeManager.isPrepared && !this.#runtimeManager.isPrepared(sessionId)) {
-        this.#awaitingPreparation.add(sessionId);
-        return;
-      }
+      const deliverable = await this.#deliverable(sessionId, next);
+      if (deliverable === "unprepared") return;
+      // Looks at the queue again after a wait: a Session stop may have withdrawn the message.
+      if (deliverable === "waited") continue;
       const reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       if (reservation.accepted) {
         this.#dequeue(sessionId, next);
@@ -638,10 +637,14 @@ export class SessionMessageInbox {
         this.#activeRuns.set(sessionId, running);
         continue;
       }
-      // A busy Session usually has a running Run: the message joins it instead of waiting for it to end.
-      if (await this.#steerIntoRunningTurn(sessionId, next)) this.#dequeue(sessionId, next);
-      else await this.#waitForReleaseOrSteerRetry();
+      await this.#steerOrWait(sessionId, next);
     }
+  }
+
+  /** A busy Session usually has a running Run: the message joins it instead of waiting for it to end. */
+  async #steerOrWait(sessionId: string, next: QueuedMessage): Promise<void> {
+    if (await this.#steerIntoRunningTurn(sessionId, next)) this.#dequeue(sessionId, next);
+    else await this.#waitForReleaseOrSteerRetry();
   }
 
   #dequeue(sessionId: string, message: QueuedMessage): void {
@@ -975,10 +978,6 @@ export class SessionMessageInbox {
     this.#messageRuns.set(run.id, run);
     let notBusy = this.#markRunBusy();
     try {
-      notBusy();
-      const due = await this.#restoredRetryDue(next, run);
-      notBusy = this.#markRunBusy();
-      if (!due) return;
       let attempt = await this.#attemptRun(sessionId, next, run);
       while (typeof attempt === "object") {
         if (await this.#endIfStopped(next, run)) break;
@@ -1003,17 +1002,27 @@ export class SessionMessageInbox {
   }
 
   /**
-   * A restored retry keeps its time: a quota wait resumes only after the reset, a restart or not. False when a
-   * daemon or Session stop ended the wait.
+   * Waiting for the Server to prepare the Session is not a failure: after a restart nothing has prepared it yet, and
+   * the message runs once a ready reconcile arrives. A prepared Session then waits for a restored retry's time.
    */
-  async #restoredRetryDue(next: QueuedMessage, run: SessionMessageRun): Promise<boolean> {
-    const restored = this.#records.get(sessionMessageKey(next.request));
-    if (restored?.status !== "retryable" || (restored.nextAttemptAt ?? 0) <= this.#now()) return true;
-    await this.#waitForRetry(restored);
-    if (this.#abort.signal.aborted) return false;
-    if (!(await this.#endIfStopped(next, run))) return true;
-    await run.settle(false);
-    return false;
+  async #deliverable(sessionId: string, next: QueuedMessage): Promise<"unprepared" | "waited" | "ready"> {
+    if (this.#runtimeManager.isPrepared && !this.#runtimeManager.isPrepared(sessionId)) {
+      this.#awaitingPreparation.add(sessionId);
+      return "unprepared";
+    }
+    return (await this.#waitUntilDue(next)) ? "waited" : "ready";
+  }
+
+  /**
+   * A restored retry keeps its time: a quota wait resumes only after the reset, a restart or not. It neither runs
+   * nor steers into a running Turn before then, and holds no reservation meanwhile. True when it waited; the
+   * caller looks at the queue again, since a Session stop may have withdrawn the message.
+   */
+  async #waitUntilDue(next: QueuedMessage): Promise<boolean> {
+    const record = this.#records.get(sessionMessageKey(next.request));
+    if (record?.status !== "retryable" || (record.nextAttemptAt ?? 0) <= this.#now()) return false;
+    await this.#waitForRetry(record);
+    return true;
   }
 
   /** A retry never starts after a Session stop; the record's terminal write is repeated in case a retry write beat it. */
@@ -1430,7 +1439,7 @@ export class SessionMessageInbox {
       }
       record = {
         ...record,
-        ...(retry ? messageRetryFields(retry) : {}),
+        ...(retry ? { ...messageRetryFields(retry), ...quotaWaitsAfterRun(record) } : {}),
         interruption,
         status: "retryable",
         nextAttemptAt: this.#now(),
@@ -1514,7 +1523,14 @@ export class SessionMessageInbox {
       let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       try {
         retryable = await this.#transition(
-          { ...record, ...messageRetryFields(retry), lastError: failure, interruption, updatedAt: now },
+          {
+            ...record,
+            ...messageRetryFields(retry),
+            ...quotaWaitsAfterRun(record),
+            lastError: failure,
+            interruption,
+            updatedAt: now,
+          },
           "retryable",
           { nextAttemptAt: now + delay },
         );

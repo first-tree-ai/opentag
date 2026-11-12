@@ -324,6 +324,11 @@ export type AgentProviderRunEvent =
       readonly outputPath?: string;
     }
   | { readonly type: "provider_warning"; readonly code: string; readonly message: string }
+  /**
+   * The provider is holding the Run open while it waits for a used-up usage window to reset, then retries by
+   * itself. The Run's duration budget does not run while `waiting` is true.
+   */
+  | { readonly type: "quota_wait_changed"; readonly waiting: boolean; readonly resetsAt?: string }
   | {
       readonly type: "provider_event";
       readonly providerId: string;

@@ -215,6 +215,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #assistantError?: string;
   /** When Claude Code said a usage window that rejected this Run opens again (`rate_limit_event`). */
   #quotaResetAt?: string;
+  /** Claude Code is retrying by itself until the used-up window resets (unattended retry mode). */
+  #quotaWaiting = false;
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
@@ -255,6 +257,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
     this.#quotaResetAt = undefined;
+    this.#quotaWaiting = false;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
     this.#resumedRun = false;
@@ -581,6 +584,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 
   async #handleMessage(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
     const type = requireString(message.type, "Claude Code message has no type");
+    if (type === "rate_limit_event") this.#quotaResetAt = usageWindowReset(message, this.#quotaResetAt);
+    await this.#trackQuotaWait(type, message);
     if (type === "stream_event") {
       await this.#handleStreamEvent(requireRecord(message.event, "Claude Code stream event is invalid"));
       return;
@@ -590,7 +595,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "rate_limit_event") {
-      this.#quotaResetAt = rejectedUsageWindowReset(message) ?? this.#quotaResetAt;
       await this.#emitProviderEvent(message);
       return;
     }
@@ -621,6 +625,37 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (await this.#handleBackgroundWorkFrame(type, message)) return;
     await this.#emitProviderEvent(message);
+  }
+
+  /**
+   * With `CLAUDE_CODE_RETRY_WATCHDOG`, Claude Code answers a rejected usage window by retrying the same request until
+   * the window resets, reporting a `system/api_retry` for HTTP 429 about every 30 s. That wait starts at the first
+   * such retry after a rejected window and ends with the next frame of any other kind.
+   */
+  async #trackQuotaWait(type: string, message: Readonly<Record<string, unknown>>): Promise<void> {
+    const retry = type === "system" && message.subtype === "api_retry";
+    if (retry && message.error_status === 429 && this.#quotaResetAt !== undefined) {
+      if (this.#quotaWaiting) return;
+      this.#quotaWaiting = true;
+      await this.requireProviderContext().emit({
+        type: "quota_wait_changed",
+        waiting: true,
+        resetsAt: this.#quotaResetAt,
+      });
+      return;
+    }
+    if (!this.#quotaWaiting || retry) return;
+    if (type === "rate_limit_event" && this.#quotaResetAt !== undefined) {
+      // Still rejected: a later reset moves the wait without ending it.
+      await this.requireProviderContext().emit({
+        type: "quota_wait_changed",
+        waiting: true,
+        resetsAt: this.#quotaResetAt,
+      });
+      return;
+    }
+    this.#quotaWaiting = false;
+    await this.requireProviderContext().emit({ type: "quota_wait_changed", waiting: false });
   }
 
   /** The synthetic frames the process adds for background work; false for any other message. */
@@ -923,7 +958,11 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
           command,
           args: [...prefix, ...args],
           cwd,
-          env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
+          env: composeRuntimeEnvironment(
+            { ...CLAUDE_CODE_QUOTA_WAIT_ENVIRONMENT, ...environment },
+            workspaceEnvironment,
+            pathPrepend,
+          ),
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
@@ -1096,6 +1135,18 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     }
   }
 }
+
+/**
+ * Claude Code's unattended retry mode: on a used-up subscription window it keeps the Run open and retries at the
+ * reset instead of failing at once (`--print` ignores `autoContinueAtUsageLimit`). The Client pauses the Run budget
+ * during that wait. A reset further away than 7 days fails the Run, as does any retry wait past 7 days in total;
+ * the Client's own quota retry takes over from there. An explicit setting in the daemon's environment wins.
+ */
+export const CLAUDE_CODE_QUOTA_WAIT_ENVIRONMENT: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_RETRY_WATCHDOG: "1",
+  CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: String(7 * 24 * 60 * 60 * 1000),
+  CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(7 * 24 * 60 * 60 * 1000),
+};
 
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...source };
@@ -1455,8 +1506,18 @@ function claudeCodeRunOutcome(
 /** 10000-01-01T00:00:00Z: the first Unix second whose ISO form needs an extended year. */
 const MAX_ISO_UNIX_SECONDS = 253_402_300_800;
 
-function rejectedUsageWindowReset(message: Readonly<Record<string, unknown>>): string | undefined {
+/** The reset of a rejected window; an allowed window clears the one seen before, anything else keeps it. */
+function usageWindowReset(
+  message: Readonly<Record<string, unknown>>,
+  previous: string | undefined,
+): string | undefined {
   const info = message.rate_limit_info;
+  const status = info && typeof info === "object" ? Reflect.get(info, "status") : undefined;
+  if (status === "allowed" || status === "allowed_warning") return undefined;
+  return rejectedUsageWindowReset(info) ?? previous;
+}
+
+function rejectedUsageWindowReset(info: unknown): string | undefined {
   if (!info || typeof info !== "object") return undefined;
   const status = Reflect.get(info, "status");
   const resetsAt = Reflect.get(info, "resetsAt");

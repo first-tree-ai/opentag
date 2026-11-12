@@ -142,6 +142,20 @@ describe("trackRunTime", () => {
     clock -= 60 * 60_000;
     expect(await tracker.finish()).toBe(0);
   });
+
+  it("does not count a paused stretch, such as an in-process quota wait", async () => {
+    let clock = 0;
+    const tracker = trackRunTime(
+      () => clock,
+      async () => undefined,
+    );
+    clock += 1_000;
+    tracker.pause();
+    clock += 60 * 60_000;
+    tracker.resume();
+    clock += 500;
+    expect(await tracker.finish()).toBe(1_500);
+  });
 });
 
 describe("TurnRetryStore", () => {

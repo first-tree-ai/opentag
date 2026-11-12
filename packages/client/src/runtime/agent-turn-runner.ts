@@ -68,6 +68,7 @@ import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration, providerSupportsMcpGateway } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { runBudgetTimer, scheduleUnrefTimeout } from "./run-budget-timer.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedMcpGatewayLaunch,
@@ -498,10 +499,17 @@ export class AgentTurnRunner {
     await Promise.all([...this.#turns.values()].map((turn) => turn.promise));
   }
 
-  #observeTurn(turn: RunningTurn, runtime: AgentRuntime, trace: TurnTraceBuffer, onTerminal: () => void): () => void {
+  #observeTurn(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    trace: TurnTraceBuffer,
+    onTerminal: () => void,
+    onQuotaWait: (waiting: boolean) => void,
+  ): () => void {
     const owner = turn.owner;
     return this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
       trace.record(event);
+      if (event.type === "quota_wait_changed" && event.runId === owner.turnId) onQuotaWait(event.waiting);
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
       if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -695,11 +703,22 @@ export class AgentTurnRunner {
       ? remainingBudgetMs(owner.request.runtime.budget?.maxDurationMs, await this.#ranMs(turn))
       : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
-    const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
-    timer.unref();
+    const budget = runBudgetTimer(scheduleUnrefTimeout, this.#now, timeoutMs, () => timeout.abort("turn_timeout"));
     const runTime = trackRunTime(this.#now, (ranMs) =>
       this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
     );
+    // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+    const onQuotaWait = (waiting: boolean): void => {
+      if (waiting) {
+        budget.pause();
+        runTime.pause();
+        return;
+      }
+      budget.resume();
+      runTime.resume();
+      /* v8 ignore next -- a resumed budget always has an expiry. */
+      if (budget.expiresAt !== undefined) turn.expiresAt = new Date(budget.expiresAt).toISOString();
+    };
     if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -727,9 +746,15 @@ export class AgentTurnRunner {
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       phaseTimings.runtimeEnsureMs = Math.max(0, this.#now() - ensureStartedAt);
       turn.runtime = runtime;
-      releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
-        terminalObserved = true;
-      });
+      releaseObserver = this.#observeTurn(
+        turn,
+        runtime,
+        trace,
+        () => {
+          terminalObserved = true;
+        },
+        onQuotaWait,
+      );
       const promptStartedAt = this.#now();
       const input = await this.#turnInput(turn, runtime, interruption);
       const result = await runtime.prompt({
@@ -788,7 +813,7 @@ export class AgentTurnRunner {
         /* v8 ignore next -- credential teardown is best-effort. */
         await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
       }
-      clearTimeout(timer);
+      budget.cancel();
       turn.unrecordedRunMs = await runTime.finish();
     }
     await this.#recordRunLimit(owner.request.sessionId, completion);

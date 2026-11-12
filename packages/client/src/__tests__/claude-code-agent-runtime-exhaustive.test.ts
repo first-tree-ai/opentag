@@ -126,6 +126,69 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
+  it("reports Claude Code's in-process wait for a rejected usage window to reset", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const rejected = (resetsAt: string) => ({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: Date.parse(resetsAt) / 1000, rateLimitType: "five_hour" },
+      session_id: "session",
+    });
+    const apiRetry = (status: number) => ({ type: "system", subtype: "api_retry", error_status: status });
+    const process = new ManualClaudeCodeProcess([
+      // A capacity retry is not a quota wait.
+      apiRetry(529),
+      rejected("2026-11-11T07:30:00.000Z"),
+      apiRetry(429),
+      apiRetry(429),
+      rejected("2026-11-11T08:00:00.000Z"),
+      apiRetry(429),
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed" }, session_id: "session" },
+      // The window opened again: a later 429 is a rate limit, not a quota wait.
+      apiRetry(429),
+      successResult(),
+    ]);
+    const runtime = await factory(process).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    await expect(runtime.prompt({ runId: "run-1", input: input("wait") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(events.filter((event) => event.type === "quota_wait_changed")).toEqual([
+      { type: "quota_wait_changed", runId: "run-1", waiting: true, resetsAt: "2026-11-11T07:30:00.000Z" },
+      { type: "quota_wait_changed", runId: "run-1", waiting: true, resetsAt: "2026-11-11T08:00:00.000Z" },
+      { type: "quota_wait_changed", runId: "run-1", waiting: false },
+    ]);
+    await runtime.close();
+  });
+
+  it("starts Claude Code in unattended retry mode unless the daemon's environment sets it", async () => {
+    const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+    const launch = async (env: NodeJS.ProcessEnv) => {
+      const runtime = await new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        process: {
+          env,
+          spawnProcess: (_command, _args, options) => {
+            environments.push(options.env);
+            return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
+          },
+        },
+      }).create({ ...createRequest(() => undefined), workspace: { cwd: process.cwd() } });
+      await runtime.prompt({ runId: "env-check", input: input("hello") });
+      await runtime.close();
+    };
+    await launch({ PATH: process.env.PATH });
+    await launch({ PATH: process.env.PATH, CLAUDE_CODE_RETRY_WATCHDOG: "0" });
+    expect(environments[0]).toMatchObject({
+      CLAUDE_CODE_RETRY_WATCHDOG: "1",
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: "604800000",
+      CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: "604800000",
+    });
+    expect(environments[1]).toMatchObject({ CLAUDE_CODE_RETRY_WATCHDOG: "0" });
+  });
+
   it("translates complete and fallback stream shapes without duplicating lifecycle events", async () => {
     const events: AgentRuntimeEvent[] = [];
     const process = new ManualClaudeCodeProcess(comprehensiveMessages());

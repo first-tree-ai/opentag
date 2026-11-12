@@ -32,6 +32,7 @@ import {
   nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
   type RetryCount,
+  type RunTimeTracker,
   recoverableFailure,
   retryDelayMs,
   retryLimit,
@@ -41,6 +42,7 @@ import {
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { type RunBudgetTimer, runBudgetTimer } from "./run-budget-timer.js";
 import type {
   PreparedRuntimeCredentialEnvironment,
   RuntimeCredentialEnvironmentManager,
@@ -138,7 +140,7 @@ export interface SessionMessageInboxOptions {
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
-    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime">>;
+    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime" | "observe">>;
   /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
@@ -722,7 +724,7 @@ export class SessionMessageInbox {
     );
   }
 
-  #trackMessageRunTime(key: string): { finish(): Promise<number> } {
+  #trackMessageRunTime(key: string): RunTimeTracker {
     return trackRunTime(this.#now, async (ranMs) => {
       const record = this.#records.get(key);
       if (record) await this.#persist(withRunTime(record, ranMs));
@@ -1014,11 +1016,12 @@ export class SessionMessageInbox {
     this.#runStops.set(sessionId, { controller: stop, placementGeneration: next.request.placementGeneration });
     // A retry's attempt can begin in the same moment a stop fences it, after that stop looked for a Run to abort.
     if (this.#isStopped(next.request)) stop.abort(new Error("Session stopped"));
-    let timer: { cancel(): void } | undefined;
+    let timer: RunBudgetTimer | undefined;
+    let releaseQuotaWait: (() => void) | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
-    let runTime: { finish(): Promise<number> } | undefined;
+    let runTime: RunTimeTracker | undefined;
     let ranIn: AgentRuntime | undefined;
     const settleRunTime = async () => {
       // Once per Run: a returned failure reaches this again on its way to the failure path.
@@ -1031,11 +1034,24 @@ export class SessionMessageInbox {
     };
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
-      timer = this.#timeoutScheduler.schedule(
+      timer = runBudgetTimer(
+        (delayMs, task) => this.#timeoutScheduler.schedule(delayMs, task),
+        this.#now,
         remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
         () => timeout.abort(new Error("Session message Run timed out")),
       );
       if (current) runTime = this.#trackMessageRunTime(key);
+      // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+      releaseQuotaWait = this.#runtimeManager.observe?.(sessionId, (event) => {
+        if (event.type !== "quota_wait_changed" || event.runId !== runId) return;
+        if (event.waiting) {
+          timer?.pause();
+          runTime?.pause();
+        } else {
+          timer?.resume();
+          runTime?.resume();
+        }
+      });
       // Revocation or control/owner replacement aborts the Run and its provider children.
       runSignal = executionSignal
         ? AbortSignal.any([this.#abort.signal, stop.signal, timeout.signal, executionSignal])
@@ -1125,6 +1141,7 @@ export class SessionMessageInbox {
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
+      releaseQuotaWait?.();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {

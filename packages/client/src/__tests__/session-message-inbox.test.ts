@@ -979,6 +979,210 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("waits for a used-up window to reset plus 2 minutes, at most 3 times in a row, across a restart", async () => {
+    const HOUR = 3_600_000;
+    let now = 1_000;
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async (_input: { input: { items: Array<{ text?: string }> } }) => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: {
+        code: "provider_quota_exceeded",
+        message: "You've hit your limit",
+        quotaKind: "usage_window",
+        retryAt: new Date(now + HOUR).toISOString(),
+      },
+    }));
+    const store = new MemoryRuntimeDurabilityStore();
+    const options: ConstructorParameters<typeof SessionMessageInbox>[0] = {
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => now,
+      onRunOutcome,
+      persistence: store,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    };
+    const inbox = new SessionMessageInbox(options);
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([HOUR + 120_000]);
+    expect(inbox.getState(request.messageId)).toMatchObject({ status: "retryable", quotaWaits: 1 });
+    expect(onRunOutcome).not.toHaveBeenCalled();
+    inbox.stop();
+
+    // A restarted daemon keeps the time: nothing runs before it.
+    now += HOUR / 2;
+    retries.length = 0;
+    const resumed = new SessionMessageInbox({ ...options, admission: new AdmissionController() });
+    await resumed.ready();
+    await vi.waitFor(() => expect(retries.map((retry) => retry.delay)).toEqual([HOUR / 2 + 120_000]));
+    expect(prompt).toHaveBeenCalledOnce();
+    now += HOUR / 2 + 120_000;
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    expect(prompt.mock.calls[1]?.[0].input.items[0]?.text).toContain("the model quota was used up");
+    // Waits 2 and 3, then the 4th used-up window in a row is reported.
+    await vi.waitFor(() => expect(retries).toHaveLength(2));
+    retries[1]?.task();
+    await vi.waitFor(() => expect(retries).toHaveLength(3));
+    retries[2]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(4));
+    await resumed.settled();
+    expect(retries).toHaveLength(3);
+    expect(resumed.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_quota_exceeded" }),
+    );
+    resumed.stop();
+  });
+
+  it("starts the quota waits over after a 5-minute run, whatever ended it", async () => {
+    vi.useFakeTimers();
+    const tasks: Array<() => void> = [];
+    const results: Array<{ code: string; quotaKind?: string; ranMs?: number }> = [
+      ...Array.from({ length: 3 }, () => ({ code: "provider_quota_exceeded", quotaKind: "usage_window" })),
+      { code: "provider_rate_limited", ranMs: 300_000 },
+      { code: "provider_quota_exceeded", quotaKind: "usage_window" },
+    ];
+    const prompt = vi.fn(async () => {
+      const { ranMs = 0, ...error } = results.shift() ?? {};
+      // Run time is sampled every minute, so the clock moves in steps.
+      if (ranMs > 0) await vi.advanceTimersByTimeAsync(ranMs + 1);
+      return { runId: "run", status: "failed" as const, output: [], error: { message: "failed", ...error } };
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (_delay, task) => {
+          tasks.push(task);
+          return { cancel: () => undefined };
+        },
+      },
+      timeoutScheduler: { schedule: () => ({ cancel: () => undefined }) },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await vi.waitFor(() => expect(tasks).toHaveLength(attempt));
+      tasks[attempt - 1]?.();
+    }
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(tasks).toHaveLength(5));
+    expect(inbox.getState(request.messageId)).toMatchObject({ status: "retryable", quotaWaits: 1 });
+    inbox.stop();
+    vi.useRealTimers();
+  });
+
+  it("starts the automatic retries over after a 5-minute run that ended in a quota wait", async () => {
+    vi.useFakeTimers();
+    const tasks: Array<() => void> = [];
+    const results: Array<{ code: string; quotaKind?: string; ranMs?: number }> = [
+      { code: "provider_process_exited" },
+      { code: "provider_process_exited" },
+      { code: "provider_quota_exceeded", quotaKind: "usage_window", ranMs: 300_000 },
+      { code: "provider_process_exited" },
+    ];
+    const prompt = vi.fn(async () => {
+      const { ranMs = 0, ...error } = results.shift() ?? {};
+      // Run time is sampled every minute, so the clock moves in steps.
+      if (ranMs > 0) await vi.advanceTimersByTimeAsync(ranMs + 1);
+      return { runId: "run", status: "failed" as const, output: [], error: { message: "failed", ...error } };
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (_delay, task) => {
+          tasks.push(task);
+          return { cancel: () => undefined };
+        },
+      },
+      timeoutScheduler: { schedule: () => ({ cancel: () => undefined }) },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await vi.waitFor(() => expect(tasks).toHaveLength(attempt));
+      tasks[attempt - 1]?.();
+    }
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(4));
+    // The last short failure is retry 1 again, not past the limit of 2.
+    await vi.waitFor(() => expect(tasks).toHaveLength(4));
+    expect(inbox.getState(request.messageId)).toMatchObject({ status: "retryable", attempts: 1 });
+    inbox.stop();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["billing", { quotaKind: "billing" }],
+    ["no known kind", {}],
+  ])("reports a quota failure of %s at once", async (_name, kind) => {
+    const retries: number[] = [];
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: { code: "provider_quota_exceeded", message: "no credit", ...kind },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay) => {
+          retries.push(delay);
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(retries).toEqual([]);
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    inbox.stop();
+  });
+
   it("retries a Run whose model CLI failed to start once after a short delay; a second failure is reported (R3)", async () => {
     const retries: Array<{ delay: number; task: () => void }> = [];
     const onRunOutcome = vi.fn();

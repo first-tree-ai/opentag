@@ -88,6 +88,14 @@ export function quotaResumeAt(retryAt: string | undefined, wait: number, now: nu
   return new Date(base + QUOTA_RESUME_AFTER_RESET_MS).toISOString();
 }
 
+/**
+ * For a write that clears the latest retry's run time: a run long enough to start the retry count over starts the
+ * quota waits over too, whatever ended it.
+ */
+export function quotaWaitsAfterRun(record: { retryRanMs?: number }): { quotaWaits?: number } {
+  return (record.retryRanMs ?? 0) >= RETRY_RESET_AFTER_MS ? { quotaWaits: 0 } : {};
+}
+
 /** At most this many retries in a row for a reason; a start failure is retried once. */
 export function retryLimit(reason: InterruptionReason): number {
   return reason === "provider_start_failed" ? 1 : MAX_AUTOMATIC_RETRIES;
@@ -191,6 +199,11 @@ export function trackRunTime(now: () => number, record: (ranMs: number) => Promi
       paused = false;
     },
   };
+}
+
+/** A recorded interruption's reason, a quota wait included; undefined when it is none of them. */
+export function interruptionReason(reason: string | undefined): InterruptionReason | undefined {
+  return reason !== undefined && REASONS.has(reason as InterruptionReason) ? (reason as InterruptionReason) : undefined;
 }
 
 /**

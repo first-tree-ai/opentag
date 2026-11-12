@@ -68,9 +68,16 @@ An IM Turn whose Run failed on a used-up window keeps its accepted delivery and 
 - After a daemon restart the startup scan finds the record, and the request to recover its Session is sent at
   `resumeAt`, not at once; the Turn stays pending until then.
 
+A Session message, a scheduled one included, waits the same way in the inbox: its record becomes `retryable` with
+`nextAttemptAt` at the resume time, the interruption `provider_quota_exceeded` and a local `quotaWaits` count, under
+the same rules (reset plus 2 minutes or the backoff, 3 waits in a row, a 5-minute run starts over, `billing` reported
+at once). The Session stays held while it waits, so a later message to it queues behind or steers into the resumed
+Run. A restarted daemon restores the record and still waits until `nextAttemptAt`; the sender gets no outcome notice
+until the message ends.
+
 > **Planned — not yet implemented.** Tracking: #1519
 
-Session messages wait the same way in the inbox (`retryable` with `nextAttemptAt = resumeAt`). Codex takes the reset
+Codex takes the reset
 from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff. A new message that reaches a
 Session while its work waits is merged into the waiting item like a steer, and runs with it once; until then such a
 message is delivered after the waiting Turn.

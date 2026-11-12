@@ -52,6 +52,7 @@ import {
   MAX_RECORDED_STEERS,
   nextRetry,
   quotaResumeAt,
+  quotaWaitsAfterRun,
   RETRY_RESET_AFTER_MS,
   recoverableFailure,
   retryDelayMs,
@@ -872,7 +873,7 @@ export class AgentTurnRunner {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
         const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
-        return { ...ran, retries: count, retryRanMs: 0, interruption };
+        return { ...ran, retries: count, retryRanMs: 0, ...quotaWaitsAfterRun(ran), interruption };
       });
     } catch {
       return undefined;
@@ -908,14 +909,16 @@ export class AgentTurnRunner {
     try {
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
         const ran = withRunTime(current, turn.unrecordedRunMs);
-        const waits = ran.retryRanMs >= RETRY_RESET_AFTER_MS ? 1 : (ran.quotaWaits ?? 0) + 1;
+        // A run long enough starts both counts over: the quota waits and the automatic retries.
+        const productive = ran.retryRanMs >= RETRY_RESET_AFTER_MS;
+        const waits = productive ? 1 : (ran.quotaWaits ?? 0) + 1;
         if (waits > MAX_QUOTA_WAITS) return { ...ran, quotaWaits: waits };
         interruption = {
           reason: "provider_quota_exceeded",
           at: new Date(now).toISOString(),
           resumeAt: quotaResumeAt(completion.retryAt, waits, now),
         };
-        return { ...ran, quotaWaits: waits, retryRanMs: 0, interruption };
+        return { ...ran, ...(productive ? { retries: 0 } : {}), quotaWaits: waits, retryRanMs: 0, interruption };
       });
     } catch {
       return undefined;

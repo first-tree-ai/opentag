@@ -39,6 +39,7 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
       outcomeReport: _localOnly,
       ranMs: _localRan,
       retryRanMs: _localRetryRan,
+      quotaWaits: _localQuotaWaits,
       joinedRunId: _localRun,
       steerInConversation: _localConversation,
       runConversation: _localRunConversation,

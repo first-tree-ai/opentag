@@ -171,6 +171,8 @@ export interface DurableWorkRecord<T = unknown> {
   readonly ranMs?: number;
   /** Session-message only: actual run time of its latest retry; long enough, and `attempts` resets. */
   readonly retryRanMs?: number;
+  /** Session-message only: quota waits in a row; a run of 5 minutes or more resets them. */
+  readonly quotaWaits?: number;
   /** Session-message only: the Run this message was steered into, whose retry count it shares. */
   readonly joinedRunId?: string;
   /**

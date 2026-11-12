@@ -193,6 +193,11 @@ export function trackRunTime(now: () => number, record: (ranMs: number) => Promi
   };
 }
 
+/** A recorded interruption's reason, a quota wait included; undefined when it is none of them. */
+export function interruptionReason(reason: string | undefined): InterruptionReason | undefined {
+  return reason !== undefined && REASONS.has(reason as InterruptionReason) ? (reason as InterruptionReason) : undefined;
+}
+
 /**
  * Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. A used-up quota
  * is not one of them: only a `usage_window` quota waits, which the failure code alone does not tell.

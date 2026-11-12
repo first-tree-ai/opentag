@@ -30,8 +30,12 @@ import {
   buildContinuationNotice,
   type Interruption,
   type InterruptionReason,
+  interruptionReason,
+  MAX_QUOTA_WAITS,
   nextRetry,
+  quotaResumeAt,
   RATE_LIMIT_RETRY_DELAY_MS,
+  RETRY_RESET_AFTER_MS,
   type RetryCount,
   type RunTimeTracker,
   recoverableFailure,
@@ -971,6 +975,10 @@ export class SessionMessageInbox {
     this.#messageRuns.set(run.id, run);
     let notBusy = this.#markRunBusy();
     try {
+      notBusy();
+      const due = await this.#restoredRetryDue(next, run);
+      notBusy = this.#markRunBusy();
+      if (!due) return;
       let attempt = await this.#attemptRun(sessionId, next, run);
       while (typeof attempt === "object") {
         if (await this.#endIfStopped(next, run)) break;
@@ -992,6 +1000,20 @@ export class SessionMessageInbox {
       await this.#reconciler.withAgentLock(next.request.agentId, async () => reservation.release());
       notBusy();
     }
+  }
+
+  /**
+   * A restored retry keeps its time: a quota wait resumes only after the reset, a restart or not. False when a
+   * daemon or Session stop ended the wait.
+   */
+  async #restoredRetryDue(next: QueuedMessage, run: SessionMessageRun): Promise<boolean> {
+    const restored = this.#records.get(sessionMessageKey(next.request));
+    if (restored?.status !== "retryable" || (restored.nextAttemptAt ?? 0) <= this.#now()) return true;
+    await this.#waitForRetry(restored);
+    if (this.#abort.signal.aborted) return false;
+    if (!(await this.#endIfStopped(next, run))) return true;
+    await run.settle(false);
+    return false;
   }
 
   /** A retry never starts after a Session stop; the record's terminal write is repeated in case a retry write beat it. */
@@ -1190,7 +1212,9 @@ export class SessionMessageInbox {
   ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
     // On a stop the restarted daemon recovers the messages, so nothing here waits for them.
     const steersSettled = this.#abort.signal.aborted || (await run.endAttempt());
-    const retry = await this.#handleFailure(record, hash, phase, error, timedOut, steersSettled);
+    const quota = timedOut || !steersSettled || this.#abort.signal.aborted ? undefined : usedUpWindow(error);
+    const waiting = quota && (await this.#waitForQuota(record, hash, phase, error, quota.retryAt));
+    const retry = waiting || (await this.#handleFailure(record, hash, phase, error, timedOut, steersSettled));
     return retry ? { retry } : "ended";
   }
 
@@ -1579,6 +1603,45 @@ export class SessionMessageInbox {
     );
   }
 
+  /**
+   * A used-up subscription window: the message waits, `retryable`, until the reset plus 2 minutes, with a limit of
+   * its own. Undefined when that limit is used up or the wait cannot be recorded; the failure is then final.
+   */
+  async #waitForQuota(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    phase: string,
+    error: unknown,
+    retryAt: string | undefined,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
+    const now = this.#now();
+    const waits = (record.retryRanMs ?? 0) >= RETRY_RESET_AFTER_MS ? 1 : (record.quotaWaits ?? 0) + 1;
+    if (waits > MAX_QUOTA_WAITS) return undefined;
+    const resumeAt = quotaResumeAt(retryAt, waits, now);
+    const failure = durableFailureFromUnknown(record.payload.requestId, phase, error, "provider_failed");
+    this.#emitFailure(failure);
+    const interruption: Interruption = { reason: "provider_quota_exceeded", at: new Date(now).toISOString() };
+    try {
+      const retryable = await this.#transition(
+        { ...record, quotaWaits: waits, retryRanMs: 0, lastError: failure, interruption, updatedAt: now },
+        "retryable",
+        { nextAttemptAt: Date.parse(resumeAt) },
+      );
+      this.#remember(record.key, { hash, status: "retryable" });
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_QUOTA_WAIT", messageId: record.payload.messageId, resumeAt },
+        "Session message waits for the model quota to reset",
+      );
+      return retryable;
+    } catch {
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "retryable" },
+        "Session message quota wait could not be persisted",
+      );
+      return undefined;
+    }
+  }
+
   #emitFailure(failure: DurableFailure): void {
     try {
       this.#onFailure?.(failure);
@@ -1682,14 +1745,27 @@ function turnContext(
 }
 
 /** A non-completed Run as an error that keeps the provider's code (e.g. `provider_rate_limited`). */
-function runFailure(result: { status: string; error?: { code?: string; message?: string } }): Error {
+function runFailure(result: {
+  status: string;
+  error?: { code?: string; message?: string; retryAt?: string; quotaKind?: string };
+}): Error {
   const error = new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
-  return result.error?.code ? Object.assign(error, { code: result.error.code }) : error;
+  if (!result.error?.code) return error;
+  const { code, retryAt, quotaKind } = result.error;
+  return Object.assign(error, { code }, retryAt ? { retryAt } : {}, quotaKind ? { quotaKind } : {});
+}
+
+/** A used-up subscription window, with the reset when the Provider told it; undefined for any other failure. */
+function usedUpWindow(error: unknown): { retryAt?: string } | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const { code, quotaKind, retryAt } = error as { code?: unknown; quotaKind?: unknown; retryAt?: unknown };
+  if (code !== "provider_quota_exceeded" || quotaKind !== "usage_window") return undefined;
+  return typeof retryAt === "string" ? { retryAt } : {};
 }
 
 /** Prefix the continuation notice when this Run is the automatic retry of an interrupted Run. */
 function withContinuation(input: AgentInput, interruption: DurableWorkRecord["interruption"]): AgentInput {
-  const reason = recoverableFailure(interruption?.reason);
+  const reason = interruptionReason(interruption?.reason);
   if (!interruption || !reason) return input;
   return {
     items: [{ type: "text", text: buildContinuationNotice({ reason, at: interruption.at }) }, ...input.items],

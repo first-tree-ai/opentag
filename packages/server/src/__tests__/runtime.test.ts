@@ -390,8 +390,8 @@ describe("Computer runtime WebSocket", () => {
       connectionId,
     });
     expect(businessContext?.negotiatedCapabilities).toMatchObject({
-      // Both sides offer the current {2,4} range, so the negotiated version is the maximum.
-      "runtime.sessionCollaboration": 4,
+      // Both sides offer the current {2,5} range, so the negotiated version is the maximum.
+      "runtime.sessionCollaboration": 5,
     });
 
     socket.send(

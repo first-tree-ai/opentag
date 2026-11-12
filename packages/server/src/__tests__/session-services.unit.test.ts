@@ -1032,9 +1032,17 @@ describe("SessionService with the unit database", () => {
       { imBindingId: fixture.bindingId, channelId: "C2", conversationKind: "dm" },
       "channel",
     );
-    await expect(
-      service.authorizeAndRecordMessage({ ...args, targetSessionId: other.session.id, messageId: randomUUID() }),
-    ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
+    // Another conversation of the same Agent is reachable.
+    const crossed = await service.authorizeAndRecordMessage({
+      ...args,
+      targetSessionId: other.session.id,
+      messageId: randomUUID(),
+    });
+    expect(crossed.route.targetSessionId).toBe(other.session.id);
+    await expect(service.resolveMessageProvenance(crossed.message)).resolves.toMatchObject({
+      source: { sessionKind: "channel", conversationKind: "dm" },
+      target: { sessionId: other.session.id, sessionKind: "channel", conversationKind: "dm", channelId: "C2" },
+    });
     await expect(
       service.authorizeAndRecordMessage({ ...args, sourceSessionId: randomUUID(), messageId: randomUUID() }),
     ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
@@ -2196,6 +2204,20 @@ describe("SessionCollaborationService response mapping", () => {
       heldHasRoom: vi.fn().mockResolvedValue(true),
       hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
       recordMessageOutcome: vi.fn().mockResolvedValue(true),
+      resolveMessageProvenance: vi.fn(async (message: { sourceSessionId: string | null; targetSessionId: string }) => ({
+        source: {
+          sessionId: message.sourceSessionId ?? randomUUID(),
+          sessionKind: "channel" as const,
+          conversationKind: "channel" as const,
+          channelId: "C-same",
+        },
+        target: {
+          sessionId: message.targetSessionId,
+          sessionKind: "internal" as const,
+          conversationKind: "channel" as const,
+          channelId: "C-same",
+        },
+      })),
       withCollaborationDispatchAdmission: vi.fn(),
     };
     const domain = {

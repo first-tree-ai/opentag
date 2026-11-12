@@ -34,6 +34,14 @@ message at each meaningful milestone instead of editing one message, and the
 final result stays one self-contained message. See
 [Internal Session collaboration](../system/messaging/internal-session-collaboration.md).
 
+An Agent's Sessions can message each other across conversations, so its work in one
+chat can reach its work in another without a person relaying it. Each message
+shows which Session and conversation sent it, and says in its text whether a
+person asked for it and what it is for. Nothing is posted to IM on its own, and each
+Session replies only in its own conversation. Content from one conversation is not
+repeated to people who could not see it; this rests on the Agent's judgement, not
+on isolation.
+
 ## Attention and when to speak
 
 `receive_mode` controls which IM traffic an Agent receives: `all_message` is the

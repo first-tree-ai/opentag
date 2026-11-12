@@ -93,6 +93,9 @@ import {
   SESSION_CLI_PROOF_HEADER,
   type SelfMCPOAuthStatus,
   SelfMCPOAuthStatusSchema,
+  type SessionCliAgentListQuery,
+  type SessionCliAgentListResponse,
+  SessionCliAgentListResponseSchema,
   type SessionCliCommandResponse,
   SessionCliCommandResponseSchema,
   type SessionCliCreateRequest,
@@ -655,6 +658,24 @@ export class OpenTagApi {
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
         },
       },
+      options,
+    );
+  }
+
+  listAgentSessions(
+    proof: string,
+    input: SessionCliAgentListQuery,
+    options?: RequestOptions,
+  ): Promise<SessionCliAgentListResponse> {
+    const query = new URLSearchParams({
+      limit: String(input.limit),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.visibleOnly ? { visibleOnly: "true" } : {}),
+    });
+    return this.#request(
+      `${HTTP_PATHS.runtimeAgentSessions}?${query.toString()}`,
+      SessionCliAgentListResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
       options,
     );
   }

@@ -5,10 +5,14 @@ import type {
   ImConversationKind,
   InternalSessionRuntimeOverrides,
   Session,
+  SessionCliAgentListQuery,
+  SessionCliAgentListResponse,
   SessionCliListItem,
   SessionCliListQuery,
   SessionCliListResponse,
   SessionKind,
+  SessionMessageEndpoint,
+  SessionMessageProvenance,
   SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
@@ -67,6 +71,18 @@ function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
     left.conversationKind === right.conversationKind &&
     left.threadKey === right.threadKey
   );
+}
+
+function sessionEndpoint(
+  session: Pick<SessionRow, "id" | "kind" | "conversationKind" | "channelId" | "threadKey">,
+): SessionMessageEndpoint {
+  return {
+    sessionId: session.id,
+    sessionKind: session.kind,
+    conversationKind: session.conversationKind,
+    channelId: session.channelId,
+    ...(session.threadKey ? { threadKey: session.threadKey } : {}),
+  };
 }
 
 interface ActiveSessionAuthority {
@@ -1718,6 +1734,70 @@ export class SessionService {
     return { admitted: false, reason };
   }
 
+  /**
+   * The live Sessions of the source's Agent, newest first. Keyset-paged by creation time and ID over this binding's
+   * Sessions, read through the existing scope index; no index serves this order, so a page sorts one Agent's
+   * live Sessions.
+   */
+  async listAgentSessions(
+    sourceSessionId: string,
+    query: SessionCliAgentListQuery,
+  ): Promise<SessionCliAgentListResponse> {
+    const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
+    type AgentSessionRow = {
+      sessionId: string;
+      sessionKind: SessionKind;
+      conversationKind: ImConversationKind;
+      channelId: string;
+      threadKey: string | null;
+      createdAt: Date | string;
+      title: string | null;
+      parentSessionId: string | null;
+      taskPreview: string | null;
+    };
+    const rows = await this.#database.execute<AgentSessionRow>(sql`
+      select
+        peer.id as "sessionId",
+        peer.kind as "sessionKind",
+        peer.conversation_kind as "conversationKind",
+        peer.channel_id as "channelId",
+        peer.thread_key as "threadKey",
+        peer.created_at as "createdAt",
+        coalesce(peer.manual_title, peer.generated_title) as "title",
+        peer.created_by_session_id as "parentSessionId",
+        link.task_preview as "taskPreview"
+      from sessions source
+      inner join sessions peer on peer.im_binding_id = source.im_binding_id
+      left join session_descendants link
+        on link.ancestor_session_id = peer.created_by_session_id and link.descendant_session_id = peer.id
+      where source.id = ${sourceSessionId}::uuid
+        and peer.ended_at is null
+        ${query.visibleOnly ? sql`and peer.kind <> 'internal'` : sql``}
+        ${cursor ? sql`and (peer.created_at, peer.id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.sessionId}::uuid)` : sql``}
+      order by peer.created_at desc, peer.id desc
+      limit ${query.limit + 1}
+    `);
+    const page = [...rows].slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => ({
+        sessionId: row.sessionId,
+        sessionKind: row.sessionKind,
+        conversationKind: row.conversationKind,
+        channelId: row.channelId,
+        ...(row.threadKey ? { threadKey: row.threadKey } : {}),
+        createdAt: new Date(row.createdAt).toISOString(),
+        ...(row.title ? { title: row.title } : {}),
+        ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
+        ...(row.taskPreview ? { taskPreview: truncateUtf8(row.taskPreview, 256) } : {}),
+        ...(row.sessionId === sourceSessionId ? { current: true } : {}),
+      })),
+      ...(rows.length > query.limit && last
+        ? { nextCursor: encodeListCursor(new Date(last.createdAt), last.sessionId, last.sessionId) }
+        : {}),
+    };
+  }
+
   async listInternalSessions(sourceSessionId: string, query: SessionCliListQuery): Promise<SessionCliListResponse> {
     const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
     const since = query.since ? new Date(query.since) : undefined;
@@ -1911,6 +1991,30 @@ export class SessionService {
     return source;
   }
 
+  /**
+   * Which Session, in which conversation, sent a recorded message to which. Read from the two Sessions for each
+   * dispatch; a Session's conversation never changes, so every dispatch of one message says the same thing.
+   */
+  async resolveMessageProvenance(
+    message: Pick<SessionMessageRow, "sourceSessionId" | "targetSessionId">,
+  ): Promise<SessionMessageProvenance> {
+    if (!message.sourceSessionId) throw new Error("A scheduled Session message has no source Session");
+    const rows = await this.#database
+      .select({
+        id: sessions.id,
+        kind: sessions.kind,
+        channelId: sessions.channelId,
+        conversationKind: sessions.conversationKind,
+        threadKey: sessions.threadKey,
+      })
+      .from(sessions)
+      .where(inArray(sessions.id, [message.sourceSessionId, message.targetSessionId]));
+    const source = rows.find((row) => row.id === message.sourceSessionId);
+    const target = rows.find((row) => row.id === message.targetSessionId);
+    if (!source || !target) throw new Error("A recorded Session message lost its Sessions");
+    return { source: sessionEndpoint(source), target: sessionEndpoint(target) };
+  }
+
   async #lockCollaborationAuthority(
     transaction: DatabaseTransaction,
     source: SourceAgentAuthority,
@@ -1938,15 +2042,7 @@ export class SessionService {
           or(
             eq(sessions.id, source.session.id),
             targetSessionIds.length > 0
-              ? and(
-                  inArray(sessions.id, [...targetSessionIds]),
-                  eq(sessions.imBindingId, source.session.imBindingId),
-                  eq(sessions.channelId, source.session.channelId),
-                  eq(sessions.conversationKind, source.session.conversationKind),
-                  source.session.threadKey === null
-                    ? isNull(sessions.threadKey)
-                    : eq(sessions.threadKey, source.session.threadKey),
-                )
+              ? and(inArray(sessions.id, [...targetSessionIds]), eq(sessions.imBindingId, source.session.imBindingId))
               : undefined,
           ),
         ),
@@ -2093,7 +2189,7 @@ export class SessionService {
         installationId: computer.currentInstallationId,
       };
     }
-    // Foreign-scope targets must retain their error precedence without joining the lock chain.
+    // Another Agent's targets must retain their error precedence without joining the lock chain.
     const [target] = await transaction
       .select({
         session: sessions,
@@ -2115,8 +2211,9 @@ export class SessionService {
     if (target.computerOwnerAccountId !== target.agentCreatedByUserId) {
       throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session Computer requires Agent rebind");
     }
-    if (!sameSessionScope(target.session, sourceSession)) {
-      throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session has a different collaboration scope");
+    // An Agent has one current binding, so this is the Agent boundary.
+    if (target.session.imBindingId !== sourceSession.imBindingId) {
+      throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session belongs to another Agent");
     }
     throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
   }

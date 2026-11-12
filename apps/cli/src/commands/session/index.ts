@@ -1,10 +1,12 @@
 import type { Command } from "commander";
 import { commandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
 import {
+  formatSessionAgentList,
   formatSessionCommandError,
   formatSessionCommandResult,
   formatSessionList,
   formatSessionStopResult,
+  runSessionAgentList,
   runSessionCreate,
   runSessionList,
   runSessionSend,
@@ -39,7 +41,7 @@ export function registerSessionCommand(program: Command): void {
 
   session
     .command("send")
-    .description("Send a message to an existing Session in the same collaboration scope")
+    .description("Send a message to any live Session of this Agent, in any conversation")
     .argument("<target-session-id>", "target Session ID")
     .option("--message <text>", "message text")
     .option("--message-file <path>", "read the message from a file, or - for stdin")
@@ -70,7 +72,11 @@ export function registerSessionCommand(program: Command): void {
 
   session
     .command("list")
-    .description("List internal Sessions created by the implicit managed source Session")
+    .description(
+      "List internal Sessions created by the implicit managed source Session, or with --agent every live Session of this Agent",
+    )
+    .option("--agent", "list every live Session of this Agent, in every conversation, with its conversation")
+    .option("--visible", "with --agent: leave out internal Sessions")
     .option("--recursive", "include all descendant internal Sessions")
     .option("--include-stopped", "also list stopped Sessions, with when they stopped")
     .option("--limit <count>", "page size (maximum 100)", parsePositiveInteger)
@@ -79,6 +85,17 @@ export function registerSessionCommand(program: Command): void {
     .option("--json", "print JSON")
     .action(async (options) => {
       try {
+        if (options.agent) {
+          if (options.recursive || options.includeStopped || options.since) {
+            throw new Error("--agent cannot be combined with --recursive, --include-stopped, or --since");
+          }
+          const result = await runSessionAgentList(options);
+          process.stdout.write(
+            `${options.json ? JSON.stringify({ ok: true, result }) : formatSessionAgentList(result)}\n`,
+          );
+          return;
+        }
+        if (options.visible) throw new Error("--visible requires --agent");
         const result = await runSessionList(options);
         if (options.json) {
           process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);

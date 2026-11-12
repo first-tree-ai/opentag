@@ -9,6 +9,7 @@ import {
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_V3,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -516,7 +517,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
    * Server did not echo the capability). The exact number is the fence: a scheduled-origin
    * dispatch requires version 2, an ordinary one version 1 — never a bare eligible boolean.
    */
-  sessionCollaborationVersion: 0 | 1 | 2 | 3 = 0;
+  sessionCollaborationVersion: 0 | 1 | 2 | 3 | 4 = 0;
 
   /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
   get sessionCollaborationEnabled(): boolean {
@@ -1149,7 +1150,7 @@ async function serveOnce(
          * a foundation Server that parses but does not echo simply leaves collaboration off — the
          * Runner never pretends.
          */
-        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V3,
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V4,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
@@ -1697,7 +1698,8 @@ function runnerWelcomeRejection(
   return undefined;
 }
 
-function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 {
+function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 | 4 {
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V4) return RUNNER_SESSION_COLLABORATION_V4;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION) {

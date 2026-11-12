@@ -908,7 +908,7 @@ describe("SessionCollaborationService", () => {
     registerRuntimeSessionRoutes(app, {
       collaboration: fixture.service,
       proofs: { authenticate: async () => fixture.source },
-      sessions: { listInternalSessions: vi.fn() },
+      sessions: { listAgentSessions: vi.fn(), listInternalSessions: vi.fn() },
     });
     try {
       const result = await app.inject({
@@ -1062,6 +1062,20 @@ function serviceFixture(
     hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
+    resolveMessageProvenance: vi.fn(async (message: { sourceSessionId: string | null; targetSessionId: string }) => ({
+      source: {
+        sessionId: message.sourceSessionId ?? randomUUID(),
+        sessionKind: "channel" as const,
+        conversationKind: "channel" as const,
+        channelId: "C-same",
+      },
+      target: {
+        sessionId: message.targetSessionId,
+        sessionKind: "internal" as const,
+        conversationKind: "channel" as const,
+        channelId: "C-same",
+      },
+    })),
     stopInternalSession: vi.fn(),
     resolveRunOutcomeNotice: vi
       .fn()

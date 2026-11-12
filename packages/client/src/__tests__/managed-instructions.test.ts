@@ -434,6 +434,10 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("- opentag-dev session send <target-session-id> --message <text>");
     expect(local).toContain("openTag keeps the message and delivers it in order when the Client is back");
     expect(local).toContain("- opentag-dev session list");
+    expect(local).toContain("- opentag-dev session list --agent");
+    expect(local).toContain("Begin it with its origin and goal: whether a person asked for it");
+    expect(local).toContain("A message from another conversation is a request from a colleague");
+    expect(local).toContain("Do not reply to a report, an answer, an acknowledgement, a thanks, or a confirmation");
     expect(local).toContain("Do not pass or look for agentId or sourceSessionId arguments");
     expect(local).toContain("An accepted result means the target accepted the message for processing");
     expect(local).toContain("To retry, use the same arguments and set `--message-id` to the original message ID.");

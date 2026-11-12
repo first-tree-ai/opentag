@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  crossesConversation,
   type EffectiveRuntimeSnapshot,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   type RunnerCloudModelGrant,
@@ -501,6 +503,14 @@ class CloudSessionDispatchUnavailableError extends Error {
   }
 }
 
+/** The connection is too old to show where a message from another conversation comes from. */
+class CloudCrossConversationUnsupportedError extends Error {
+  constructor() {
+    super("The Runner connection does not understand Session message provenance");
+    this.name = "CloudCrossConversationUnsupportedError";
+  }
+}
+
 /** The connection was current but negotiated only the ordinary-message v1 contract. */
 class CloudScheduledOriginUnsupportedError extends Error {
   readonly code = "unsupported_schedule_origin";
@@ -526,6 +536,20 @@ class CloudSessionDispatchTimeoutError extends Error {
 export interface CloudSessionTargetEnvelope {
   readonly sessionKind: "internal" | "visible";
   readonly outboxContext?: RuntimeImOutboxContext;
+}
+
+/** The outcome of a dispatch the Runner connection refused or never answered; undefined for anything else. */
+function cloudDispatchRefusal(error: unknown): CloudSessionMessageOutcome | undefined {
+  if (error instanceof CloudSessionDispatchUnavailableError)
+    return { status: "unreachable", code: "runtime_not_ready" };
+  if (error instanceof CloudScheduledOriginUnsupportedError) {
+    return { status: "unreachable", code: "unsupported_schedule_origin" };
+  }
+  if (error instanceof CloudCrossConversationUnsupportedError) {
+    return { status: "unreachable", code: "unsupported_cross_conversation" };
+  }
+  if (error instanceof CloudSessionDispatchTimeoutError) return { status: "unknown", code: "delivery_timeout" };
+  return undefined;
 }
 
 /** The owner and dispatcher share one Cloud delivery input contract. */
@@ -747,6 +771,10 @@ export class CloudSessionCollaborationOwner {
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
+    const requirement = {
+      scheduled,
+      requireProvenance: !scheduled && input.provenance !== undefined && crossesConversation(input.provenance),
+    };
     const request: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
@@ -759,7 +787,10 @@ export class CloudSessionCollaborationOwner {
             scheduledOrigin: input.message.scheduledOrigin,
             scheduleDetailUrl: input.message.scheduleDetailUrl,
           }
-        : { sourceSessionId: input.route.sourceSessionId }),
+        : {
+            sourceSessionId: input.route.sourceSessionId,
+            ...(input.provenance ? { provenance: input.provenance } : {}),
+          }),
       targetSessionId: route.targetSessionId,
       agentId: route.agentId,
       placementGeneration: route.targetPlacementGeneration,
@@ -803,7 +834,7 @@ export class CloudSessionCollaborationOwner {
           },
         },
         () =>
-          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal, () => {
+          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, requirement, admission, signal, () => {
             attempts += 1;
           }),
         {
@@ -822,15 +853,8 @@ export class CloudSessionCollaborationOwner {
       receipt = admitted.receipt;
     } catch (error) {
       this.#work.settleUnassigned(workAllocation, message.id);
-      if (error instanceof CloudSessionDispatchUnavailableError) {
-        return { status: "unreachable", code: "runtime_not_ready" };
-      }
-      if (error instanceof CloudScheduledOriginUnsupportedError) {
-        return { status: "unreachable", code: "unsupported_schedule_origin" };
-      }
-      if (error instanceof CloudSessionDispatchTimeoutError) {
-        return { status: "unknown", code: "delivery_timeout" };
-      }
+      const refused = cloudDispatchRefusal(error);
+      if (refused) return refused;
       throw error;
     }
     const result = await this.#settleReceipt(sandbox, receipt, request, input.attemptCount);
@@ -842,13 +866,13 @@ export class CloudSessionCollaborationOwner {
     sandbox: typeof sandboxes.$inferSelect,
     request: SessionMessageDeliveryRequestV3,
     envelope: CloudSessionTargetEnvelope,
-    scheduled: boolean,
+    requirement: { scheduled: boolean; requireProvenance: boolean },
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
     signal: AbortSignal | undefined,
     onAttempt: () => void,
   ): Promise<{ admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame }> {
     const outcome = await admission((onDispatched) =>
-      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal, onAttempt),
+      this.#sendSessionMessageToRunner(sandbox, request, envelope, requirement, onDispatched, signal, onAttempt),
     );
     if (!outcome.admitted) return { admitted: false };
     return { admitted: true, receipt: await outcome.result };
@@ -858,7 +882,7 @@ export class CloudSessionCollaborationOwner {
     sandbox: typeof sandboxes.$inferSelect,
     request: SessionMessageDeliveryRequestV3,
     envelope: CloudSessionTargetEnvelope,
-    scheduled: boolean,
+    { scheduled, requireProvenance }: { scheduled: boolean; requireProvenance: boolean },
     onDispatched: () => void,
     signal: AbortSignal | undefined,
     onAttempt: () => void,
@@ -868,6 +892,10 @@ export class CloudSessionCollaborationOwner {
     if (!connection) throw new CloudSessionDispatchUnavailableError();
     if (scheduled && connection.sessionCollaborationVersion < 2) {
       throw new CloudScheduledOriginUnsupportedError();
+    }
+    if (connection.sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V4) {
+      if (requireProvenance) throw new CloudCrossConversationUnsupportedError();
+      delete request.provenance;
     }
     const socket = this.#socketFor(connection);
     if (!socket) throw new CloudSessionDispatchUnavailableError();

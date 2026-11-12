@@ -761,6 +761,36 @@ describe("AgentTurnRunner automatic retry", () => {
     await h.runner.settled();
   });
 
+  it.each([
+    ["reports the quota failure when its wait cannot be recorded", false],
+    ["leaves a quota wait to the restarted daemon when the daemon stops while it is recorded", true],
+  ])("%s", async (_name, stop) => {
+    const h = runnerHarness({ restartRetry: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const update = h.retries.update;
+    h.retries.update = async (sessionId, turnId, change) =>
+      update(sessionId, turnId, (current) => {
+        const next = change(current);
+        if (next.interruption?.reason !== "provider_quota_exceeded") return next;
+        if (!stop) throw new Error("disk");
+        h.runner.stop();
+        return next;
+      });
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    if (stop) {
+      expect(h.create).not.toHaveBeenCalled();
+      expect(h.records.get(h.request.sessionId)?.interruption).toMatchObject({ reason: "provider_quota_exceeded" });
+    } else {
+      expect(h.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "failed", errorReason: "provider_quota_exceeded" }),
+        3,
+      );
+    }
+  });
+
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
     const h = runnerHarness({ restartRetry: true });

@@ -51,14 +51,29 @@ error; the persisted resume below takes over.
 
 ## Persisted resume
 
+A failed Run carries a Client-only `quotaKind` with `provider_quota_exceeded`: `usage_window` for a subscription
+window that resets by itself (Claude Code sets it when a rejected window failed the Run), `billing` for no balance or
+credit. Only `usage_window` waits; `billing`, or no kind, is reported at once.
+
+An IM Turn whose Run failed on a used-up window keeps its accepted delivery and its retry record
+(`turn-retries/<session>.json`), which gains an interruption `provider_quota_exceeded` with a `resumeAt`:
+
+- `resumeAt` is the reset plus 2 minutes. A reset already past counts as now; a missing reset, or one more than 7 days
+  away, gets a backoff of 15, 30, then 60 minutes for the 1st, 2nd and 3rd wait in a row.
+- Quota waits have their own limit, 3 in a row, and do not use the count of automatic retries. A run of 5 minutes or
+  more starts the count over. Past the limit, the Turn gets its terminal quota report.
+- The daemon waits until `resumeAt` and runs the Turn again in the same conversation, with the continuation notice
+  (`… because the model quota was used up; OpenTag waited for it to reset and resumed automatically`) and the original
+  input. Nothing is reported while it waits.
+- After a daemon restart the startup scan finds the record, and the request to recover its Session is sent at
+  `resumeAt`, not at once; the Turn stays pending until then.
+
 > **Planned — not yet implemented.** Tracking: #1519
 
-Codex and Pi have no in-process wait, and a daemon restart loses Claude Code's. For these, a
-`provider_quota_exceeded` failure of kind `usage_window` is kept in the work's existing durable record (the IM
-Turn's retry record, or the Session message's inbox record) with a resume time of the reset plus 2 minutes, and
-run again then in the same conversation. Codex takes the reset from `account/rateLimits/updated` (`resetsAt`);
-Pi, which reports none, backs off conservatively. A new message that reaches a Session while its work waits is
-merged into the waiting item like a steer, and runs with it once.
+Session messages wait the same way in the inbox (`retryable` with `nextAttemptAt = resumeAt`). Codex takes the reset
+from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff. A new message that reaches a
+Session while its work waits is merged into the waiting item like a steer, and runs with it once; until then such a
+message is delivered after the waiting Turn.
 
 ## Notice
 

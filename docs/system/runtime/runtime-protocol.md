@@ -138,6 +138,21 @@ changes presentation only, never approval authority or decision semantics.
 Decision frames contain only the request identity and decision. Request-only presentation fields
 are never copied into decisions, including automatic declines and expired requests.
 
+## Session message approvals
+
+The optional `runtime.sessionMessageApproval` capability (version 1) lets a Client send `approval:request` from
+the Run of a Session message, which has no IM delivery. Such a request sets `source: "session-message"`, carries
+the Session message ID in `deliveryId`, and uses that message's own Run ID, `session-message-<messageId>`, as
+`turnId`. Decisions and results echo `source`. A Client sends it only when the capability is negotiated. Without it,
+the Client declines the request itself (see [Agent permissions](agent-permissions.md)).
+
+The Server accepts it only for the live Run of an accepted Session message. The message's target Session, its
+current placement, and the Agent, binding and Computer connection must match exactly as for an IM Turn. The card
+goes to the top visible Session above the target, found through `created_by_session_id` (at most 32 levels; an ended
+Session on the way refuses the request). The approver is the human sender of the last message that visible Session
+received before the Session message was created, which keeps the authority stable while the request is open. The
+card names the asking Session. A request that finds nobody to ask is declined.
+
 The Server checks the durable Computer/connection and approval status under their row
 locks through synchronous decision enqueue. It releases SQL before waiting for the
 WebSocket callback. An uncertain send retains the owner's no-replay fence; late

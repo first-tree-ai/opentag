@@ -145,7 +145,7 @@ export class RuntimeApprovalOwner {
       connectionId: context.connectionId,
       imBindingId: scope.imBindingId,
       authority: scope.authority,
-      request: { ...request, expiresAt: expiresAt.toISOString() },
+      request: { ...presentedRequest(request), expiresAt: expiresAt.toISOString() },
       status: "pending",
       expiresAt,
       messageId: null,
@@ -336,7 +336,29 @@ function decline(request: RuntimeApprovalRequest): RuntimeApprovalDecision {
     sessionId: request.sessionId,
     deliveryId: request.deliveryId,
     placementGeneration: request.placementGeneration,
+    ...(request.source ? { source: request.source } : {}),
     decision: "decline",
+  };
+}
+
+/**
+ * A Session message Run's request is shown in a conversation that did not start it, so the card names the Session
+ * that asks. The prefix is the Server's, not the Client's.
+ */
+function presentedRequest(request: RuntimeApprovalRequest): RuntimeApprovalRequest {
+  if (request.source !== "session-message") return request;
+  const origin = `Asked by Session ${request.sessionId} while it handles a Session message.`;
+  return {
+    ...request,
+    description: `${origin}\n\n${request.description}`.slice(0, 6000),
+    ...(request.commandPresentation
+      ? {
+          commandPresentation: {
+            ...request.commandPresentation,
+            reason: `${origin}\n\n${request.commandPresentation.reason}`.slice(0, 6000),
+          },
+        }
+      : {}),
   };
 }
 function approvalId(

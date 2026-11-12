@@ -13,6 +13,7 @@ import {
   slackInstallations,
 } from "../db/schema/index.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
+import { loadSessionMessageApprovalAuthority } from "./session-message-approval-authority.js";
 
 export async function loadApprovalAuthority(
   database: DatabaseClient,
@@ -20,6 +21,7 @@ export async function loadApprovalAuthority(
   context: Pick<RuntimeBusinessContext, "computerId" | "instanceId" | "connectionId">,
 ) {
   if (!context.connectionId) return undefined;
+  if (request.source === "session-message") return loadSessionMessageApprovalAuthority(database, request, context);
   const [row] = await database
     .select({
       imBindingId: imBindings.id,

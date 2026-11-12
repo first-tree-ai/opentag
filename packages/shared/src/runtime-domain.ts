@@ -1394,8 +1394,14 @@ const RuntimeApprovalIdentitySchema = z.object({
   requestId: RuntimeRequestIdSchema,
   turnId: RuntimeOpaqueIdSchema,
   sessionId: RuntimeOpaqueIdSchema,
+  /** The IM delivery of the Turn; with `source: "session-message"`, the Session message whose own Run asks. */
   deliveryId: RuntimeOpaqueIdSchema,
   placementGeneration: z.number().int().positive(),
+  /**
+   * Set only with `runtime.sessionMessageApproval`: the request comes from a Session message Run, which has no IM
+   * input of its own. Absent means an IM Turn. Decisions echo it.
+   */
+  source: z.literal("session-message").optional(),
 });
 export const RuntimeApprovalRequestSchema = RuntimeApprovalIdentitySchema.extend({
   type: z.literal("approval:request"),

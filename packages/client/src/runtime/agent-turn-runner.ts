@@ -48,8 +48,11 @@ import {
   buildContinuationNotice,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
+  MAX_QUOTA_WAITS,
   MAX_RECORDED_STEERS,
   nextRetry,
+  quotaResumeAt,
+  RETRY_RESET_AFTER_MS,
   recoverableFailure,
   retryDelayMs,
   retryLimit,
@@ -222,6 +225,8 @@ export interface TurnCompletion {
   readonly usage?: TurnReportHashInput["usage"];
   /** When a used-up model quota is available again; sent only on Turn report v5. */
   readonly retryAt?: string;
+  /** Client-only: whether a used-up quota is a window that resets (it waits) or billing (it does not). */
+  readonly quotaKind?: "usage_window" | "billing";
 }
 
 interface TurnPhaseTimings {
@@ -659,7 +664,7 @@ export class AgentTurnRunner {
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
       // An in-place retry follows a model failure; a 429 or a start failure waits first, a Provider exit does
       // not. False when an orderly stop interrupts the wait.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(this.#retryDelay(next), shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -857,6 +862,9 @@ export class AgentTurnRunner {
     shutdownSignal: AbortSignal,
   ): Promise<Interruption | "deferred" | undefined> {
     if (completion.outcome === "completed") return undefined;
+    if (completion.errorReason === "provider_quota_exceeded" && completion.quotaKind === "usage_window") {
+      return this.#nextQuotaWait(turn, completion, shutdownSignal);
+    }
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
     // A start failure is retried only when it provably ran nothing.
@@ -893,6 +901,46 @@ export class AgentTurnRunner {
   }
 
   /** The retry starts: its interruption is done with. False leaves the failure reported. */
+  /**
+   * A used-up subscription window: record when to resume, the reset plus 2 minutes, and wait for it. A daemon
+   * stop leaves the wait to the restarted daemon, which resumes at that time. Quota waits have their own limit.
+   */
+  async #nextQuotaWait(
+    turn: RunningTurn,
+    completion: TurnCompletion,
+    shutdownSignal: AbortSignal,
+  ): Promise<Interruption | "deferred" | undefined> {
+    const now = this.#now();
+    let interruption: Interruption | undefined;
+    let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
+    try {
+      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
+        const ran = withRunTime(current, turn.unrecordedRunMs);
+        const waits = ran.retryRanMs >= RETRY_RESET_AFTER_MS ? 1 : (ran.quotaWaits ?? 0) + 1;
+        if (waits > MAX_QUOTA_WAITS) return { ...ran, quotaWaits: waits };
+        interruption = {
+          reason: "provider_quota_exceeded",
+          at: new Date(now).toISOString(),
+          resumeAt: quotaResumeAt(completion.retryAt, waits, now),
+        };
+        return { ...ran, quotaWaits: waits, retryRanMs: 0, interruption };
+      });
+    } catch {
+      return undefined;
+    }
+    if (!record || !interruption) return undefined;
+    this.#logger.info(
+      { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId, resumeAt: interruption.resumeAt },
+      "Turn waits for the model quota to reset",
+    );
+    return shutdownSignal.aborted ? "deferred" : interruption;
+  }
+
+  #retryDelay(interruption: Interruption): number {
+    if (interruption.resumeAt) return Math.max(0, Date.parse(interruption.resumeAt) - this.#now());
+    return retryDelayMs(interruption.reason);
+  }
+
   async #claimRetry(turn: RunningTurn): Promise<boolean> {
     const { sessionId } = turn.owner.request;
     // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
@@ -1362,8 +1410,15 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
     errorReason: providerTurnFailureReason(result.error?.code),
-    ...(result.error?.retryAt ? { retryAt: result.error.retryAt } : {}),
+    ...quotaFields(result.error),
     ...(result.usage ? { usage: result.usage } : {}),
+  };
+}
+
+function quotaFields(error: AgentRunResult["error"]): Pick<TurnCompletion, "retryAt" | "quotaKind"> {
+  return {
+    ...(error?.retryAt ? { retryAt: error.retryAt } : {}),
+    ...(error?.quotaKind ? { quotaKind: error.quotaKind } : {}),
   };
 }
 

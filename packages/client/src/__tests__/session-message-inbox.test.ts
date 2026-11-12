@@ -22,7 +22,6 @@ import type {
   AgentProviderSteerCustody,
   AgentRunResult,
   AgentRuntime,
-  AgentRuntimeEventSink,
   AgentSteerOutcome,
 } from "../agent-runtime/types.js";
 import { executeProviderCliTurnPlan } from "../index.js";
@@ -896,13 +895,11 @@ describe("SessionMessageInbox", () => {
         };
       },
     };
-    let sink: AgentRuntimeEventSink | undefined;
-    const prompt = vi.fn(async (input: { runId: string }) => {
+    const prompt = vi.fn(async (input: { runId: string; onQuotaWaitChanged?: (waiting: boolean) => void }) => {
       clock += 1_000;
-      await sink?.({ type: "quota_wait_changed", runId: input.runId, waiting: true });
+      input.onQuotaWaitChanged?.(true);
       clock += 5 * 60 * 60_000;
-      await sink?.({ type: "quota_wait_changed", runId: "another-run", waiting: false });
-      await sink?.({ type: "quota_wait_changed", runId: input.runId, waiting: false });
+      input.onQuotaWaitChanged?.(false);
       return { runId: input.runId, status: "completed", output: [] };
     });
     const inbox = new SessionMessageInbox({
@@ -916,12 +913,6 @@ describe("SessionMessageInbox", () => {
       runtimeManager: {
         ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
         sessionKind: vi.fn(() => "internal" as const),
-        observe: (_sessionId, observer) => {
-          sink = observer;
-          return () => {
-            sink = undefined;
-          };
-        },
       },
       timeoutScheduler,
     });
@@ -935,7 +926,6 @@ describe("SessionMessageInbox", () => {
       { delay: budget, cancelled: true },
       { delay: budget - 1_000, cancelled: true },
     ]);
-    expect(sink).toBeUndefined();
     inbox.stop();
   });
 

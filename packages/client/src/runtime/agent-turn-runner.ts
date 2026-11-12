@@ -499,17 +499,10 @@ export class AgentTurnRunner {
     await Promise.all([...this.#turns.values()].map((turn) => turn.promise));
   }
 
-  #observeTurn(
-    turn: RunningTurn,
-    runtime: AgentRuntime,
-    trace: TurnTraceBuffer,
-    onTerminal: () => void,
-    onQuotaWait: (waiting: boolean) => void,
-  ): () => void {
+  #observeTurn(turn: RunningTurn, runtime: AgentRuntime, trace: TurnTraceBuffer, onTerminal: () => void): () => void {
     const owner = turn.owner;
     return this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
       trace.record(event);
-      if (event.type === "quota_wait_changed" && event.runId === owner.turnId) onQuotaWait(event.waiting);
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
       if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -746,15 +739,9 @@ export class AgentTurnRunner {
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       phaseTimings.runtimeEnsureMs = Math.max(0, this.#now() - ensureStartedAt);
       turn.runtime = runtime;
-      releaseObserver = this.#observeTurn(
-        turn,
-        runtime,
-        trace,
-        () => {
-          terminalObserved = true;
-        },
-        onQuotaWait,
-      );
+      releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
+        terminalObserved = true;
+      });
       const promptStartedAt = this.#now();
       const input = await this.#turnInput(turn, runtime, interruption);
       const result = await runtime.prompt({
@@ -772,6 +759,7 @@ export class AgentTurnRunner {
          */
         input,
         signal: runSignal,
+        onQuotaWaitChanged: onQuotaWait,
         durationLimitInMs: Math.max(1, Date.parse(turn.expiresAt as string) - this.#now()),
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries

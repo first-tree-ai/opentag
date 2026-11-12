@@ -2,7 +2,13 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { AgentRuntimeOptionsSchema, RuntimeModelSchema, RuntimeReasoningEffortSchema } from "@opentag/shared";
+import {
+  AgentRuntimeOptionsSchema,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_EXECUTION_MAX_LIFETIME_MS,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+} from "@opentag/shared";
 import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
@@ -116,7 +122,10 @@ interface ClaudeCodeRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
-  readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly createProcess: (
+    args: readonly string[],
+    quotaWait?: Readonly<Record<string, string>>,
+  ) => ClaudeCodeProcessClient;
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
@@ -193,7 +202,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
   readonly #systemPromptSnapshotOff: boolean;
   readonly #configuration?: AgentRunConfiguration;
-  readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly #createProcess: ClaudeCodeRuntimeOptions["createProcess"];
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
   readonly #skillPaths: readonly string[];
@@ -292,7 +301,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           await this.#compactContext(request, context, hostedToolBridge);
         resumed = this.#sessionExists;
         this.#resumedRun = resumed;
-        process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+        process = this.#createProcess(
+          this.#arguments(request, hostedToolBridge),
+          claudeCodeQuotaWaitEnvironment(request.durationLimitInMs),
+        );
       } catch (error) {
         if (context.signal.aborted) throw error;
         logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
@@ -373,7 +385,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#continuedTerminals.length = 0;
     // An abort that arrived while the first process was exiting interrupted nothing that is still running.
     context.signal.throwIfAborted();
-    const process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+    const process = this.#createProcess(
+      this.#arguments(request, hostedToolBridge),
+      claudeCodeQuotaWaitEnvironment(request.durationLimitInMs),
+    );
     this.#process = process;
     this.#processReady ??= deferredProcess();
     this.#processReady.resolve(process);
@@ -647,7 +662,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       });
       return;
     }
-    if (!this.#quotaWaiting || retry) return;
+    if (!this.#quotaWaiting) return;
     if (type === "rate_limit_event" && this.#quotaResetAt !== undefined) {
       // Still rejected: a later reset moves the wait without ending it.
       await this.requireProviderContext().emit({
@@ -657,6 +672,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       });
       return;
     }
+    // Any other frame ends the wait, a retry of another kind (529 and the like) included: that is a capacity wait,
+    // and the Run budget runs through it.
     this.#quotaWaiting = false;
     await this.requireProviderContext().emit({ type: "quota_wait_changed", waiting: false });
   }
@@ -940,6 +957,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     args: readonly string[],
     environment?: Readonly<Record<string, string>>,
     pathPrepend?: string,
+    quotaWait?: Readonly<Record<string, string>>,
   ) => ClaudeCodeProcessClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
@@ -956,13 +974,14 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     const prefix = options.process?.args ?? [];
     this.#createProcess =
       options.createProcess ??
-      ((cwd, args, workspaceEnvironment, pathPrepend) =>
+      ((cwd, args, workspaceEnvironment, pathPrepend, quotaWait) =>
         new ClaudeCodeProcess({
           command,
           args: [...prefix, ...args],
           cwd,
           env: composeRuntimeEnvironment(
-            { ...CLAUDE_CODE_QUOTA_WAIT_ENVIRONMENT, ...environment },
+            // An explicit setting in the daemon's environment wins.
+            { ...quotaWait, ...environment },
             workspaceEnvironment,
             pathPrepend,
           ),
@@ -1115,12 +1134,13 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         binding,
         configuration: request.configuration,
-        createProcess: (args) =>
+        createProcess: (args, quotaWait) =>
           this.#createProcess(
             request.workspace.cwd,
             args,
             request.workspace.environment,
             request.workspace.pathPrepend,
+            quotaWait,
           ),
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
@@ -1139,17 +1159,34 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   }
 }
 
+/** Room left in the execution for preparing the Run and for reporting after it. */
+const QUOTA_WAIT_EXECUTION_MARGIN_MS = 30 * 60_000;
+/** A shorter wait is not worth holding a Provider process for; the Run fails at once, as without the mode. */
+const MIN_QUOTA_WAIT_MS = 60 * 60_000;
+
 /**
- * Claude Code's unattended retry mode: on a used-up subscription window it keeps the Run open and retries at the
- * reset instead of failing at once (`--print` ignores `autoContinueAtUsageLimit`). The Client pauses the Run budget
- * during that wait. A reset further away than 7 days fails the Run, as does any retry wait past 7 days in total;
- * the Client's own quota retry takes over from there. An explicit setting in the daemon's environment wins.
+ * Claude Code's unattended retry mode for one Run: on a used-up subscription window it keeps the Run open and
+ * retries at the reset instead of failing at once (`--print` ignores `autoContinueAtUsageLimit`). The Client pauses
+ * the Run budget during that wait.
+ *
+ * The Run's credential execution lives at most `RUNTIME_EXECUTION_MAX_LIFETIME_MS` from its start, and the Run can
+ * still run for its remaining budget besides waiting. So every retry wait together is capped at that lifetime less
+ * the budget and a margin; a reset further away fails the Run with the quota error at once. With no room left, the
+ * mode stays off. An explicit setting in the daemon's environment wins.
  */
-export const CLAUDE_CODE_QUOTA_WAIT_ENVIRONMENT: Readonly<Record<string, string>> = {
-  CLAUDE_CODE_RETRY_WATCHDOG: "1",
-  CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: String(7 * 24 * 60 * 60 * 1000),
-  CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(7 * 24 * 60 * 60 * 1000),
-};
+export function claudeCodeQuotaWaitEnvironment(remainingRunMs: number | undefined): Readonly<Record<string, string>> {
+  const waitMs =
+    RUNTIME_EXECUTION_MAX_LIFETIME_MS -
+    (remainingRunMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS) -
+    QUOTA_WAIT_EXECUTION_MARGIN_MS;
+  if (waitMs < MIN_QUOTA_WAIT_MS) return {};
+  return {
+    CLAUDE_CODE_RETRY_WATCHDOG: "1",
+    CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: String(Math.floor(waitMs)),
+    // Counts every retry wait, capacity retries included.
+    CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(Math.floor(waitMs)),
+  };
+}
 
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...source };

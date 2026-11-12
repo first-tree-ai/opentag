@@ -359,6 +359,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         if (event.type === "quota_wait_changed") {
           if (event.waiting) record.limitNotice?.pause();
           else record.limitNotice?.resume();
+          record.request.onQuotaWaitChanged?.(event.waiting);
         }
         await this.#dispatch(dispatched);
       },
@@ -703,6 +704,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
     ...(request.durationLimitInMs !== undefined ? { durationLimitInMs: request.durationLimitInMs } : {}),
+    ...(request.onQuotaWaitChanged ? { onQuotaWaitChanged: request.onQuotaWaitChanged } : {}),
     ...(request.compactContext ? { compactContext: true } : {}),
   });
 }

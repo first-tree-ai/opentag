@@ -83,13 +83,15 @@ describe("the notice before a Run's limit", () => {
     expect(runtime.told).toHaveLength(1);
   });
 
-  it("stands still while the Provider waits for a quota reset", async () => {
+  it("stands still while the Provider waits for a quota reset, and tells the caller", async () => {
     vi.useFakeTimers();
     const runtime = new HoldingRuntime();
+    const waits: boolean[] = [];
     const run = runtime.prompt({
       runId: "a",
       input: { items: [{ type: "text", text: "go" }] },
       durationLimitInMs: 20 * MINUTE,
+      onQuotaWaitChanged: (waiting) => waits.push(waiting),
     });
     await vi.advanceTimersByTimeAsync(10 * MINUTE);
     await runtime.context?.emit({ type: "quota_wait_changed", waiting: true });
@@ -100,6 +102,7 @@ describe("the notice before a Run's limit", () => {
     expect(runtime.told).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(runtime.told).toEqual([expect.stringContaining("in about 2 min")]);
+    expect(waits).toEqual([true, false]);
     runtime.finish();
     await run;
   });

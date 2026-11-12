@@ -140,7 +140,7 @@ export interface SessionMessageInboxOptions {
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
-    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime" | "observe">>;
+    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime">>;
   /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
@@ -1017,7 +1017,6 @@ export class SessionMessageInbox {
     // A retry's attempt can begin in the same moment a stop fences it, after that stop looked for a Run to abort.
     if (this.#isStopped(next.request)) stop.abort(new Error("Session stopped"));
     let timer: RunBudgetTimer | undefined;
-    let releaseQuotaWait: (() => void) | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
@@ -1041,17 +1040,6 @@ export class SessionMessageInbox {
         () => timeout.abort(new Error("Session message Run timed out")),
       );
       if (current) runTime = this.#trackMessageRunTime(key);
-      // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
-      releaseQuotaWait = this.#runtimeManager.observe?.(sessionId, (event) => {
-        if (event.type !== "quota_wait_changed" || event.runId !== runId) return;
-        if (event.waiting) {
-          timer?.pause();
-          runTime?.pause();
-        } else {
-          timer?.resume();
-          runTime?.resume();
-        }
-      });
       // Revocation or control/owner replacement aborts the Run and its provider children.
       runSignal = executionSignal
         ? AbortSignal.any([this.#abort.signal, stop.signal, timeout.signal, executionSignal])
@@ -1124,6 +1112,16 @@ export class SessionMessageInbox {
           ),
         ),
         signal: ensureRunSignal(),
+        // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+        onQuotaWaitChanged: (waiting) => {
+          if (waiting) {
+            timer?.pause();
+            runTime?.pause();
+          } else {
+            timer?.resume();
+            runTime?.resume();
+          }
+        },
         // The budget is running here: it pauses only during a quota wait inside the prompt.
         durationLimitInMs: Math.max(1, (timer?.expiresAt ?? this.#now()) - this.#now()),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
@@ -1143,7 +1141,6 @@ export class SessionMessageInbox {
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
-      releaseQuotaWait?.();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {

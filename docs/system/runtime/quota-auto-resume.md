@@ -20,9 +20,13 @@ interactive `autoContinueAtUsageLimit` setting:
 | Variable | Value |
 |---|---|
 | `CLAUDE_CODE_RETRY_WATCHDOG` | `1` |
-| `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` | 7 days |
-| `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | 7 days (it counts every retry wait, quota waits included) |
+| `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` | the wait cap below |
+| `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | the wait cap below (it counts every retry wait, quota waits included) |
 
+The wait cap is set for each Run. The Run's credential execution lives at most 24 hours
+(`RUNTIME_EXECUTION_MAX_LIFETIME_MS`), and the Run may still use its remaining budget besides waiting. So the cap is
+24 hours less the remaining budget and a 30-minute margin: 23 hours for the default 30-minute budget. Under 1 hour,
+the mode stays off and a used-up window fails the Run at once.
 A value already set in the daemon's environment wins. With this mode, a rejected window does not fail the Run:
 Claude Code emits a `rate_limit_event` with `status: rejected` and `resetsAt`, then a `system/api_retry` frame
 with `error_status: 429` about every 30 seconds, and retries the same request at the reset. The Run then finishes
@@ -42,7 +46,8 @@ While a Run is waiting:
 - Cancelling the Turn on the Web or `session stop` ends the Run and the wait as usual.
 - 529 and other capacity retries are not quota waits; the budget keeps running through them.
 
-A reset more than 7 days away makes Claude Code fail the Run at once with the quota error.
+A reset further away than the cap, such as a weekly window, makes Claude Code fail the Run at once with the quota
+error; the persisted resume below takes over.
 
 ## Persisted resume
 

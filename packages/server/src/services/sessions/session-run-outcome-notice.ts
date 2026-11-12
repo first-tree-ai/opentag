@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { SESSION_RUN_OUTCOME_NOTICE_HEADER, type SessionMessageRunOutcome } from "@opentag/shared";
+import {
+  isSessionCreatorReportReason,
+  SESSION_CREATOR_REPORT_NOTICE_HEADER,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+  type SessionMessageRunOutcome,
+} from "@opentag/shared";
 
 /** The RFC 9562 URL namespace; the notice id derives from the reported message identity. */
 const RUN_OUTCOME_NOTICE_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -53,8 +58,10 @@ const NOTICE_IDENTITY = /^Session: ([0-9a-f-]{36})\nMessage: ([0-9a-f-]{36})\n/;
  * create/send cannot record a new version 5 id, so only the Server can.
  */
 export function isRunOutcomeNotice(message: { id: string; sourceSessionId: string | null; content: string }): boolean {
-  const header = `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\n`;
-  if (!message.content.startsWith(header)) return false;
+  const header = [SESSION_RUN_OUTCOME_NOTICE_HEADER, SESSION_CREATOR_REPORT_NOTICE_HEADER]
+    .map((value) => `${value}\n`)
+    .find((value) => message.content.startsWith(value));
+  if (!header) return false;
   const named = NOTICE_IDENTITY.exec(message.content.slice(header.length));
   if (!named?.[1] || !named[2] || named[1] !== message.sourceSessionId) return false;
   return message.id === runOutcomeNoticeMessageId(named[1], named[2]);
@@ -78,6 +85,19 @@ export function renderRunOutcomeNotice(input: {
   outcome: SessionMessageRunOutcome;
   reason: string;
 }): string {
+  if (isSessionCreatorReportReason(input.reason)) {
+    return [
+      SESSION_CREATOR_REPORT_NOTICE_HEADER,
+      `Session: ${input.childSessionId}`,
+      `Message: ${input.messageId}`,
+      `Outcome: ${input.outcome} (reason: ${input.reason})`,
+      "",
+      input.outcome === "failed"
+        ? "The child Session completed this Run. At least one report it tried to send you failed."
+        : "The child Session completed this Run. Delivery of a report it tried to send you could not be confirmed.",
+      "openTag wrote this notice and will not rerun the work. If you still need its result, ask the child Session about it.",
+    ].join("\n");
+  }
   return [
     SESSION_RUN_OUTCOME_NOTICE_HEADER,
     `Session: ${input.childSessionId}`,

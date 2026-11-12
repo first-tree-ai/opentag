@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  isSessionCreatorReportReason,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION,
   RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   type SessionMessageOutcomeReport,
   SessionMessageOutcomeReportSchema,
@@ -195,19 +197,21 @@ export class SessionMessageOutcomeReporter {
     });
   }
 
-  #canSend(): boolean {
+  #canSend(reason: string): boolean {
+    const version = isSessionCreatorReportReason(reason)
+      ? RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION
+      : RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION;
     return (
       !this.#stopped &&
       this.#connection.state === "registered" &&
-      (this.#connection.capabilityVersion(RUNTIME_CAPABILITY.sessionCollaboration) ?? 0) >=
-        RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION
+      (this.#connection.capabilityVersion(RUNTIME_CAPABILITY.sessionCollaboration) ?? 0) >= version
     );
   }
 
   #send(key: string): void {
     const record = this.#records.get(key);
     if (!record || isFinal(record) || this.#inFlight.has(key) || this.#retryTimers.has(key)) return;
-    if (!this.#canSend()) {
+    if (!this.#canSend(record.payload.reason)) {
       // A registered peer below v4 cannot accept the frame yet; an unregistered connection
       // resends on its next registration.
       if (this.#connection.state === "registered") void this.#retryLater(record, "unsupported_capability");

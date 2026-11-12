@@ -229,6 +229,19 @@ Thread Session never compacts.
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+### Creator report delivery from a Local Codex child
+
+Use a Codex App Server test double to emit completed command items for the managed `session send <creator> --message`
+inside a successful child Run. Exercise these results with the existing Session collaboration connection.
+
+1. With an accepted receipt, the creator gets the report through the normal delivery path and receives no failure notice.
+2. With a rejected receipt, the creator gets one child report delivery notice with outcome `failed`. With a synthetic
+   `SERVICE_UNAVAILABLE` receipt, the notice instead reports `unknown`. In both cases the child Run stays succeeded.
+3. Emit repeated uncertain results followed by acceptance with the original message ID and text in the same Run. Confirm
+   there is no notice. Acceptance under a different ID or with different text leaves the original outcome unresolved.
+4. Replay the pending outcome after restarting the reporter. Confirm the work does not run again and the Server reuses
+   the notice ID. Repeat with a v4 Server and confirm the report waits until collaboration v5 is negotiated.
+
 ## Cloud Session message steering
 
 1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that

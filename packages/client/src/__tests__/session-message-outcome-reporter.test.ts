@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, type SessionMessageOutcomeReport } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, SESSION_CREATOR_REPORT_REASON, type SessionMessageOutcomeReport } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import { MemoryRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
@@ -107,6 +107,24 @@ describe("SessionMessageOutcomeReporter", () => {
     await flush();
     expect(sent).toHaveLength(1);
     reporter.stop();
+  });
+
+  it("holds creator report delivery notices for collaboration v5 while sending ordinary outcomes on v4", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const reporter = new SessionMessageOutcomeReporter({ connection, scheduler: manualScheduler() });
+    const report = outcome({ outcome: "unknown", reason: SESSION_CREATOR_REPORT_REASON.unknown });
+    const run = outcome();
+    try {
+      await reporter.report(report);
+      await reporter.report(run);
+      expect(sent.map((frame) => frame.reason)).toEqual([run.reason]);
+      connection.version = 5;
+      connection.emit("registered");
+      await flush();
+      expect(sent.filter((frame) => frame.reason === report.reason)).toHaveLength(1);
+    } finally {
+      reporter.stop();
+    }
   });
 
   it("resends with a fresh correlation id after a retry answer and ignores stale answers", async () => {

@@ -564,6 +564,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       response,
       requireRecord(request.params, `${request.method} has invalid params`),
     );
+    // Queue the explanation on the active turn before Codex resumes from its decision-only response.
+    if (response.kind === "approval" && response.decision === "decline" && response.reason) {
+      void this.tellProvider(`[OpenTag approval notice]\n${response.reason}`);
+    }
     await this.#client.respondServerRequest(request.id, result);
     this.#wireInteractions.delete(response.requestId);
   }

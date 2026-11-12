@@ -117,7 +117,7 @@ export interface AgentApprovalResponse extends AgentInteractionIdentity {
   readonly decision: "accept" | "decline" | "cancel";
   readonly scope?: "run" | "runtime";
   readonly value?: JsonValue;
-  /** Why the action was declined, for the model; Providers whose protocol carries no reason ignore it. */
+  /** Model-facing explanation for a decline. */
   readonly reason?: string;
 }
 

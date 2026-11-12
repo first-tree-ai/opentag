@@ -428,8 +428,25 @@ function SlackTicket({
     resize();
     setCopied(false);
     setCopyFailed(false);
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", resize);
+      return () => window.removeEventListener("resize", resize);
+    }
+    let width = field.getBoundingClientRect().width;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = field.getBoundingClientRect().width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      cancelAnimationFrame(frame);
+      // The height write also resizes the observed field.
+      frame = requestAnimationFrame(resize);
+    });
+    observer.observe(field);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
   }, [command, hidden]);
   async function copy() {
     try {

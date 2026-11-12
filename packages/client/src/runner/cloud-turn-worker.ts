@@ -40,6 +40,7 @@ import {
   completionForResult,
   type TurnCompletion,
 } from "../runtime/agent-turn-runner.js";
+import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
 import {
   beginChannelTurn,
   ChannelActivityStore,
@@ -140,6 +141,7 @@ const TURN_POLICY = {
 /** Pi conversation/binding subtree inside the Session workspace; survives a native reset. */
 export const CLOUD_TURN_CONTINUITY_SUBDIRECTORY = ".opentag/pi-session";
 const BINDING_FILE_NAME = "pi-binding.json";
+const BACKGROUND_WORK_FILE_NAME = "background-work.json";
 
 const ProxyEnvironmentManifestSchema = {
   parse(value: unknown): { executionId: string; environment: Record<string, string> } {
@@ -468,6 +470,8 @@ function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory
 
 export interface CloudWorkerCompletion extends TurnCompletion {
   readonly sessionSteers?: Readonly<Record<string, AgentSteerOutcome>>;
+  /** IM deliveries that joined this Session message Turn, keyed by delivery id. */
+  readonly imJoins?: Readonly<Record<string, AgentSteerOutcome>>;
 }
 
 export async function runCloudTurnWorker(
@@ -508,6 +512,9 @@ export async function runCloudTurnWorker(
     await mkdir(piHome, { recursive: true, mode: 0o700 });
     await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const bindingFile = join(continuityDirectory, BINDING_FILE_NAME);
+    const backgroundWork = new BackgroundWorkLedger(
+      fileLedgerStorage(join(continuityDirectory, BACKGROUND_WORK_FILE_NAME)),
+    );
 
     // Per-execution proxy material published by the trusted Runner (read-only mount).
     const proxyStartStarted = performance.now();
@@ -614,6 +621,7 @@ export async function runCloudTurnWorker(
       configuration,
       eventSink: async (event: AgentRuntimeEvent) => {
         if (event.type === "binding_changed") await persistBinding(bindingFile, event.binding);
+        await backgroundWork.apply(event);
       },
       policy: TURN_POLICY,
       systemPrompt: renderManagedSystemPrompt(
@@ -647,17 +655,20 @@ export async function runCloudTurnWorker(
     let completion: TurnCompletion;
     let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
     const sessionSteers = new Map<string, AgentSteerReceipt>();
+    const imJoins = new Map<string, AgentSteerReceipt>();
     const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
-      steering = await openWorkerSteering(request, activeRuntime, sessionSteers, options).catch((error: unknown) => {
-        diagnostics.failure(error);
-        return undefined;
-      });
+      steering = await openWorkerSteering(request, activeRuntime, { sessionSteers, imJoins }, options).catch(
+        (error: unknown) => {
+          diagnostics.failure(error);
+          return undefined;
+        },
+      );
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
         ...(await channelTurn.begin()),
-        input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
+        input: await backgroundWork.prefix(cloudWorkerInput(request, new Date(options.now?.() ?? Date.now()))),
         signal: execution.signal,
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
@@ -675,7 +686,8 @@ export async function runCloudTurnWorker(
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }
-    return finishWorkerSteers(completion, sessionSteers);
+    await recordRunLimit(backgroundWork, completion, options);
+    return finishWorkerSteers(completion, sessionSteers, imJoins);
   } finally {
     registerRunnerSignalCleanup(undefined);
     await rm(scratch, { recursive: true, force: true });
@@ -811,6 +823,34 @@ async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding |
   return PersistedBindingSchema.parse(JSON.parse(raw));
 }
 
+async function recordRunLimit(
+  ledger: BackgroundWorkLedger,
+  completion: TurnCompletion,
+  options: CloudTurnWorkerRunOptions,
+): Promise<void> {
+  if (completion.errorReason !== "turn_timeout") return;
+  await ledger.recordRunLimit({ reason: "turn_timeout", at: new Date(options.now?.() ?? Date.now()).toISOString() });
+}
+
+/** The sandbox is recycled with the Run, so the ledger lives beside the binding, in what survives it. */
+function fileLedgerStorage(path: string): BackgroundWorkLedgerStorage {
+  return {
+    read: async () => {
+      const raw = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      return raw === undefined ? undefined : JSON.parse(raw);
+    },
+    write: async (state) => {
+      const temporary = `${path}.${process.pid}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+      await rename(temporary, path);
+    },
+    remove: () => rm(path, { force: true }),
+  };
+}
+
 /** Atomic binding persistence: the next Turn resumes exactly this provider binding. */
 async function persistBinding(path: string, binding: AgentRuntimeBinding): Promise<void> {
   const temporary = `${path}.${process.pid}.tmp`;
@@ -859,10 +899,17 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
 async function finishWorkerSteers(
   completion: TurnCompletion,
   steers: Map<string, AgentSteerReceipt>,
+  joins: Map<string, AgentSteerReceipt>,
 ): Promise<CloudWorkerCompletion> {
-  if (steers.size === 0) return completion;
-  const outcomes = await Promise.all([...steers].map(async ([id, receipt]) => [id, await receipt.outcome] as const));
-  return { ...completion, sessionSteers: Object.fromEntries(outcomes) };
+  const outcomes = async (receipts: Map<string, AgentSteerReceipt>) =>
+    Object.fromEntries(
+      await Promise.all([...receipts].map(async ([id, receipt]) => [id, await receipt.outcome] as const)),
+    );
+  return {
+    ...completion,
+    ...(steers.size > 0 ? { sessionSteers: await outcomes(steers) } : {}),
+    ...(joins.size > 0 ? { imJoins: await outcomes(joins) } : {}),
+  };
 }
 
 function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
@@ -875,9 +922,10 @@ function sessionSteerRefusal(error: unknown): CloudSessionSteerResult {
 async function openWorkerSteering(
   request: RunnerCloudWorkerRequest,
   activeRuntime: CloudTurnPiRuntime,
-  sessionSteers: Map<string, AgentSteerReceipt>,
+  receipts: { sessionSteers: Map<string, AgentSteerReceipt>; imJoins: Map<string, AgentSteerReceipt> },
   options: CloudTurnWorkerRunOptions,
 ) {
+  const { sessionSteers, imJoins } = receipts;
   const steering = request.steering;
   if (!steering) return undefined;
   const root = request.kind === "turn" ? request.delivery : request.message;
@@ -924,11 +972,40 @@ async function openWorkerSteering(
         return cloudSteerResult(input, "deferred", "steer_state_unknown");
       }
     },
+    joinIm: async ({ expectedTurnId, delivery }) => {
+      // Only a visible Session message Turn of the same Session and placement can take an IM delivery.
+      if (
+        request.kind === "turn" ||
+        !context ||
+        !activeRuntime.steer ||
+        expectedTurnId !== steering.turnId ||
+        delivery.sessionId !== sessionId ||
+        delivery.agentId !== root.agentId ||
+        delivery.placementGeneration !== root.placementGeneration
+      )
+        return "refused";
+      if (imJoins.has(delivery.deliveryId)) return "accepted";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
+      sessionSteerPending = true;
+      try {
+        const receipt = await activeRuntime.steer({
+          expectedRunId: runId,
+          input: buildAgentInput(delivery, undefined, undefined, now()),
+        });
+        imJoins.set(delivery.deliveryId, receipt);
+        return "accepted";
+      } catch (error) {
+        return sessionSteerRefusal(error);
+      } finally {
+        sessionSteerPending = false;
+      }
+    },
     steerSession: async (input) => {
       const { message } = input;
       if (!matchesSession(input) || (sessionKind === "visible" && !context) || !activeRuntime.steer) return "refused";
       if (sessionSteers.has(message.messageId)) return "accepted";
-      if (sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
+      if (sessionSteers.size + imJoins.size >= CLOUD_SESSION_STEER_LIMIT) return "refused";
       if (sessionSteerPending || !activeRuntime.steerReady) return "retry";
       sessionSteerPending = true;
       try {

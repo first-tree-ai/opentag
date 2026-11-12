@@ -629,13 +629,404 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
 
     const missingTool = runtime.prompt({ runId: "open-tool-12", input: input("tool") });
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(12));
-    client.emitItem("item/started", { id: "tool-12", type: "commandExecution" });
+    client.emitItem("item/started", { id: "tool-12", type: "mcpToolCall" });
     client.complete({ id: "turn-12", status: "completed", items: [] });
     await expect(missingTool).resolves.toMatchObject({ status: "completed" });
     expect(events.find((event) => event.type === "tool_completed" && event.toolCallId === "tool-12")).toMatchObject({
       status: "failed",
     });
     await runtime.close();
+  });
+
+  describe("background commands", () => {
+    const command = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      type: "commandExecution",
+      commandActions: [{ type: "unknown", command: `run ${id}` }],
+      ...extra,
+    });
+    /** A late report names the turn that started the command, not the current one. */
+    const late = (client: ManualCodexClient, item: Record<string, unknown>, turnId = "turn-1") =>
+      client.emit({ method: "item/completed", params: { threadId: "thread-1", turnId, item } });
+
+    async function started() {
+      const client = new ManualCodexClient();
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const controller = new AbortController();
+      const run = runtime.prompt({ runId: "bg", input: input("start it"), signal: controller.signal });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("cmd"));
+      const turnStarts = () => client.calls.filter((call) => call.method === "turn/start").length;
+      const background = () => events.filter((event) => event.type.startsWith("background_work"));
+      return { client, events, runtime, controller, run, turnStarts, background };
+    }
+
+    it("keeps the Run open, then wakes the model with the result in a new turn of the same Run", async () => {
+      const { client, events, runtime, run, turnStarts, background } = await started();
+      let settled = false;
+      void run.then(() => {
+        settled = true;
+      });
+      client.emit({
+        method: "thread/tokenUsage/updated",
+        params: { turnId: "turn-1", tokenUsage: { inputTokens: 1 } },
+      });
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      expect(background()[0]).toMatchObject({ items: [{ id: "cmd", label: "run cmd", reportsProgress: true }] });
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "tool_completed", toolCallId: "cmd", status: "completed" }),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(runtime.state).toMatchObject({ phase: "running", activeRunId: "bg" });
+      // Output before the end is not an error, whichever turn it names.
+      client.emit({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId: "thread-1", turnId: "turn-1", itemId: "cmd", delta: "x" },
+      });
+      late(client, command("cmd", { status: "completed", exitCode: 0, aggregatedOutput: "BG-OUT\n" }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("BG-OUT");
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("run cmd (exit code 0)");
+      client.emitItem("item/completed", { id: "answer", type: "agentMessage", phase: "final_answer", text: "woken" });
+      client.emit({
+        method: "thread/tokenUsage/updated",
+        params: { turnId: "turn-2", tokenUsage: { inputTokens: 2 } },
+      });
+      client.complete({ id: "turn-2", items: [] });
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        output: [{ text: "woken" }],
+        usage: { inputTokens: 3 },
+      });
+      expect(background().slice(1)).toEqual([
+        { type: "background_work_finished", runId: "bg", id: "cmd", status: "completed", detail: "exit code 0" },
+        { type: "background_work_changed", runId: "bg", items: [] },
+      ]);
+      expect(client.closed).toBe(false);
+      await runtime.close();
+    });
+
+    it("reports a failed command, and one that ended without output or an exit code", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.emitItem("item/started", command("other", { commandActions: [], command: "other command" }));
+      client.emitItem("item/started", { id: "bare", type: "commandExecution" });
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      expect(background()[0]).toMatchObject({
+        items: [
+          { id: "cmd", label: "run cmd" },
+          { id: "other", label: "other command" },
+          { id: "bare", label: "background command" },
+        ],
+      });
+      late(client, command("cmd", { exitCode: 3, aggregatedOutput: "x".repeat(5_000) }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("Output (tail):");
+      expect(background()).toContainEqual(
+        expect.objectContaining({
+          type: "background_work_finished",
+          id: "cmd",
+          status: "failed",
+          detail: "exit code 3",
+        }),
+      );
+      // Ends while the wake turn runs: it names an older turn, and the model hears of it next.
+      late(client, command("other", { status: "failed" }));
+      late(client, command("bare", { aggregatedOutput: null }));
+      await vi.waitFor(() => expect(background().filter((e) => e.type === "background_work_finished")).toHaveLength(3));
+      client.complete({ id: "turn-2", items: [] });
+      await vi.waitFor(() => expect(turnStarts()).toBe(3));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("It produced no output.");
+      client.complete({ id: "turn-3", items: [] });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      await runtime.close();
+    });
+
+    it("starts a turn with input steered during the wait, and keeps waiting after it", async () => {
+      const { client, runtime, run, turnStarts } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(runtime.state.phase).toBe("running"));
+      await new Promise((resolve) => setImmediate(resolve));
+      const steered = runtime.steer({ expectedRunId: "bg", input: input("while waiting") });
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      const receipt = await steered;
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("while waiting");
+      expect(client.call("turn/steer")).toBeUndefined();
+      // Only a `turn/steer` answer was measured as durable, so this one promises nothing.
+      expect(receipt.inConversation).toBeUndefined();
+      client.complete({ id: "turn-2", items: [] });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(turnStarts()).toBe(2);
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(3));
+      client.complete({ id: "turn-3", items: [] });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      await expect(receipt.outcome).resolves.toBe("processed");
+      await runtime.close();
+    });
+
+    it("stops the App Server when the Run is stopped during the wait, and says so", async () => {
+      const { client, controller, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort("limit");
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(background().slice(1)).toEqual([
+        { type: "background_work_finished", runId: "bg", id: "cmd", status: "stopped" },
+        { type: "background_work_changed", runId: "bg", items: [] },
+      ]);
+      await vi.waitFor(() => expect(client.closed).toBe(true));
+      expect(client.interrupts).toEqual([]);
+    });
+
+    it("does not fail an answered Run when the wake turn fails, and stops the work still live", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.emitItem("item/started", command("still"));
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      client.complete({ id: "turn-2", status: "failed", error: { message: "model failed" }, items: [] });
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        followUpFailure: { message: "model failed" },
+      });
+      expect(background()).toContainEqual(
+        expect.objectContaining({ type: "background_work_finished", id: "still", status: "stopped" }),
+      );
+      await vi.waitFor(() => expect(client.closed).toBe(true));
+      await expect(runtime.waitForIdle()).resolves.toBeUndefined();
+    });
+
+    it("fails the Run when a turn carrying steered input fails", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.steer({
+        expectedRunId: "bg",
+        input: { items: [...input("while waiting").items, ...input("and this").items] },
+      });
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("and this");
+      client.complete({ id: "turn-2", status: "failed", error: { message: "model failed" }, items: [] });
+      const result = await run;
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result.followUpFailure).toBeUndefined();
+    });
+
+    it("fails the Run when input steered into a running wake turn fails with it", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      await vi.waitFor(() => expect(background().at(-1)).toMatchObject({ items: [] }));
+      await new Promise((resolve) => setImmediate(resolve));
+      const receipt = await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      expect(client.call("turn/steer")?.params).toMatchObject({ expectedTurnId: "turn-2" });
+      client.complete({ id: "turn-2", status: "failed", error: { message: "model failed" }, items: [] });
+      const result = await run;
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result.followUpFailure).toBeUndefined();
+      await expect(receipt.outcome).resolves.toBe("interrupted");
+      await runtime.close();
+    });
+
+    it("carries the App Server's failure out of the wait, as a process exit the retry rule sees", async () => {
+      const { client, runtime, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({
+        method: "opentag/processError",
+        params: { error: new CodexAppServerError("exited", "App Server exited") },
+      });
+      await expect(run).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_process_exited", message: "App Server exited" },
+      });
+      await expect(runtime.close()).resolves.toBeUndefined();
+    });
+
+    it("settles a Run in the wait when the runtime closes", async () => {
+      const { client, runtime, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.close();
+      await expect(run).resolves.toMatchObject({ status: expect.stringMatching(/aborted|failed/) });
+      expect(client.closed).toBe(true);
+    });
+
+    it("still closes the App Server when a wake turn cannot be interrupted", async () => {
+      const interruptResponse = Promise.reject(new Error("interrupt timed out"));
+      interruptResponse.catch(() => undefined);
+      const client = new ManualCodexClient({ interruptResponse });
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: "bg", input: input("start it") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("cmd"));
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(runtime.abort({ expectedRunId: "bg" })).rejects.toThrow("interrupt timed out");
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await vi.waitFor(() => expect(client.closed).toBe(true));
+    });
+
+    it("keeps a failed turn's own failure when its interrupt also fails and a wake is queued", async () => {
+      const interrupt = deferred<void>();
+      const client = new ManualCodexClient({ interruptResponse: interrupt.promise });
+      const gate = deferred<void>();
+      let hold = false;
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest(async (event) => {
+          events.push(event);
+          if (hold) await gate.promise;
+        }),
+      );
+      const run = runtime.prompt({ runId: "bg", input: input("start it") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("one"));
+      client.emitItem("item/started", command("two"));
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      late(client, command("one", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "background_work_finished")).toHaveLength(1),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      const aborting = runtime.abort({ expectedRunId: "bg" }).catch(() => undefined);
+      await vi.waitFor(() => expect(client.interrupts).toHaveLength(1));
+      // The failure arrives while an earlier event is still being delivered, and then the interrupt finds no turn.
+      hold = true;
+      client.emitItem("item/started", { id: "pending", type: "mcpToolCall" });
+      await new Promise((resolve) => setImmediate(resolve));
+      client.complete({
+        id: "turn-2",
+        status: "failed",
+        error: { message: "429", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } },
+        items: [],
+      });
+      interrupt.reject(new Error("turn is already terminal"));
+      await aborting;
+      hold = false;
+      gate.resolve();
+      await expect(run).resolves.toMatchObject({ error: { code: "provider_rate_limited" } });
+      await runtime.close();
+    });
+
+    it("fails input it accepted for a turn that could not start", async () => {
+      const { client, runtime, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      const request = client.request.bind(client);
+      vi.spyOn(client, "request").mockImplementation(async (method: string, params: unknown) => {
+        if (method === "turn/start") return { turn: { id: "turn-2", status: "completed", items: [] } };
+        return request(method, params);
+      });
+      const steering = runtime.steer({ expectedRunId: "bg", input: input("too late") });
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await expect(steering).rejects.toBeDefined();
+      await runtime.close();
+    });
+
+    it("starts a turn for a notice during the wait, and counts reported output as progress", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await (
+        runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> }
+      ).tellProviderAboutBackgroundWork("quiet for a while");
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("quiet for a while");
+      client.complete({ id: "turn-2", status: "failed", error: { message: "429" }, items: [] });
+      await expect(run).resolves.toMatchObject({ status: "completed", followUpFailure: { message: "429" } });
+    });
+
+    it("refuses input that reached the wait as the Run was stopped", async () => {
+      const { client, controller, runtime, run, background, turnStarts } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort("limit");
+      const steering = runtime.steer({ expectedRunId: "bg", input: input("too late") });
+      await expect(steering).rejects.toMatchObject({ code: "run_mismatch" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(turnStarts()).toBe(1);
+    });
+
+    it("does not hold the Run for a command the turn's own items report as ended", async () => {
+      const client = new ManualCodexClient();
+      const runtime = await factory(client).create(createRequest(() => undefined));
+      const run = runtime.prompt({ runId: "ended", input: input("work") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("cmd"));
+      client.complete({ id: "turn-1", items: [command("cmd", { status: "completed" })] });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      await runtime.close();
+    });
+
+    it("holds the Run for a command the turn's own items report as still running", async () => {
+      const client = new ManualCodexClient();
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: "running", input: input("work") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("cmd"));
+      client.complete({ id: "turn-1", items: [command("cmd", { status: "inProgress" })] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await client.called("turn/start");
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      client.complete({ id: "turn-2", items: [] });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      await runtime.close();
+    });
+
+    it("forgets nothing about an unrelated late report and ignores reports between Runs", async () => {
+      const { client, runtime, run } = await started();
+      client.emit({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: "invalid" } });
+      client.emitItem("item/completed", command("cmd", { status: "completed" }));
+      client.emitItem("item/started", { id: "ignored", type: "fileChange" });
+      client.complete({
+        id: "turn-1",
+        items: [{ id: "ignored", type: "fileChange", status: "completed" }],
+      });
+      await expect(run)
+        .rejects.toBeDefined()
+        .catch(() => undefined);
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      // The runtime closed on the invalid item; a report after that reaches nothing.
+      late(client, command("cmd", { status: "completed" }));
+      await runtime.close();
+    });
   });
 
   it("translates every supported approval and question interaction response", async () => {

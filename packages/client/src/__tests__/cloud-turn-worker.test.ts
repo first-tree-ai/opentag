@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
+  AgentRuntimeEvent,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -25,6 +26,7 @@ import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
   CLOUD_STEER_RELAY_SOURCE,
+  type CloudImJoinRequest,
   type CloudSessionSteerRequest,
   cloudSteerSocketPath,
 } from "../runner/cloud-steer-control.js";
@@ -88,6 +90,60 @@ it("continues the Turn and closes Pi when the optional steering socket cannot op
   expect(close).toHaveBeenCalledOnce();
   await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
   expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
+
+it("tells a Turn what the last one left, from a file that outlives the sandbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-ledger-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "ledger");
+  const prompts: AgentPromptRequest[] = [];
+  const sinks: ((event: AgentRuntimeEvent) => Promise<void>)[] = [];
+  const results: Partial<Record<number, "aborted">> = { 0: "aborted" };
+  const prompt = async (input: AgentPromptRequest) => {
+    prompts.push(input);
+    const sink = sinks.at(-1) as (event: AgentRuntimeEvent) => Promise<void>;
+    if (results[prompts.length - 1] === "aborted") {
+      await sink({ type: "background_work_changed", runId: input.runId, items: [{ id: "job", label: "the suite" }] });
+      await new Promise((resolve) => input.signal?.addEventListener("abort", resolve, { once: true }));
+      return { runId: input.runId, output: [], status: "aborted" as const };
+    }
+    await sink({ type: "model_turn_started", runId: input.runId, modelTurnId: "m" });
+    return { runId: input.runId, output: [{ text: "done", type: "text" as const }], status: "completed" as const };
+  };
+  const createPiFactory = () => ({
+    create: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+    resume: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+  });
+  const options = {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+    createPiFactory,
+  };
+  const timedOut = turnRequest(executionDir);
+  timedOut.delivery = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 500).toISOString() });
+  await expect(runCloudTurnWorker(timedOut, options as never)).resolves.toMatchObject({ errorReason: "turn_timeout" });
+  expect(JSON.stringify(prompts[0]?.input)).not.toContain("openTag notice");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(prompts[1]?.input.items[0]?.text).toContain("reached its duration limit");
+  expect(prompts[1]?.input.items[0]?.text).toContain("- the suite (status unknown");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(JSON.stringify(prompts[2]?.input)).not.toContain("openTag notice");
 });
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {
@@ -1888,3 +1944,158 @@ it.each(["session-message", "turn"] as const)(
   },
   12_000,
 );
+
+it("lets an IM delivery join a running visible Session message Turn and returns its receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-im-join-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const executionDir = await fixtureExecution(root, "im-join");
+  const outboxContext = {
+    provider: "feishu",
+    sessionKind: "thread",
+    chatId: "oc_visible",
+    threadId: "omt_visible",
+  } satisfies RuntimeImOutboxContext;
+  const request = sessionRequest(executionDir, { steering, outboxContext, sessionKind: "visible" });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const inputs: AgentInput[] = [];
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async ({ runId }) => {
+          started();
+          await done;
+          return { runId, output: [{ type: "text", text: "done" }], status: "completed" };
+        },
+        steerReady: true,
+        steer: async ({ input }) => {
+          inputs.push(input);
+          return { outcome: done.then(() => "processed") };
+        },
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  const base = cloudDeliveryFixture();
+  const delivery = cloudDeliveryFixture({
+    sessionId: request.message.targetSessionId,
+    agentId: request.message.agentId,
+    placementGeneration: request.message.placementGeneration,
+    runtime: request.message.runtime,
+    content: { ...base.content, text: "Also check the release notes." },
+  });
+  const join_: CloudImJoinRequest = { type: "im:join", expectedTurnId: steering.turnId, delivery };
+  const relay = (payload: CloudImJoinRequest) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        CLOUD_STEER_RELAY_SOURCE,
+        cloudSteerSocketPath(request.message.messageId),
+      ]);
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child
+        .once("error", reject)
+        .once("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+      child.stdin.end(JSON.stringify({ token: steering.token, request: payload }));
+    });
+  try {
+    await ready;
+    expect(JSON.parse(await relay({ ...join_, expectedTurnId: randomUUID() }))).toBe("refused");
+    expect(JSON.parse(await relay({ ...join_, delivery: { ...delivery, sessionId: randomUUID() } }))).toBe("refused");
+    expect(JSON.parse(await relay({ ...join_, delivery: { ...delivery, placementGeneration: 2 } }))).toBe("refused");
+    expect(JSON.parse(await relay(join_))).toBe("accepted");
+    expect(JSON.parse(await relay(join_))).toBe("accepted");
+    expect(inputs).toHaveLength(1);
+    expect(JSON.stringify(inputs[0])).toContain("Also check the release notes.");
+  } finally {
+    finish();
+  }
+  await expect(completion).resolves.toMatchObject({
+    outcome: "completed",
+    imJoins: { [delivery.deliveryId]: "processed" },
+  });
+  expect((await completion).sessionSteers).toBeUndefined();
+}, 12_000);
+
+it("refuses an IM join into an internal Session message Turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-im-join-internal-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const steering = { turnId: randomUUID(), token: randomUUID() };
+  const executionDir = await fixtureExecution(root, "im-join-internal");
+  const request = sessionRequest(executionDir, { steering });
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const completion = runCloudTurnWorker(request, {
+    createPiFactory: () => ({
+      create: async () => ({
+        prompt: async ({ runId }) => {
+          started();
+          await done;
+          return { runId, output: [], status: "completed" };
+        },
+        steerReady: true,
+        steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
+        close: async () => undefined,
+      }),
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    }),
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+  });
+  const delivery = cloudDeliveryFixture({
+    sessionId: request.message.targetSessionId,
+    agentId: request.message.agentId,
+    placementGeneration: request.message.placementGeneration,
+    runtime: request.message.runtime,
+  });
+  try {
+    await ready;
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        "-e",
+        CLOUD_STEER_RELAY_SOURCE,
+        cloudSteerSocketPath(request.message.messageId),
+      ]);
+      let text = "";
+      child.stdout.on("data", (chunk) => {
+        text += chunk;
+      });
+      child.once("error", reject).once("close", () => resolve(text));
+      child.stdin.end(
+        JSON.stringify({
+          token: steering.token,
+          request: { type: "im:join", expectedTurnId: steering.turnId, delivery },
+        }),
+      );
+    });
+    expect(JSON.parse(output)).toBe("refused");
+  } finally {
+    finish();
+  }
+  await expect(completion).resolves.not.toHaveProperty("imJoins");
+}, 12_000);

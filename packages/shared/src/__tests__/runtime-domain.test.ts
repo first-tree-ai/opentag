@@ -280,6 +280,19 @@ describe("runtime domain contract", () => {
     ).toMatchObject({ status: "recorded" });
   });
 
+  it("requires the Server's terminal outcome for a superseded report result", () => {
+    const base = {
+      type: "turn:report:result",
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      resultHash: "a".repeat(64),
+    };
+    const superseded = { ...base, status: "superseded", terminalOutcome: "unknown" };
+    expect(ServerRuntimeBusinessFrameSchema.parse(superseded)).toEqual(superseded);
+    expect(ServerRuntimeBusinessFrameSchema.safeParse({ ...base, status: "superseded" }).success).toBe(false);
+    expect(ServerRuntimeBusinessFrameSchema.safeParse({ ...superseded, status: "recorded" }).success).toBe(false);
+  });
+
   it("B-02 rejects contradictory discriminated fields", () => {
     const runtime = snapshot();
     expect(() =>

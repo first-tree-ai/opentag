@@ -147,6 +147,13 @@ const TEXT = {
     zh: "可能已经执行了部分操作，也不会自动重跑。",
     en: "Some operations may already have run, and it won't be rerun automatically.",
   },
+  backgroundWork: {
+    what: { zh: "已完成。", en: "finished." },
+    effects: {
+      zh: "它启动的后台工作可能已在 Run 结束时停止。",
+      en: "Background work it started may have stopped when its Run ended.",
+    },
+  },
   runNext: { zh: "先看看结果，再决定下一步。", en: "Check the results before deciding what to do next." },
 } satisfies Record<string, unknown>;
 
@@ -171,6 +178,9 @@ const subject = (occurrence: ScheduledOccurrence, language: FeedbackLanguage): s
 
 const RUN_OUTCOME_REASON = { timed_out: "turn_timeout", unknown: "turn_state_unknown" } as const;
 
+/** The Client's report for a Run that completed and may have left background work behind. */
+const BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
+
 export function renderRunFailure(
   occurrence: ScheduledOccurrence,
   outcome: Exclude<RunOutcomeNoticeInput["outcome"], "cancelled">,
@@ -179,6 +189,14 @@ export function renderRunFailure(
   provider: Provider,
 ): string {
   const language = textLanguage(occurrence.prompt);
+  if (code === BACKGROUND_WORK_POSSIBLY_STOPPED_CODE) {
+    const space = language === "zh" ? "" : " ";
+    return message(occurrence, language, provider, publicUrl, [
+      `${subject(occurrence, language)}${space}${TEXT.backgroundWork.what[language]}`,
+      TEXT.backgroundWork.effects[language],
+      TEXT.runNext[language],
+    ]);
+  }
   const reason = outcome === "failed" ? code : RUN_OUTCOME_REASON[outcome];
   const separator = language === "zh" ? "：" : ": ";
   return message(occurrence, language, provider, publicUrl, [

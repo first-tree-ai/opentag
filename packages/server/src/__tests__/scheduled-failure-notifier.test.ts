@@ -971,6 +971,55 @@ describe("a scheduled occurrence that never ran", () => {
   });
 });
 
+describe("renderRunFailure", () => {
+  const occurrence = {
+    agentId: "agent",
+    name: "nightly",
+    prompt: "Run the nightly check.",
+    scheduleId: "schedule",
+    scheduledFor: T0.toISOString(),
+    targetSessionId: "session",
+    timezone: "UTC",
+  };
+
+  it("says a Run that left background work finished, not that it was interrupted", () => {
+    const text = renderRunFailure(
+      occurrence,
+      "unknown",
+      "background_work_possibly_stopped",
+      "https://example.test",
+      "slack",
+    );
+    expect(text).toContain('Scheduled task "nightly" (scheduled for ');
+    expect(text).toContain("(UTC)) finished.");
+    expect(text).toContain("Background work it started may have stopped when its Run ended.");
+    expect(text).toContain("<https://example.test/agents/agent?schedule=schedule|View details>");
+    expect(text).not.toContain("We can't confirm whether the task finished.");
+    expect(text).not.toContain("won't be rerun automatically");
+  });
+
+  it("keeps the current unknown-result fallback for other reasons", () => {
+    const text = renderRunFailure(occurrence, "unknown", "run_interrupted", "https://example.test", "feishu");
+    expect(text).toContain("We can't confirm whether the task finished.");
+    expect(text).toContain("Some operations may already have run, and it won't be rerun automatically.");
+    expect(text).toContain("[View details](https://example.test/agents/agent?schedule=schedule)");
+  });
+
+  it("localizes the completed Run special case from the schedule prompt", () => {
+    const text = renderRunFailure(
+      { ...occurrence, prompt: "执行夜间检查。" },
+      "unknown",
+      "background_work_possibly_stopped",
+      "https://example.test",
+      "feishu",
+    );
+    expect(text).toContain("定时任务“nightly”");
+    expect(text).toContain("已完成。");
+    expect(text).toContain("它启动的后台工作可能已在 Run 结束时停止。");
+    expect(text).toContain("[查看详情](https://example.test/agents/agent?schedule=schedule)");
+  });
+});
+
 describe("scheduledMissKind", () => {
   const previous = (outcome: string, code: string | null) =>
     ({ scheduledFor: T0.toISOString(), attemptedAt: null, messageId: null, outcome, code }) as never;

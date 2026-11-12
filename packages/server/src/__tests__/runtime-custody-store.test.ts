@@ -3,12 +3,13 @@ import {
   computeDirectInputHash,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
+  RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   computers,
@@ -19,8 +20,10 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../runtime/im-delivery-recovery.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -388,6 +391,57 @@ describe("PostgresRuntimeCustodyStore", () => {
       report: { finalText: "done" },
     });
     await expect(store.getTurn("missing")).resolves.toBeUndefined();
+  });
+
+  it("acknowledges a superseded report only for the same terminal delivery and placement", async () => {
+    const fixture = await createFixture(unit);
+    const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => fixture.now });
+    const hash = computeDirectInputHash(fixture.direct);
+    await store.beginDeliveryDispatch(fixture.direct, hash, fixture.dispatchContext);
+    await store.acceptDelivery(fixture.direct, hash, "turn-1", fixture.context);
+    const late = turnReport(fixture, "turn-1");
+    const { finalText: _finalText, ...reportWithoutText } = late;
+    const body = {
+      ...reportWithoutText,
+      outcome: "unknown" as const,
+      errorReason: "turn_state_unknown" as const,
+      executionEffects: "may_have_occurred" as const,
+    };
+    const terminal = { ...body, requestId: randomUUID(), resultHash: computeTurnResultHash(body) };
+    const options = { acknowledgeSuperseded: true };
+    await expect(store.recordTurn(terminal, fixture.context)).resolves.toBe("recorded");
+
+    const registry = new ConnectionRegistry();
+    vi.spyOn(registry, "currentInstanceId").mockReturnValue(fixture.instanceId);
+    const context = { ...fixture.context, negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnReport]: 6 } };
+    const owner = new RuntimeDomainOwner(registry, store);
+    try {
+      await expect(
+        owner.handle(late, { ...context, negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnReport]: 5 } }),
+      ).resolves.toMatchObject({ status: "conflict" });
+      await expect(owner.handle(late, context)).resolves.toEqual({
+        type: "turn:report:result",
+        requestId: late.requestId,
+        turnId: late.turnId,
+        status: "superseded",
+        terminalOutcome: terminal.outcome,
+        resultHash: late.resultHash,
+      });
+      await expect(owner.handle(late, { ...context, instanceId: randomUUID() })).resolves.toMatchObject({
+        status: "stale_generation",
+      });
+    } finally {
+      owner.close();
+    }
+
+    await expect(store.recordTurn(terminal, fixture.context, options)).resolves.toBe("already_recorded");
+    await expect(store.recordTurn({ ...late, turnId: "another-turn" }, fixture.context, options)).resolves.toBe(
+      "conflict",
+    );
+    await expect(store.recordTurn({ ...late, placementGeneration: 2 }, fixture.context, options)).resolves.toBe(
+      "stale_generation",
+    );
+    await expect(store.getTurn("turn-1")).resolves.toMatchObject({ resultHash: terminal.resultHash, report: terminal });
   });
 });
 

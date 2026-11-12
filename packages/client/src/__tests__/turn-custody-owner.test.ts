@@ -437,7 +437,7 @@ describe("TurnCustodyOwner reporting", () => {
     await decision.onAcceptedSent?.();
     expect(owner.admission.get("session-1")?.phase).toBe("active");
     await owner.recordResult("turn-1", "c".repeat(64));
-    expect(store.recordResult).toHaveBeenCalledWith("agent-1", "session-1", "turn-1", "c".repeat(64));
+    expect(store.recordResult).toHaveBeenCalledWith("agent-1", "session-1", "turn-1", "c".repeat(64), undefined);
     expect(reconciler.clearActivity).toHaveBeenCalledWith("session-1", "turn-1");
     expect(owner.getTurn("turn-1")).toBeUndefined();
     expect(owner.liveTurnCount).toBe(0);

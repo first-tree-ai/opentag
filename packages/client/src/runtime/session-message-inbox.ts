@@ -10,9 +10,16 @@ import {
   SessionMessageRunOutcomeReasonSchema,
   type SessionRunInput,
 } from "@opentag/shared";
-import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
+import type {
+  AgentInput,
+  AgentRunError,
+  AgentRuntime,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
+} from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import {
   beginChannelTurn,
   type ChannelActivityStore,
@@ -90,6 +97,8 @@ export interface JoinableRuns {
 export interface SessionMessageInboxOptions {
   readonly runInputs?: SessionRunInputTracker;
   admission: AdmissionController;
+  /** What the Session's earlier Runs left to tell it; a Run reads it first and reports its limit there. */
+  backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   /** Without one, Channel Sessions never compact on idle. */
   channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   cliCommand?: string;
@@ -151,11 +160,6 @@ export interface SessionMessageRunOutcomeEvent {
 
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
-/**
- * The Run completed, but background work it may have left behind stops with it, so what the sender
- * is waiting for may never come. The message itself succeeded and is not run again.
- */
-export const SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
 /** A Session stop withdrew or aborted the message. */
 export const SESSION_MESSAGE_STOPPED_CODE = "session_stopped";
 export const SESSION_STOP_GRACE_MS = 5_000;
@@ -164,6 +168,7 @@ const MAX_STOPPED_PLACEMENTS = 1024;
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #backgroundWork: SessionMessageInboxOptions["backgroundWork"];
   readonly #channelActivity: SessionMessageInboxOptions["channelActivity"];
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
@@ -223,6 +228,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#backgroundWork = options.backgroundWork;
     this.#channelActivity = options.channelActivity;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
@@ -1098,13 +1104,16 @@ export class SessionMessageInbox {
          * time, never the claim or enqueue time. It is prompt input only: the durable record,
          * the semantic hash, and the runtime configuration never carry a current-time fact.
          */
-        input: withCarriedMessages(
-          withContinuation(
-            buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
-            continuation,
-          ),
-          this.#carriedToRepeat(run, runtime).map((message) =>
-            buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
+        input: await this.#withBackgroundWorkNotice(
+          sessionId,
+          withCarriedMessages(
+            withContinuation(
+              buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
+              continuation,
+            ),
+            this.#carriedToRepeat(run, runtime).map((message) =>
+              buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
+            ),
           ),
         ),
         signal: ensureRunSignal(),
@@ -1113,7 +1122,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
-        await this.#settleCompleted(current, next.hash, result.abandonedBackgroundWork);
+        await this.#settleCompleted(current, next.hash, result.followUpFailure);
       }
       outcome = "completed";
     } catch (error) {
@@ -1146,6 +1155,7 @@ export class SessionMessageInbox {
     error: unknown,
     attempt: { stop: AbortController; timedOut: boolean },
   ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    if (attempt.timedOut) await this.#recordRunLimit(record.payload.targetSessionId);
     // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
     if (!attempt.stop.signal.aborted || this.#abort.signal.aborted) {
       return this.#attemptFailed(record, hash, run, phase, error, attempt.timedOut);
@@ -1170,14 +1180,17 @@ export class SessionMessageInbox {
     return retry ? { retry } : "ended";
   }
 
+  /**
+   * The input was answered, so even a failed later turn never runs the message again. Whoever sent it may
+   * be waiting for that later work, so they hear of it.
+   */
   async #settleCompleted(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
-    abandonedBackgroundWork: readonly string[] | undefined,
+    followUpFailure: AgentRunError | undefined,
   ): Promise<void> {
-    const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
-    const fields = abandoned
-      ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
+    const fields = followUpFailure
+      ? { lastError: followUpFailed(record.payload.requestId, followUpFailure), ...this.#pendingOutcomeReport() }
       : {};
     const terminal = await this.#transition(record, "succeeded", fields).catch(() => {
       // The Run did complete, so this is no failure to report, and it must not stay in flight here, where it
@@ -1192,8 +1205,18 @@ export class SessionMessageInbox {
       return local;
     });
     this.#remember(record.key, { hash, status: "succeeded" });
-    if (abandoned)
-      await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);
+    if (followUpFailure) await this.#publishRunOutcome(terminal, "unknown", followUpFailure.code);
+  }
+
+  async #withBackgroundWorkNotice(sessionId: string, input: AgentInput): Promise<AgentInput> {
+    return this.#backgroundWork?.forSession(sessionId).prefix(input) ?? input;
+  }
+
+  async #recordRunLimit(sessionId: string): Promise<void> {
+    await this.#backgroundWork?.forSession(sessionId).recordRunLimit({
+      reason: SESSION_MESSAGE_TURN_TIMEOUT_CODE,
+      at: new Date(this.#now()).toISOString(),
+    });
   }
 
   #requirePreparedOutbox(
@@ -1604,6 +1627,7 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
   code: string;
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
+  // A succeeded record is pending only if an older Client left background work behind it.
   if (record.status === "succeeded") return { outcome: "unknown", code };
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
@@ -1673,14 +1697,14 @@ function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]):
   };
 }
 
-function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
+function followUpFailed(requestId: string, failure: AgentRunError): DurableFailure {
   return {
-    code: SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE,
+    code: failure.code,
     category: "unavailable",
     retryability: "never",
     phase: "provider",
     requestId,
-    message: "Background work this Run may have left behind stops when the Run ends",
+    message: failure.message,
   };
 }
 

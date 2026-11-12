@@ -8,7 +8,11 @@ import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
-import { piProviderFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import {
+  answeredWithFollowUpFailure,
+  piProviderFailureCode,
+  providerProcessFailureCode,
+} from "../../agent-runtime/provider-failure.js";
 import type { Deferred } from "../../agent-runtime/provider-utils.js";
 import {
   deferred,
@@ -54,6 +58,7 @@ import {
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
 import { type PiDiagnosticSink, PiRunDiagnostics } from "../../observability/pi-diagnostics.js";
+import type { BackgroundWorkStatus } from "../../pi-extensions/background-work.js";
 import {
   PI_RPC_REQUEST_TIMEOUT_MS,
   PI_RPC_STARTUP_GET_STATE_TIMEOUT_MS,
@@ -135,6 +140,12 @@ type PiMcpGatewayConfiguration = {
 const PI_WEB_TOOLS_SOCKET_ENV = "OPENTAG_WEB_TOOLS_SOCKET";
 const PI_MCP_GATEWAY_EXTENSION = fileURLToPath(new URL("../../pi-extensions/mcp-gateway.ts", import.meta.url));
 const PI_MCP_GATEWAY_BUNDLED_EXTENSION = fileURLToPath(new URL("./pi-extensions/mcp-gateway.mjs", import.meta.url));
+/** Pinned to the extension by a test: importing it would make the bundler share a chunk, and it must stand alone. */
+export const PI_BACKGROUND_WORK_STATUS_KEY = "opentag-background-work";
+const PI_BACKGROUND_WORK_EXTENSION = fileURLToPath(new URL("../../pi-extensions/background-work.ts", import.meta.url));
+const PI_BACKGROUND_WORK_BUNDLED_EXTENSION = fileURLToPath(
+  new URL("./pi-extensions/background-work.mjs", import.meta.url),
+);
 
 interface PiRuntimeOptions {
   readonly nativeResources?: boolean;
@@ -265,6 +276,12 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #closingForAbort = false;
   #mcpEnabled = false;
   #agentStarted = false;
+  /** The extension's latest report of live work, which holds the Run open. */
+  #backgroundWork = new Map<string, BackgroundWorkStatus["live"][number]>();
+  /** Pi settled with work live: it is idle until a wake or new input starts an agent run. */
+  #waitingForBackgroundWork = false;
+  /** Whether the agent run in progress carries nothing but background results, after the input was answered. */
+  #followUpOnly = false;
   #promptPhase: "startup" | "awaiting-ack" | "owned" = "startup";
 
   get steerReady(): boolean {
@@ -345,7 +362,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!terminal) throw protocolError("Pi run has no terminal state");
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
-      result = this.#runResult(terminal);
+      await this.#reportStoppedBackgroundWork();
+      result = this.#settledResult(terminal);
       if (accepted) this.#diagnostics.endTerminal(result.status, terminal.stopReason, result.error?.code);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
@@ -550,6 +568,18 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
     if (!client) throw new AgentRuntimeError("run_mismatch", "there is no active Pi process");
+    // Whatever this agent run started as, it now carries input someone is waiting on: its failure is the Run's.
+    this.#followUpOnly = false;
+    if (this.#waitingForBackgroundWork) {
+      // Pi is idle, so `steer` has nothing to join. A `prompt` that names how to behave while streaming
+      // also holds if a wake has just started a new agent run.
+      await client.request(
+        { type: "prompt", message: piItems(request.input.items), streamingBehavior: "steer" },
+        this.providerContext?.signal,
+        { timeoutMs: null },
+      );
+      return;
+    }
     await client.request({ type: "steer", message: piItems(request.input.items) });
     if (!this.#nativeResources) return;
     await this.#eventTail;
@@ -561,11 +591,19 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
   }
 
+  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+    await this.#client?.request(
+      { type: "prompt", message: text, streamingBehavior: "steer" },
+      this.providerContext?.signal,
+      { timeoutMs: null },
+    );
+  }
+
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     const client = this.#client;
     if (!client) return;
-    if (!this.#compacting) {
+    if (!this.#compacting && !this.#waitingForBackgroundWork) {
       try {
         await client.request({ type: "abort" }, AbortSignal.timeout(2_000));
         return;
@@ -575,8 +613,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         if (!(error instanceof PiRpcError) || (error.code !== "aborted" && error.code !== "timeout")) throw error;
       }
     }
-    // Pi 0.84.2 RPC abort does not abort native compaction. Keep the Session on
-    // disk, and report cancellation only after the owned process has exited.
+    // Pi 0.84.2 RPC abort does not abort native compaction, and an idle Pi waiting for background work
+    // has no agent run to abort. Keep the Session on disk, and report cancellation only after the owned
+    // process has exited.
     this.#closingForAbort = true;
     await client.close();
     await this.#eventTail;
@@ -609,6 +648,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#compacting = false;
     this.#closingForAbort = false;
     this.#agentStarted = false;
+    this.#backgroundWork.clear();
+    this.#waitingForBackgroundWork = false;
+    this.#followUpOnly = false;
     this.#promptPhase = "startup";
   }
 
@@ -627,6 +669,14 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
       // Platform resources are additive and execution-only; probes never receive them.
+      ...(this.#policy.fileSystem === "read-only"
+        ? []
+        : [
+            "--extension",
+            /* v8 ignore start -- source tests execute .ts; the .mjs branch is exercised by the built Pi smoke. */
+            import.meta.url.endsWith(".mjs") ? PI_BACKGROUND_WORK_BUNDLED_EXTENSION : PI_BACKGROUND_WORK_EXTENSION,
+            /* v8 ignore stop */
+          ]),
       ...(provider.webTools ? ["--extension", provider.webTools.extensionPath] : []),
       ...(provider.mcpGateway
         ? [
@@ -650,6 +700,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#failProvider(protocolError("Pi emitted model activity before the requested prompt was acknowledged"));
       return;
     }
+    const backgroundWork = this.#observeBackgroundWork(message);
     if (message.type === "turn_start" && this.#promptPhase === "owned") {
       this.#diagnostics.firstTurnStarted();
     }
@@ -668,15 +719,57 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const next = this.#eventTail.then(async () => {
       /* v8 ignore next -- unsubscribe detaches the only event source before Run context cleanup. */
       if (!this.providerContext) return;
-      await this.#handleMessage(message);
+      if (backgroundWork) await this.#publishBackgroundWork(backgroundWork);
+      else await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
       this.#failProvider(error instanceof Error ? error : protocolError("Pi event processing failed"));
     });
   }
 
+  /**
+   * At ingress, so `agent_settled` sees everything Pi reported before it. An unreadable status is not
+   * silently a list: only the extension writes this key, so it fails the Run.
+   */
+  #observeBackgroundWork(message: Readonly<Record<string, unknown>>): BackgroundWorkStatus | undefined {
+    if (
+      message.type !== "extension_ui_request" ||
+      message.method !== "setStatus" ||
+      message.statusKey !== PI_BACKGROUND_WORK_STATUS_KEY
+    )
+      return undefined;
+    try {
+      const status = parseBackgroundWorkStatus(message.statusText);
+      this.#backgroundWork = new Map(status.live.map((item) => [item.id, item]));
+      return status;
+    } catch (error) {
+      this.#failProvider(error as Error);
+      return { live: [] };
+    }
+  }
+
+  async #publishBackgroundWork(status: BackgroundWorkStatus): Promise<void> {
+    const context = this.requireProviderContext();
+    if (status.finished) {
+      const { id, status: end, detail, outputPath } = status.finished;
+      await context.emit({ type: "background_work_finished", id, status: end, detail, outputPath });
+    }
+    await context.emit({ type: "background_work_changed", items: status.live });
+  }
+
+  /** What Pi's process group takes with it when the Run ends. Measured: a group SIGTERM stops the children. */
+  async #reportStoppedBackgroundWork(): Promise<void> {
+    if (this.#backgroundWork.size === 0) return;
+    const context = this.requireProviderContext();
+    for (const id of this.#backgroundWork.keys()) {
+      await context.emit({ type: "background_work_finished", id, status: "stopped" });
+    }
+    this.#backgroundWork.clear();
+    await context.emit({ type: "background_work_changed", items: [] });
+  }
+
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
-    if (message.type !== "agent_settled" || !this.providerContext) return;
+    if (message.type !== "agent_settled" || !this.providerContext || this.#backgroundWork.size > 0) return;
     this.providerContext.claimTerminal();
     this.#terminalClaimed = true;
   }
@@ -689,7 +782,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         : new AgentProviderError("provider_error", "Pi process failed");
     }
     if (type === "extension_ui_request") return this.#handleExtensionUiRequest(message);
-    if (type === "agent_start") return;
+    if (type === "agent_start") {
+      this.#waitingForBackgroundWork = false;
+      return;
+    }
     if (type === "turn_start") {
       if (this.#currentTurnId) throw protocolError("Pi started overlapping turns");
       this.#turnSequence += 1;
@@ -996,11 +1092,23 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const stopReason = this.#lastStopReason;
     if (!stopReason) throw protocolError("Pi settled without an assistant result");
     const status = stopReason === "stop" ? "completed" : stopReason === "aborted" ? "aborted" : "failed";
+    // The model is done for now and its work is not: the process stays up and the extension wakes the model.
+    if (status === "completed" && this.#backgroundWork.size > 0) {
+      this.#waitingForBackgroundWork = true;
+      this.#followUpOnly = true;
+      return;
+    }
     this.#terminal?.resolve({
       status,
       stopReason,
       ...(this.#lastError ? { error: this.#lastError } : {}),
     });
+  }
+
+  /** A later agent run failing does not undo an input already answered. */
+  #settledResult(terminal: PiTerminal): AgentProviderRunResult {
+    const result = this.#runResult(terminal);
+    return this.#followUpOnly && result.status === "failed" ? answeredWithFollowUpFailure(result) : result;
   }
 
   #runResult(terminal: PiTerminal): AgentProviderRunResult {
@@ -1739,4 +1847,18 @@ function piModelActivity(message: Readonly<Record<string, unknown>>): boolean {
   return (
     (message.type === "message_start" || message.type === "message_end") && record(message.message)?.role !== "custom"
   );
+}
+
+function parseBackgroundWorkStatus(text: unknown): BackgroundWorkStatus {
+  let status: BackgroundWorkStatus | undefined;
+  try {
+    status = JSON.parse(String(text)) as BackgroundWorkStatus;
+  } catch (error) {
+    logger.debug(
+      { code: "background_work_status_invalid", error: String(error) },
+      "Pi background work status was rejected",
+    );
+  }
+  if (!status || !Array.isArray(status.live)) throw protocolError("Pi reported an invalid background work status");
+  return status;
 }

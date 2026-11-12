@@ -86,10 +86,10 @@ New QR registrations include this callback; existing Apps need it enabled in the
 Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender if posting in the originating conversation fails) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand using read-only checks or dry runs.
 A Run started by a Session message (an internal Session's task, a message from another Session, or a steered
 message's own Run) has no IM input of its own. When its Provider asks for an approval or a question, the Client
-declines the approval, or cancels the question, at once. For Claude Code the decline tells the model that nobody
-could approve the action and that it should continue without it or report that the step needs a person. Codex
-receives a plain decline. The Run therefore never waits for an answer that cannot come. A Session message that
-joins a running IM Turn uses that Turn's approval flow.
+declines the approval, or cancels the question, at once. The model is told that nobody could approve the action
+and that it should continue without it or report that the step needs a person. Claude Code receives the reason
+in the decline itself. Codex receives it as an OpenTag notice on the active turn alongside the native decline.
+A Session message that joins a running IM Turn uses that Turn's approval flow.
 
 > **Planned — not yet implemented.** Tracking: #1533
 

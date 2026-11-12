@@ -295,8 +295,9 @@ command outside the Agent's command rules, such as `ps -ax -o pid,command | grep
    answered with "No one could approve this action: this Run was started by a Session message, and nobody is
    reviewing it. ...", the child replies that the step needs a person's approval, and the record is `succeeded`.
    The Run does not wait for its duration limit.
-2. Repeat step 1 on Codex. Expected: the same, except the command is declined without that text; the child still
-   replies and the record is `succeeded` within seconds.
+2. Repeat step 1 on Codex. Expected: the command is declined and the same reason appears as an OpenTag approval
+   notice on the active turn. The child replies that the step needs a person's approval and the record is
+   `succeeded` within seconds.
 3. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card appears for
    the sender, unchanged.
 

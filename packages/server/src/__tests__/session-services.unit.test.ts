@@ -433,6 +433,48 @@ describe("SessionService with the unit database", () => {
     });
   });
 
+  it("lists the Agent's live Sessions in every conversation, newest first, in pages", async () => {
+    let tick = 0;
+    const service = new SessionService(db.database, { now: () => new Date(fixture.now.getTime() + tick++ * 1000) });
+    const open = async (channelId: string, conversationKind: "dm" | "channel") =>
+      (await service.ensureChatSession({ imBindingId: fixture.bindingId, channelId, conversationKind }, "channel"))
+        .session;
+    const dm = await open("LD1", "dm");
+    const group = await open("LG1", "channel");
+    const ended = await open("LD2", "dm");
+    const child = await service.createInternalSessionWithMessage({
+      creatorSessionId: group.id,
+      creatorInstallationId: fixture.installationId,
+      creatorConnectionInstanceId: fixture.instanceId,
+      creatorComputerId: fixture.computerId,
+      creatorPlacementGeneration: 1,
+      messageId: randomUUID(),
+      initialMessage: "task",
+    });
+    await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, ended.id));
+
+    const { items } = await service.listAgentSessions(dm.id, { limit: 100 });
+    const byId = new Map(items.map((item) => [item.sessionId, item]));
+    expect(byId.has(ended.id)).toBe(false);
+    expect(byId.get(dm.id)).toMatchObject({ current: true, sessionKind: "channel", conversationKind: "dm" });
+    expect(byId.get(group.id)).toMatchObject({ sessionKind: "channel", channelId: "LG1" });
+    expect(byId.get(group.id)).not.toHaveProperty("current");
+    expect(byId.get(child.session.id)).toMatchObject({
+      sessionKind: "internal",
+      channelId: "LG1",
+      parentSessionId: group.id,
+      taskPreview: "task",
+    });
+    const visible = await service.listAgentSessions(dm.id, { limit: 100, visibleOnly: true });
+    expect(visible.items.map((item) => item.sessionKind)).not.toContain("internal");
+    const first = await service.listAgentSessions(dm.id, { limit: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(first.nextCursor).toBeDefined();
+    const second = await service.listAgentSessions(dm.id, { limit: 100, cursor: first.nextCursor as string });
+    expect(second.items.map((item) => item.sessionId)).not.toContain(first.items[0]?.sessionId);
+    expect(second.items).toHaveLength(items.length - 1);
+  });
+
   it("creates internal sessions, descendants, retries, and fences conflicting IDs", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const source = await service.ensureChatSession(

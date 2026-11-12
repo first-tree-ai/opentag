@@ -193,7 +193,8 @@ interface RunningTurn {
   readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
   readonly reportVersion: number;
-  phase: "starting" | "running" | "reporting";
+  /** `waiting`: between attempts, for a used-up quota window to reset; steers join the retry input. */
+  phase: "starting" | "running" | "reporting" | "waiting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
   expiresAt?: string;
@@ -346,6 +347,7 @@ export class AgentTurnRunner {
       return steerResult(request, "rejected", "target_mismatch");
     }
     if (turn.phase === "starting") return steerResult(request, "retry", "turn_starting");
+    if (turn.phase === "waiting") return this.#joinWaitingTurn(turn, request, semanticHash);
     const runtime = turn.runtime;
     if (turn.phase !== "running" || !runtime) {
       return steerResult(request, "deferred", "turn_not_running");
@@ -362,6 +364,34 @@ export class AgentTurnRunner {
     turn.steering.add(steering);
     void steering.finally(() => turn.steering.delete(steering));
     return steering;
+  }
+
+  /**
+   * A Turn waiting for the quota to reset has no Provider process: the message joins its retry input with a steer
+   * receipt, and the resumed attempt runs it once with the rest. Past the steer limit it stays with the Server.
+   */
+  #joinWaitingTurn(
+    turn: RunningTurn,
+    request: RuntimeImSteerRequest,
+    semanticHash: string,
+  ): Promise<RuntimeImSteerResult> {
+    turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
+    const joining = (async () => {
+      const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
+      if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
+      if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+      try {
+        await this.#bindingStore.recordSteer(request, semanticHash);
+      } catch {
+        await this.#retries.removeSteer(request).catch(() => undefined);
+        return steerResult(request, "deferred", "turn_not_running");
+      }
+      return steerResult(request, "steered");
+    })();
+    // The retry reads its input only once this is settled.
+    turn.steering.add(joining);
+    void joining.finally(() => turn.steering.delete(joining));
+    return joining;
   }
 
   async #steerRunningTurn(
@@ -657,7 +687,7 @@ export class AgentTurnRunner {
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
       // An in-place retry follows a model failure; a 429 or a start failure waits first, a Provider exit does
       // not. False when an orderly stop interrupts the wait.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(this.#retryDelay(next), shutdownSignal));
+      const ready = next && next !== "deferred" && (await this.#waitBeforeRetry(turn, next, shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -929,6 +959,15 @@ export class AgentTurnRunner {
       "Turn waits for the model quota to reset",
     );
     return shutdownSignal.aborted ? "deferred" : interruption;
+  }
+
+  /** False when an orderly stop ends the wait. During a quota wait, steers join the retry input. */
+  async #waitBeforeRetry(turn: RunningTurn, next: Interruption, shutdownSignal: AbortSignal): Promise<boolean> {
+    if (next.resumeAt) turn.phase = "waiting";
+    const ready = await waitUnlessAborted(this.#retryDelay(next), shutdownSignal);
+    // From here a steer waits for the retry to start, rather than joining its input.
+    if (turn.phase === "waiting") turn.phase = "starting";
+    return ready;
   }
 
   #retryDelay(interruption: Interruption): number {

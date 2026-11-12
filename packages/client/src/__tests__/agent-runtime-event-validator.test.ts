@@ -156,9 +156,9 @@ describe("AgentRunEventValidator", () => {
   });
 
   it.each([
-    [{ type: "quota_wait_changed", waiting: "yes" as never }],
+    [{ type: "quota_wait_changed", waiting: "yes" as unknown as boolean }],
     [{ type: "quota_wait_changed", waiting: true, resetsAt: "soon" }],
-  ] satisfies AgentProviderRunEvent[][])("rejects an invalid quota wait %j", (event) => {
+  ] as AgentProviderRunEvent[][])("rejects an invalid quota wait %j", (event) => {
     expect(() => new AgentRunEventValidator().accept(event)).toThrowError(
       expect.objectContaining({ code: "provider_protocol_error" }),
     );

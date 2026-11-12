@@ -18,6 +18,8 @@ describe("AgentRunEventValidator", () => {
       { type: "usage_updated", usage: { inputTokens: 0, cachedInputTokens: 1, outputTokens: 2 } },
       { type: "usage_updated", usage: {} },
       { type: "provider_warning", code: "notice", message: "warning" },
+      { type: "quota_wait_changed", waiting: true, resetsAt: "2026-11-12T12:00:00.000Z" },
+      { type: "quota_wait_changed", waiting: false },
       { type: "provider_event", providerId: "test", schemaVersion: 1, payload: { value: true } },
       { type: "model_turn_completed", modelTurnId: "turn-1" },
     ] satisfies AgentProviderRunEvent[]) {
@@ -151,6 +153,15 @@ describe("AgentRunEventValidator", () => {
     expect(() =>
       validator.accept({ type: "tool_completed", toolCallId: "tool", name: "read", status: "failed" }),
     ).not.toThrow();
+  });
+
+  it.each([
+    [{ type: "quota_wait_changed", waiting: "yes" as unknown as boolean }],
+    [{ type: "quota_wait_changed", waiting: true, resetsAt: "soon" }],
+  ] as AgentProviderRunEvent[][])("rejects an invalid quota wait %j", (event) => {
+    expect(() => new AgentRunEventValidator().accept(event)).toThrowError(
+      expect.objectContaining({ code: "provider_protocol_error" }),
+    );
   });
 
   it("normalizes non-Error validation failures into protocol errors", () => {

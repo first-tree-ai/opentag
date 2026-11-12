@@ -47,6 +47,7 @@ export default defineConfig({
       "src/__tests__/provider-failure.test.ts",
       "src/__tests__/background-work-watch.test.ts",
       "src/__tests__/run-limit-notice.test.ts",
+      "src/__tests__/run-budget-timer.test.ts",
       "src/__tests__/background-work-ledger.test.ts",
       "src/__tests__/resolved-runtime-factory.test.ts",
       "src/__tests__/runtime-durability.test.ts",

@@ -8,6 +8,7 @@ import {
   type SessionMessageDeliveryResult,
   SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
+import { type RunBudgetTimer, runBudgetTimer } from "../agent-runtime/run-budget-timer.js";
 import type {
   AgentInput,
   AgentRunError,
@@ -32,6 +33,7 @@ import {
   nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
   type RetryCount,
+  type RunTimeTracker,
   recoverableFailure,
   retryDelayMs,
   retryLimit,
@@ -727,7 +729,7 @@ export class SessionMessageInbox {
     );
   }
 
-  #trackMessageRunTime(key: string): { finish(): Promise<number> } {
+  #trackMessageRunTime(key: string): RunTimeTracker {
     return trackRunTime(this.#now, async (ranMs) => {
       const record = this.#records.get(key);
       if (record) await this.#persist(withRunTime(record, ranMs));
@@ -1019,11 +1021,11 @@ export class SessionMessageInbox {
     this.#runStops.set(sessionId, { controller: stop, placementGeneration: next.request.placementGeneration });
     // A retry's attempt can begin in the same moment a stop fences it, after that stop looked for a Run to abort.
     if (this.#isStopped(next.request)) stop.abort(new Error("Session stopped"));
-    let timer: { cancel(): void } | undefined;
+    let timer: RunBudgetTimer | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
-    let runTime: { finish(): Promise<number> } | undefined;
+    let runTime: RunTimeTracker | undefined;
     let ranIn: AgentRuntime | undefined;
     let stopApprovals: (() => void) | undefined;
     const settleRunTime = async () => {
@@ -1035,14 +1037,13 @@ export class SessionMessageInbox {
       const latest = this.#records.get(key) ?? current;
       if (latest) current = { ...withRunTime(latest, ranMs), runConversation: conversationIdentity(ranIn?.binding) };
     };
-    /** When the timer below stops the Run. Preparing the Run spends this time too. */
-    let limitAt = 0;
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
-      const budgetMs = remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0);
-      limitAt = this.#now() + budgetMs;
-      timer = this.#timeoutScheduler.schedule(budgetMs, () =>
-        timeout.abort(new Error("Session message Run timed out")),
+      timer = runBudgetTimer(
+        (delayMs, task) => this.#timeoutScheduler.schedule(delayMs, task),
+        this.#now,
+        remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
+        () => timeout.abort(new Error("Session message Run timed out")),
       );
       if (current) runTime = this.#trackMessageRunTime(key);
       // Revocation or control/owner replacement aborts the Run and its provider children.
@@ -1118,7 +1119,18 @@ export class SessionMessageInbox {
           ),
         ),
         signal: ensureRunSignal(),
-        durationLimitInMs: Math.max(1, limitAt - this.#now()),
+        // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+        onQuotaWaitChanged: (waiting) => {
+          if (waiting) {
+            timer?.pause();
+            runTime?.pause();
+          } else {
+            timer?.resume();
+            runTime?.resume();
+          }
+        },
+        // The budget is running here: it pauses only during a quota wait inside the prompt.
+        durationLimitInMs: Math.max(1, (timer?.expiresAt ?? this.#now()) - this.#now()),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
       await settleRunTime();

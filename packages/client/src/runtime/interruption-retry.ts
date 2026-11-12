@@ -112,18 +112,24 @@ export function nextRetry(
  * tick that comes far too late means the Computer slept or the clock moved: that gap is not run time,
  * so it counts as two intervals at most, and never as negative.
  */
-export function trackRunTime(
-  now: () => number,
-  record: (ranMs: number) => Promise<unknown>,
-): { finish(): Promise<number> } {
+export interface RunTimeTracker {
+  /** Resolves with the run time not yet recorded, once no recording is in flight. */
+  finish(): Promise<number>;
+  /** A provider waiting in-process for a quota reset is not running: that time is not run time. */
+  pause(): void;
+  resume(): void;
+}
+
+export function trackRunTime(now: () => number, record: (ranMs: number) => Promise<unknown>): RunTimeTracker {
   // `pending` is the run time not yet recorded. One write at a time, and it drops only once a write
   // commits, so a failed or slow write can neither lose time nor count it twice.
   let pending = 0;
   let observedAt = now();
+  let paused = false;
   let writing: Promise<void> | undefined;
   const observe = (): number => {
     const at = now();
-    pending += Math.min(Math.max(0, at - observedAt), MAX_RUN_TIME_TICK_MS);
+    if (!paused) pending += Math.min(Math.max(0, at - observedAt), MAX_RUN_TIME_TICK_MS);
     observedAt = at;
     return at;
   };
@@ -144,12 +150,19 @@ export function trackRunTime(
   }, RUN_TIME_RECORD_INTERVAL_MS);
   timer.unref();
   return {
-    // Resolves with the run time not yet recorded, once no recording is in flight.
     finish: async () => {
       clearInterval(timer);
       await writing;
       observe();
       return pending;
+    },
+    pause: () => {
+      observe();
+      paused = true;
+    },
+    resume: () => {
+      observe();
+      paused = false;
     },
   };
 }

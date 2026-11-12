@@ -3,6 +3,7 @@ import {
   type InputRejectReason,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RuntimeImOutboxContext,
+  SESSION_CREATOR_REPORT_REASON,
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
@@ -25,6 +26,7 @@ import {
   endChannelTurn,
   isChannelOutbox,
 } from "./channel-idle-compaction.js";
+import { CreatorReportObservation } from "./creator-report-observation.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
@@ -123,9 +125,8 @@ export interface SessionMessageInboxOptions {
   now?: () => number;
   onFailure?(failure: DurableFailure): void;
   /**
-   * Called when a message's Run reaches a terminal non-completed state (timeout, permanent
-   * failure, or exhausted retries). The Server uses the report to notify an internal Session's
-   * creator; it ignores reports for visible Sessions. The terminal inbox record carries a
+   * Reports a terminal Run failure or a failed follow-up after completed work. The Server
+   * resolves the recipient under the existing collaboration rules. The terminal inbox record carries a
    * `pending` outcome-report marker until this resolves, so it must resolve only once the report
    * is durable and reject otherwise; hydration calls it again for a still-pending record, so it
    * must be idempotent per message.
@@ -148,7 +149,7 @@ export interface SessionMessageInboxOptions {
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
-    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime">>;
+    Partial<Pick<SessionRuntimeManager, "creatorSessionId" | "isPrepared" | "runtime">>;
   /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
@@ -1118,7 +1119,8 @@ export class SessionMessageInbox {
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
       ranIn = runtime;
-      stopApprovals = this.#approvals?.watch(sessionId, runId, runtime, next.request.placementGeneration);
+      const observation = this.#watchRun(sessionId, runId, runtime, next.request.placementGeneration);
+      stopApprovals = observation.stopWatching;
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
       channelTurn.channel = isChannelOutbox(outboxContext);
@@ -1167,7 +1169,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
-        await this.#settleCompleted(current, next.hash, result.followUpFailure);
+        await this.#settleCompleted(current, next.hash, result.followUpFailure, observation.report?.unresolved());
       }
       outcome = "completed";
     } catch (error) {
@@ -1190,6 +1192,22 @@ export class SessionMessageInbox {
       });
     }
     return outcome;
+  }
+
+  #watchRun(sessionId: string, runId: string, runtime: AgentRuntime, placementGeneration: number) {
+    const creator = this.#runtimeManager.creatorSessionId?.(sessionId);
+    const report =
+      creator && runtime.manifest.providerId === "codex"
+        ? new CreatorReportObservation(this.#cliCommand, creator)
+        : undefined;
+    const stopWatching = this.#approvals?.watch(
+      sessionId,
+      runId,
+      runtime,
+      placementGeneration,
+      report?.observe.bind(report),
+    );
+    return { report, stopWatching };
   }
 
   async #settleFailedAttempt(
@@ -1228,21 +1246,29 @@ export class SessionMessageInbox {
   }
 
   /**
-   * The input was answered, so even a failed later turn never runs the message again. Whoever sent it may
-   * be waiting for that later work, so they hear of it.
+   * Keep answered input succeeded when a later turn or the creator report fails. The existing
+   * outcome reporter retries the notice independently of the completed work.
    */
   async #settleCompleted(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
     followUpFailure: AgentRunError | undefined,
+    reportDelivery: "failed" | "unknown" | undefined,
   ): Promise<void> {
-    const fields = followUpFailure
-      ? { lastError: followUpFailed(record.payload.requestId, followUpFailure), ...this.#pendingOutcomeReport() }
+    const failure =
+      followUpFailure ??
+      (reportDelivery
+        ? {
+            code: SESSION_CREATOR_REPORT_REASON[reportDelivery],
+            message: "The creator report failed or its delivery was unconfirmed",
+          }
+        : undefined);
+    const fields = failure
+      ? { lastError: completedRunFailure(record.payload.requestId, failure), ...this.#pendingOutcomeReport() }
       : {};
     const terminal = await this.#transition(record, "succeeded", fields).catch(() => {
-      // The Run did complete, so this is no failure to report, and it must not stay in flight here, where it
-      // would hold up an upgrade. The record stays `running` on disk and the next start treats it as
-      // interrupted: it may run again, with the notice that it may already have been handled.
+      // Release the completed Run in memory so it cannot hold up an upgrade. The record still
+      // reads as interrupted on disk and can be retried on restart.
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "succeeded" },
         "Session message success could not be recorded",
@@ -1252,7 +1278,10 @@ export class SessionMessageInbox {
       return local;
     });
     this.#remember(record.key, { hash, status: "succeeded" });
-    if (followUpFailure) await this.#publishRunOutcome(terminal, "unknown", followUpFailure.code);
+    if (failure) {
+      const { outcome, code } = terminalRunOutcome(terminal);
+      await this.#publishRunOutcome(terminal, outcome, code);
+    }
   }
 
   async #withBackgroundWorkNotice(sessionId: string, input: AgentInput): Promise<AgentInput> {
@@ -1730,8 +1759,9 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
   code: string;
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
-  // A succeeded record is pending only if an older Client left background work behind it.
-  if (record.status === "succeeded") return { outcome: "unknown", code };
+  if (record.status === "succeeded") {
+    return { outcome: code === SESSION_CREATOR_REPORT_REASON.failed ? "failed" : "unknown", code };
+  }
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
 
@@ -1813,7 +1843,7 @@ function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]):
   };
 }
 
-function followUpFailed(requestId: string, failure: AgentRunError): DurableFailure {
+function completedRunFailure(requestId: string, failure: { code: string; message: string }): DurableFailure {
   return {
     code: failure.code,
     category: "unavailable",

@@ -558,6 +558,20 @@ describe("SessionService with the unit database", () => {
     });
     const fromSibling = await send(sibling, child.session.id, "from a sibling");
     await expect(resolve(child.session.id, fromSibling.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
+    await expect(
+      service.resolveRunOutcomeNotice({
+        childSessionId: child.session.id,
+        messageId: fromSibling.message.id,
+        creatorOnly: true,
+      }),
+    ).resolves.toEqual(toRecipient(creator.session.id));
+    await expect(
+      service.resolveRunOutcomeNotice({
+        childSessionId: creator.session.id,
+        messageId: callback.message.id,
+        creatorOnly: true,
+      }),
+    ).resolves.toBeUndefined();
 
     // A failed notice climbs to the creator, never back to the Session the notice was about.
     const noticeFrom = async (source: typeof sibling, targetSessionId: string, reported: string) => {

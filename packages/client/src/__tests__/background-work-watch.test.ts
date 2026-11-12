@@ -199,8 +199,8 @@ describe("a Run's quiet background work", () => {
       });
       return { status: "completed", output: [] };
     }
-    protected override tellProviderAboutBackgroundWork(text: string): Promise<void> {
-      if (!this.listens) return super.tellProviderAboutBackgroundWork(text);
+    protected override tellProvider(text: string): Promise<void> {
+      if (!this.listens) return super.tellProvider(text);
       this.told.push(text);
       return Promise.resolve();
     }

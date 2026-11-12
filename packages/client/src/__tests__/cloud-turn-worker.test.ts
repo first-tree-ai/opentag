@@ -244,6 +244,62 @@ it("compacts a Channel Session on the first Turn after 8 idle hours in the conti
   await expect(runAt("thread", start + hours(40), "thread")).resolves.toBeUndefined();
 });
 
+describe("the Run limit a Cloud prompt is given", () => {
+  const twentyMinutes = 20 * 60_000;
+
+  async function durationLimit(
+    request: RunnerCloudTurnWorkerRequest | RunnerCloudSessionWorkerRequest,
+    root: string,
+    start: number,
+  ) {
+    let clock = start;
+    const limits: (number | undefined)[] = [];
+    const runtime = {
+      close: async () => undefined,
+      prompt: async (input: AgentPromptRequest) => {
+        limits.push(input.durationLimitInMs);
+        return { runId: input.runId, status: "completed" as const, output: [] };
+      },
+    };
+    // Opening the runtime takes three minutes of the Run's budget.
+    const open = async () => {
+      clock += 3 * 60_000;
+      return runtime;
+    };
+    await expect(
+      runCloudTurnWorker(request, {
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+        now: () => clock,
+        prepareContextTree: async () => ({ status: { status: "unavailable", reason: "TIMEOUT" } }),
+        createPiFactory: () => ({ create: open, resume: open }),
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    return limits;
+  }
+
+  it("leaves out preparation time for a Session message with only a relative budget", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-limit-session-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const request = sessionRequest(await fixtureExecution(root, "limit-session"));
+    request.message.runtime = { ...request.message.runtime, budget: { maxDurationMs: twentyMinutes } };
+    await expect(durationLimit(request, root, Date.now())).resolves.toEqual([twentyMinutes - 3 * 60_000]);
+  });
+
+  it("leaves out preparation time for an IM Turn with an absolute deadline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-limit-turn-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const start = Date.now();
+    const request = turnRequest(await fixtureExecution(root, "limit-turn"));
+    request.delivery = cloudDeliveryFixture({
+      deadlineAt: new Date(start + twentyMinutes).toISOString(),
+      runtime: { ...request.delivery.runtime, budget: { maxDurationMs: twentyMinutes } },
+    });
+    await expect(durationLimit(request, root, start)).resolves.toEqual([twentyMinutes - 3 * 60_000]);
+  });
+});
+
 it("captures a prompt rejection before runtime execution converts it to a completion", async () => {
   const root = await mkdtemp(join(tmpdir(), "cloud-worker-prompt-rejected-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));

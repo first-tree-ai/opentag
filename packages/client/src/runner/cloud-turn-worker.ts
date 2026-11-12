@@ -380,18 +380,24 @@ export interface CloudTurnWorkerRunOptions {
 interface TurnExecutionContext {
   readonly signal: AbortSignal;
   readonly stopReason: () => "client_shutdown" | "turn_timeout" | undefined;
+  /** What is left before the deadline fixed when the worker started, so preparation time is not given back. */
+  readonly remainingMs: () => number;
 }
 
 function createTurnExecutionContext(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
 ): TurnExecutionContext {
-  const deadline = AbortSignal.timeout(Math.max(1, cloudWorkerTimeout(request, options.now?.() ?? Date.now())));
+  const now = () => options.now?.() ?? Date.now();
+  const startedAt = now();
+  const timeoutMs = Math.max(1, cloudWorkerTimeout(request, startedAt));
+  const deadline = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   return {
     signal,
     // Distinguish a caller stop from the Turn deadline at the moment a stop is observed.
     stopReason: () => (options.signal?.aborted ? "client_shutdown" : deadline.aborted ? "turn_timeout" : undefined),
+    remainingMs: () => Math.max(1, startedAt + timeoutMs - now()),
   };
 }
 
@@ -670,6 +676,7 @@ export async function runCloudTurnWorker(
         ...(await channelTurn.begin()),
         input: await backgroundWork.prefix(cloudWorkerInput(request, new Date(options.now?.() ?? Date.now()))),
         signal: execution.signal,
+        durationLimitInMs: execution.remainingMs(),
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
       completion =

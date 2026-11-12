@@ -473,7 +473,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         response:
           response.decision === "accept"
             ? { behavior: "allow", updatedInput: input }
-            : { behavior: "deny", message: "The user declined this action." },
+            : { behavior: "deny", message: response.reason ?? "The user declined this action." },
       },
     });
     this.#permissions.delete(response.requestId);

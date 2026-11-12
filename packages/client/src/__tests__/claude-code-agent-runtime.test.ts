@@ -14,9 +14,13 @@ import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../provid
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("ClaudeCodeAgentRuntime", () => {
-  it.each(["accept", "decline"] as const)(
-    "bridges a local permission decision (%s) to the original process",
-    async (decision) => {
+  it.each([
+    ["accept", undefined],
+    ["decline", undefined],
+    ["decline", "No one could approve this action."],
+  ] as const)(
+    "bridges a local permission decision (%s, reason %s) to the original process",
+    async (decision, reason) => {
       const processes: ScriptedClaudeCodeProcess[] = [];
       const events: AgentRuntimeEvent[] = [];
       const request = createRequest((event) => {
@@ -59,6 +63,7 @@ describe("ClaudeCodeAgentRuntime", () => {
         kind: "approval",
         decision,
         scope: "run",
+        ...(reason ? { reason } : {}),
       });
       expect(processes[0]?.sent).toContainEqual({
         type: "control_response",
@@ -68,7 +73,7 @@ describe("ClaudeCodeAgentRuntime", () => {
           response:
             decision === "accept"
               ? { behavior: "allow", updatedInput: { command: "git push" } }
-              : { behavior: "deny", message: "The user declined this action." },
+              : { behavior: "deny", message: reason ?? "The user declined this action." },
         },
       });
       await expect(run).resolves.toMatchObject({ status: "completed" });

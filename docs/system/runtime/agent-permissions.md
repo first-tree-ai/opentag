@@ -84,6 +84,21 @@ Feishu Apps must subscribe to the `card.action.trigger` callback through the exi
 New QR registrations include this callback; existing Apps need it enabled in their developer console.
 
 Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender if posting in the originating conversation fails) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand using read-only checks or dry runs.
+A Run started by a Session message (an internal Session's task, a message from another Session, or a steered
+message's own Run) has no IM input of its own. When its Provider asks for an approval or a question, the Client
+declines the approval, or cancels the question, at once. For Claude Code the decline tells the model that nobody
+could approve the action and that it should continue without it or report that the step needs a person. Codex
+receives a plain decline. The Run therefore never waits for an answer that cannot come. A Session message that
+joins a running IM Turn uses that Turn's approval flow.
+
+> **Planned — not yet implemented.** Tracking: #1533
+
+Session message Runs will route approvals to a person. The Server climbs the target Session's creation chain to
+the top visible Session and posts the same approval card in that conversation, naming the child Session and the
+action. The approver is the human who sent the latest message delivered to that visible Session. The decision goes
+back to the child Session's Run. A request that gets no answer in about 10 minutes is declined automatically and
+the model is told why. Clients and Servers without this capability keep the immediate decline above.
+
 Cards show the requester mention, reason, and action, without provider transport metadata.
 Both cards include a small footer with the requester mention and "Whitelist command or disable approvals in Agent Model Settings".
 Only "Agent Model Settings" is linked, opening that Agent's Model settings directly.

@@ -21,6 +21,7 @@ import type {
   AgentProviderSteerCustody,
   AgentRunResult,
   AgentRuntime,
+  AgentRuntimeEvent,
   AgentSteerOutcome,
 } from "../agent-runtime/types.js";
 import { executeProviderCliTurnPlan } from "../index.js";
@@ -41,6 +42,7 @@ import {
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
+import { SESSION_MESSAGE_APPROVAL_UNAVAILABLE, SessionMessageApprovals } from "../runtime/session-message-approvals.js";
 import {
   buildSessionMessageInput,
   SESSION_MESSAGE_STOPPED_CODE,
@@ -1621,6 +1623,66 @@ describe("SessionMessageInbox", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it("answers a Run's approval request instead of leaving the Run waiting for it", async () => {
+    let sink: ((event: AgentRuntimeEvent) => Promise<void>) | undefined;
+    const responses: unknown[] = [];
+    let answered: () => void = () => undefined;
+    const answer = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      respond: vi.fn(async (response: unknown) => {
+        responses.push(response);
+        answered();
+      }),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => {
+        await sink?.({
+          type: "interaction_requested",
+          runId,
+          request: { requestId: "permission-1", kind: "approval", title: "Approve Bash" },
+        });
+        // Claude Code waits here until the request is answered.
+        await answer;
+        return { runId, status: "completed" as const, output: [] };
+      }),
+    };
+    const runtimeManager = {
+      ensureRuntime: vi.fn(async () => runtime as never),
+      sessionKind: vi.fn(() => "internal" as const),
+      observe: vi.fn((_sessionId: string, next: (event: AgentRuntimeEvent) => Promise<void>) => {
+        sink = next;
+        return () => {
+          sink = undefined;
+        };
+      }),
+    };
+    const store = new MemoryRuntimeDurabilityStore();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      approvals: new SessionMessageApprovals({ runtimeManager }),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager,
+    });
+    const message = delivery({ text: "run a command" });
+    await inbox.accept(message);
+    await vi.waitFor(() => expect(responses).toHaveLength(1), { timeout: 2_000 });
+    expect(responses[0]).toMatchObject({
+      requestId: "permission-1",
+      kind: "approval",
+      decision: "decline",
+      reason: SESSION_MESSAGE_APPROVAL_UNAVAILABLE,
+    });
+    await inbox.settled();
+    expect((await store.list("session-message"))[0]?.status).toBe("succeeded");
+    expect(sink).toBeUndefined();
+    inbox.stop();
   });
 
   it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {

@@ -222,6 +222,10 @@ describe("MCP gateway preparation", () => {
       }));
       const prepared = await credentials.prepare(request("session-pi"));
       expect(prepared.mcp).toBeDefined();
+      const mcpGateway = {
+        url: prepared.mcp?.url ?? "",
+        token: prepared.mcp?.token ?? "",
+      };
 
       const adapterEntry = join(workspace, "adapter.mjs");
       await writeFile(
@@ -247,7 +251,7 @@ describe("MCP gateway preparation", () => {
         probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
       });
       const probeResult = await factory.probe({
-        configuration: { provider: { mcpGateway: prepared.mcp } },
+        configuration: { provider: { mcpGateway } },
       });
       expect(probeResult).toEqual({ ready: true, version: "fixture", issues: [] });
       const runtime = await factory.create({
@@ -260,7 +264,7 @@ describe("MCP gateway preparation", () => {
           approvals: "never",
           tools: { mode: "provider-default" },
         },
-        configuration: { provider: { mcpGateway: prepared.mcp } },
+        configuration: { provider: { mcpGateway } },
       });
       await runtime.close();
 

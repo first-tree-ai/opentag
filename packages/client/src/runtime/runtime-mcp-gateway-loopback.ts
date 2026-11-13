@@ -4,7 +4,7 @@ import type { AddressInfo, Socket } from "node:net";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { MCP_GATEWAY_PATH, runtimeProxyErrorReason } from "./runtime-credential-frames.js";
 
-const LOCAL_TOKEN_PREFIX = "otmgl_";
+const LOCAL_TOKEN_PREFIX = "otmg_local_";
 const MAX_REQUEST_BYTES = 1024 * 1024;
 /**
  * Upstream HTTP statuses that occur strictly before `dispatchInboundRequest` on `/api/v1/mcp`:

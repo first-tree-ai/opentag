@@ -88,7 +88,7 @@ describe("legacy-mode MCP gateway", () => {
     expect(prepared.executionId).toBe("legacy-1");
     expect(prepared.provider).toBe("feishu");
     expect(prepared.mcp?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mcp$/);
-    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
+    expect(prepared.mcp?.token).toMatch(/^otmg_local_[A-Za-z0-9_-]+$/);
     const subject = mocks.openServices.mock.calls[0]?.[1] as { services?: readonly string[]; runId: string };
     expect(subject.services).toEqual(["mcp"]);
     expect(subject.runId).toBe("run-session-1");
@@ -114,7 +114,7 @@ describe("legacy-mode MCP gateway", () => {
     const firstPrepared = await credentials.prepare(request());
     const prepared = await credentials.prepare(request());
     expect(first.close).toHaveBeenCalledTimes(1);
-    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
+    expect(prepared.mcp?.token).toMatch(/^otmg_local_[A-Za-z0-9_-]+$/);
     expect(prepared.mcp?.token).not.toBe(firstPrepared.mcp?.token);
     await credentials.close();
     expect(second.close).toHaveBeenCalledTimes(1);
@@ -154,7 +154,7 @@ describe("legacy-mode MCP gateway", () => {
     const { credentials, legacy } = manager();
     const prepared = await credentials.prepareLegacyServices(request("internal-1"));
     expect(legacy.prepare).not.toHaveBeenCalled();
-    expect(prepared?.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
+    expect(prepared?.mcp?.token).toMatch(/^otmg_local_[A-Za-z0-9_-]+$/);
     expect(prepared?.provider).toBeUndefined();
     await credentials.cleanup("internal-1", prepared?.executionId);
     expect(relay.close).toHaveBeenCalledTimes(1);

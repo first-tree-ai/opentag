@@ -557,7 +557,7 @@ export class RuntimeCredentialEnvironmentManager {
     const replacement = await RuntimeCredentialRelay.openServices(this.#relayOptions(), {
       agentId: request.agentId,
       placementGeneration: request.placementGeneration,
-      runId: `${request.run.runId}:mcp:${randomUUID()}`,
+      runId: randomUUID(),
       sessionId: request.sessionId,
       source: request.run.source,
       ...(sandbox ? { sandbox } : {}),

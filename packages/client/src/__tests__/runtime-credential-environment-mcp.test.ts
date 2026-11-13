@@ -1,9 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect as connectSocket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RuntimeExecutionSource } from "@opentag/shared";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  RuntimeExecutionCloseRequestSchema,
+  RuntimeExecutionOpenRequestSchema,
+  type RuntimeExecutionSource,
+  RuntimeMcpGatewayRequestSchema,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { RuntimeCredentialEnvironmentManager } from "../runtime/runtime-credential-environment-manager.js";
 import {
   RUNTIME_CREDENTIAL_CAPABILITY,
@@ -11,15 +18,24 @@ import {
   RUNTIME_PROVIDER_PROXY_CAPABILITY,
 } from "../runtime/runtime-credential-frames.js";
 
-const mocks = vi.hoisted(() => ({ relayOpen: vi.fn(), openServices: vi.fn(), adapterStart: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  relayOpen: vi.fn(),
+  openServices: vi.fn(),
+  adapterStart: vi.fn(),
+  realOpenServices: undefined as
+    | typeof import("../runtime/runtime-credential-relay.js").RuntimeCredentialRelay.openServices
+    | undefined,
+}));
 
 vi.mock("../runtime/runtime-credential-relay.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../runtime/runtime-credential-relay.js")>();
+  mocks.realOpenServices = actual.RuntimeCredentialRelay.openServices;
   return {
     ...actual,
     RuntimeCredentialRelay: {
       open: (...args: unknown[]) => mocks.relayOpen(...args),
-      openServices: (...args: unknown[]) => mocks.openServices(...args),
+      openServices: (...args: Parameters<typeof actual.RuntimeCredentialRelay.openServices>) =>
+        mocks.openServices(...args),
     },
   };
 });
@@ -34,21 +50,74 @@ vi.mock("../runtime/runtime-proxy-loopback-adapter.js", async (importOriginal) =
 
 const homes: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
   vi.clearAllMocks();
 });
 
 function fakeConnection(mcpNegotiated = true) {
-  return {
+  const businessListeners = new Set<(frame: Record<string, unknown>) => void>();
+  const connection = {
     capabilityVersion: (capability: string): number | undefined => {
       if (capability === RUNTIME_CREDENTIAL_CAPABILITY || capability === RUNTIME_PROVIDER_PROXY_CAPABILITY) return 1;
       if (capability === RUNTIME_MCP_GATEWAY_CAPABILITY) return mcpNegotiated ? 1 : undefined;
       return undefined;
     },
-    send: vi.fn(async () => undefined),
-    subscribeBusinessFrames: vi.fn(() => () => undefined),
+    send: vi.fn(async (frame: Record<string, unknown>) => {
+      if (frame.type === "runtime:execution:open") {
+        const parsed = RuntimeExecutionOpenRequestSchema.parse(frame);
+        queueMicrotask(() => {
+          for (const listener of businessListeners) {
+            listener({
+              type: "runtime:execution:result",
+              requestId: parsed.requestId,
+              status: "succeeded",
+              executionId: "11111111-1111-4111-8111-111111111111",
+              expiresAt: "2026-01-01T00:00:00.000Z",
+              providers: [],
+              services: [{ service: "mcp", scopes: ["mcp:tools"] }],
+            });
+          }
+        });
+      } else if (frame.type === "runtime:mcp:gateway") {
+        const parsed = RuntimeMcpGatewayRequestSchema.parse(frame);
+        queueMicrotask(() => {
+          for (const listener of businessListeners) {
+            listener({
+              type: "runtime:mcp:gateway:result",
+              requestId: parsed.requestId,
+              status: "succeeded",
+              executionId: parsed.executionId,
+              token: `{{SECRET_bdtyfqlv}}after_restart_${"a".repeat(32)}`,
+              expiresAt: "2026-01-01T00:00:00.000Z",
+              path: "/api/v1/mcp",
+            });
+          }
+        });
+      } else if (frame.type === "runtime:execution:close") {
+        const parsed = RuntimeExecutionCloseRequestSchema.parse(frame);
+        queueMicrotask(() => {
+          for (const listener of businessListeners) {
+            listener({
+              type: "runtime:execution:closed",
+              requestId: parsed.requestId,
+              executionId: parsed.executionId,
+              status: "succeeded",
+            });
+          }
+        });
+      }
+    }),
+    subscribeBusinessFrames: vi.fn((listener: (frame: Record<string, unknown>) => void) => {
+      businessListeners.add(listener);
+      return () => {
+        businessListeners.delete(listener);
+      };
+    }),
     subscribeState: vi.fn(() => () => undefined),
   };
+  return connection;
 }
 
 function fakeRelay(executionId: string, acquire: () => Promise<{ token: string; expiresAt: string } | undefined>) {
@@ -133,7 +202,95 @@ describe("MCP gateway preparation", () => {
     expect(prepared.provider).toBeUndefined();
     expect(prepared.outboxContext).toBeUndefined();
     expect(prepared.mcp?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mcp$/);
-    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
+    expect(prepared.mcp?.token).toMatch(/^otmg_local_[A-Za-z0-9_-]+$/);
+  });
+
+  it("produces an MCP gateway descriptor accepted by both PiAgentRuntimeFactory and the Pi MCP extension", async () => {
+    const relay = fakeRelay("exec-pi-compat", async () => ({
+      token: "otmg_upstream_pi_compat",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const workspace = await home();
+    const credentials = await manager(workspace, true);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: join(workspace, "fake-ca.pem"),
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-pi"));
+      expect(prepared.mcp).toBeDefined();
+
+      const adapterEntry = join(workspace, "adapter.mjs");
+      await writeFile(
+        adapterEntry,
+        `
+        export function registerMcpServer({ pi, name, definition }) {
+          pi.events.emit("registered", { name, definition });
+          return { dispose: async () => undefined };
+        }
+        export function createMcpAdapter({ config }) {
+          return (pi) => pi.events.emit("installed", config);
+        }
+      `,
+      );
+      const factory = new PiAgentRuntimeFactory({
+        mcpAdapterEntry: adapterEntry,
+        createSessionId: () => "11111111-1111-4111-8111-111111111111",
+        createClient: () => ({
+          request: async () => ({}),
+          subscribe: () => () => undefined,
+          close: async () => undefined,
+        }),
+        probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+      });
+      const probeResult = await factory.probe({
+        configuration: { provider: { mcpGateway: prepared.mcp } },
+      });
+      expect(probeResult).toEqual({ ready: true, version: "fixture", issues: [] });
+      const runtime = await factory.create({
+        eventSink: () => undefined,
+        systemPrompt: "OpenTag managed system prompt",
+        workspace: { cwd: workspace },
+        policy: {
+          fileSystem: "read-only",
+          network: "disabled",
+          approvals: "never",
+          tools: { mode: "provider-default" },
+        },
+        configuration: { provider: { mcpGateway: prepared.mcp } },
+      });
+      await runtime.close();
+
+      vi.stubEnv("OPENTAG_PI_NATIVE_RESOURCES", "0");
+      vi.stubEnv("OPENTAG_MCP_GATEWAY_URL", prepared.mcp?.url ?? "");
+      vi.stubEnv("OPENTAG_MCP_GATEWAY_TOKEN", prepared.mcp?.token ?? "");
+      vi.stubEnv("OPENTAG_PI_MCP_ADAPTER_ENTRY", adapterEntry);
+      const emit = vi.fn();
+      const { default: mcpGatewayExtension } = await import("../pi-extensions/mcp-gateway.js");
+      mcpGatewayExtension({
+        on: () => undefined,
+        registerTool: () => undefined,
+        getAllTools: () => [],
+        getCommands: () => [],
+        events: { emit },
+      } as unknown as ExtensionAPI);
+      expect(emit).toHaveBeenCalledWith(
+        "installed",
+        expect.objectContaining({
+          mcpServers: {
+            "opentag-mcp": expect.objectContaining({
+              url: prepared.mcp?.url,
+              bearerToken: prepared.mcp?.token,
+            }),
+          },
+        }),
+      );
+    } finally {
+      await credentials.close();
+    }
   });
 
   it("composes the endpoint against the pinned Server origin, not anything the Server said", async () => {
@@ -276,10 +433,6 @@ describe("MCP gateway preparation", () => {
       }
       throw new Error("execution_unknown");
     });
-    const replacementRelay = fakeRelay("exec-after-restart", async () => ({
-      token: "otmg_after_restart",
-      expiresAt: "2026-01-01T00:00:00.000Z",
-    }));
     const upstreamFetch = vi.fn<typeof fetch>(async (_url, init) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
       if (auth === "Bearer otmg_before_restart") {
@@ -296,10 +449,21 @@ describe("MCP gateway preparation", () => {
         },
       );
     });
-    const credentials = await manager(await home(), true, upstreamFetch);
+    const connection = fakeConnection(true);
+    const credentials = new RuntimeCredentialEnvironmentManager({
+      connection,
+      home: await home(),
+      mcpGatewayFetch: upstreamFetch,
+      mode: "proxy",
+      platform: "darwin",
+      serverUrl: "https://server.example.test",
+    });
     try {
       mocks.relayOpen.mockResolvedValueOnce(relay);
-      mocks.openServices.mockResolvedValueOnce(replacementRelay);
+      mocks.openServices.mockImplementationOnce(
+        (...args: Parameters<NonNullable<typeof mocks.realOpenServices>>) =>
+          mocks.realOpenServices?.(...args) ?? Promise.reject(new Error("realOpenServices missing")),
+      );
       mocks.adapterStart.mockImplementationOnce(async () => ({
         caCertPath: "/tmp/fake-ca.pem",
         connectProxyUrl: "http://127.0.0.1:0",
@@ -332,16 +496,32 @@ describe("MCP gateway preparation", () => {
       expect(second.status).toBe(200);
       // Single-flight refresh opens only one replacement MCP execution across concurrent 401s:
       expect(mocks.openServices).toHaveBeenCalledTimes(1);
-      expect(mocks.openServices.mock.calls[0]?.[1]).toMatchObject({
+      const replacementSubject = mocks.openServices.mock.calls[0]?.[1] as {
+        agentId: string;
+        placementGeneration: number;
+        sessionId: string;
+        runId: string;
+        source: RuntimeExecutionSource;
+        services: readonly string[];
+      };
+      expect(replacementSubject).toMatchObject({
         agentId: "agent-1",
         placementGeneration: 1,
         sessionId: "session-1",
         source: { kind: "delivery", deliveryId: "delivery-1", turnId: "turn-1" },
         services: ["mcp"],
       });
+      expect(replacementSubject.runId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
 
       await credentials.cleanup("session-1", prepared.executionId);
-      expect(replacementRelay.close).toHaveBeenCalledTimes(1);
+      expect(
+        connection.send.mock.calls.some(
+          ([frame]) =>
+            frame.type === "runtime:execution:close" && frame.executionId === "11111111-1111-4111-8111-111111111111",
+        ),
+      ).toBe(true);
     } finally {
       await credentials.close();
     }

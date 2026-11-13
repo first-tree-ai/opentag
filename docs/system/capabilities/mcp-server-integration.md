@@ -1125,7 +1125,7 @@ execution-open result, because that result has never carried a secret and both e
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
 the upstream endpoint URL against the Server origin it already pinned; only the fixed path crosses
 the wire. On a local Computer, the Client hands the Provider a Run-scoped loopback endpoint
-(`http://127.0.0.1:<port>/api/v1/mcp`) with a local `otmgl_` bearer and forwards each POST to the
+(`http://127.0.0.1:<port>/api/v1/mcp`) with a local `otmg_local_` bearer and forwards each POST to the
 pinned Server origin with the current `otmg_` execution token. Because `RuntimeMcpGatewayTokenStore`
 and `RuntimeExecutionRegistry` are in-memory on the Server, a rolling deploy or restart during a live
 Run drops the in-memory `otmg_` token and execution record while the Provider still holds the launch

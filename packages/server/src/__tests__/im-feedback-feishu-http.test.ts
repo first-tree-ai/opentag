@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApprovalMessenger } from "../runtime/approval-messenger.js";
 import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import { ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
 import type { FeedbackTarget } from "../services/im/im-feedback-store.js";
@@ -25,11 +26,11 @@ interface Reaction {
   reaction_type: { emoji_type: string };
 }
 
-function harness(rtt = 480) {
+function harness(rtt = 480, circuitFailureThreshold = 100) {
   const appId = randomUUID();
-  const material = { generation: 2, appId, appSecret: "test-secret", teamBrand: "feishu" };
+  const material = { generation: 2, appId, appSecret: "test-secret", agentId: "agent", teamBrand: "feishu" };
   const binding = vi.fn(async () => material as typeof material | undefined);
-  const policy = new ExternalCallPolicy({ allowedHosts: [], circuitFailureThreshold: 100 });
+  const policy = new ExternalCallPolicy({ allowedHosts: [], circuitFailureThreshold });
   const messenger = new ImFeedbackMessenger(
     { getFeishuConnectionMaterial: binding } as unknown as ImBindingService,
     policy,
@@ -110,6 +111,54 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("Feishu feedback with the real SDK and controlled HTTP", () => {
+  it("classifies an HTTP-200 token policy refusal without printing raw SDK errors", async () => {
+    const h = harness(480, 1);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    http.post.mockResolvedValueOnce({ code: 21001, msg: "private provider diagnostic" });
+    try {
+      const error = await h.messenger.reaction(h.target, "working").catch((cause: unknown) => cause);
+      expect(log).not.toHaveBeenCalled();
+      expect(error).toMatchObject({
+        code: "IM_FEEDBACK_REACTION_POLICY_DENIED",
+        knownNotApplied: true,
+        permanent: true,
+      });
+      expect(http.request).not.toHaveBeenCalled();
+      expect(h.policy.circuitState("feishu.feedback.reaction")).toBe("closed");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("keeps approval SDK failures off stdout", async () => {
+    const h = harness();
+    const approvals = new ApprovalMessenger(
+      { getFeishuConnectionMaterial: h.binding } as unknown as ImBindingService,
+      h.policy,
+      "https://app.example.test",
+    );
+    const approval = {
+      id: randomUUID(),
+      imBindingId: h.target.bindingId,
+      authority: { provider: "feishu", generation: 2, senderExternalId: "ou_test", externalMessageId: "om_test" },
+      request: { title: "Approval", description: "Synthetic command" },
+      status: "pending",
+    } as Parameters<ApprovalMessenger["post"]>[0];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    http.post.mockResolvedValueOnce({ code: 21001, msg: "private provider diagnostic" });
+    try {
+      await expect(approvals.post(approval)).rejects.toMatchObject({
+        message: "FEISHU_TOKEN_REQUEST_FAILED",
+        code: 21001,
+      });
+      expect(http.post).toHaveBeenCalledOnce();
+      expect(http.request).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("measures cold, warm, no-op and expired-token request counts at 480 ms RTT", async () => {
     const h = harness();
     expect(await measured(() => h.messenger.reaction(h.target, "working"))).toBe(1440);
@@ -194,6 +243,7 @@ describe("Feishu feedback with the real SDK and controlled HTTP", () => {
     const h = harness(20_000);
     const result = expect(h.messenger.reaction(h.target, "working")).rejects.toMatchObject({
       code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+      knownNotApplied: true,
     });
     await vi.advanceTimersByTimeAsync(8_000);
     await result;
@@ -293,15 +343,34 @@ describe("Feishu feedback with the real SDK and controlled HTTP", () => {
               },
             };
       });
-      const result = expect(h.messenger.reaction(h.target, "warning")).rejects.toThrow(
-        mode === "failure" ? "REACTION_READ_FAILED" : "PAGINATION_INVALID",
-      );
+      const result = expect(h.messenger.reaction(h.target, "warning")).rejects.toMatchObject({
+        code: mode === "failure" ? "IM_FEEDBACK_REACTION_READ_FAILED" : "IM_FEEDBACK_REACTION_PAGINATION_INVALID",
+        knownNotApplied: true,
+        permanent: false,
+      });
       await vi.runAllTimersAsync();
       await result;
       expect(h.requests.filter((request) => request.method !== "GET" && !request.url.includes("/auth/"))).toEqual([]);
       expect(h.requests.length).toBeLessThanOrEqual(102);
     },
   );
+
+  it("keeps a partially applied projection unknown when another writer receives a policy refusal", async () => {
+    const h = harness(480, 1);
+    h.reactions.push(h.owned("OnIt"));
+    await measured(() => h.messenger.reaction(h.target, "working"));
+    http.request.mockImplementation(async (request: Request) => {
+      if (request.method === "DELETE") return { code: 21001, msg: "private provider diagnostic" };
+      return h.response(request);
+    });
+    await expect(h.messenger.reaction(h.target, "warning")).rejects.toMatchObject({
+      code: "IM_FEEDBACK_REACTION_POLICY_DENIED",
+      knownNotApplied: false,
+      permanent: true,
+    });
+    expect(h.reactions.map((reaction) => reaction.reaction_type.emoji_type)).toEqual(["OnIt", "CrossMark"]);
+    expect(h.policy.circuitState("feishu.feedback.reaction")).toBe("closed");
+  });
 
   it("joins both writers after a failure and reconciles an unknown create by reading first", async () => {
     const h = harness();

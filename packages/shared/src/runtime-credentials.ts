@@ -52,12 +52,12 @@ export const FEISHU_RATE_LIMIT_CODE = 99991400;
 
 /**
  * Feishu error codes that permanently reject app credentials, tenant tokens, or app configuration
- * (invalid app_id/app_secret, app not installed/suspended/forbidden, IP allowlist rejection,
+ * (invalid app_id/app_secret, app not installed/suspended/forbidden, access control policy or IP allowlist rejection,
  * invalid/expired/revoked access token).
  */
 export const FEISHU_CREDENTIAL_REJECTED_CODES: ReadonlySet<number> = new Set([
-  10003, 10005, 10012, 10013, 10014, 10015, 20002, 99991401, 99991543, 99991661, 99991662, 99991663, 99991664, 99991665,
-  99991668, 99991671, 99991672, 99991673, 99991677,
+  10003, 10005, 10012, 10013, 10014, 10015, 20002, 21001, 99991401, 99991543, 99991661, 99991662, 99991663, 99991664,
+  99991665, 99991668, 99991671, 99991672, 99991673, 99991677,
 ]);
 
 export function isFeishuRateLimitCode(code: unknown): boolean {

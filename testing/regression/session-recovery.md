@@ -91,6 +91,11 @@ is joined with its sibling before returning, and that a late read after the dead
 480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
 separately when an authorized test deployment is available.
 
+For policy refusals, run the controlled HTTP and durable feedback suites with synthetic code 21001.
+Verify the worker preserves the known reaction before any write, stops reaction retries for that revision,
+and keeps an ambiguous partial mutation unknown. Confirm that feedback and approval SDK failures emit no
+raw stdout diagnostics.
+
 ## Feedback queue concurrency and drain
 
 Use the controlled worker and PostgreSQL feedback suites to queue eight independent inputs with delayed transports.

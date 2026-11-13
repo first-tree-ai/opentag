@@ -160,7 +160,8 @@ interface FeishuScopeListResponse {
   };
 }
 
-const REDACTING_SDK_LOGGER = {
+// SDK errors may include raw provider responses or request options. Callers log bounded codes.
+export const REDACTING_SDK_LOGGER = {
   error: () => undefined,
   warn: () => undefined,
   info: () => undefined,

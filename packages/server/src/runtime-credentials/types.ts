@@ -39,6 +39,8 @@ export interface RuntimeExecutionRecord {
   accountId: string;
   agentId: string;
   agentRevision: number;
+  /** `agents.access_generation` at open; the fence compares it, so a withdrawn right to run stays withdrawn. */
+  agentAccessGeneration: number;
   sessionId: string;
   computerId: string;
   instanceId: string;

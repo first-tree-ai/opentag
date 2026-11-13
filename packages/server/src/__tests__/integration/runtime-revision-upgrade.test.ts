@@ -52,13 +52,15 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
   it("repairs existing opt-in states atomically and only once through the migration ledger", async () => {
     const { sql, database } = client;
     const account = await bootstrapInitialAdmin(database, { displayName: "Admin", email: "upgrade@example.invalid" });
-    const service = new AgentService(database);
+    // Raw SQL: AgentService writes today's columns, and this schema stops before migration 0066.
     for (const name of ["enabled", "disabled", "unchanged"]) {
-      const agent = await service.createForAccount(account.userId, {
-        name,
-        displayName: name,
-        runtimeProvider: "codex",
-      });
+      const [agent] = await sql<{ id: string }[]>`
+        insert into agents (created_by_user_id, name, display_name, runtime_provider)
+        values (${account.userId}, ${name}, ${name}, 'codex')
+        returning id
+      `;
+      if (!agent) throw new Error("Agent fixture was not created");
+      await sql`insert into agent_runtime_configs (agent_id, instructions) values (${agent.id}, '')`;
       if (name !== "unchanged") {
         await sql`update agents set self_configuration_enabled = ${name === "enabled"}, revision = revision + 1 where id = ${agent.id}`;
       }
@@ -88,6 +90,7 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
     expect(await sql`select * from agent_runtime_configs order by agent_id`).toEqual(repairedConfigs);
     await migrateDatabase(container.getConnectionUri(), migrationsFolder);
     await verifyDatabaseMigrations(container.getConnectionUri(), migrationsFolder);
+    const service = new AgentService(database);
     const agent = await service.getConfigById(account.userId, previousAgents[0]?.id);
     const next = await service.updateById(account.userId, agent.id, {
       expectedRevision: agent.revision,

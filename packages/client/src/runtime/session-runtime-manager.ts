@@ -319,6 +319,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return managed.sessionKind;
   }
 
+  creatorSessionId(sessionId: string): string | undefined {
+    return this.#sessions.get(sessionId)?.creatorSessionId;
+  }
+
   /** The prepared Session's Agent Runtime provider id; undefined when not prepared. */
   providerId(sessionId: string): string | undefined {
     return this.#sessions.get(sessionId)?.providerId;

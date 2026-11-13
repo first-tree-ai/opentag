@@ -170,6 +170,7 @@ function openValidationRecord(
       accountId: snapshot.computer.ownerAccountId,
       agentId: snapshot.agent.id,
       agentRevision: snapshot.agent.revision,
+      agentAccessGeneration: snapshot.agent.accessGeneration,
       sessionId: frame.sessionId,
       computerId: context.computerId,
       instanceId: context.instanceId,

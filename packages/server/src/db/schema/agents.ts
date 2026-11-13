@@ -36,6 +36,12 @@ export const agents = pgTable(
     selfConfigurationEnabled: boolean("self_configuration_enabled").notNull().default(true),
     status: agentStatus("status").notNull().default("active"),
     revision: integer("revision").notNull().default(1),
+    /**
+     * Advances when the right to run is withdrawn or moved: suspension, deletion, a move to another Computer or
+     * Account. An execution pins it, so its platform access never comes back after a suspend and reactivate. A
+     * configuration save advances `revision` only, and running Turns keep their access.
+     */
+    accessGeneration: integer("access_generation").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -19,7 +19,7 @@ export function contextTreeExecutionIsCurrent(
     [
       "accountId",
       "agentId",
-      "agentRevision",
+      "agentAccessGeneration",
       "sessionId",
       "computerId",
       "instanceId",

@@ -67,13 +67,22 @@ export class SessionMessageApprovals {
     return (this.#options.now ?? Date.now)();
   }
 
-  /** Watches one Run's requests until the returned function is called; requests still open then go stale. */
-  watch(sessionId: string, runId: string, runtime: AgentRuntime, placementGeneration?: number): () => void {
+  /** Watches a Run's events until the returned function is called; requests still open then go stale. */
+  watch(
+    sessionId: string,
+    runId: string,
+    runtime: AgentRuntime,
+    placementGeneration?: number,
+    onToolCompleted?: (event: Extract<AgentRuntimeEvent, { type: "tool_completed" }>) => void,
+  ): () => void {
     let stopObserving: () => void;
     try {
       stopObserving = this.#options.runtimeManager.observe(sessionId, async (event: AgentRuntimeEvent) => {
-        if (event.type === "interaction_requested" && event.runId === runId)
+        if (!("runId" in event) || event.runId !== runId) return;
+        if (event.type === "interaction_requested") {
           await this.#handle({ sessionId, runId, runtime, placementGeneration }, event.request);
+        }
+        if (event.type === "tool_completed") onToolCompleted?.(event);
       });
     } catch (error) {
       // Another owner already observes this Session's runtime, so it answers the requests.

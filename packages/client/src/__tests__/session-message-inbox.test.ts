@@ -9,6 +9,7 @@ import {
   type InputRejectReason,
   RUNTIME_CAPABILITY,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  SESSION_CREATOR_REPORT_REASON,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageOutcomeReport,
@@ -665,6 +666,105 @@ describe("SessionMessageInbox", () => {
     );
     inbox.stop();
   });
+
+  it.each(["failed", "unknown", "retried", "accepted"] as const)(
+    "keeps a completed child Run succeeded when creator report delivery is %s",
+    async (outcome) => {
+      const creatorSessionId = randomUUID();
+      const reportMessageId = randomUUID();
+      const request = delivery();
+      const cliCommand = "'/opt/opentag'";
+      const command = `${cliCommand} session send ${creatorSessionId} --message 'finished' --message-id ${reportMessageId}`;
+      let observe: ((event: AgentRuntimeEvent) => void | Promise<void>) | undefined;
+      const unobserve = vi.fn();
+      const accepted = `status=accepted messageId=${reportMessageId} sessionId=${creatorSessionId}`;
+      const failed = `status=rejected messageId=${reportMessageId} code=target_unavailable`;
+      const unknown = `status=unknown messageId=${reportMessageId} code=SERVICE_UNAVAILABLE message="Server unavailable"`;
+      const emitReceipt = async (runId: string, output: string, exitCode: number) => {
+        const status = exitCode === 0 ? "completed" : "failed";
+        await observe?.({
+          type: "tool_completed",
+          runId,
+          toolCallId: randomUUID(),
+          name: "commandExecution",
+          status,
+          output: { type: "commandExecution", status, command, aggregatedOutput: output, exitCode },
+        });
+      };
+      const prompt = vi.fn(async ({ runId }: AgentPromptRequest): Promise<AgentRunResult> => {
+        await emitReceipt("different-run", failed, 1);
+        if (outcome === "failed") await emitReceipt(runId, failed, 1);
+        if (outcome === "unknown" || outcome === "retried") {
+          await emitReceipt(runId, unknown, 3);
+          await emitReceipt(runId, unknown, 3);
+        }
+        if (outcome === "accepted" || outcome === "retried") await emitReceipt(runId, accepted, 0);
+        return { runId, status: "completed", output: [{ type: "text", text: "work finished" }] };
+      });
+      const runtimeManager = {
+        creatorSessionId: () => creatorSessionId,
+        sessionKind: () => "internal" as const,
+        ensureRuntime: async () =>
+          ({ manifest: { providerId: "codex" }, waitForIdle: async () => {}, prompt }) as unknown as AgentRuntime,
+        observe: (_sessionId: string, sink: NonNullable<typeof observe>) => {
+          observe = sink;
+          return unobserve;
+        },
+      };
+      const onRunOutcome = vi.fn(async () => {
+        throw new Error("synthetic interruption before reporter custody");
+      });
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const options = {
+        admission: new AdmissionController(),
+        approvals: new SessionMessageApprovals({ runtimeManager }),
+        cliCommand,
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        persistence,
+        sessionCollaborationVersion: () => 5,
+        reconciler: inboxReconciler(),
+        runtimeManager,
+      };
+      const inbox = new SessionMessageInbox({ ...options, onRunOutcome });
+      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(unobserve).toHaveBeenCalledOnce();
+      expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+      await inbox.accept(request);
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      const restartedReport = vi.fn();
+      inbox.stop();
+      const restarted = new SessionMessageInbox({ ...options, onRunOutcome: restartedReport });
+      try {
+        await restarted.ready();
+        expect(prompt).toHaveBeenCalledOnce();
+        if (outcome === "retried" || outcome === "accepted") {
+          expect(onRunOutcome).not.toHaveBeenCalled();
+          expect(restartedReport).not.toHaveBeenCalled();
+        } else {
+          const report = {
+            messageId: request.messageId,
+            targetSessionId: request.targetSessionId,
+            agentId: request.agentId,
+            placementGeneration: request.placementGeneration,
+            outcome,
+            reason: SESSION_CREATOR_REPORT_REASON[outcome],
+          };
+          expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(report);
+          expect(restartedReport).toHaveBeenCalledExactlyOnceWith(report);
+          expect(restarted.getState(request.messageId)).toMatchObject({
+            status: "succeeded",
+            outcomeReport: "published",
+          });
+        }
+      } finally {
+        restarted.stop();
+      }
+    },
+  );
 
   it("puts what earlier Runs left in front of the input, and records a limit where the next Run will read it", async () => {
     let fireTimeout: () => void = () => undefined;

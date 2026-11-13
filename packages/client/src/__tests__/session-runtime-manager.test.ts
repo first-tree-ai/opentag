@@ -219,6 +219,7 @@ describe("SessionRuntimeManager", () => {
     );
     expect(factory.created[0]?.systemPrompt).toContain("do not substitute a Provider-native subagent");
     expect(factory.created[0]?.systemPrompt).toContain(request.creatorSessionId);
+    expect(manager.creatorSessionId(request.sessionId)).toBe(request.creatorSessionId);
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     const rotated = {
       ...request,
@@ -971,6 +972,7 @@ describe("SessionRuntimeManager", () => {
 
     expect(() => manager.sessionKind(first.sessionId)).toThrow(SessionRuntimeNotPreparedError);
     expect(manager.providerId(first.sessionId)).toBeUndefined();
+    expect(manager.creatorSessionId(first.sessionId)).toBeUndefined();
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(first.sessionId)).toBe("visible");
     expect(manager.providerId(first.sessionId)).toBe("codex");

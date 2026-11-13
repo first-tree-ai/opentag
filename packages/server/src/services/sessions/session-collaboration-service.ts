@@ -312,7 +312,7 @@ interface LocalHandOffInput {
   creatorSessionId: string | null;
   /** Offer the message inside the reconcile frame when the Client negotiated that. */
   inlineMessage?: boolean;
-  /** Sent only to a Client that negotiated session collaboration v5; one below it never gets a cross-conversation message. */
+  /** Sent only to a Client that negotiated session collaboration v6; one below it never gets a cross-conversation message. */
   provenance: SessionMessageProvenance;
 }
 
@@ -1520,7 +1520,7 @@ export class SessionCollaborationService {
   }
 
   /**
-   * A Client below session collaboration v5 would present a message from another conversation as its own
+   * A Client below session collaboration v6 would present a message from another conversation as its own
    * conversation's work, so it is refused one. A same-conversation message keeps the frame it always had.
    */
   #localHandOffGate(

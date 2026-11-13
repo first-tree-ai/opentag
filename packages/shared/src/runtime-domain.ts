@@ -283,7 +283,7 @@ export const SessionMessageEndpointSchema = z
   .strict();
 
 /**
- * Session-collaboration v5: which Session, in which conversation, sent an ordinary message to which Session in
+ * Session-collaboration v6: which Session, in which conversation, sent an ordinary message to which Session in
  * which conversation. The Server reads both from the Sessions when it dispatches; a sender cannot supply it, and
  * nothing about the chain the message belongs to is recorded or derived. Like the scheduled display metadata,
  * it takes no part in the semantic conflict hash.
@@ -325,7 +325,7 @@ export const SessionReconcileRequestSchema = z
       .object({
         messageId: z.string().uuid(),
         sourceSessionId: z.string().uuid(),
-        // Only to a peer that negotiated runtime.sessionCollaboration version 5.
+        // Only to a peer that negotiated runtime.sessionCollaboration version 6.
         provenance: SessionMessageProvenanceSchema.optional(),
         content: SessionMessageContentSchema,
       })
@@ -824,7 +824,7 @@ export const SessionMessageDeliveryRequestV3Schema = z
     sentAt: z.string().datetime({ offset: true }).optional(),
     /** Deep link to the current Schedule detail page, from the deployment public URL. */
     scheduleDetailUrl: z.string().url().max(2048).optional(),
-    /** Only on the ordinary branch, and only to a peer that negotiated version 5. */
+    /** Only on the ordinary branch, and only to a peer that negotiated version 6. */
     provenance: SessionMessageProvenanceSchema.optional(),
     targetSessionId: z.string().uuid(),
     agentId: z.string().uuid(),

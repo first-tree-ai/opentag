@@ -205,7 +205,7 @@ rules are unchanged: a failed notice never returns to its sender, so a failure c
 its own. The guarding is model judgement, not isolation. On Local, Sessions of one daemon user already share files and
 memory; on Cloud each Session shares nothing else, so this is a new channel.
 
-**Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
+**Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 6 on a Local target and Runner
 Session-collaboration version 4 on a Cloud target. A message offered inside a reconcile frame, and a held message on each
 redelivery, carry it the same way. A same-conversation message reaches an older peer without it, on the frozen frame. A
 cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame

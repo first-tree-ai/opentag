@@ -114,11 +114,16 @@ never redelivers accepted input and only records the outcome the Client reports.
 The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)):
 
 - A process interruption (a daemon crash or power loss, an orderly restart or
-  upgrade) and a model HTTP 429 (`provider_rate_limited`) share one count of at
+  upgrade), a model HTTP 429 (`provider_rate_limited`) and a model API that
+  could not be reached (`provider_connection_failed`) share one count of at
   most 2 automatic retries. A retry that actually ran for at least 5 minutes
   resets the count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`); downtime,
   waiting and backoff do not count. This does not stop work that crashes the
   daemon only after running longer than that.
+- `provider_connection_failed` waits as long as a 429 before its retry. It also
+  covers a 403 whose body is a block page from the API's network edge (Cloudflare's
+  "Attention Required!"), which Claude Code reports as a login failure: the request
+  never reached the model API. A real 401 or 403 from the API is not retried.
 - A model CLI that fails to start (`provider_start_failed`) before running anything
   (`executionEffects: not_started`) gets one automatic retry, in place, after about
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry

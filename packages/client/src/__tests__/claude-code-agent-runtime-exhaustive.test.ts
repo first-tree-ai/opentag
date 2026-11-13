@@ -80,6 +80,29 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
   });
 
   it.each([
+    ["Failed to authenticate. API Error: 403 Attention Required! | Cloudflare", 403, "provider_connection_failed"],
+    ["API Error: 403 <html><head><title>Just a moment...</title></head></html>", 403, "provider_connection_failed"],
+    ["Failed to authenticate. API Error: 403 OAuth token has been revoked", 403, "provider_authentication_failed"],
+    ["Failed to authenticate. API Error: 401 Cloudflare", 401, "provider_authentication_failed"],
+  ])("tells a network edge block page from a login failure: %s", async (text, apiErrorStatus, code) => {
+    const process = new ManualClaudeCodeProcess([
+      {
+        type: "assistant",
+        uuid: "22222222-2222-4222-8222-222222222222",
+        message: { id: "message-1", content: [{ type: "text", text }] },
+        error: "authentication_failed",
+      },
+      successResult({ is_error: true, result: text, api_error_status: apiErrorStatus }),
+    ]);
+    const runtime = await factory(process).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-1", input: input("fail") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code, message: text },
+    });
+    await runtime.close();
+  });
+
+  it.each([
     [429, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
     [402, "rejected", "provider_quota_exceeded", "2026-11-11T07:30:00.000Z"],
     [429, "allowed_warning", "provider_rate_limited", undefined],

@@ -220,8 +220,13 @@ export class RuntimeApprovalOwner {
     // The callback can arrive at a different server replica. Durable decision delivery stays
     // with the replica holding the runtime socket; authority is checked on both sides.
     const scope = await this.options.authority(row.request, row);
-    if (!scope) return { outcome: "unavailable", reason: "authority_missing" };
-    if (!sameAuthority(row, scope)) return { outcome: "unavailable", reason: "authority_changed" };
+    const refused = !scope ? "authority_missing" : !sameAuthority(row, scope) ? "authority_changed" : undefined;
+    if (refused) {
+      // The request can never be decided now. Close it at once so the card loses its buttons and the Run is
+      // declined, instead of offering buttons that keep failing until the request expires.
+      await this.invalidate(row, this.current(row));
+      return { outcome: "unavailable", reason: refused };
+    }
     const updated = await this.options.store.update(row.id, "pending", { status: action.decision });
     if (updated) {
       this.options.logger?.info(

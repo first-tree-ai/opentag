@@ -18,9 +18,34 @@ const HTTP_ERRORS: Readonly<Record<string, number>> = {
   GITHUB_TOKEN_LIFETIME_UNSUPPORTED: 503,
 };
 
+/** Server provider proxy failure codes for Feishu and Slack (`RuntimeProxyFailureCode`). */
+const IM_HTTP_ERRORS: Readonly<Record<string, number>> = {
+  operation_not_registered: 403,
+  validation_scope: 403,
+  header_rejected: 400,
+  body_invalid: 400,
+  body_too_large: 413,
+  write_outcome_unknown: 502,
+  upstream_unavailable: 503,
+  handle_invalid: 404,
+  cancelled: 503,
+  response_invalid: 502,
+  resource_limit: 429,
+  unavailable: 503,
+};
+
 /** Only closed, nonsecret reason codes cross the local HTTP boundary. Never expose raw errors. */
 export function githubProxyFailure(error: unknown): { status: number; code: string } {
   const code = error instanceof RuntimeProxyDataError ? error.upstreamCode : undefined;
   if (code && Object.hasOwn(HTTP_ERRORS, code)) return { status: HTTP_ERRORS[code] as number, code };
+  return { status: 503, code: "upstream_unavailable" };
+}
+
+/** Feishu and Slack counterpart of {@link githubProxyFailure}: closed codes only, unknown codes collapse. */
+export function imProxyFailure(error: unknown): { status: number; code: string } {
+  if (!(error instanceof RuntimeProxyDataError)) return { status: 503, code: "upstream_unavailable" };
+  const code = error.upstreamCode;
+  if (code && Object.hasOwn(IM_HTTP_ERRORS, code)) return { status: IM_HTTP_ERRORS[code] as number, code };
+  if (error.code === "open_timeout") return { status: 504, code: "timeout" };
   return { status: 503, code: "upstream_unavailable" };
 }

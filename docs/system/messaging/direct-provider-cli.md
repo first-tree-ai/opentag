@@ -110,6 +110,13 @@ Slack read methods use native URL-encoded `--data` parameters (for example `slac
 because legacy Slack endpoints ignore JSON parameters when the Local CLI talks to Slack directly. Message writes keep
 `--json`. In proxy mode the Server also accepts JSON reads and normalizes their upstream encoding.
 
+When the proxy refuses or cannot complete a Feishu or Slack call, the Client's loopback endpoint answers with a
+closed reason code in the provider's native error shape (`{"code","msg"}` for Feishu, `{"ok":false,"error"}` for
+Slack) and a matching HTTP status: `403` for `operation_not_registered` and `validation_scope`, `400` for
+`body_invalid` and `header_rejected`, `413` for `body_too_large`, `502` for `write_outcome_unknown` and
+`response_invalid`, `404` for `handle_invalid`, and `504` `timeout` when the stream does not open in time. Any other
+failure is `503` `upstream_unavailable`. Raw error messages never cross this boundary.
+
 For raw Slack attachment HTTP requests, read only the nonsecret routing/config paths from that file.
 Proxy executions use `OPENTAG_PROVIDER_PROXY_URL` and `OPENTAG_PROVIDER_CA_PATH` with literal `curl` arguments and
 execution-scoped handle URLs. Default Local executions instead publish `OPENTAG_SLACK_DOWNLOAD_CONFIG`, a path to a

@@ -1,4 +1,3 @@
-import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { and, asc, eq, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, imMessageDeliveries, sandboxes, sessionPlacements, sessions } from "../../db/schema/index.js";
@@ -31,7 +30,7 @@ interface SandboxIdleReclaimOptions {
   sealer: SandboxWorkspaceSealer;
   now: () => Date;
   idleTimeoutMs: number;
-  createConvergeTimeoutMs: number;
+  startupTimeoutMs: number;
   sessionWorkBusy: SandboxRunnerServiceOptions["sessionWorkBusy"];
   sessionWorkBarrier: SandboxRunnerServiceOptions["sessionWorkBarrier"];
   allocationStartMeta: Map<string, { generation: number; mode: "cold_start" | "warm_reuse"; startedAtMs: number }>;
@@ -65,7 +64,7 @@ export class SandboxIdleReclaim {
   readonly #sealer: SandboxIdleReclaimOptions["sealer"];
   readonly #now: SandboxIdleReclaimOptions["now"];
   readonly #idleTimeoutMs: SandboxIdleReclaimOptions["idleTimeoutMs"];
-  readonly #createConvergeTimeoutMs: SandboxIdleReclaimOptions["createConvergeTimeoutMs"];
+  readonly #startupTimeoutMs: SandboxIdleReclaimOptions["startupTimeoutMs"];
   readonly #sessionWorkBusy: SandboxIdleReclaimOptions["sessionWorkBusy"];
   readonly #sessionWorkBarrier: SandboxIdleReclaimOptions["sessionWorkBarrier"];
   readonly #allocationStartMeta: SandboxIdleReclaimOptions["allocationStartMeta"];
@@ -85,7 +84,7 @@ export class SandboxIdleReclaim {
     this.#sealer = options.sealer;
     this.#now = options.now;
     this.#idleTimeoutMs = options.idleTimeoutMs;
-    this.#createConvergeTimeoutMs = options.createConvergeTimeoutMs;
+    this.#startupTimeoutMs = options.startupTimeoutMs;
     this.#sessionWorkBusy = options.sessionWorkBusy;
     this.#sessionWorkBarrier = options.sessionWorkBarrier;
     this.#allocationStartMeta = options.allocationStartMeta;
@@ -115,9 +114,7 @@ export class SandboxIdleReclaim {
     if (!this.#workspace) return { claimed: 0, released: 0, recovered: 0, failed: 0 };
     const now = this.#now();
     const idleCutoff = new Date(now.getTime() - this.#idleTimeoutMs);
-    // Startup includes claim, archive download, the restored checkpoint upload and native
-    // initialization. The create API's convergence budget alone cannot bound that work.
-    const startupCutoff = new Date(now.getTime() - this.#createConvergeTimeoutMs - 4 * RUNNER_WORKSPACE_TIMEOUT_MS);
+    const startupCutoff = new Date(now.getTime() - this.#startupTimeoutMs);
     let claimed = 0;
     let released = 0;
     let failed = 0;

@@ -161,7 +161,10 @@ function makeStack(
 }
 
 /** A fresh Server process over the same database/cloud/store, for restart-recovery assertions. */
-function restartService(stack: Stack): SandboxRunnerService {
+function restartService(
+  stack: Stack,
+  capacity?: ConstructorParameters<typeof SandboxRunnerService>[1]["capacity"],
+): SandboxRunnerService {
   return new SandboxRunnerService(unit.database, {
     cloudAdmin: stack.fake as never,
     tokens: stack.tokens,
@@ -174,6 +177,7 @@ function restartService(stack: Stack): SandboxRunnerService {
     idleTimeoutMs: IDLE_TIMEOUT_MS,
     sleep: () => Promise.resolve(),
     now: stack.now,
+    capacity,
     workspace: { store: stack.store },
   });
 }
@@ -590,6 +594,37 @@ describe("E7 automatic idle reclamation", () => {
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
     expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("recovers an expired untracked create through IM ingress after a restart", async () => {
+    const accountId = await account();
+    const capacity = { accountLimit: 1, platformLimit: 1 };
+    const stack = makeStack({ capacity });
+    const { sandbox } = await ownedSandbox(accountId, "room-interrupted");
+    stack.fake.createUnknownWithoutResourceOnce = true;
+    const pending = await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const { storageUri } = await sandboxRow(sandbox.sandboxId);
+    const archive = stack.store.stored(storageUri);
+    expect(archive).toBeDefined();
+    expect(pending).toMatchObject({
+      lifecycle: "preparing",
+      environmentGeneration: 1,
+      currentResourceUid: null,
+      currentOperationName: null,
+      lastErrorCode: "cloud_create_uncertain",
+    });
+
+    stack.advance(STARTUP_TIMEOUT_MS);
+    const restarted = restartService(stack, capacity);
+    await expect(restarted.ensureIngressAllocation(accountId, sandbox.sandboxId)).resolves.toBe("pending");
+    const replacement = await sandboxRow(sandbox.sandboxId);
+    expect(replacement).toMatchObject({ lifecycle: "preparing", environmentGeneration: 2, storageUri });
+    expect(replacement.currentResourceUid).toMatch(/^uid-/);
+    expect(replacement.currentResourceName).not.toBe(pending.currentResourceName);
+    expect(stack.fake.createCalls.map((call) => call.environmentGeneration)).toEqual([1, 2]);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    expect(stack.store.stored(storageUri)).toEqual(archive);
   });
 
   it("recovers a stale preparing allocation after the startup deadline and preserves the archive", async () => {

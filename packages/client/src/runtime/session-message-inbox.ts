@@ -21,6 +21,7 @@ import type {
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
 import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import {
   beginChannelTurn,
@@ -78,7 +79,7 @@ import {
   sessionMessageRunId,
 } from "./session-message-run.js";
 import type { SessionReconciler } from "./session-reconciler.js";
-import type { SessionRuntimeManager } from "./session-runtime-manager.js";
+import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
 import { remainingBudgetMs } from "./turn-timeout.js";
 
 interface QueuedMessage {
@@ -1533,7 +1534,7 @@ export class SessionMessageInbox {
       record.payload.requestId,
       phase,
       error,
-      phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
+      fallbackFailureCode(phase, error),
     );
     const failure: DurableFailure = timedOut
       ? { ...reported, code: SESSION_MESSAGE_TURN_TIMEOUT_CODE, retryability: "never" }
@@ -2193,4 +2194,22 @@ function sessionMessageLaunchConfiguration(
 ) {
   if (!prepared?.web && !prepared?.mcp) return {};
   return providerLaunchConfiguration({ webTools: prepared.web, mcpGateway: prepared.mcp }, runtime.manifest.providerId);
+}
+
+/**
+ * The failure code of a Run that failed without a code of its own. A Provider that could not be made ready,
+ * or whose process could not start, ran nothing: like an IM Turn, it counts as a start failure and gets the
+ * one automatic retry. A missing model login stays a runtime failure, since waiting does not fix it.
+ */
+function fallbackFailureCode(phase: string, error: unknown): string {
+  if (phase === "credential") return "credential_unavailable";
+  if (phase === "prompt") return "provider_failed";
+  if (error instanceof ClientRuntimeProviderStartError) return "provider_start_failed";
+  if (
+    error instanceof AgentRuntimeProviderUnavailableError &&
+    !error.result.issues.some((issue) => issue.code === "credential_missing")
+  ) {
+    return "provider_start_failed";
+  }
+  return "runtime_failed";
 }

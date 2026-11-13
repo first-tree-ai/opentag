@@ -123,6 +123,10 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   (`executionEffects: not_started`) gets one automatic retry, in place, after about
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
+  A Provider that could not be made ready (for example its readiness probe passed its
+  deadline on a busy Computer) ran nothing either, so it counts as a start failure, for
+  an IM Turn and a Session message alike. A missing model login does not: waiting does
+  not fix it.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. A Provider waiting in-process for a
   used-up quota window to reset is not running, so its budget stands still

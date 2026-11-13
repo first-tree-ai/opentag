@@ -274,9 +274,12 @@ uses a monotonic 90-second deadline; the stale socket sweep runs at most five se
 Credential validation runs on registration or a changed binding generation, explicit Check again,
 a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
 makes one external attempt within the existing 15-second grant budget and the provider's ten-second
-request deadline. It does not add automatic retry attempts. A Computer runs one validation process,
-so a check it answers as busy made no external attempt; the Server sends it again within the same
-budget. Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+request deadline. It does not add automatic retry attempts. A daemon runs one validation at a time
+and admits up to eight waiting requests in arrival order. Each check uses its own grant or validation
+run, and waiting uses that request's existing grant budget. Cancellation removes a waiting check, and
+a check that expires in the queue returns `validation_expired` without contacting the provider.
+A full queue returns `validation_busy`; the Server can send the check again within the same budget.
+Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
 recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
 or replaying the original operation. The first check can expose a neutral initialization for at most
 15 seconds. Later checks preserve the previous complete answer until they settle, including an

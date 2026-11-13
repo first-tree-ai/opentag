@@ -75,6 +75,7 @@ export const RUNTIME_CAPABILITY = {
   sessionConfiguration: "runtime.sessionConfiguration",
   turnReport: "runtime.turnReport",
   turnActivity: "runtime.turnActivity",
+  quotaWait: "runtime.quotaWait",
   webTools: "runtime.webTools",
   mcpGateway: "runtime.mcpGateway",
 } as const;
@@ -114,6 +115,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   // v5 adds `retryAt` to a quota failure. v6 acknowledges a superseded report.
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 6 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
+  // v1: `turn:quota-wait` tells the Server an IM Turn waits for a used-up model quota; the Server writes the notice.
+  [RUNTIME_CAPABILITY.quotaWait]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },
 } as const;

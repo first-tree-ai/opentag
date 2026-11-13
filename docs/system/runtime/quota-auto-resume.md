@@ -98,7 +98,11 @@ Codex and Pi have no in-process wait, so a used-up window ends the Run and the p
 
 ## Notice
 
+The waiting conversation gets one notice, "模型额度已用完，约 HH:mm 自动继续", edited in place when the wait gets
+longer. The Server writes it from the reset time the Client sends in `turn:quota-wait`
+([Runtime protocol](runtime-protocol.md#quota-wait-notice)); the Client sends no copy. The creating Session of an
+internal Session is not told.
+
 > **Planned — not yet implemented.** Tracking: #1519
 
-The waiting conversation gets one notice, "模型额度已用完，约 HH:mm 自动继续", edited in place when the wait gets
-longer. The creating Session of an internal Session is not told.
+The Client sends `turn:quota-wait` for a waiting IM Turn.

@@ -226,8 +226,27 @@ const RESET_TIME_ZONE = "Asia/Shanghai";
 
 /** The quota card names the time it is available again when the model CLI said so, and keeps its plain copy otherwise. */
 function quotaCard(retryAt: string | undefined, now: Date): CardCopy {
-  const at = retryAt === undefined ? Number.NaN : Date.parse(retryAt);
-  if (!Number.isFinite(at) || at <= now.getTime()) return FAILURE_CARDS.provider_quota_exceeded;
+  const reset = quotaResetText(retryAt, now);
+  if (!reset) return FAILURE_CARDS.provider_quota_exceeded;
+  return {
+    title: FAILURE_CARDS.provider_quota_exceeded.title,
+    body: { zh: `将于 ${reset.zh} 恢复`, en: `Available again ${reset.en}` },
+  };
+}
+
+/** The notice of an IM Turn that waits for a used-up quota and continues by itself; undefined for a reset in the past. */
+export function quotaWaitNoticeText(resetAt: string, language: "zh" | "en", now: Date): string | undefined {
+  const reset = quotaResetText(resetAt, now);
+  if (!reset) return undefined;
+  return language === "zh"
+    ? `模型额度已用完，约 ${reset.zh} 自动继续`
+    : `Model quota used up. OpenTag continues automatically ${reset.en}.`;
+}
+
+/** A future reset in China time: `HH:mm` today, with the date on another day; the English names its preposition. */
+function quotaResetText(resetAt: string | undefined, now: Date): { zh: string; en: string } | undefined {
+  const at = resetAt === undefined ? Number.NaN : Date.parse(resetAt);
+  if (!Number.isFinite(at) || at <= now.getTime()) return undefined;
   const parts = (date: Date) =>
     Object.fromEntries(
       new Intl.DateTimeFormat("en-US", {
@@ -244,17 +263,9 @@ function quotaCard(retryAt: string | undefined, now: Date): CardCopy {
   const reset = parts(new Date(at));
   const today = parts(now);
   const time = `${reset.hour}:${reset.minute}`;
-  const sameDay = reset.month === today.month && reset.day === today.day;
+  if (reset.month === today.month && reset.day === today.day) return { zh: time, en: `at ${time} (UTC+8)` };
   const month = new Intl.DateTimeFormat("en-US", { timeZone: RESET_TIME_ZONE, month: "short" }).format(new Date(at));
-  return {
-    title: FAILURE_CARDS.provider_quota_exceeded.title,
-    body: sameDay
-      ? { zh: `将于 ${time} 恢复`, en: `Available again at ${time} (UTC+8)` }
-      : {
-          zh: `将于 ${reset.month}月${reset.day}日 ${time} 恢复`,
-          en: `Available again on ${month} ${reset.day} at ${time} (UTC+8)`,
-        },
-  };
+  return { zh: `${reset.month}月${reset.day}日 ${time}`, en: `on ${month} ${reset.day} at ${time} (UTC+8)` };
 }
 
 export const OFFLINE_CARD: CardCopy = {

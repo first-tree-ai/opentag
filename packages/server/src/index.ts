@@ -94,6 +94,7 @@ import { legacyFeishuFeedbackAction } from "./services/im/im-feedback-callback.j
 import { ImFeedbackMessenger } from "./services/im/im-feedback-messenger.js";
 import { acknowledgeFeedbackActivity } from "./services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "./services/im/im-feedback-worker.js";
+import { ImQuotaWaitNotices } from "./services/im/im-quota-wait-notice.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
 import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
@@ -683,6 +684,8 @@ export async function startServer(): Promise<void> {
 
     const applicationCipher = createApplicationCipher(config);
     let imFeedbackWorker: ImFeedbackWorker | undefined;
+    // Late-bound: the IM messenger is built after the runtime domain owner that routes `turn:quota-wait`.
+    let quotaWaitNotices: ImQuotaWaitNotices | undefined;
     const onDeliverySettled = (_deliveryId: string) => {
       void imFeedbackWorker?.runOnce();
     };
@@ -987,6 +990,16 @@ export async function startServer(): Promise<void> {
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onSessionRecover: (frame, context) => sessionRecovery.recover(frame, context),
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
+      onTurnQuotaWait: async (frame, context) =>
+        quotaWaitNotices
+          ? quotaWaitNotices.handle(frame, context)
+          : {
+              type: "turn:quota-wait:result",
+              requestId: frame.requestId,
+              turnId: frame.turnId,
+              sequence: frame.sequence,
+              status: "unsupported_capability",
+            },
       onSessionMessageOutcome: async (frame, context) =>
         (await runOutcomeNotifier?.notifyRunOutcomeInBackground({
           childSessionId: frame.targetSessionId,
@@ -1167,6 +1180,7 @@ export async function startServer(): Promise<void> {
       config.publicUrl,
       imFeedback.store,
     );
+    quotaWaitNotices = new ImQuotaWaitNotices({ database, messenger: imFeedbackMessenger });
     imFeedbackWorker = new ImFeedbackWorker({
       store: imFeedback.store,
       transport: imFeedbackMessenger,

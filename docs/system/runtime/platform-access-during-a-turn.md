@@ -37,6 +37,21 @@ The other fences are unchanged: Session ended, internal Session authority, Agent
 placement generation, Computer owner, binding status, Slack installation, Cloud Sandbox allocation, Cloud control
 credential, current control connection and accepted custody.
 
+### Why it is a plain column
+
+`agents.access_generation` is an `integer NOT NULL DEFAULT 1` column with no index, added by
+`packages/server/drizzle/0076_agent_access_generation.sql`.
+
+- Nothing queries by it. It is read with the Agent row by primary key and compared with the value the execution pinned.
+  It is written only by the four withdrawals above, each as `+ 1` in the same transaction. An index would add nothing.
+- `agents` has no JSON column, so storing it in JSON would still need a migration.
+- The JSON fields in `agent_runtime_configs` (`context_trees`, `permissions` and the other runtime settings) hold the
+  saved configuration. A save that changes the runtime configuration replaces them. A save that changes neither the
+  runtime configuration nor self-configuration skips that write, although it still advances `agents.revision`. The
+  access generation must stay independent of configuration saves in both cases, so it cannot live in fields that those
+  saves replace.
+- A plain column keeps `NOT NULL` and the atomic increment in the database instead of in code.
+
 A validation execution still compares the revision. It is a short Server-issued check of one configuration, and a save
 makes its result meaningless.
 

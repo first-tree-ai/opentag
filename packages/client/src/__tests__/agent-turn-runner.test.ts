@@ -440,7 +440,7 @@ describe("AgentTurnRunner", () => {
       };
       const resolveApproval = (id: string, runId = "turn-1") =>
         observe({ type: "interaction_resolved", runId, requestId: id, decision: "expired" });
-      const deferred = { status: "deferred", reason: "steer_unsupported" };
+      const retry = { status: "retry", reason: "turn_starting" };
       runner.start(liveOwner(h.request));
       try {
         await vi.waitFor(() => expect(observe).toBeDefined());
@@ -449,7 +449,7 @@ describe("AgentTurnRunner", () => {
             await requestApproval("first");
             return "appended";
           });
-          await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+          await expect(runner.steer(request)).resolves.toMatchObject(retry);
           expect(removeSteer).toHaveBeenCalledExactlyOnceWith(request);
           await resolveApproval("first");
 
@@ -458,11 +458,11 @@ describe("AgentTurnRunner", () => {
             return "appended";
           });
           removeSteer.mockRejectedValueOnce(new Error("synthetic retry-input cleanup failure"));
-          await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+          await expect(runner.steer(request)).resolves.toMatchObject(retry);
           expect(removeSteer).toHaveBeenCalledTimes(2);
         } else {
           const approval = await requestApproval("first");
-          await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+          await expect(runner.steer(request)).resolves.toMatchObject(retry);
           expect(appendSteer).not.toHaveBeenCalled();
           const reply = {
             type: "approval:decision" as const,
@@ -475,11 +475,11 @@ describe("AgentTurnRunner", () => {
           };
           const answering = runner.respondToApproval(reply);
           await expect(runner.respondToApproval(reply)).resolves.toMatchObject({ status: "stale" });
-          await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+          await expect(runner.steer(request)).resolves.toMatchObject(retry);
           if (decision === "failed-response") {
             failResponse(new Error("synthetic response failure"));
             await expect(answering).resolves.toMatchObject({ status: "stale" });
-            await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+            await expect(runner.steer(request)).resolves.toMatchObject(retry);
             await resolveApproval("first");
           } else {
             finishResponse();
@@ -491,7 +491,7 @@ describe("AgentTurnRunner", () => {
           await requestApproval("second");
           await resolveApproval("first", "another-run");
           await resolveApproval("second");
-          await expect(runner.steer(request)).resolves.toMatchObject(deferred);
+          await expect(runner.steer(request)).resolves.toMatchObject(retry);
           await resolveApproval("first");
         }
         expect(steer).not.toHaveBeenCalled();

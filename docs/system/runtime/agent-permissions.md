@@ -84,9 +84,10 @@ Feishu Apps must subscribe to the `card.action.trigger` callback through the exi
 New QR registrations include this callback; existing Apps need it enabled in their developer console.
 
 Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender if posting in the originating conversation fails) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand using read-only checks or dry runs.
-While a Local IM Turn has a pending approval, the Client defers new IM steers and the Server retains those messages
-in its delivery queue. Normal delivery resumes after the Provider resolves the approval or the Turn ends. A replay
-of a steer the Client already accepted returns the existing receipt.
+While a Local IM Turn has a pending approval, the Client returns a retry for new IM steers. The Server keeps those
+messages in its delivery queue and releases the steer claim. A queued message can steer into the same Turn after the
+Provider resolves the approval, or start a new Turn if the original Turn has ended. A replay of a steer the Client
+already accepted returns the existing receipt.
 
 A Run started by a Session message (an internal Session's task, a message from another Session, or a steered
 message's own Run) has no IM input of its own. When its Provider asks for an approval, the Client sends the request

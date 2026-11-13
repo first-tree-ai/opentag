@@ -346,13 +346,14 @@ export class AgentTurnRunner {
     ) {
       return steerResult(request, "rejected", "target_mismatch");
     }
-    if (turn.phase === "starting") return steerResult(request, "retry", "turn_starting");
+    // Both waits are temporary. Release the Server's steer claim so it can try this Turn again.
+    if (turn.phase === "starting" || turn.approvals.size > 0) return steerResult(request, "retry", "turn_starting");
     if (turn.phase === "waiting") return this.#joinWaitingTurn(turn, request, semanticHash);
     const runtime = turn.runtime;
     if (turn.phase !== "running" || !runtime) {
       return steerResult(request, "deferred", "turn_not_running");
     }
-    if (runtime.capabilities.steer !== "supported" || turn.approvals.size > 0) {
+    if (runtime.capabilities.steer !== "supported") {
       return steerResult(request, "deferred", "steer_unsupported");
     }
     if (runtime.state.phase !== "running" || runtime.state.activeRunId !== request.expectedTurnId) {
@@ -409,7 +410,7 @@ export class AgentTurnRunner {
     // An approval can arrive while we persist the retry input.
     if (turn.approvals.size > 0) {
       await this.#retries.removeSteer(request).catch(() => undefined);
-      return steerResult(request, "deferred", "steer_unsupported");
+      return steerResult(request, "retry", "turn_starting");
     }
 
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a

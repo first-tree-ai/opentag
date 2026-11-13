@@ -186,7 +186,13 @@ describe("a scheduled Run that failed", () => {
     expect(text).toContain("Some operations may already have run");
     expect(text).toContain("2026-09-28 09:00:00 +08:00 (Asia/Shanghai)");
     expect(text).not.toContain("provider_unavailable");
-    expect(text).toMatch(/\[View details\]\(https:\/\/opentag\.example\.com\/agents\/[^)]+\?schedule=[^)]+\)$/u);
+    // A Session with only scheduled messages has no Task page to open, so its full ID stays plain.
+    expect(text).toMatch(
+      new RegExp(
+        `\\[View details\\]\\(https://opentag\\.example\\.com/agents/[^)]+\\?schedule=[^)]+\\)\n\nSession: ${value.sessionId}$`,
+        "u",
+      ),
+    );
     // Schedule names are untrusted: no provider mention syntax survives.
     expect(text).not.toMatch(/<at|<\/at>/u);
   });
@@ -498,10 +504,21 @@ describe("the failure message's wording", () => {
     const url = `${PUBLIC_URL}/agents/agent?schedule=schedule`;
     const slack = renderMiss(occurrence(), "missed", PUBLIC_URL, "slack");
     const feishu = renderRunFailure(occurrence(), "failed", "provider_quota_exceeded", PUBLIC_URL, "feishu");
-    expect(slack.endsWith(`<${url}|View details>`)).toBe(true);
-    expect(feishu.endsWith(`[View details](${url})`)).toBe(true);
+    expect(slack.endsWith(`<${url}|View details>\n\nSession: session`)).toBe(true);
+    expect(feishu.endsWith(`[View details](${url})\n\nSession: session`)).toBe(true);
     expect(feishu).not.toContain("provider_quota_exceeded");
-    expect(feishu.split("\n\n")).toHaveLength(3);
+    expect(feishu.split("\n\n")).toHaveLength(4);
+  });
+
+  it("links the full Session ID to its Task page when that page can be opened", () => {
+    const task = `${PUBLIC_URL}/agents/agent/tasks/session`;
+    const zh = occurrence({ prompt: "检查构建" });
+    expect(renderMiss(zh, "missed", PUBLIC_URL, "slack", task).endsWith(`\n\nSession：<${task}|session>`)).toBe(true);
+    expect(
+      renderRunFailure(occurrence(), "failed", "x", PUBLIC_URL, "feishu", task).endsWith(
+        `\n\nSession: [session](${task})`,
+      ),
+    ).toBe(true);
   });
 
   it("follows the language of the schedule's task", () => {

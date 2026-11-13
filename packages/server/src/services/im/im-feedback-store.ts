@@ -20,6 +20,7 @@ import {
 } from "../../db/schema/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage, messageExcerpt } from "./im-feedback-copy.js";
+import { hasLinkableSessionTask } from "./im-session-link.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
   batchRetryBlocked?: boolean;
@@ -53,6 +54,8 @@ export interface FeedbackMessageContext {
   excerpt?: string;
   /** The Agent's tool and model as its settings name them, for cards that tell someone what to fix. */
   runtime?: FeedbackRuntime;
+  /** The Agent whose Session Task page the card's Session ID opens, present only when that Task can be opened. */
+  taskAgentId?: string;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -593,6 +596,7 @@ export class ImFeedbackStore {
           .where(eq(agents.id, target.agentId))
           .limit(1)
       : [];
+    const linkable = target.agentId ? await hasLinkableSessionTask(this.database, target.sessionId) : false;
     return {
       language: message ? feedbackLanguage(message.content) : "en",
       ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
@@ -600,6 +604,7 @@ export class ImFeedbackStore {
       ...(agent
         ? { runtime: { tool: agent.computerKind === "cloud" ? "cloud" : agent.provider, model: agent.model ?? null } }
         : {}),
+      ...(linkable && target.agentId ? { taskAgentId: target.agentId } : {}),
     };
   }
 

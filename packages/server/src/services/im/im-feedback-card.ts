@@ -8,6 +8,7 @@ import {
 } from "./im-feedback-card-copy.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackRuntime, FeedbackTarget } from "./im-feedback-store.js";
+import { sessionLine } from "./im-feedback-text.js";
 
 export type CardTone = "failure" | "success" | "offline" | "pending";
 
@@ -27,10 +28,14 @@ export interface FeedbackCard {
   kind: "failure" | "notice";
   tone: CardTone;
   title: string;
-  /** Plain text: cards carry no links (Gandy 11-10). */
+  /** Plain text: the only visible link a card holds is its Session ID line. */
   body?: string;
   /** Plain text above the body: which group and message a card sent to the sender's direct message is about. */
   origin?: string;
+  /** The full Session ID, shown as a small last line on every card so an administrator can find the Session. */
+  sessionId: string;
+  /** The Session's Task page, which the Session ID links to; absent when that page cannot be opened. */
+  sessionUrl?: string;
 }
 
 export function feedbackDetailsUrl(target: Pick<FeedbackTarget, "id">, publicUrl: string): string {
@@ -60,12 +65,13 @@ function cardStatus(target: FeedbackTarget, action?: FeedbackAction): CardStatus
   if (target.state === "completed") return { tone: "success", key: "completed" };
 }
 
-function fromCopy(copy: CardCopy, tone: CardTone, language: FeedbackLanguage): FeedbackCard {
+function fromCopy(copy: CardCopy, tone: CardTone, language: FeedbackLanguage, sessionId: string): FeedbackCard {
   return {
     kind: "failure",
     tone,
     title: copy.title[language],
     ...(copy.body ? { body: copy.body[language] } : {}),
+    sessionId,
   };
 }
 
@@ -77,7 +83,13 @@ export function feedbackCard(
 ): FeedbackCard {
   const status = cardStatus(target, action);
   // A status card is only its state: who acted and when stay on the details page.
-  if (status) return { kind: "failure", tone: status.tone, title: CARD_STATUS[status.key][language] };
+  if (status)
+    return {
+      kind: "failure",
+      tone: status.tone,
+      title: CARD_STATUS[status.key][language],
+      sessionId: target.sessionId,
+    };
   return fromCopy(
     failureCardCopy(target.errorCode, {
       workspaceBlocked: target.state === "workspace_blocked",
@@ -89,12 +101,20 @@ export function feedbackCard(
     }),
     "failure",
     language,
+    target.sessionId,
   );
 }
 
 /** Both waiting notices are red, like a failure: the offline Computer, or a message parked behind an unconfirmed one. */
-export function waitingCard(language: FeedbackLanguage, reason: "offline" | "parked" = "offline"): FeedbackCard {
-  return { ...fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language), kind: "notice" };
+export function waitingCard(
+  language: FeedbackLanguage,
+  sessionId: string,
+  reason: "offline" | "parked" = "offline",
+): FeedbackCard {
+  return {
+    ...fromCopy(reason === "parked" ? PARKED_CARD : OFFLINE_CARD, "offline", language, sessionId),
+    kind: "notice",
+  };
 }
 
 /**
@@ -142,6 +162,19 @@ export function slackCardMessage(card: FeedbackCard, feedbackId: string, languag
             ? [{ type: "section" as const, text: { type: "plain_text" as const, text: card.origin, emoji: false } }]
             : []),
           ...(body ? [{ type: "section" as const, text: { type: "mrkdwn" as const, text: body } }] : []),
+          {
+            type: "context" as const,
+            elements: [
+              {
+                type: "mrkdwn" as const,
+                text: sessionLine(
+                  card.sessionId,
+                  language,
+                  card.sessionUrl ? { provider: "slack", url: card.sessionUrl } : undefined,
+                ),
+              },
+            ],
+          },
         ],
       },
     ],
@@ -164,6 +197,19 @@ export function feishuCardContent(card: FeedbackCard, detailsUrl: string, langua
     elements: [
       ...(card.origin ? [{ tag: "div", text: { tag: "plain_text", content: card.origin } }] : []),
       { tag: "div", text: { tag: "lark_md", content: markdown } },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "lark_md",
+            content: sessionLine(
+              card.sessionId,
+              language,
+              card.sessionUrl ? { provider: "feishu", url: card.sessionUrl } : undefined,
+            ),
+          },
+        ],
+      },
     ],
   });
 }

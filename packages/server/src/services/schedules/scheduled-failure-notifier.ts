@@ -13,7 +13,8 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { FEEDBACK_LABELS, type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
 import { FeedbackProviderError, type ImFeedbackMessenger } from "../im/im-feedback-messenger.js";
-import { plainText, textLink } from "../im/im-feedback-text.js";
+import { plainText, sessionLine, textLink } from "../im/im-feedback-text.js";
+import { hasLinkableSessionTask, sessionTaskUrl } from "../im/im-session-link.js";
 import type {
   RunOutcomeNoticeInput,
   RunOutcomeNoticeStatus,
@@ -157,20 +158,29 @@ const TEXT = {
   runNext: { zh: "先看看结果，再决定下一步。", en: "Check the results before deciding what to do next." },
 } satisfies Record<string, unknown>;
 
-/** Same shape as other IM failure messages: what happened, whether operations ran, what to do next, and a link. */
+/**
+ * Same shape as other IM failure messages: what happened, whether operations ran, what to do next, a link, and
+ * the full Session ID as the last line.
+ */
 function message(
   occurrence: ScheduledOccurrence,
   language: FeedbackLanguage,
   provider: Provider,
   publicUrl: string,
   [what, effects, next]: readonly [string, string, string],
+  sessionUrl?: string,
 ): string {
   const link = textLink(
     provider,
     scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId),
     FEEDBACK_LABELS.details[language],
   );
-  return [what, effects, `${next} ${link}`].join("\n\n");
+  return [
+    what,
+    effects,
+    `${next} ${link}`,
+    sessionLine(occurrence.targetSessionId, language, sessionUrl ? { provider, url: sessionUrl } : undefined),
+  ].join("\n\n");
 }
 
 const subject = (occurrence: ScheduledOccurrence, language: FeedbackLanguage): string =>
@@ -187,23 +197,38 @@ export function renderRunFailure(
   code: string,
   publicUrl: string,
   provider: Provider,
+  sessionUrl?: string,
 ): string {
   const language = textLanguage(occurrence.prompt);
   if (code === BACKGROUND_WORK_POSSIBLY_STOPPED_CODE) {
     const space = language === "zh" ? "" : " ";
-    return message(occurrence, language, provider, publicUrl, [
-      `${subject(occurrence, language)}${space}${TEXT.backgroundWork.what[language]}`,
-      TEXT.backgroundWork.effects[language],
-      TEXT.runNext[language],
-    ]);
+    return message(
+      occurrence,
+      language,
+      provider,
+      publicUrl,
+      [
+        `${subject(occurrence, language)}${space}${TEXT.backgroundWork.what[language]}`,
+        TEXT.backgroundWork.effects[language],
+        TEXT.runNext[language],
+      ],
+      sessionUrl,
+    );
   }
   const reason = outcome === "failed" ? code : RUN_OUTCOME_REASON[outcome];
   const separator = language === "zh" ? "：" : ": ";
-  return message(occurrence, language, provider, publicUrl, [
-    `${subject(occurrence, language)}${separator}${failureCopy(reason, language).cause}`,
-    TEXT.runEffects[language],
-    TEXT.runNext[language],
-  ]);
+  return message(
+    occurrence,
+    language,
+    provider,
+    publicUrl,
+    [
+      `${subject(occurrence, language)}${separator}${failureCopy(reason, language).cause}`,
+      TEXT.runEffects[language],
+      TEXT.runNext[language],
+    ],
+    sessionUrl,
+  );
 }
 
 export function renderMiss(
@@ -211,15 +236,19 @@ export function renderMiss(
   kind: ScheduledMissKind,
   publicUrl: string,
   provider: Provider,
+  sessionUrl?: string,
 ): string {
   const language = textLanguage(occurrence.prompt);
   const [what, effects, next] = TEXT.miss[kind][language] as unknown as [string, string, string];
   const space = language === "zh" ? "" : " ";
-  return message(occurrence, language, provider, publicUrl, [
-    `${subject(occurrence, language)}${space}${what}`,
-    effects,
-    next,
-  ]);
+  return message(
+    occurrence,
+    language,
+    provider,
+    publicUrl,
+    [`${subject(occurrence, language)}${space}${what}`, effects, next],
+    sessionUrl,
+  );
 }
 
 const MISS_SEND_ATTEMPTS = 3;
@@ -233,7 +262,7 @@ const MAX_REMEMBERED_RESULTS = 1024;
 interface ScheduledRunNotice {
   requestId: string;
   sessionId: string;
-  render(provider: Provider): string;
+  render(provider: Provider, sessionUrl?: string): string;
 }
 
 type SendResult = { status: "sent" | "dropped" } | { status: "retry"; retryAfterMs?: number };
@@ -328,7 +357,8 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
       // Feishu would drop this failure as a repeat of it.
       requestId: runOutcomeNoticeMessageId(input.childSessionId, input.messageId),
       sessionId: scheduled.occurrence.targetSessionId,
-      render: (provider) => renderRunFailure(occurrence, outcome, input.reason, this.#options.publicUrl, provider),
+      render: (provider, sessionUrl) =>
+        renderRunFailure(occurrence, outcome, input.reason, this.#options.publicUrl, provider, sessionUrl),
     };
   }
 
@@ -338,7 +368,8 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   ): Promise<void> {
     // It has no conversation. The miss stays in the schedule's summary, and nobody is messaged for it.
     if (await this.#targetIsInternal(input.occurrence.targetSessionId)) return;
-    const render = (provider: Provider) => renderMiss(input.occurrence, input.kind, this.#options.publicUrl, provider);
+    const render = (provider: Provider, sessionUrl?: string) =>
+      renderMiss(input.occurrence, input.kind, this.#options.publicUrl, provider, sessionUrl);
     for (let attempt = 1; attempt <= MISS_SEND_ATTEMPTS; attempt += 1) {
       const sent = await this.#send(input.occurrence.targetSessionId, render, input.requestId);
       if (sent.status !== "retry") return;
@@ -425,7 +456,11 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   }
 
   /** Never throws. `requestId` makes Feishu drop a repeat of the same occurrence's send. */
-  async #send(sessionId: string, render: (provider: Provider) => string, requestId: string): Promise<SendResult> {
+  async #send(
+    sessionId: string,
+    render: (provider: Provider, sessionUrl?: string) => string,
+    requestId: string,
+  ): Promise<SendResult> {
     let provider: "slack" | "feishu" | undefined;
     try {
       const target = await this.#conversation(sessionId);
@@ -437,7 +472,11 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
         return { status: "dropped" };
       }
       provider = target.provider;
-      await this.#options.messenger.postConversationText(target, render(target.provider), requestId);
+      const { database, logger, publicUrl } = this.#options;
+      const sessionUrl = (await hasLinkableSessionTask(database, sessionId, logger))
+        ? sessionTaskUrl(publicUrl, target.agentId, sessionId)
+        : undefined;
+      await this.#options.messenger.postConversationText(target, render(target.provider, sessionUrl), requestId);
       return { status: "sent" };
     } catch (error) {
       if (!(error instanceof FeedbackProviderError)) return { status: "retry" };
@@ -461,6 +500,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
         bindingGeneration: imBindings.credentialGeneration,
         bindingId: imBindings.id,
         bindingStatus: imBindings.status,
+        agentId: imBindings.agentId,
         channelId: sessions.channelId,
         installationId: imBindings.slackInstallationId,
         kind: sessions.kind,
@@ -473,6 +513,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
       .limit(1);
     if (!row || row.kind === "internal" || row.bindingStatus !== "active") return undefined;
     const base = {
+      agentId: row.agentId,
       bindingGeneration: row.bindingGeneration,
       bindingId: row.bindingId,
       channelId: row.channelId,

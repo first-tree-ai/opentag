@@ -32,8 +32,8 @@ error code and a clickable link that opens the schedule in Web.
 | ST-10 | Cancelled Run | On a Cloud Agent, stop a running scheduled Run (a Local Computer has no way to stop a running Task) | No failure message |
 | ST-11 | Pause, edit, delete | Pause, edit, or delete a schedule as an occurrence is due | No failure message |
 | ST-12 | Agent paused | Suspend the Agent across an occurrence | No failure message |
-| ST-13 | Untrusted name | Name a schedule with provider mention or link syntax, then make it fail | The name appears as text. Nobody is mentioned, and the only disguised link is the details link |
-| ST-14 | Language and link | Make a schedule with a Chinese task fail, then one with an English task; click the link in each | Each message follows its task's language, shows no error code, and its link opens the schedule, which shows the Run as failed with its code. Check Slack and Feishu in the client |
+| ST-13 | Untrusted name | Name a schedule with provider mention or link syntax, then make it fail | The name appears as text. Nobody is mentioned, and the only disguised link is the details link; the last line is the Session ID |
+| ST-14 | Language and link | Make a schedule with a Chinese task fail, then one with an English task; click the link in each | Each message follows its task's language, shows no error code, ends with “Session：<full Session ID>” (English “Session: ”), and its details link opens the schedule, which shows the Run as failed with its code. Check Slack and Feishu in the client |
 | ST-15 | Cloud Sandbox release at trigger | Let a scheduled occurrence fire while idle reclaim is releasing the Sandbox. Allow release and workspace restoration to finish within the dispatch window | The original occurrence starts once after restoration. The schedule keeps its next trigger and IM posts no failure message |
 | ST-16 | Delayed Local hand-off | Delay only the Local scheduled delivery frame by about 89 seconds after the Server sends it, then let the Client accept and process it | The original occurrence runs once, IM posts no failure message, and the latest summary shows acceptance if this is still the latest occurrence |
 

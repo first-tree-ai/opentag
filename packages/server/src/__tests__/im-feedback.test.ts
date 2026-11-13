@@ -508,6 +508,7 @@ describe("durable IM feedback", () => {
       tone: "failure",
       title: "工作区改动没能保存",
       body: "请在 OpenTag 重试保存或放弃改动",
+      sessionId: target.sessionId,
     });
   });
 
@@ -544,6 +545,7 @@ describe("durable IM feedback", () => {
       tone: "failure",
       title: "The Agent ran into an error",
       body: "The model call failed. Try again",
+      sessionId: target.sessionId,
     });
   });
 
@@ -551,6 +553,8 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     const target = await h.target();
     expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // A visible Session's Task can be opened, so the card's Session ID links to it.
+    expect((await h.store.messageContext(target)).taskAgentId).toBe(target.agentId);
     // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
     expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
     expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);

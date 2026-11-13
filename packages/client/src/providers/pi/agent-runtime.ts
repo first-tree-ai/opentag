@@ -11,6 +11,7 @@ import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/error
 import {
   answeredWithFollowUpFailure,
   piProviderFailureCode,
+  piQuotaFailure,
   providerProcessFailureCode,
 } from "../../agent-runtime/provider-failure.js";
 import type { Deferred } from "../../agent-runtime/provider-utils.js";
@@ -1138,6 +1139,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       error: {
         code: terminal.stopReason === "length" ? "provider_execution_limit" : piProviderFailureCode(terminal.error),
         message: terminal.error ?? piFailedStopMessage(terminal.stopReason),
+        ...(terminal.stopReason === "length" ? {} : piQuotaFailure(terminal.error, Date.now())),
       },
       diagnostics,
     };

@@ -80,10 +80,21 @@ at once). The Session stays held while it waits, so a later message to it queues
 Run. A restarted daemon restores the record and still waits until `nextAttemptAt`; the sender gets no outcome notice
 until the message ends.
 
-> **Planned — not yet implemented.** Tracking: #1519
+### Codex and Pi
 
-Codex takes the reset
-from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff.
+Codex and Pi have no in-process wait, so a used-up window ends the Run and the persisted resume above takes over.
+
+- **Codex:** `usageLimitExceeded` is a `usage_window` quota. Its reset comes from the account rate limits the App
+  Server reports during the Run (`account/rateLimits/updated`): the latest `resetsAt` among the windows at 100 %.
+  A later update without a used-up window does not clear it. Without one, the backoff applies.
+- **Pi:** Pi reports a model failure as text, often `<status>: <JSON error>`. Billing text (`insufficient_quota`,
+  `insufficient_credit`, `billing`, `available balance`, `out of budget`, `credit balance`, or HTTP 402) is a `billing`
+  quota and is reported at once. A subscription usage limit is a `usage_window` quota: the code `usage_limit_reached` or OpenCode's
+  `GoUsageLimitError` / `FreeUsageLimitError`, or pi-ai's "You have hit your ChatGPT usage limit … Try again in ~N
+  min". pi-ai writes the same text without the reset for every ChatGPT HTTP 429 and for `usage_not_included`,
+  billing and access included, so that text alone keeps its ordinary classification. The reset is taken from
+  `resets_at`, `resets_in_seconds` or "Try again in ~N min" when present; otherwise the backoff applies. A plain rate limit keeps
+  its ordinary 429 retry.
 
 ## Notice
 

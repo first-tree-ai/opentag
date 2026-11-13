@@ -255,6 +255,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #turnIdReady?: Deferred<string>;
   #terminal?: Deferred<ParsedTurn>;
   #latestUsage?: { readonly inputTokens?: number; readonly cachedInputTokens?: number; readonly outputTokens?: number };
+  /** When the latest used-up usage window opens again, from `account/rateLimits/updated`. */
+  #quotaResetAt?: string;
   #providerFailure?: Error;
 
   constructor(options: CodexRuntimeOptions) {
@@ -291,6 +293,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#providerTurnId = undefined;
     this.#providerFailure = undefined;
     this.#latestUsage = undefined;
+    this.#quotaResetAt = undefined;
     this.#completedMessages.clear();
     this.#activeMessages.clear();
     this.#activeTools.clear();
@@ -911,7 +914,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         return;
       }
       if (envelope.type !== "notification") await this.#handleServerRequest(envelope.request);
-      else if (!(await this.#handleBackgroundCommand(envelope.message)))
+      else if (!(await this.#handleBackgroundCommand(envelope.message)) && !this.#noteRateLimits(envelope.message))
         await this.#handleNotification(envelope.message);
     });
     this.#eventTail = next.catch((error: unknown) => {
@@ -943,6 +946,13 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (method !== "item/commandExecution/outputDelta" || !this.#backgroundCommands.has(String(params?.itemId)))
       return false;
     this.requireProviderContext().noteBackgroundProgress(String(params?.itemId));
+    return true;
+  }
+
+  /** Account rate limits name when a used-up window opens again; false for any other notification. */
+  #noteRateLimits({ method, params }: CodexAppServerMessage): boolean {
+    if (method !== "account/rateLimits/updated") return false;
+    this.#quotaResetAt = usedUpWindowReset(record(params)?.rateLimits) ?? this.#quotaResetAt;
     return true;
   }
 
@@ -1202,7 +1212,14 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(this.#finishedUsage ? { usage: this.#finishedUsage } : {}),
-      error: { code: providerFailureCode(turn.errorCode), message: turn.error ?? "Codex turn failed" },
+      error: {
+        code: providerFailureCode(turn.errorCode),
+        message: turn.error ?? "Codex turn failed",
+        // A used-up subscription window waits for its reset; Codex names the reset only in its rate limits.
+        ...(turn.errorCode === "usageLimitExceeded"
+          ? { quotaKind: "usage_window" as const, ...(this.#quotaResetAt ? { retryAt: this.#quotaResetAt } : {}) }
+          : {}),
+      },
       diagnostics,
     };
   }
@@ -2075,6 +2092,25 @@ function settleUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 function parseTurnResponse(value: unknown, source: string): ParsedTurn {
   const response = requireRecord(value, `${source} returned an invalid response`);
   return parseTurn(response.turn, source);
+}
+
+/** 10000-01-01T00:00:00Z: the first Unix second whose ISO form needs an extended year. */
+const MAX_ISO_UNIX_SECONDS = 253_402_300_800;
+
+/**
+ * The latest reset among the used-up windows of a rate-limit snapshot (`primary`, `secondary`: `usedPercent`,
+ * `resetsAt` in Unix seconds); undefined when none is used up or names a usable reset.
+ */
+function usedUpWindowReset(value: unknown): string | undefined {
+  const snapshot = record(value);
+  let latest: number | undefined;
+  for (const window of [record(snapshot?.primary), record(snapshot?.secondary)]) {
+    const resetsAt = window?.resetsAt;
+    if (typeof window?.usedPercent !== "number" || window.usedPercent < 100) continue;
+    if (typeof resetsAt !== "number" || !(resetsAt > 0 && resetsAt < MAX_ISO_UNIX_SECONDS)) continue;
+    latest = Math.max(latest ?? 0, resetsAt);
+  }
+  return latest === undefined ? undefined : new Date(latest * 1000).toISOString();
 }
 
 function parseTurn(value: unknown, source: string): ParsedTurn {

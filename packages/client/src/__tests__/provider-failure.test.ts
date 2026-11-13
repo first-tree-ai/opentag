@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   answeredWithFollowUpFailure,
   piProviderFailureCode,
+  piQuotaFailure,
   providerFailureCode,
   providerProcessFailureCode,
 } from "../agent-runtime/provider-failure.js";
@@ -78,5 +79,40 @@ describe("answeredWithFollowUpFailure", () => {
       followUpFailure: error,
     });
     expect(answeredWithFollowUpFailure({ status: "failed" })).toEqual({ status: "completed" });
+  });
+});
+
+describe("piQuotaFailure", () => {
+  const now = Date.parse("2026-11-13T00:00:00.000Z");
+  const later = (seconds: number) => new Date(now + seconds * 1000).toISOString();
+
+  it.each([
+    [
+      '429: {"error":{"type":"usage_limit_reached","resets_at":1794528000}}',
+      "usage_window",
+      "2026-11-13T00:00:00.000Z",
+    ],
+    ['429: {"error":{"code":"usage_limit_reached","resets_in_seconds":3600}}', "usage_window", later(3600)],
+    ["You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.", "usage_window", later(42 * 60)],
+    ['429: {"error":{"type":"GoUsageLimitError"}}', "usage_window", undefined],
+    ['429: {"error":{"code":"insufficient_quota"}}', "billing", undefined],
+    ['402: {"error":{"type":"payment_required"}}', "billing", undefined],
+    ["Monthly usage limit reached. Enable available balance usage to continue.", "billing", undefined],
+  ])("classifies %s", (message, quotaKind, retryAt) => {
+    const failure = piQuotaFailure(message, now);
+    expect(failure).toMatchObject({ code: "provider_quota_exceeded", quotaKind });
+    expect(failure?.retryAt).toBe(retryAt);
+  });
+
+  it.each([
+    undefined,
+    "",
+    '429: {"code":"rate_limit_exceeded"}',
+    "500: server error",
+    // pi-ai writes this for every ChatGPT 429 and for usage_not_included: without a reset it proves nothing.
+    "You have hit your ChatGPT usage limit (plus plan).",
+    "You have hit your ChatGPT usage limit.",
+  ])("leaves any other failure alone: %s", (message) => {
+    expect(piQuotaFailure(message, now)).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import type { RuntimeCredentialProvider } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
-import { decodeBufferedBody, slackBufferedBodyKind } from "./buffered-body.js";
+import { decodeBufferedBody, requestQuery, slackBufferedBodyKind } from "./buffered-body.js";
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
 import { FeishuTenantTokenExchangeError } from "./feishu-tenant-token.js";
 import {
@@ -220,10 +220,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     const operation = match.operation;
     const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
     try {
-      if (operation.body === "none") {
-        const bytes = await bufferProxyBody(request.body, 0);
-        return { bytes, parsed: undefined, stream: false };
-      }
+      if (operation.body === "none") return await emptyBody(request);
       if (operation.body === "stream" || (operation.body === "auto" && isMultipart(headers["content-type"]))) {
         // Upload/file streams are never buffered; their content type is passed through upstream.
         return { bytes: new Uint8Array(0), parsed: undefined, stream: true };
@@ -499,6 +496,15 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     throw new RuntimeProxyError("handle_invalid");
   }
+}
+
+/** Body of an operation that takes none; any byte fails as `body_too_large`. */
+async function emptyBody(request: ProviderProxyRequest): Promise<PreparedBody> {
+  // A Slack credential in the query would bypass the body token scrub.
+  if (request.provider === "slack" && requestQuery(request.path).has("token")) {
+    throw new RuntimeProxyError("body_invalid", "Slack query credentials are not accepted");
+  }
+  return { bytes: await bufferProxyBody(request.body, 0), parsed: undefined, stream: false };
 }
 
 function isMultipart(contentType: string | undefined): boolean {

@@ -1,7 +1,19 @@
-import type { ProviderOperation, ProviderOperationRewriteContext } from "./operation-registry.js";
+import type {
+  ProviderOperation,
+  ProviderOperationRewriteContext,
+  ProviderPassthroughRule,
+} from "./operation-registry.js";
 
 const JSON_BODY = 128 * 1024;
 const JSON_RESPONSE = 2 * 1024 * 1024;
+const PASSTHROUGH_BODY = 1024 * 1024;
+const PASSTHROUGH_JSON_RESPONSE = 10 * 1024 * 1024;
+/** Slack Web API method names: dot-separated words, e.g. `admin.conversations.create`. */
+const SLACK_METHOD_NAME = /^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/;
+/** Credential issuance, user sign-in, and revocation stay refused even with passthrough on. */
+const PASSTHROUGH_DENIED_PREFIXES = ["oauth.", "openid."];
+const PASSTHROUGH_DENIED_METHODS = new Set(["auth.revoke"]);
+const READ_METHOD_VERBS = new Set(["list", "info", "history", "replies", "members", "get", "test"]);
 
 /**
  * Slack file-object fields that require the caller token: private download URLs and the
@@ -71,9 +83,9 @@ function write(operationId: string, extra: Partial<ProviderOperation> = {}): Pro
 }
 
 /**
- * Slack operation table covering the official CLI instruction business domains. Paths are the
- * fixed `/api/<method>` shape on the fixed `https://slack.com` origin; OAuth, admin, app
- * management, revocation, and user-login domains are deliberately absent and therefore rejected.
+ * Explicit Slack operations on the fixed `/api/<method>` shape and `https://slack.com` origin.
+ * They match before the passthrough rule: `auth.test` is the only validation-purpose call,
+ * `chat.postMessage` feeds the outbound capture, and file URLs are rewritten to handles.
  */
 export const SLACK_OPERATIONS: readonly ProviderOperation[] = [
   read("auth.test", {
@@ -104,3 +116,55 @@ export const SLACK_OPERATIONS: readonly ProviderOperation[] = [
   write("files.getUploadURLExternal", { rewriteResponseJson: rewriteSlackProtectedUrls }),
   write("files.completeUploadExternal", { rewriteResponseJson: rewriteSlackProtectedUrls }),
 ];
+
+const EXPLICIT_METHOD_NAMES = new Set(
+  SLACK_OPERATIONS.map((operation) => operation.pathTemplate.slice("/api/".length).toLowerCase()),
+);
+
+/** Read when the method's final verb is a known read (`*.list`, `*.info`, `users.getPresence`, `search.*`). */
+function slackMethodKind(method: string): ProviderOperation["kind"] {
+  const parts = method.split(".");
+  const verb = parts.at(-1) ?? "";
+  if (parts[0] === "search" || READ_METHOD_VERBS.has(verb) || verb.startsWith("get") || verb.startsWith("lookup")) {
+    return "read";
+  }
+  return "write";
+}
+
+/**
+ * Generic Slack operation for any other Web API method when passthrough is enabled. The App's own
+ * scopes are the only limit, except for `oauth.*`, `openid.*`, and `auth.revoke`. Bodies use the
+ * same form/JSON decoding as the explicit table (multipart is not accepted), the caller's token is
+ * always stripped, and JSON responses keep the protected-URL rewriting.
+ */
+export const SLACK_PASSTHROUGH: ProviderPassthroughRule = {
+  resolve(method, path) {
+    if (method !== "POST" && method !== "GET") return undefined;
+    const [, prefix, name, ...rest] = path.split("/");
+    if (prefix !== "api" || !name || rest.length > 0 || !SLACK_METHOD_NAME.test(name)) return undefined;
+    const lowered = name.toLowerCase();
+    if (PASSTHROUGH_DENIED_METHODS.has(lowered) || PASSTHROUGH_DENIED_PREFIXES.some((p) => lowered.startsWith(p))) {
+      return undefined;
+    }
+    // Slack accepts GET and any casing for a method, so another spelling of an explicit method
+    // would skip its validation scope, capture, or rewriting; only the explicit entry may serve it.
+    if (EXPLICIT_METHOD_NAMES.has(lowered)) return undefined;
+    const kind = slackMethodKind(name);
+    return {
+      operationId: "slack.passthrough",
+      provider: "slack",
+      method,
+      pathTemplate: "/api/{method}",
+      kind,
+      // Legacy read methods ignore JSON parameters, so reads are sent upstream as forms.
+      body: method === "GET" ? "none" : kind === "read" ? "form" : "json",
+      response: "auto",
+      passthrough: true,
+      maxBodyBytes: PASSTHROUGH_BODY,
+      maxResponseBytes: PASSTHROUGH_JSON_RESPONSE,
+      rewriteResponseJson: rewriteSlackProtectedUrls,
+      // `/api/<method>` carries no identifiers; keep the method name and drop the query.
+      auditPath: (requestPath) => requestPath.split("?", 1)[0] ?? "",
+    };
+  },
+};

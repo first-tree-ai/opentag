@@ -28,7 +28,7 @@ import { ProviderOperationRegistry } from "./operation-registry.js";
 import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
 import { RuntimeCredentialOwner, type RuntimeCredentialOwnerOptions } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
-import { SLACK_OPERATIONS } from "./slack-operations.js";
+import { SLACK_OPERATIONS, SLACK_PASSTHROUGH } from "./slack-operations.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "./task-policy.js";
 import { RuntimeProxyTicketStore } from "./ticket-store.js";
 import { RuntimeUrlHandleStore } from "./url-handle-store.js";
@@ -79,7 +79,7 @@ export interface RuntimeCredentialServicesOptions {
   onCredentialFailure?: import("./provider-proxy-adapter.js").ImProviderProxyAdapterOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
   /**
-   * Whether Feishu calls outside the explicit operation table pass through to the provider
+   * Whether Feishu and Slack calls outside the explicit operation tables pass through to the provider
    * (`OPENTAG_PROVIDER_PROXY_PASSTHROUGH`). Off keeps the explicit table as an exact allowlist.
    */
   providerProxyPassthrough?: boolean;
@@ -436,7 +436,7 @@ function createImAdapters(
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
   const passthrough = options.providerProxyPassthrough === true;
   const defaults = [
-    ["slack", SLACK_OPERATIONS, undefined],
+    ["slack", SLACK_OPERATIONS, passthrough ? SLACK_PASSTHROUGH : undefined],
     ["feishu", FEISHU_OPERATIONS, passthrough ? FEISHU_PASSTHROUGH : undefined],
   ] as const;
   for (const [provider, operations, passthroughRule] of defaults) {

@@ -39,18 +39,18 @@ is one chat Session.
     chain.
 
   Each endpoint reports the canonical id.
-- Outbound IM replies sent through the Server provider proxy append a clickable `Session <shortId>`
-  footer linking to `/agents/:agentId/tasks/:sessionId` for the Session that sent them. Group channel
-  executions and internal Sessions link too, because the Task routes resolve those Session ids to
-  their Task. A footer links only when that Task qualifies under the same rule the Task list and
-  detail use, so an emitted link never opens a 404: an ambient-only group channel Session, an
-  internal Session whose creator chain reaches one, or a Session that cannot be found gets plain
-  `Session <shortId>` text. The check runs before every annotated provider write, so it never reads
-  the Task's status rollup: it resolves the Session's Task once and asks whether a qualifying
-  delivery exists through a few bounded index-range probes, each stopping at its first match, so a
-  Task costs the same whether it qualifies or holds only superseded deliveries, however long the
-  history is. Footers that
-  older replies carry anchor on a request's message id and keep resolving.
+- The Server provider proxy forwards an Agent's IM replies as written and appends no Session footer
+  (product decision, 2026-11-13). The Session ID instead appears on IM failure messages, linked to
+  `/agents/:agentId/tasks/:sessionId` (see [IM task feedback](../system/messaging/im-feedback.md#session-id)).
+  It links only when that Task qualifies under the same rule the Task list and detail use, so an
+  emitted link never opens a 404: an ambient-only group channel Session, an internal Session whose
+  creator chain reaches one, or a Session that cannot be found keeps the plain ID. Group channel
+  Sessions and internal Sessions link too, because the Task routes resolve those Session ids to
+  their Task. The check never reads the Task's status rollup: it resolves the Session's Task once
+  and asks whether a qualifying delivery exists through a few bounded index-range probes, each
+  stopping at its first match, so a Task costs the same whether it qualifies or holds only
+  superseded deliveries, however long the history is. Footers that older replies carry anchor on a
+  Session id or a request's message id and keep resolving.
 - `createdAt` is the earlier of the Session's creation and its first addressed message.
 
 A Task reports `sessionKind: "thread"` and the Session's thread key for a group thread Session.

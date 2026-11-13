@@ -20,7 +20,7 @@ import {
   sessionMessages,
   sessions,
 } from "../../../db/schema/index.js";
-import { resolveSessionTaskAnchor } from "../../../runtime-credentials/index.js";
+import { hasLinkableSessionTask } from "../../im/im-session-link.js";
 import { TaskQueryError, TaskService } from "../index.js";
 import { type LockedDeliveryRow, withdrawalRefusal } from "../task-service.js";
 
@@ -2107,10 +2107,7 @@ describe("TaskService bounded detail at scale", () => {
       occurredAt: minutes(2),
     });
 
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: dmSession.id })).toEqual({
-      kind: "link",
-      taskAnchorId: dmSession.id,
-    });
+    expect(await hasLinkableSessionTask(unitDatabase.database, dmSession.id)).toBe(true);
     expect((await service.detail(bootstrap.userId, dmSession.id)).task.id).toBe(dmSession.id);
     expect((await service.get(bootstrap.userId, dmSession.id, { limit: 10 })).task.id).toBe(dmSession.id);
     expect((await service.listTurns(bootstrap.userId, dmSession.id, {})).items.map((t) => t.message.id)).toEqual([
@@ -2163,20 +2160,14 @@ describe("TaskService bounded detail at scale", () => {
       occurredAt: minutes(13),
     });
 
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: thread.id })).toEqual({
-      kind: "link",
-      taskAnchorId: thread.id,
-    });
+    expect(await hasLinkableSessionTask(unitDatabase.database, thread.id)).toBe(true);
     expect((await service.detail(bootstrap.userId, thread.id)).task.id).toBe(thread.id);
     expect((await service.get(bootstrap.userId, thread.id, { limit: 10 })).task.id).toBe(thread.id);
     expect((await service.listTurns(bootstrap.userId, thread.id, {})).items.map((t) => t.message.id)).toEqual([
       reply.id,
     ]);
     // An internal Session's footer links by its own id, which opens its creator's Task.
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: internal.id })).toEqual({
-      kind: "link",
-      taskAnchorId: internal.id,
-    });
+    expect(await hasLinkableSessionTask(unitDatabase.database, internal.id)).toBe(true);
     expect((await service.detail(bootstrap.userId, internal.id)).task.id).toBe(thread.id);
     expect((await service.listInternalSessions(bootstrap.userId, thread.id, {})).items.map((s) => s.id)).toEqual([
       internal.id,
@@ -2196,7 +2187,7 @@ describe("TaskService bounded detail at scale", () => {
       text: "Top-level group request A",
       occurredAt: minutes(20),
     });
-    const deliveryA = await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
+    await createDelivery(channel.id, requestA.id, { at: minutes(21), reported: true });
     await unitDatabase.database.insert(imMessages).values({
       imBindingId: binding.id,
       providerEventId: null,
@@ -2225,34 +2216,21 @@ describe("TaskService bounded detail at scale", () => {
       text: "Top-level group request B",
       occurredAt: minutes(30),
     });
-    const deliveryB = await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
+    await createDelivery(channel.id, requestB.id, { at: minutes(31), reported: true });
 
-    // Every execution of the group channel Session links its footer to the Session's Task.
-    for (const source of [
-      { kind: "delivery" as const, deliveryId: deliveryA.id, turnId: "turn-a" },
-      { kind: "delivery" as const, deliveryId: deliveryB.id, turnId: "turn-b" },
-      { kind: "session-message" as const, messageId: crypto.randomUUID() },
-    ]) {
-      expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: channel.id, source })).toEqual({
-        kind: "link",
-        taskAnchorId: channel.id,
-      });
-    }
-    expect(await resolveSessionTaskAnchor(unitDatabase.database, { sessionId: crypto.randomUUID() })).toEqual({
-      kind: "plain",
-    });
+    // A group channel Session with addressed requests links its Session ID to its Task.
+    expect(await hasLinkableSessionTask(unitDatabase.database, channel.id)).toBe(true);
+    expect(await hasLinkableSessionTask(unitDatabase.database, crypto.randomUUID())).toBe(false);
 
-    // A DB lookup failure logs IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED and falls back to plain.
+    // A DB lookup failure logs IM_FEEDBACK_SESSION_LINK_LOOKUP_FAILED and keeps the plain ID.
     const warnings: unknown[] = [];
-    const failedLookup = await resolveSessionTaskAnchor(
-      unitDatabase.database,
-      { sessionId: "not-a-uuid" },
-      { warn: (fields) => warnings.push(fields) },
-    );
-    expect(failedLookup).toEqual({ kind: "plain" });
-    expect(warnings).toMatchObject([{ code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED", sessionId: "not-a-uuid" }]);
+    const failedLookup = await hasLinkableSessionTask(unitDatabase.database, "not-a-uuid", {
+      warn: (fields) => warnings.push(fields),
+    });
+    expect(failedLookup).toBe(false);
+    expect(warnings).toMatchObject([{ code: "IM_FEEDBACK_SESSION_LINK_LOOKUP_FAILED", sessionId: "not-a-uuid" }]);
 
-    // Footers sent before Tasks became Sessions anchored on a request's message id; those links
+    // Reply footers sent before Tasks became Sessions anchored on a request's message id; those links
     // keep opening the Task of the Session that received the request.
     for (const anchor of [requestA.id, requestB.id, root.id, channel.id]) {
       expect((await service.detail(bootstrap.userId, anchor)).task.id).toBe(channel.id);

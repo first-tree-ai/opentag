@@ -48,6 +48,7 @@ function fakeLegacy() {
 function fakeRelay(token: string | undefined) {
   return {
     executionId: "exec-mcp",
+    signal: new AbortController().signal,
     acquireMcpGatewayToken: vi.fn(async () => (token ? { token, expiresAt: "2026-01-01T00:00:00.000Z" } : undefined)),
     close: vi.fn(async () => undefined),
   };
@@ -86,7 +87,8 @@ describe("legacy-mode MCP gateway", () => {
     const prepared = await credentials.prepare(request());
     expect(prepared.executionId).toBe("legacy-1");
     expect(prepared.provider).toBe("feishu");
-    expect(prepared.mcp).toEqual({ url: "https://server.example.test/api/v1/mcp", token: "otmg_legacy" });
+    expect(prepared.mcp?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mcp$/);
+    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
     const subject = mocks.openServices.mock.calls[0]?.[1] as { services?: readonly string[]; runId: string };
     expect(subject.services).toEqual(["mcp"]);
     expect(subject.runId).toBe("run-session-1");
@@ -109,10 +111,11 @@ describe("legacy-mode MCP gateway", () => {
     const second = fakeRelay("otmg_2");
     mocks.openServices.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const { credentials } = manager();
-    await credentials.prepare(request());
+    const firstPrepared = await credentials.prepare(request());
     const prepared = await credentials.prepare(request());
     expect(first.close).toHaveBeenCalledTimes(1);
-    expect(prepared.mcp?.token).toBe("otmg_2");
+    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
+    expect(prepared.mcp?.token).not.toBe(firstPrepared.mcp?.token);
     await credentials.close();
     expect(second.close).toHaveBeenCalledTimes(1);
   });
@@ -151,7 +154,7 @@ describe("legacy-mode MCP gateway", () => {
     const { credentials, legacy } = manager();
     const prepared = await credentials.prepareLegacyServices(request("internal-1"));
     expect(legacy.prepare).not.toHaveBeenCalled();
-    expect(prepared?.mcp?.token).toBe("otmg_internal");
+    expect(prepared?.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
     expect(prepared?.provider).toBeUndefined();
     await credentials.cleanup("internal-1", prepared?.executionId);
     expect(relay.close).toHaveBeenCalledTimes(1);

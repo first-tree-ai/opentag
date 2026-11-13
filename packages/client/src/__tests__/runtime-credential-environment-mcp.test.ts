@@ -10,13 +10,16 @@ import {
   RUNTIME_PROVIDER_PROXY_CAPABILITY,
 } from "../runtime/runtime-credential-frames.js";
 
-const mocks = vi.hoisted(() => ({ relayOpen: vi.fn(), adapterStart: vi.fn() }));
+const mocks = vi.hoisted(() => ({ relayOpen: vi.fn(), openServices: vi.fn(), adapterStart: vi.fn() }));
 
 vi.mock("../runtime/runtime-credential-relay.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../runtime/runtime-credential-relay.js")>();
   return {
     ...actual,
-    RuntimeCredentialRelay: { open: (...args: unknown[]) => mocks.relayOpen(...args) },
+    RuntimeCredentialRelay: {
+      open: (...args: unknown[]) => mocks.relayOpen(...args),
+      openServices: (...args: unknown[]) => mocks.openServices(...args),
+    },
   };
 });
 
@@ -76,10 +79,15 @@ function request(sessionId: string) {
   };
 }
 
-async function manager(home: string, mcpNegotiated = true): Promise<RuntimeCredentialEnvironmentManager> {
+async function manager(
+  home: string,
+  mcpNegotiated = true,
+  mcpGatewayFetch?: typeof fetch,
+): Promise<RuntimeCredentialEnvironmentManager> {
   return new RuntimeCredentialEnvironmentManager({
     connection: fakeConnection(mcpNegotiated),
     home,
+    ...(mcpGatewayFetch ? { mcpGatewayFetch } : {}),
     mode: "proxy",
     platform: "darwin",
     serverUrl: "https://server.example.test",
@@ -123,13 +131,49 @@ describe("MCP gateway preparation", () => {
     expect(prepared.providers).toEqual([]);
     expect(prepared.provider).toBeUndefined();
     expect(prepared.outboxContext).toBeUndefined();
-    expect(prepared.mcp).toEqual({ url: "https://server.example.test/api/v1/mcp", token: "otmg_internal_fixture" });
+    expect(prepared.mcp?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mcp$/);
+    expect(prepared.mcp?.token).toMatch(/^otmgl_[A-Za-z0-9_-]+$/);
   });
 
   it("composes the endpoint against the pinned Server origin, not anything the Server said", async () => {
     const relay = fakeRelay("exec-mcp", async () => ({ token: "otmg_abc", expiresAt: "2026-01-01T00:00:00.000Z" }));
-    const prepared = await prepareWith(await home(), relay);
-    expect(prepared.mcp).toEqual({ url: "https://server.example.test/api/v1/mcp", token: "otmg_abc" });
+    const upstreamFetch = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json", "cache-control": "no-store" },
+        }),
+    );
+    const credentials = await manager(await home(), true, upstreamFetch);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      expect(prepared.mcp?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mcp$/);
+      expect(prepared.mcp?.token).not.toBe("otmg_abc");
+      const response = await fetch(prepared.mcp?.url ?? "", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${prepared.mcp?.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+      expect(upstreamFetch).toHaveBeenCalledTimes(1);
+      expect(upstreamFetch.mock.calls[0]?.[0]).toBe("https://server.example.test/api/v1/mcp");
+      expect(upstreamFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+        authorization: "Bearer otmg_abc",
+      });
+    } finally {
+      await credentials.close();
+    }
   });
 
   it("requests the mcp service when its capability is negotiated", async () => {
@@ -173,5 +217,200 @@ describe("MCP gateway preparation", () => {
     const prepared = await prepareWith(await home(), relay);
     expect(prepared.mcp).toBeUndefined();
     expect(prepared.executionId).toBe("exec-mcp");
+  });
+
+  it("refreshes the upstream bearer on the active relay and replays once when the Server token store returns 401", async () => {
+    const tokens = ["otmg_initial", "otmg_refreshed"];
+    const relay = fakeRelay("exec-mcp", async () => {
+      const next = tokens.shift();
+      return next ? { token: next, expiresAt: "2026-01-01T00:00:00.000Z" } : undefined;
+    });
+    const upstreamFetch = vi.fn<typeof fetch>(async (_url, init) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (auth === "Bearer otmg_initial") {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 7, result: { tools: ["search"] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const credentials = await manager(await home(), true, upstreamFetch);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      const response = await fetch(prepared.mcp?.url ?? "", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${prepared.mcp?.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ jsonrpc: "2.0", id: 7, result: { tools: ["search"] } });
+      expect(relay.acquireMcpGatewayToken).toHaveBeenCalledTimes(2);
+      expect(mocks.openServices).not.toHaveBeenCalled();
+      expect(upstreamFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await credentials.close();
+    }
+  });
+
+  it("opens a replacement MCP execution and replays once when the Server restarts mid-turn and loses both token and execution state", async () => {
+    let initialAcquired = false;
+    const relay = fakeRelay("exec-before-restart", async () => {
+      if (!initialAcquired) {
+        initialAcquired = true;
+        return { token: "otmg_before_restart", expiresAt: "2026-01-01T00:00:00.000Z" };
+      }
+      throw new Error("execution_unknown");
+    });
+    const replacementRelay = fakeRelay("exec-after-restart", async () => ({
+      token: "otmg_after_restart",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const upstreamFetch = vi.fn<typeof fetch>(async (_url, init) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (auth === "Bearer otmg_before_restart") {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 9, result: { content: [{ type: "text", text: "ok" }] } }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+    const credentials = await manager(await home(), true, upstreamFetch);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.openServices.mockResolvedValueOnce(replacementRelay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      // Simulate control connection loss during Server rolling restart:
+      relay.abort.abort();
+
+      const [first, second] = await Promise.all([
+        fetch(prepared.mcp?.url ?? "", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${prepared.mcp?.token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call" }),
+        }),
+        fetch(prepared.mcp?.url ?? "", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${prepared.mcp?.token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call" }),
+        }),
+      ]);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      // Single-flight refresh opens only one replacement MCP execution across concurrent 401s:
+      expect(mocks.openServices).toHaveBeenCalledTimes(1);
+      expect(mocks.openServices.mock.calls[0]?.[1]).toMatchObject({
+        agentId: "agent-1",
+        placementGeneration: 1,
+        sessionId: "session-1",
+        source: { kind: "delivery", deliveryId: "delivery-1", turnId: "turn-1" },
+        services: ["mcp"],
+      });
+
+      await credentials.cleanup("session-1", prepared.executionId);
+      expect(replacementRelay.close).toHaveBeenCalledTimes(1);
+    } finally {
+      await credentials.close();
+    }
+  });
+
+  it("enforces local loopback path, method, bearer, and payload limits and surfaces unrecoverable upstream errors", async () => {
+    const relay = fakeRelay("exec-mcp", async () => ({
+      token: "otmg_initial",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    relay.acquireMcpGatewayToken
+      .mockResolvedValueOnce({ token: "otmg_initial", expiresAt: "2026-01-01T00:00:00.000Z" })
+      .mockResolvedValue(undefined);
+    let failNetwork = false;
+    const upstreamFetch = vi.fn<typeof fetch>(async () => {
+      if (failNetwork) throw new Error("socket hang up");
+      return new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const credentials = await manager(await home(), true, upstreamFetch);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.openServices.mockRejectedValue(new Error("execution_source_invalid"));
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      const baseUrl = new URL(prepared.mcp?.url ?? "");
+
+      const notFound = await fetch(new URL("/wrong-path", baseUrl), { method: "POST" });
+      expect(notFound.status).toBe(404);
+
+      const badMethod = await fetch(baseUrl, { method: "GET" });
+      expect(badMethod.status).toBe(405);
+
+      const unauthorized = await fetch(baseUrl, {
+        method: "POST",
+        headers: { authorization: "Bearer wrong-token" },
+        body: "{}",
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const tooLarge = await fetch(baseUrl, {
+        method: "POST",
+        headers: { authorization: `Bearer ${prepared.mcp?.token}` },
+        body: "x".repeat(1024 * 1024 + 16),
+      });
+      expect(tooLarge.status).toBe(413);
+
+      const unrecoverable401 = await fetch(baseUrl, {
+        method: "POST",
+        headers: { authorization: `Bearer ${prepared.mcp?.token}` },
+        body: "{}",
+      });
+      expect(unrecoverable401.status).toBe(401);
+
+      failNetwork = true;
+      const upstreamDown = await fetch(baseUrl, {
+        method: "POST",
+        headers: { authorization: `Bearer ${prepared.mcp?.token}` },
+        body: "{}",
+      });
+      expect(upstreamDown.status).toBe(502);
+    } finally {
+      await credentials.close();
+    }
   });
 });

@@ -1,7 +1,7 @@
 # Provider proxy passthrough release regression
 
-Credential-free checklist for the Feishu provider proxy in proxy credential mode. Use a test Feishu tenant and a test
-App only. Do not commit tokens, App secrets, tenant, chat, document or user identifiers, or logs. Record results outside
+Credential-free checklist for the Feishu and Slack provider proxies in proxy credential mode. Use a test Feishu
+tenant, a test Slack workspace, and test Apps only. Do not commit tokens, App secrets, tenant, chat, document or user identifiers, or logs. Record results outside
 the repository.
 
 ## Prerequisites
@@ -29,9 +29,22 @@ the repository.
 2. Ask the Agent to call an API the App has no scope for.
    Expected: Feishu's own permission error is relayed unchanged.
 
+## Slack
+
+Use an Agent bound to a test Slack App with the `pins:write`, `pins:read` and `bookmarks:read` scopes.
+
+1. Ask the Agent to pin one of its own messages with `slack api pins.add`, then list pins with `slack api pins.list`.
+   Expected: the message is pinned; the list contains it, and any file URL in it is an OpenTag handle URL.
+2. Ask the Agent to call `slack api oauth.v2.access` and `slack api auth.revoke`.
+   Expected: both fail with HTTP `403` `operation_not_registered`; the bot token still works afterwards.
+3. Ask the Agent to call a method the App has no scope for, such as `bookmarks.add`.
+   Expected: Slack's own `missing_scope` error is relayed.
+4. In the Server log, find `PROVIDER_PROXY_PASSTHROUGH` records with `provider=slack` and `path=/api/pins.add`.
+
 ## Switch off
 
 1. Restart the Server with `OPENTAG_PROVIDER_PROXY_PASSTHROUGH=off` and repeat step 1 of the first section.
-   Expected: the call fails with `403` `operation_not_registered`; ordinary message replies still work.
+   Expected: the call fails with `403` `operation_not_registered`, as does Slack step 1; ordinary message replies
+   still work on both providers.
 2. Start the Server with `OPENTAG_PROVIDER_PROXY_PASSTHROUGH=yes`.
    Expected: startup fails with a configuration error.

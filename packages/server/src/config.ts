@@ -345,7 +345,7 @@ const ServerEnvironmentSchema = z
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
     OPENTAG_MCP_OAUTH_REUSE: booleanString("false"),
-    /* `off` restricts the Feishu provider proxy to its explicit operation table. */
+    /* `off` restricts the Feishu and Slack provider proxies to their explicit operation tables. */
     OPENTAG_PROVIDER_PROXY_PASSTHROUGH: z.enum(["on", "off"]).default("on"),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
@@ -782,7 +782,7 @@ export interface ServerConfig {
    */
   mcpAllowLoopback: boolean;
   mcpOAuthReuse: boolean;
-  /** The Feishu provider proxy forwards calls outside its explicit operation table. */
+  /** The Feishu and Slack provider proxies forward calls outside their explicit operation tables. */
   providerProxyPassthrough: boolean;
   /**
    * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both

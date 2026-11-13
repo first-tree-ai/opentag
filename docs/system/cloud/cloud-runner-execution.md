@@ -40,9 +40,14 @@ activity reporting remain specific to each kind of work.
 
 The existing lifecycle is `unallocated → preparing → ready → releasing → unallocated`.
 The Server reserves the allocation name before cloud I/O. Competing callers reconcile the same
-allocation. An uncertain create or delete retains the row's resource reference and an actionable
-error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
-etag protect deletion against name reuse.
+allocation. An uncertain create or delete retains the resource reference for reconciliation.
+After the create convergence budget plus four workspace transfer budgets, a start or explicit
+stop can retire a pending or uncertain create when an Instance GET returns 404 and the same
+generation still has neither a UID nor a recorded operation. The deadline starts at the create
+marker and survives repeated polls and stop attempts. Start goes through normal capacity and
+workspace admission for a new generation. A visible Instance goes through ownership checks.
+Failed reads and recorded operations keep their existing reconciliation paths. The provider UID
+and etag protect deletion against name reuse.
 
 Cloud Admin Instance and operation GETs make at most three attempts for HTTP 502/503/504
 or transport failures, with 150 ms then 300 ms backoff. Credential acquisition, requests,

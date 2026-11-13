@@ -6,7 +6,7 @@ import type {
   RunnerReadiness,
 } from "@opentag/shared";
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, notInArray, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, sandboxes } from "../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
@@ -63,8 +63,8 @@ export { CLOUD_DELETE_PENDING, WORKSPACE_RECOVERY_RETRY_DELAY_MS } from "./sandb
  *   No database transaction is ever held through cloud I/O.
  * - Subsequent and concurrent starts reconcile the deterministic name with GET/operation reads;
  *   they never POST a second create for the same generation. Because the name is known before the
- *   first byte leaves the process, a stop can never "clear" a generation whose create might still
- *   materialize.
+ *   first byte leaves the process, a stop retains an unknown create through the startup window.
+ *   After that window, a 404 can retire an untracked generation with no recorded operation.
  * - `lastErrorCode` carries the durable create phase for a generation whose UID is not yet
  *   tracked: `cloud_create_pending` (submission committed), `cloud_create_uncertain` (unknown
  *   result), `cloud_create_rejected` / `cloud_create_failed` (definitive: retry or release is
@@ -166,6 +166,7 @@ type Marker =
   | "cloud_instance_unverified"
   | (typeof MARKER_RETRYABLE)[number];
 const RETRYABLE_MARKER_LIST: string[] = [...MARKER_RETRYABLE];
+const UNTRACKED_CREATE_MARKERS = ["cloud_create_pending", "cloud_create_uncertain"];
 /**
  * Every durable create-phase marker. A delete-phase failure (`cloud_delete_incomplete`) or the
  * weak `cloud_create_uncertain` update must never overwrite one of these: they are the only
@@ -259,6 +260,7 @@ export class SandboxRunnerService {
   readonly #expectedRunnerVersion: string;
   readonly #acceptanceTimeoutMs: number;
   readonly #createConvergeTimeoutMs: number;
+  readonly #startupTimeoutMs: number;
   readonly #deleteVerifyTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #capacity: CloudCapacityLimits;
@@ -284,6 +286,8 @@ export class SandboxRunnerService {
     this.#expectedRunnerVersion = options.expectedRunnerVersion;
     this.#acceptanceTimeoutMs = options.acceptanceTimeoutMs;
     this.#createConvergeTimeoutMs = options.createConvergeTimeoutMs;
+    // Startup covers provider convergence, workspace claim/download/checkpoint and native initialization.
+    this.#startupTimeoutMs = options.createConvergeTimeoutMs + 4 * RUNNER_WORKSPACE_TIMEOUT_MS;
     this.#deleteVerifyTimeoutMs = options.deleteVerifyTimeoutMs ?? DELETE_VERIFY_DEFAULT_MS;
     this.#idleTimeoutMs = options.idleTimeoutMs ?? IDLE_RECLAIM_DEFAULT_MS;
     if (!Number.isSafeInteger(this.#idleTimeoutMs) || this.#idleTimeoutMs < 1) {
@@ -324,7 +328,7 @@ export class SandboxRunnerService {
       sealer: this.#workspaceSealer,
       now: this.#now,
       idleTimeoutMs: this.#idleTimeoutMs,
-      createConvergeTimeoutMs: this.#createConvergeTimeoutMs,
+      startupTimeoutMs: this.#startupTimeoutMs,
       sessionWorkBusy: options.sessionWorkBusy,
       sessionWorkBarrier: options.sessionWorkBarrier,
       allocationStartMeta: this.#allocationStartMeta,
@@ -423,11 +427,10 @@ export class SandboxRunnerService {
         throw mapCloudError(error, "allocate the Sandbox environment");
       }
     } else if (reservation.action === "reconcile") {
-      try {
-        await this.#reconcileAllocation(reservation.row);
-      } catch (error) {
+      const expired = await this.#reconcileAllocation(reservation.row).catch((error: unknown) => {
         throw mapCloudError(error, "reconcile the Sandbox environment");
-      }
+      });
+      if (expired) return this.#startForAccount(accountId, sandboxId);
     } else if (reservation.action === "reuse" && borrowed) {
       // The transfer committed: the physical Instance is now owned by the claimant, so the old
       // holder's Runner channel must close and reconnect through its physical control credential,
@@ -1152,7 +1155,7 @@ export class SandboxRunnerService {
     if (tracked === "tracked") {
       // A stop may have moved the row to `releasing` while the create was in flight; finish that
       // pending release now instead of leaving it for a second user stop.
-      await this.#afterReconcile(row.id);
+      await this.#afterReconcile(row, resourceName);
       return;
     }
     // The row moved on while the create was in flight: this resource belongs to a stale
@@ -1236,30 +1239,68 @@ export class SandboxRunnerService {
   }
 
   /**
-   * Reconcile a generation that is preparing without a verified UID. 404 alone is never proof a
-   * late create cannot materialize; only a completed operation with an error, or a definitive
-   * pre-submission failure marker, unlocks a retry. Once the Instance is visible it is policy
-   * verified and its UID tracked (even while releasing, so stop can finish verified cleanup).
+   * Reconcile a generation that is preparing without a verified UID. Return true when the
+   * expired reservation was cleared so start goes back through admission for a new generation.
    */
-  async #reconcileAllocation(row: typeof sandboxes.$inferSelect): Promise<void> {
+  async #reconcileAllocation(row: typeof sandboxes.$inferSelect): Promise<boolean> {
     const current = await this.#ensureDeterministicName(row);
-    if (!current) return;
+    if (!current) return false;
     const resourceName = current.currentResourceName as string;
+    const expiryCutoff = this.#expiredCreateCutoff(current);
     const view = await this.#getVerifiedAndTracked(current, resourceName);
     if (view) {
-      await this.#afterReconcile(current.id);
-      return;
+      await this.#afterReconcile(current, resourceName);
+      return false;
     }
     if (current.currentOperationName) {
       await this.#reconcileOperation(current, resourceName);
-      return;
+      return false;
     }
     if (isDefinitiveNoResourceMarker(current.lastErrorCode)) {
       await this.#submitCreate(current, { claimed: false });
-      return;
+      return false;
     }
-    // Unknown create outcome with no operation to inspect: keep the reference and report it.
+    if (expiryCutoff) return this.#clearExpiredCreate(current, resourceName, "preparing", expiryCutoff);
     await this.#marker(current, "cloud_create_uncertain");
+    return false;
+  }
+
+  #expiredCreateCutoff(row: typeof sandboxes.$inferSelect): Date | undefined {
+    if (
+      row.currentResourceUid !== null ||
+      row.currentOperationName !== null ||
+      row.idleReclaimAt !== null ||
+      !UNTRACKED_CREATE_MARKERS.includes(row.lastErrorCode ?? "") ||
+      row.lastErrorAt === null ||
+      row.currentResourceName !== this.#resourceNameFor(row, row.environmentGeneration)
+    ) {
+      return undefined;
+    }
+    // Use the startup budget from stale adoption. The create marker has its own clock: stop
+    // and repeated reconciliation can advance the row's other timestamps.
+    const cutoff = new Date(this.#now().getTime() - this.#startupTimeoutMs);
+    return row.lastErrorAt <= cutoff ? cutoff : undefined;
+  }
+
+  /** Called after a 404. Recheck submission evidence that could have changed during the GET. */
+  async #clearExpiredCreate(
+    row: typeof sandboxes.$inferSelect,
+    resourceName: string,
+    lifecycle: "preparing" | "releasing",
+    cutoff: Date,
+  ): Promise<boolean> {
+    return this.#clearReleased(
+      row,
+      resourceName,
+      null,
+      lifecycle,
+      and(
+        isNull(sandboxes.currentOperationName),
+        isNull(sandboxes.idleReclaimAt),
+        inArray(sandboxes.lastErrorCode, UNTRACKED_CREATE_MARKERS),
+        lte(sandboxes.lastErrorAt, cutoff),
+      ),
+    );
   }
 
   /** Legacy rows without a persisted name get the deterministic name for their generation. */
@@ -1319,7 +1360,7 @@ export class SandboxRunnerService {
       await this.#sleep(Math.min(1_000, Math.max(0, deadline - this.#now().getTime())));
       const view = await this.#getVerifiedAndTracked(current, resourceName);
       if (view) {
-        await this.#afterReconcile(current.id);
+        await this.#afterReconcile(current, resourceName);
         return;
       }
     }
@@ -1352,9 +1393,14 @@ export class SandboxRunnerService {
   }
 
   /** Promote, and if the row moved to releasing while reconciling, finish verified cleanup. */
-  async #afterReconcile(sandboxId: string): Promise<void> {
-    const [row] = await this.#rowById(sandboxId);
-    if (!row) return;
+  async #afterReconcile(
+    allocation: Pick<typeof sandboxes.$inferSelect, "id" | "environmentGeneration">,
+    resourceName: string,
+  ): Promise<void> {
+    const [row] = await this.#rowById(allocation.id);
+    if (row?.environmentGeneration !== allocation.environmentGeneration || row.currentResourceName !== resourceName) {
+      return;
+    }
     if (row.lifecycle === "releasing") {
       // Another request may have promoted and then stopped this allocation while create was
       // in flight. Always use the current durable release marker and the same seal-proof funnel.
@@ -1366,7 +1412,7 @@ export class SandboxRunnerService {
       await this.#releaseAllocation(row);
       return;
     }
-    await this.#promoteReadyIfReported(sandboxId);
+    await this.#promoteReadyIfReported(row.id);
   }
 
   /**
@@ -1466,10 +1512,9 @@ export class SandboxRunnerService {
       }
       // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`
       // is the only proof a winner may still POST, `cloud_create_rejected` /
-      // `cloud_create_failed` are the only definitive markers a later stop can release from,
-      // and `cloud_instance_unverified` is a diagnostic that must survive. Without this, one
-      // failed `getInstance` during stop strands the row in `releasing` forever: the next
-      // stop reads 404, finds no definitive marker, and can never clear.
+      // `cloud_create_failed` establish definitive absence after a 404, and
+      // `cloud_instance_unverified` is a diagnostic that must survive. Preserve the original
+      // create timestamp so a failed provider read cannot postpone expiry.
       await this.#recordError(row, "cloud_delete_incomplete", error, {
         preserveCreateMarkers: true,
         automaticAttempt: automatic ? row : undefined,
@@ -1497,8 +1542,8 @@ export class SandboxRunnerService {
    * Stop's release half. A resource with a tracked UID is
    * deleted and verified by read-back. Without a UID the create outcome is awaited for a bounded
    * window: a visible Instance is verified/tracked and then deleted, a completed operation with
-   * an error proves nothing was allocated, and anything still unknown keeps `releasing` plus the
-   * full reference and reports incomplete — the reference is never erased on uncertainty.
+   * an error proves nothing was allocated, or an expired create without an operation is absent.
+   * Otherwise the row keeps `releasing` plus the full reference and reports incomplete.
    */
   async #releaseAllocation(row: typeof sandboxes.$inferSelect, automatic = false): Promise<boolean> {
     const resourceName = row.currentResourceName;
@@ -1515,8 +1560,8 @@ export class SandboxRunnerService {
 
   /**
    * The create result was never observed. A visible Instance is ownership-verified, tracked and
-   * deleted; a completed operation proves the outcome; anything still unknown keeps `releasing`
-   * plus the full reference and reports incomplete after the bounded window.
+   * deleted. An absent Instance can be released on definitive operation evidence or expiry of
+   * an untracked create. Otherwise the bounded wait keeps the release incomplete.
    */
   async #awaitUnknownAllocation(
     row: typeof sandboxes.$inferSelect,
@@ -1525,6 +1570,7 @@ export class SandboxRunnerService {
   ): Promise<boolean> {
     const deadline = this.#now().getTime() + this.#deleteVerifyTimeoutMs;
     for (;;) {
+      const expiryCutoff = this.#expiredCreateCutoff(row);
       const view = await this.#cloud.getInstance(resourceName);
       if (view) {
         // Deletion requires OWNERSHIP only: the deterministic name plus the allocation labels
@@ -1536,6 +1582,7 @@ export class SandboxRunnerService {
         return this.#releaseObservedAllocation(row, resourceName, view.uid, automatic);
       }
       if (await this.#releaseFromDefinitiveEvidence(row, resourceName)) return true;
+      if (expiryCutoff && (await this.#clearExpiredCreate(row, resourceName, "releasing", expiryCutoff))) return true;
       if (automatic || this.#now().getTime() >= deadline) {
         await this.#marker(row, "cloud_create_uncertain");
         throw new CloudRunAdminError(
@@ -1684,6 +1731,7 @@ export class SandboxRunnerService {
     resourceName: string | null,
     resourceUid: string | null,
     expectedLifecycle: "preparing" | "releasing" | "ready" = "releasing",
+    extraGuard?: SQL,
   ): Promise<boolean> {
     const now = this.#now();
     const [cleared] = await this.#database
@@ -1708,11 +1756,14 @@ export class SandboxRunnerService {
             ? isNull(sandboxes.currentResourceName)
             : eq(sandboxes.currentResourceName, resourceName),
           resourceUid === null ? isNull(sandboxes.currentResourceUid) : eq(sandboxes.currentResourceUid, resourceUid),
+          extraGuard,
         ),
       )
       .returning({ id: sandboxes.id });
     if (!cleared) return false;
-    this.#allocationStartMeta.delete(row.id);
+    if (this.#allocationStartMeta.get(row.id)?.generation === row.environmentGeneration) {
+      this.#allocationStartMeta.delete(row.id);
+    }
     this.#emitLifecycleLog("sandbox.lifecycle.release", {
       sandboxId: row.id,
       sessionId: row.sessionId,

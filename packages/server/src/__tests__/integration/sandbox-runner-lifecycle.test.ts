@@ -5,6 +5,7 @@
  * migrated PostgreSQL container, so the CAS/SQL behavior proven here is the production one.
  */
 import { randomUUID } from "node:crypto";
+import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
@@ -17,6 +18,7 @@ import { RunnerBootstrapTokenService } from "../../services/sandboxes/runner-boo
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
 import { FakeCloudRunAdmin } from "../support/fake-cloud-run-admin.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -92,6 +94,7 @@ function makeService(
     createConvergeTimeoutMs?: number;
     deleteVerifyTimeoutMs?: number;
     expectedRunnerVersion?: string;
+    now?: () => Date;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
@@ -107,6 +110,7 @@ function makeService(
     acceptanceTimeoutMs: 30_000,
     createConvergeTimeoutMs: options.createConvergeTimeoutMs ?? 30_000,
     deleteVerifyTimeoutMs: options.deleteVerifyTimeoutMs ?? 2_000,
+    now: options.now,
     ...(options.sleep ? { sleep: options.sleep } : {}),
   });
   return { service, tokens, hub };
@@ -288,6 +292,175 @@ describe("SandboxRunnerService original-image reconnect on PostgreSQL", () => {
       currentResourceUid: "uid-swapped",
     });
     expect(fake.liveInstanceCount()).toBe(1);
+  });
+});
+
+describe("SandboxRunnerService recovery after an interrupted reservation", () => {
+  const createConvergeTimeoutMs = 30_000;
+  const startupTimeoutMs = createConvergeTimeoutMs + 4 * RUNNER_WORKSPACE_TIMEOUT_MS;
+
+  async function interruptedReservation() {
+    const { accountId, sandbox } = await fixture();
+    const fake = new FakeCloudRunAdmin();
+    const sandboxId = sandbox.sandboxId;
+    const environmentGeneration = 8;
+    const resourceName = fake.resourceNameFor(
+      fake.instanceIdFor({ sandboxId, sessionId: sandbox.sessionId, environmentGeneration, environment: "staging" }),
+    );
+    const reservedAt = new Date("2026-11-06T03:15:00Z");
+    let now = reservedAt;
+    // State committed by the reservation transaction, immediately before the process died.
+    await database
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration,
+        currentResourceName: resourceName,
+        lastErrorCode: "cloud_create_pending",
+        lastErrorAt: reservedAt,
+        lastActivityAt: reservedAt,
+        updatedAt: reservedAt,
+      })
+      .where(eq(sandboxes.id, sandboxId));
+    const options = { createConvergeTimeoutMs, now: () => now, deleteVerifyTimeoutMs: 0 };
+    return {
+      accountId,
+      sandboxId,
+      resourceName,
+      fake,
+      ...makeService(fake, options),
+      otherService: makeService(fake, options).service,
+      setAge: (ms: number) => {
+        now = new Date(reservedAt.getTime() + ms);
+      },
+    };
+  }
+
+  it("waits for convergence, then lets concurrent starts reserve only one successor", async () => {
+    const { accountId, sandboxId, resourceName, fake, service, otherService, setAge } = await interruptedReservation();
+    setAge(startupTimeoutMs - 1);
+    await expect(service.startForAccount(accountId, sandboxId)).resolves.toMatchObject({
+      lifecycle: "preparing",
+      environmentGeneration: 8,
+      currentResourceName: resourceName,
+      currentResourceUid: null,
+    });
+    expect(fake.createCalls).toHaveLength(0);
+
+    setAge(startupTimeoutMs);
+    await Promise.all([
+      service.startForAccount(accountId, sandboxId),
+      otherService.startForAccount(accountId, sandboxId),
+    ]);
+    expect(await sandboxRow(sandboxId)).toMatchObject({ lifecycle: "preparing", environmentGeneration: 9 });
+    expect(fake.createCalls.map((call) => call.environmentGeneration)).toEqual([9]);
+    expect(fake.liveInstanceCount()).toBe(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("cleans up only the old UID when a delayed create returns after replacement", async () => {
+    const { accountId, sandbox } = await fixture();
+    const sandboxId = sandbox.sandboxId;
+    const fake = new FakeCloudRunAdmin();
+    const reservedAt = new Date("2026-11-06T03:15:00Z");
+    let now = reservedAt;
+    const options = { createConvergeTimeoutMs, now: () => now };
+    const { service } = makeService(fake, options);
+    const restarted = makeService(fake, options).service;
+    const gate = deferred();
+    fake.createGate = { promise: gate.promise, open: gate.resolve };
+    const first = service.startForAccount(accountId, sandboxId);
+    try {
+      await vi.waitFor(() => expect(fake.createCalls).toHaveLength(1));
+      const old = await sandboxRow(sandboxId);
+      now = new Date(reservedAt.getTime() + startupTimeoutMs);
+      const replacement = await restarted.startForAccount(accountId, sandboxId);
+      expect(replacement.environmentGeneration).toBe(2);
+      expect(replacement.currentResourceUid).toMatch(/^uid-/);
+
+      gate.resolve();
+      await expect(first).resolves.toMatchObject({
+        environmentGeneration: 2,
+        currentResourceName: replacement.currentResourceName,
+        currentResourceUid: replacement.currentResourceUid,
+        currentOperationName: replacement.currentOperationName,
+      });
+      expect(fake.deleteCalls).toEqual([{ name: old.currentResourceName, uid: expect.stringMatching(/^uid-/) }]);
+      expect(fake.liveInstanceCount()).toBe(1);
+    } finally {
+      gate.resolve();
+      await first;
+    }
+  });
+
+  it("preserves a create operation recorded while the absence read is in flight", async () => {
+    const { accountId, sandboxId, resourceName, fake, service, setAge } = await interruptedReservation();
+    setAge(startupTimeoutMs);
+    const operationName = resourceName.replace(/instances\/[^/]+$/, "operations/pending-create");
+    fake.operations.set(operationName, { state: "pending" });
+    vi.spyOn(fake, "getInstance").mockImplementationOnce(async () => {
+      await database.update(sandboxes).set({ currentOperationName: operationName }).where(eq(sandboxes.id, sandboxId));
+      return undefined;
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(service.startForAccount(accountId, sandboxId)).resolves.toMatchObject({
+        lifecycle: "preparing",
+        environmentGeneration: 8,
+        currentResourceName: resourceName,
+        currentOperationName: operationName,
+        currentResourceUid: null,
+      });
+    }
+    await expect(service.stopForAccount(accountId, sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(sandboxId)).toMatchObject({ lifecycle: "releasing", currentOperationName: operationName });
+    expect(fake.createCalls).toHaveLength(0);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("keeps a visible Instance that fails ownership verification", async () => {
+    const { accountId, sandboxId, resourceName, fake, service, setAge } = await interruptedReservation();
+    setAge(startupTimeoutMs);
+    const sessionId = (await sandboxRow(sandboxId)).sessionId;
+    fake.materialize({
+      sandboxId,
+      sessionId,
+      environmentGeneration: 8,
+      environment: "staging",
+      backendUrl: "wss://api.example.com/api/v1/sandbox-runners/ws",
+      bootstrapToken: "unused",
+    });
+    fake.tamperLabels(resourceName, {});
+    await expect(service.startForAccount(accountId, sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    await expect(service.stopForAccount(accountId, sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(sandboxId)).toMatchObject({
+      lifecycle: "releasing",
+      environmentGeneration: 8,
+      currentResourceName: resourceName,
+      currentResourceUid: null,
+      lastErrorCode: "cloud_instance_unverified",
+    });
+    expect(fake.liveInstanceCount()).toBe(1);
+    expect(fake.createCalls).toHaveLength(0);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("keeps the binding through a failed read, then lets stop release a confirmed absence", async () => {
+    const { accountId, sandboxId, resourceName, fake, service, setAge } = await interruptedReservation();
+    setAge(startupTimeoutMs);
+    fake.getInstanceFailures = 1;
+    await expect(service.stopForAccount(accountId, sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(sandboxId)).toMatchObject({
+      lifecycle: "releasing",
+      currentResourceName: resourceName,
+      lastErrorCode: "cloud_create_pending",
+    });
+    await expect(service.stopForAccount(accountId, sandboxId)).resolves.toMatchObject({
+      lifecycle: "unallocated",
+      environmentGeneration: 8,
+      currentResourceName: null,
+    });
+    expect(fake.createCalls).toHaveLength(0);
+    expect(fake.deleteCalls).toHaveLength(0);
   });
 });
 

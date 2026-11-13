@@ -254,13 +254,13 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("names the provider when a stopped app is disabled, in both languages", async () => {
+  it("names the provider and access policy when a stopped app is unavailable, in both languages", async () => {
     installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     const rendered = render(<App />);
     expect(
       await screen.findByText(
-        "This application is disabled or not installed in Lark. Enable it there, then reconnect.",
+        "This application is unavailable in Lark. Ask an administrator to check its installation, status, and access policy, then reconnect.",
       ),
     ).toBeTruthy();
     rendered.unmount();
@@ -269,7 +269,9 @@ describe("OpenTag Web App Shell", () => {
       installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
       window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
       render(<App />);
-      expect(await screen.findByText("此应用在飞书中已停用或未安装。启用后请重新连接。")).toBeTruthy();
+      expect(
+        await screen.findByText("此应用在飞书中不可用。请管理员检查应用安装、启用状态和访问策略，然后重新连接。"),
+      ).toBeTruthy();
       expect(screen.getByText("连接失败")).toBeTruthy();
     });
   });

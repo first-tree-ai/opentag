@@ -539,6 +539,74 @@ describe("Feishu durable connection lifecycle", () => {
     await second.stop();
   });
 
+  it.each([
+    { ageMinutes: 0, intervalMinutes: 1 },
+    { ageMinutes: 15, intervalMinutes: 5 },
+    { ageMinutes: 60, intervalMinutes: 30 },
+    { ageMinutes: 24 * 60, intervalMinutes: 120 },
+  ])("sweeps a $ageMinutes-minute-old candidate after $intervalMinutes minutes", async (tier) => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const service = createService(value, fake.activation, { timing: { checkIntervalMs: 60_000 } });
+    const checkedAt = clock.now.getTime();
+    const { attemptId } = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      {
+        savedAt: new Date(checkedAt - tier.ageMinutes * 60_000),
+        nextCheckAt: new Date(checkedAt + 60_000),
+        observation: { checkedAt: clock.now.toISOString(), reason: "permissions_pending" },
+      },
+    );
+
+    try {
+      const dueAt = checkedAt + tier.intervalMinutes * 60_000;
+      clock.now = new Date(dueAt - 1);
+      await service.maintainSweep();
+      expect(fake.checkCandidate).not.toHaveBeenCalled();
+
+      clock.now = new Date(dueAt);
+      await service.maintainSweep();
+      await vi.waitFor(async () => {
+        expect((await service.get(value.bootstrap.userId, attemptId)).state).toBe("succeeded");
+      });
+      expect(fake.checkCandidate).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("checks a stale candidate on demand as soon as its provider wait has elapsed", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const service = createService(value, fake.activation, { timing: { checkIntervalMs: 60_000 } });
+    const checkedAt = clock.now.getTime();
+    const nextCheckAt = checkedAt + 180_000;
+    const { attemptId } = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      {
+        savedAt: new Date(checkedAt - 2 * 24 * 60 * 60_000),
+        nextCheckAt: new Date(nextCheckAt),
+        observation: { checkedAt: clock.now.toISOString(), reason: "temporary_failure" },
+      },
+    );
+
+    try {
+      clock.now = new Date(nextCheckAt - 1);
+      expect((await service.check(value.bootstrap.userId, attemptId)).state).toBe("pending_activation");
+      expect(fake.checkCandidate).not.toHaveBeenCalled();
+
+      clock.now = new Date(nextCheckAt);
+      await service.maintainSweep();
+      expect(fake.checkCandidate).not.toHaveBeenCalled();
+      expect((await service.check(value.bootstrap.userId, attemptId)).state).toBe("succeeded");
+      expect(fake.checkCandidate).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("keeps runtime and transient failures waiting, honors Retry-After, and fails only on explicit signals", async () => {
     const value = await fixture();
     const runtime = createFakeActivation(value, {

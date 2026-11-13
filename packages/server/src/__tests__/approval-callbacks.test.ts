@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerSlackInteractionsRoute } from "../api/slack-interactions.js";
 import { handleFeishuApprovalAction } from "../runtime/feishu-approval-action.js";
+import type { ApprovalDecideResult } from "../runtime/runtime-approval-owner.js";
 
 describe("Approval callbacks", () => {
   it.each(["/api/v1/im-bindings/slack/interactions", "/api/v1/agents/agent/im-binding/slack/interactions"])(
@@ -82,7 +83,7 @@ describe("Approval callbacks", () => {
 
   it("extracts Feishu card authority and reports unavailable decisions", async () => {
     const approvalId = randomUUID();
-    const decide = vi.fn(async () => "recorded" as "recorded" | "unavailable");
+    const decide = vi.fn(async (): Promise<ApprovalDecideResult> => "recorded");
     const event = {
       operator: { open_id: "ou_owner" },
       action: { value: { approvalId, decision: "decline" } },
@@ -101,10 +102,17 @@ describe("Approval callbacks", () => {
       messageId: "om_card",
       channelId: "oc_chat",
     });
-    decide.mockResolvedValue("unavailable");
-    expect(await handleFeishuApprovalAction({ decide }, event, "binding", 3)).toMatchObject({
-      toast: { type: "error" },
-    });
+    for (const [result, content] of [
+      ["resolved", "This approval was already decided or is no longer open."],
+      ["expired", "This approval has expired."],
+      ["not-approver", "Only the person this approval was requested from can decide it."],
+      ["unavailable", "This approval is no longer available."],
+    ] as const) {
+      decide.mockResolvedValue(result);
+      expect(await handleFeishuApprovalAction({ decide }, event, "binding", 3)).toEqual({
+        toast: { type: "error", content },
+      });
+    }
     decide.mockClear();
     expect(await handleFeishuApprovalAction({ decide }, {}, "binding", 3)).toMatchObject({ toast: { type: "error" } });
     expect(decide).not.toHaveBeenCalled();

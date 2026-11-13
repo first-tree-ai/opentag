@@ -33,6 +33,7 @@ import {
 const execFileAsync = promisify(execFile);
 const defaultValidationLogger = createLogger("provider-cli-validation");
 const PRIVATE_DIRS = ["home", "config", "tmp", "cache", "state", "runtime"] as const;
+const MAX_WAITING_VALIDATIONS = 8;
 
 export function deriveProviderCliValidationRequestKey(requestId: string): string {
   return createHash("sha256").update(requestId).digest("hex").slice(0, 32);
@@ -128,8 +129,9 @@ export class ProviderCliValidationRunner {
   readonly #proxyCredentialMode: boolean;
   readonly #root: string;
   readonly #verifyTarget: (request: ProviderCliValidationRequest) => Promise<boolean>;
-  #busy = false;
   readonly #startupCleanup: Promise<void>;
+  readonly #validationWaiters = new Set<() => void>();
+  #validating = false;
 
   constructor(options: ProviderCliValidationRunnerOptions) {
     this.#exchangeFeishuToken =
@@ -154,14 +156,68 @@ export class ProviderCliValidationRunner {
   ): Promise<ProviderCliValidationResult> {
     await this.#startupCleanup;
     signal?.throwIfAborted();
-    if (this.#proxyCredentialMode) return this.#runProxyValidation(request, fence, signal);
-    if (Date.parse(request.expiresAt) <= this.#now()) {
+    if (this.#proxyCredentialMode && (!this.#openProxyValidation || !request.validationRunId)) {
+      return { ...fence, status: "needs_attention" };
+    }
+    const expiresAt = Date.parse(request.expiresAt);
+    if (expiresAt <= this.#now()) {
       return { ...fence, status: "retrying", reason: "validation_expired" };
     }
-    if (this.#busy) {
-      return { ...fence, status: "retrying", reason: "validation_busy" };
+    if (this.#validating) {
+      if (this.#validationWaiters.size >= MAX_WAITING_VALIDATIONS) {
+        return { ...fence, status: "retrying", reason: "validation_busy" };
+      }
+      if (!(await this.#waitForValidationSlot(expiresAt, signal))) {
+        return { ...fence, status: "retrying", reason: "validation_expired" };
+      }
     }
-    this.#busy = true;
+    this.#validating = true;
+    try {
+      signal?.throwIfAborted();
+      if (expiresAt <= this.#now()) return { ...fence, status: "retrying", reason: "validation_expired" };
+      return this.#proxyCredentialMode
+        ? await this.#runProxyValidation(request, fence, signal)
+        : await this.#runLocalValidation(request, fence, signal);
+    } finally {
+      // Transfer ownership before another caller can bypass the oldest waiter.
+      const next = this.#validationWaiters.values().next().value;
+      if (next) next();
+      else this.#validating = false;
+    }
+  }
+
+  #waitForValidationSlot(expiresAt: number, signal?: AbortSignal): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      const removeWaiter = () => {
+        clearTimeout(expiryTimer);
+        signal?.removeEventListener("abort", onAbort);
+        this.#validationWaiters.delete(start);
+      };
+      const start = () => {
+        removeWaiter();
+        resolve(true);
+      };
+      const onAbort = () => {
+        removeWaiter();
+        reject(abortError());
+      };
+      const expiryTimer = setTimeout(
+        () => {
+          removeWaiter();
+          resolve(false);
+        },
+        Math.min(expiresAt - this.#now(), 2_147_483_647),
+      );
+      this.#validationWaiters.add(start);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  async #runLocalValidation(
+    request: ProviderCliValidationRequest,
+    fence: ProviderCliValidationFence,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliValidationResult> {
     const requestKey = deriveProviderCliValidationRequestKey(request.requestId);
     const workDir = join(this.#root, requestKey);
     try {
@@ -169,6 +225,7 @@ export class ProviderCliValidationRunner {
       if (!(await this.#verifyTarget(request))) {
         return { ...fence, status: "retrying", reason: "artifact_changed" };
       }
+      signal?.throwIfAborted();
       if (Date.parse(request.expiresAt) <= this.#now()) {
         return { ...fence, status: "retrying", reason: "validation_expired" };
       }
@@ -192,11 +249,7 @@ export class ProviderCliValidationRunner {
       );
       return validationFailureResult(fence, error, signal, this.#logger);
     } finally {
-      try {
-        await rm(workDir, { recursive: true, force: true });
-      } finally {
-        this.#busy = false;
-      }
+      await rm(workDir, { recursive: true, force: true });
     }
   }
 
@@ -218,15 +271,6 @@ export class ProviderCliValidationRunner {
     fence: ProviderCliValidationFence,
     signal?: AbortSignal,
   ): Promise<ProviderCliValidationResult> {
-    const open = this.#openProxyValidation;
-    if (!open || !request.validationRunId) return { ...fence, status: "needs_attention" };
-    if (Date.parse(request.expiresAt) <= this.#now()) {
-      return { ...fence, status: "retrying", reason: "validation_expired" };
-    }
-    if (this.#busy) {
-      return { ...fence, status: "retrying", reason: "validation_busy" };
-    }
-    this.#busy = true;
     const requestKey = deriveProviderCliValidationRequestKey(request.requestId);
     const workDir = join(this.#root, requestKey);
     let session: ProviderCliProxyValidationSession | undefined;
@@ -235,10 +279,17 @@ export class ProviderCliValidationRunner {
       if (!(await this.#verifyTarget(request))) {
         return { ...fence, status: "retrying", reason: "artifact_changed" };
       }
-      session = await open(request, signal);
+      signal?.throwIfAborted();
+      if (Date.parse(request.expiresAt) <= this.#now()) {
+        return { ...fence, status: "retrying", reason: "validation_expired" };
+      }
+      session = await this.#openProxyValidation?.(request, signal);
       if (!session) return { ...fence, status: "needs_attention" };
       const combinedSignal = combineSignals(signal, session.signal);
       combinedSignal?.throwIfAborted();
+      if (Date.parse(request.expiresAt) <= this.#now()) {
+        return { ...fence, status: "retrying", reason: "validation_expired" };
+      }
       const catalog = findProviderCliCatalogEntry(fence.provider);
       const env = applySessionEnvironment(
         scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {}),
@@ -263,17 +314,13 @@ export class ProviderCliValidationRunner {
       );
       return validationFailureResult(fence, error, signal, this.#logger);
     } finally {
-      try {
-        await session?.cleanup().catch((error: unknown) => {
-          this.#logger.debug(
-            { code: "validation_session_cleanup_failed", error: runtimeProxyErrorReason(error) },
-            "Proxy validation session cleanup failed",
-          );
-        });
-        await rm(workDir, { recursive: true, force: true });
-      } finally {
-        this.#busy = false;
-      }
+      await session?.cleanup().catch((error: unknown) => {
+        this.#logger.debug(
+          { code: "validation_session_cleanup_failed", error: runtimeProxyErrorReason(error) },
+          "Proxy validation session cleanup failed",
+        );
+      });
+      await rm(workDir, { recursive: true, force: true });
     }
   }
 
@@ -419,6 +466,7 @@ export class ProviderCliValidationRunner {
         windowsHide: true,
         ...(signal ? { signal } : {}),
       });
+      signal?.throwIfAborted();
       return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
       this.#logger.debug(

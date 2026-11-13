@@ -31,6 +31,8 @@ export interface RunnerPerformanceMetrics {
   readonly runnerVersion?: string;
   readonly launchDurationMs?: number;
   readonly probeDurationMs?: number;
+  readonly wsOpenDurationMs?: number;
+  readonly authRoundTripMs?: number;
   readonly reason?: "initial_restore_fence" | "initial_empty_workspace";
   readonly archiveBytes?: number;
   readonly downloadMs?: number;

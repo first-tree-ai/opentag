@@ -309,6 +309,28 @@ export class RuntimeCredentialRelay {
     }
   }
 
+  /**
+   * Open an execution that carries platform services only (legacy credential mode). Provider
+   * grants the Server describes are never acquired and no data channel is opened, so the
+   * execution can only hand out service bearers such as the MCP gateway token.
+   */
+  static async openServices(
+    options: RuntimeCredentialRelayOptions,
+    subject: RuntimeCredentialExecutionSubject,
+    signal?: AbortSignal,
+  ): Promise<RuntimeCredentialRelay> {
+    const relay = new RuntimeCredentialRelay(options);
+    const deadline = relay.#now() + relay.#openBudgetMs;
+    try {
+      relay.#subject = subject;
+      await relay.#openExecution(subject, deadline, signal);
+      return relay;
+    } catch (error) {
+      await relay.#closeInternal("open_failed", true).catch(() => undefined);
+      throw error;
+    }
+  }
+
   /** Plaintext local handle for CLI material assembly. Never leaves the Runner boundary. */
   localHandleFor(provider: RuntimeProxyProvider): string {
     const handle = this.#providerHandles.get(provider);

@@ -11,6 +11,9 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import { SessionBindingConflictError } from "./session-binding-store.js";
+import type { StoredSessionCliProof } from "./session-cli-proof-manager.js";
+
+export const SESSION_CLI_PROOF_REFRESH_FAILED = "session_cli_proof_refresh_failed";
 
 const BINDING_CONFLICT_REASONS: Record<SessionBindingConflictError["code"], string> = {
   conflict: "session_binding_conflict",
@@ -42,6 +45,7 @@ export interface RuntimePreparation {
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   requiresSessionPreparation?(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): boolean;
+  refreshSessionProof?(sessionId: string, proof: StoredSessionCliProof): Promise<void>;
   prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
@@ -507,11 +511,11 @@ export class SessionReconciler {
     };
   }
 
-  #reconcileActiveTurn(
+  async #reconcileActiveTurn(
     request: SessionReconcileRequest,
     existingSession: SessionRuntimeState | undefined,
     activity: SessionActivity,
-  ): LocalReconcileResult {
+  ): Promise<LocalReconcileResult> {
     if (
       request.desired === "stopped" ||
       !existingSession ||
@@ -546,9 +550,17 @@ export class SessionReconciler {
     if (sessionComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
     if (sessionComparison === "newer") return this.#result(request, "busy", "active_turn");
     const status = activity.phase === "running" ? "running" : "reporting";
+    const turn = { turnId: activity.turnId, deliveryId: activity.deliveryId };
+    if (request.sessionCliProof) {
+      try {
+        await this.#preparation.refreshSessionProof?.(request.sessionId, request.sessionCliProof);
+      } catch {
+        return { ...this.#result(request, status, SESSION_CLI_PROOF_REFRESH_FAILED), turn };
+      }
+    }
     return {
       ...this.#result(request, status),
-      turn: { turnId: activity.turnId, deliveryId: activity.deliveryId },
+      turn,
       ...this.#inlineMessageReadiness(request, hashes, existingSession),
     };
   }

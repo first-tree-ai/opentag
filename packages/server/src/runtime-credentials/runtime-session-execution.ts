@@ -362,9 +362,9 @@ async function describeSessionServices(
  *
  * Withholding is silent everywhere else, which is the problem: a user binds an MCP Server on the
  * web, watches its probe succeed, and then the Agent has no tools and nothing anywhere says why.
- * The commonest cause is not a mistake in the MCP configuration at all — the credential relay only
- * runs in proxy mode, so a Client on the default `legacy` mode never asks for the service and this
- * function is never even reached with a request.
+ * The commonest cause is not a mistake in the MCP configuration at all — an older Client in the
+ * default `legacy` mode, or one with `OPENTAG_LEGACY_MCP_GATEWAY=off`, never asks for the service and
+ * this function is never even reached with a request.
  *
  * Logged at debug because it is per execution open and most deployments bind no MCP Server at all;
  * the reason code is what makes the silence explicable when someone does go looking.
@@ -384,8 +384,7 @@ async function describeMcpService(
   };
   deps.signal?.throwIfAborted();
   if (!negotiated(context, "mcp")) return withheld("capability_not_negotiated");
-  // A Client in legacy credential mode opens no execution through the relay at all; one that does
-  // open an execution without naming the service has the capability but did not opt in.
+  // A Client that opens an execution without naming the service has the capability but did not opt in.
   if (!frame.services?.includes("mcp")) return withheld("not_requested");
   if (!deps.mcpPolicy) return withheld("policy_unavailable");
   const scopes = await deps.mcpPolicy.authorizeMcp({

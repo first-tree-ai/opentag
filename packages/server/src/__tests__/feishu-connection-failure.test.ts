@@ -19,6 +19,13 @@ describe("classifyFeishuConnectionFailure", () => {
     expect(failure).toEqual({ kind: "permanent", code: "FEISHU_CREDENTIAL_INVALID" });
   });
 
+  it("reads a policy-blocked App as needing administrative action", () => {
+    expect(classifyFeishuConnectionFailure(channelError({ code: 21001 }))).toEqual({
+      kind: "permanent",
+      code: "FEISHU_APP_UNAVAILABLE",
+    });
+  });
+
   it("reads a disabled or uninstalled App as needing action", () => {
     expect(
       classifyFeishuConnectionFailure(

@@ -614,8 +614,9 @@ export class ProviderCliReconciler {
       return;
     }
     const inspection = await this.#manager.inspect(frame.provider);
-    const ready = this.#readySelection.get(frame.provider);
     const live = await readySelectionFromInspect(this.#manager.layout, frame.provider, inspection);
+    if (!this.#acceptsFence(frame)) return;
+    const ready = this.#readySelection.get(frame.provider);
     if (!ready || !live || !selectionsMatch(ready, live)) {
       this.#rememberGrant(frame, new AbortController(), true, false);
       await this.#publishValidation(frame, { status: "retrying", reason: "artifact_changed" });
@@ -638,8 +639,9 @@ export class ProviderCliReconciler {
       return;
     }
     const inspection = await this.#manager.inspect(frame.provider);
-    const ready = this.#readySelection.get(frame.provider);
     const live = await readySelectionFromInspect(this.#manager.layout, frame.provider, inspection);
+    if (!this.#acceptsFence(frame)) return;
+    const ready = this.#readySelection.get(frame.provider);
     if (!ready || !live || !selectionsMatch(ready, live)) {
       this.#rememberGrant(frame, new AbortController(), true, false);
       await this.#publishValidation(frame, { status: "retrying", reason: "artifact_changed" });

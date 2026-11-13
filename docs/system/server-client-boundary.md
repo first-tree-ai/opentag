@@ -149,10 +149,13 @@ failure message and sends no notice for it.
 
 The retry continues the same Session with a continuation notice as the first
 input item — `[OpenTag] Your previous turn was interrupted at <time> because
-<reason> (automatic retry). Before continuing, check your history …` — then
-the original input and, for an IM Turn, the messages steered into it, in their
-original order. Duplicates
-are acceptable: the Provider may or may not have persisted the interrupted turn.
+<reason> (automatic retry). Your conversation history is intact: continue from
+where you stopped, and do not redo steps already completed. …` — then the
+original input, marked as a reference rather than a new request, and, for an IM
+Turn, the messages steered into it, in their original order. The retry resumes
+the same Provider conversation, so the Agent keeps what it already did; the
+original input is repeated only because the Provider may or may not have
+persisted the interrupted turn. Duplicates are acceptable.
 
 - A 429 retries in place, in the same daemon, after about 30 seconds; a start
   failure after about 5 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
@@ -205,6 +208,12 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   pending and the daemon asks for another reconcile. Before and during the resume the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
+- When the daemon stays up across a transport reconnect, a ready reconcile
+  for the running or reporting Turn can carry a fresh Session CLI proof. For
+  the current placement and matching configuration, the Client replaces the
+  credential in the file already used by that Turn. If the write fails, the
+  reconcile reports `session_cli_proof_refresh_failed` alongside the Turn's
+  current status and defers any inline Session message.
 - The daemon owns each recovery until the Session is actually prepared: after
   `scheduled` it waits for the ready reconcile, and sends the request again
   when the reconcile does not arrive. A refused reconcile, a refused request

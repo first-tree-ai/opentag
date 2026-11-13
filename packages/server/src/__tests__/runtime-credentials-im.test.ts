@@ -140,6 +140,7 @@ describe("Feishu tenant token exchange and cache", () => {
       { code: 99991644 },
       { kind: "upstream", providerCode: 99991644 },
     ],
+    ["a tenant access policy refusal", 200, { code: 21001 }, { kind: "rejected", providerCode: 21001 }],
     ["the rate limit code on HTTP 200", 200, { code: 99991400 }, { kind: "rate_limited" }],
     ["the rate limit code on HTTP 400", 400, { code: 99991400 }, { kind: "rate_limited" }],
     ["HTTP 429", 429, {}, { kind: "rate_limited" }],

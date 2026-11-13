@@ -311,7 +311,7 @@ describe("Agent persistence and authorization", () => {
         messageId: "om_card",
         channelId: "oc_sender_dm",
       };
-      expect(await owner.decide({ ...action, userId: "ou_stranger" })).toBe("unavailable");
+      expect(await owner.decide({ ...action, userId: "ou_stranger" })).toBe("not-approver");
       expect(await owner.decide(action)).toBe("recorded");
       await owner.poll();
       expect(sent).toEqual([

@@ -29,7 +29,7 @@ import { createAgentErrorReporter } from "../diagnostics/agent-error-reporting.j
 import { reportCliError } from "../diagnostics/error-reporting.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
-import { resolveRuntimeCredentialMode } from "./credential-mode.js";
+import { resolveLegacyMcpGateway, resolveRuntimeCredentialMode } from "./credential-mode.js";
 import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
@@ -266,6 +266,7 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     home: context.home,
     environment: context.daemonEnvironment,
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
+    legacyMcpGateway: resolveLegacyMcpGateway(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: cliInvocation.map(quotePosix).join(" "),
     cliInvocation,

@@ -102,6 +102,46 @@ describe("SessionMessageInbox", () => {
     },
   );
 
+  it("gives legacy-mode internal messages the MCP-only execution and releases it", async () => {
+    const prompt = vi.fn(async (_request: unknown) => ({ runId: "run", status: "completed" as const, output: [] }));
+    const credentials = {
+      mode: "legacy" as const,
+      prepare: vi.fn(),
+      prepareLegacyServices: vi.fn(async () => ({
+        executionId: "legacy-mcp",
+        path: "",
+        mcp: { url: "http://127.0.0.1:1/mcp", token: "otmg_legacy_fixture" },
+      })),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        sessionKind: () => "internal",
+        ensureRuntime: async () =>
+          ({ waitForIdle: async () => undefined, prompt, manifest: { providerId: "claude-code" } }) as never,
+      },
+    });
+    const request = delivery();
+    expect((await inbox.accept(request)).status).toBe("accepted");
+    await inbox.settled();
+    expect(credentials.prepare).not.toHaveBeenCalled();
+    expect(credentials.prepareLegacyServices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run: expect.objectContaining({ source: expect.objectContaining({ kind: "session-message" }) }),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(prompt.mock.calls[0]?.[0]).toHaveProperty("configuration");
+    expect(credentials.cleanup).toHaveBeenCalledWith(expect.any(String), "legacy-mcp");
+    expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+    inbox.stop();
+  });
+
   it.each(["visible", "internal"] as const)(
     "delivers fresh MCP grants to new and resumed Claude %s Sessions without persisting the bearer",
     async (sessionKind) => {

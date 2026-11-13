@@ -46,14 +46,20 @@ const TERMINAL_SERVICE_CODES = new Set([
  */
 export const TERMINAL_FEISHU_CREDENTIAL_CODES: ReadonlySet<number> = new Set([10015, 20002]);
 
+export const FEISHU_POLICY_DENIED_CODE = 21001;
+
 /**
- * Official Feishu/Lark codes meaning the app is disabled or not installed for the tenant
- * (https://open.feishu.cn/document/server-docs/api-call-guide/generic-error-code.md). The candidate
- * stays recoverable while the tenant enables or installs the app, so these read as a bounded wait
- * instead of a dead credential or an opaque transient failure.
+ * A disabled, uninstalled or policy-blocked app can become available after administrator action.
+ * Setup keeps the candidate until its deadline. Active bindings treat these as explicit refusals.
  */
 export const RECOVERABLE_APP_UNAVAILABLE_CODES: ReadonlySet<number> = new Set([
-  10014, 11207, 11210, 20009, 99991662, 99991673,
+  10014,
+  11207,
+  11210,
+  20009,
+  FEISHU_POLICY_DENIED_CODE,
+  99991662,
+  99991673,
 ]);
 
 function objectProperty(value: unknown, key: string): unknown {

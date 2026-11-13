@@ -91,6 +91,11 @@ is joined with its sibling before returning, and that a late read after the dead
 480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
 separately when an authorized test deployment is available.
 
+For policy refusals, run the controlled HTTP and durable feedback suites with synthetic code 21001.
+Verify the worker preserves the known reaction before any write, stops reaction retries for that revision,
+and keeps an ambiguous partial mutation unknown. Confirm that feedback and approval SDK failures emit no
+raw stdout diagnostics.
+
 ## Feedback queue concurrency and drain
 
 Use the controlled worker and PostgreSQL feedback suites to queue eight independent inputs with delayed transports.
@@ -164,6 +169,15 @@ Thread Session never compacts.
    send occurs, and the retained Session report remains available on restart.
    If writing the Session report itself failed, do not claim a durable completed
    report or send an invented success.
+
+## Local Session CLI proof refresh after reconnect
+
+1. Start a Turn on the authorized Local test Computer and keep its daemon and Provider Run alive while its
+   WebSocket disconnects and reconnects. While the same Turn is still active, trigger a ready reconcile for that
+   Session through normal Session message dispatch.
+2. Expected: the running Turn's next authorized Session CLI request succeeds after the ready reconcile completes.
+   The Turn continues with its original identity, and eligible inline messages can use the active Session.
+   Repeat while the Turn is reporting and check that its report can still settle.
 
 ## Retained report replay after reconnect
 

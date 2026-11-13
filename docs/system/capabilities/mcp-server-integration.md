@@ -105,17 +105,22 @@ version when a legacy downgrade is required. Never copy refresh tokens or revers
 
 ### Local runtime delivery
 
-Local MCP delivery requires `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` in the daemon launch
-environment, including `<OpenTag Home>/config/daemon.env`. Restart the daemon after changing it.
-The default `legacy` mode can configure and authorize connectors in the Web App, but does not open
-the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
-per-action approval settings.
+Local MCP delivery does not depend on the credential mode. In proxy mode the gateway grant rides on
+the Run's proxy execution. In the default `legacy` mode the Client keeps raw IM grants and opens a
+separate MCP-only execution per Run: it requests only the `mcp` service, never acquires the provider
+grants the Server describes, and opens no proxy data channel, so Git, GitHub and IM traffic stay on
+the legacy path. A legacy Client advertises `runtimeCredential` without `providerProxy`; the Server
+treats a Client as proxy mode only when both are negotiated. When the Server grants no MCP service
+the execution closes at once. Any failure only costs that Run its MCP tools. Set
+`OPENTAG_LEGACY_MCP_GATEWAY=off` in the daemon launch environment (including
+`<OpenTag Home>/config/daemon.env`) to keep legacy mode free of executions; restart the daemon after
+changing it. Codex and Claude Code retain their normal per-action approval settings.
 
 Both IM Turns and Session messages pass the current execution's service grants to the Provider.
 In proxy mode, Local internal Sessions open their own execution for an accepted Session message
 over a connection that negotiated Session collaboration. They receive only their Agent's authorized
 platform services, without inheriting the visible Session's IM provider credentials or outbox.
-Legacy-mode internal Sessions retain their credential-free execution path. An older Server that
+Legacy-mode internal Sessions receive no IM grant; they open only the MCP-only execution. An older Server that
 refuses the internal execution leaves the message without managed services and emits a bounded
 warning; it supplies no replacement credentials. Each message prepares
 and closes its own execution; a new Session or runtime snapshot does not reuse a previous bearer.

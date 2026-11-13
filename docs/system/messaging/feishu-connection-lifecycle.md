@@ -223,9 +223,13 @@ migration applied still reports those Agents as disconnected, with both channel 
 
 ## Recovery and concurrency
 
-The existing setup timer scans candidates in bounded keyset batches. It checks the saved
-next-check time, uses bounded concurrency and jitter, and respects provider `Retry-After`.
-Manual POST checks use the same admission. GET requests remain read-only.
+The setup timer scans candidates in bounded keyset batches. For the first 15 minutes after a
+candidate is saved, it uses the saved next-check time, which includes a 60-second base wait,
+jitter, and any longer provider `Retry-After` after a waiting result. At ages of 15 minutes,
+1 hour, and 24 hours, the timer also requires at least 5 minutes, 30 minutes, and 2 hours,
+respectively, since the last observed check. A candidate with no observation is eligible for
+its first check at the saved next-check time. Manual POST checks use that saved time and
+share the same claim and concurrency limits. GET requests remain read-only.
 Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
 This uses the existing attempt DTO and Account ownership checks, independently of the active
 binding: a working connection must not hide its saved same-App reauthorization. No open attempt
@@ -250,7 +254,9 @@ It rejects new work and stale probe results, and cannot restart while stop is in
 
 All 66 scopes are checked before a candidate opens a message channel. Only a ready candidate
 enters existing atomic activation. Ambiguous upstream failures preserve it; a provider's
-explicit invalid-secret response is distinct from a generic parameter error or disabled App.
+explicit invalid-secret response is distinct from a generic parameter error or an unavailable App.
+Feishu policy refusal (21001) is an App availability condition. A setup candidate remains available for
+the tenant administrator to resolve the access restriction within the setup deadline.
 
 This is a database-backed recovery loop using existing setup fields, not an exactly-once
 transaction with Feishu. A crash between external credential issuance and the first database
@@ -279,7 +285,7 @@ Each failure is classified (`connection-failure.ts`) by what Feishu itself answe
 numeric codes, never from provider text:
 
 - **Refused by Feishu.** The tenant token is refused for dead credentials (10015, 20002) or because
-  the App is disabled or not installed (the app-unavailable codes the setup check already uses), the
+  the App is disabled, uninstalled, or blocked by access policy (the app-unavailable codes the setup check already uses), the
   long-connection gateway rejects the App (403, 514), or a different Bot answers.
 - **Not attempted.** The call's circuit is open, so Feishu was never asked.
 - **Transient.** Everything else: network failures, timeouts, rate limits, and the SDK's ambiguous

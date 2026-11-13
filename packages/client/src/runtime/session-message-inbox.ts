@@ -114,7 +114,7 @@ export interface SessionMessageInboxOptions {
   channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
-    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
+    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession" | "prepareLegacyServices">>;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -1320,20 +1320,20 @@ export class SessionMessageInbox {
     request: SessionMessageDeliveryRequestV3,
     sessionKind: "visible" | "internal",
   ) {
-    if (sessionKind === "internal" && this.#credentialEnvironment.mode !== "proxy") return undefined;
+    const subject = {
+      sessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      run: {
+        runId: request.requestId,
+        source: { kind: "session-message" as const, messageId: request.messageId },
+      },
+    };
+    if (sessionKind === "internal" && this.#credentialEnvironment.mode !== "proxy") {
+      return this.#credentialEnvironment.prepareLegacyServices?.(subject, this.#abort.signal);
+    }
     try {
-      return await this.#credentialEnvironment.prepare(
-        {
-          sessionId,
-          agentId: request.agentId,
-          placementGeneration: request.placementGeneration,
-          run: {
-            runId: request.requestId,
-            source: { kind: "session-message", messageId: request.messageId },
-          },
-        },
-        this.#abort.signal,
-      );
+      return await this.#credentialEnvironment.prepare(subject, this.#abort.signal);
     } catch (error) {
       if (
         sessionKind === "internal" &&

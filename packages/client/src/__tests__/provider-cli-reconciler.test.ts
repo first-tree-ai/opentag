@@ -974,6 +974,44 @@ describe("provider CLI reconciler", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it.each([grantFrame, validationRunFrame])(
+    "rechecks the validation fence after inspection (%#. frame)",
+    async (frame) => {
+      const runtime = connection();
+      const fixture = await externalReadyFixture();
+      const inspecting = deferred();
+      const release = deferred();
+      const inspect = vi
+        .fn()
+        .mockResolvedValue(fixture.inspection)
+        .mockImplementationOnce(async () => fixture.inspection)
+        .mockImplementationOnce(async () => {
+          inspecting.resolve();
+          await release.promise;
+          return fixture.inspection;
+        });
+      const run = vi.fn(async (_request, fence) => ({ ...fence, status: "ready" as const }));
+      const reconciler = new ProviderCliReconciler({
+        connection: runtime,
+        manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+        now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+        validation: { run, cleanupAll: vi.fn() },
+      });
+      await runtime.emit(requirement);
+      const stale = runtime.emit(frame());
+      await inspecting.promise;
+      await runtime.emit({
+        ...requirement,
+        requestId: "99999999-9999-4999-8999-999999999999",
+        credentialGeneration: 3,
+      });
+      release.resolve();
+      await stale;
+      expect(run).not.toHaveBeenCalled();
+      await reconciler.close();
+    },
+  );
+
   it("reports artifact_changed without holding the grant when selection identity drifts", async () => {
     const accountHome = await mkdtemp(join(tmpdir(), "opentag-reconcile-"));
     const layout = resolveProviderCliAccountLayout(accountHome);

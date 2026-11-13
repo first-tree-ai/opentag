@@ -200,7 +200,7 @@ describe("Runtime approvals", () => {
       await s.owner.request(s.request, s.context);
       expect(s.messenger.post).toHaveBeenCalledTimes(1);
       expect(await s.owner.decide(s.action())).toBe("recorded");
-      expect(await s.owner.decide(s.action())).toBe("unavailable");
+      expect(await s.owner.decide(s.action())).toBe("resolved");
       await s.owner.poll();
       await s.owner.poll();
       expect(s.registry.send).toHaveBeenCalledTimes(1);
@@ -318,7 +318,9 @@ describe("Runtime approvals", () => {
   ])("rejects mismatched callback authority %j", async (change) => {
     const s = setup();
     await s.owner.request(s.request, s.context);
-    expect(await s.owner.decide({ ...s.action(), ...change })).toBe("unavailable");
+    expect(await s.owner.decide({ ...s.action(), ...change })).toBe(
+      "userId" in change ? "not-approver" : "unavailable",
+    );
     expect(s.row().status).toBe("pending");
   });
 
@@ -338,7 +340,7 @@ describe("Runtime approvals", () => {
     s.request.commandPresentation = { command: "git push", reason: "Push?" };
     await s.owner.request(s.request, s.context);
     s.advance();
-    expect(await s.owner.decide(s.action())).toBe("unavailable");
+    expect(await s.owner.decide(s.action())).toBe("expired");
     await s.owner.poll();
     expect(s.row().status).toBe("stale");
     expect(ServerRuntimeBusinessFrameSchema.parse(s.registry.send.mock.calls[0]?.[2])).toMatchObject({
@@ -453,7 +455,7 @@ describe("Runtime approvals", () => {
       const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
       s.registry.currentConnectionId.mockReturnValue(randomUUID());
       await s.register();
-      expect(await replacement.decide(s.action())).toBe("unavailable");
+      expect(await replacement.decide(s.action())).toBe("resolved");
       await replacement.poll();
       expect(s.registry.send).not.toHaveBeenCalled();
       expect(s.row().status).toBe("stale");

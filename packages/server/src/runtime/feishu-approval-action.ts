@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RuntimeApprovalOwner } from "./runtime-approval-owner.js";
+import type { ApprovalDecideResult, RuntimeApprovalOwner } from "./runtime-approval-owner.js";
 
 const ActionSchema = z.object({
   operator: z.object({ open_id: z.string().min(1).max(128) }),
@@ -25,11 +25,13 @@ export async function handleFeishuApprovalAction(
     messageId: context.open_message_id,
     channelId: context.open_chat_id,
   });
-  return {
-    toast: {
-      type: result === "recorded" ? "success" : "error",
-      content:
-        result === "recorded" ? "Decision recorded." : "This approval is unavailable or belongs to another user.",
-    },
-  };
+  return { toast: { type: result === "recorded" ? "success" : "error", content: DECIDE_TOASTS[result] } };
 }
+
+const DECIDE_TOASTS: Record<ApprovalDecideResult, string> = {
+  recorded: "Decision recorded.",
+  resolved: "This approval was already decided or is no longer open.",
+  expired: "This approval has expired.",
+  "not-approver": "Only the person this approval was requested from can decide it.",
+  unavailable: "This approval is no longer available.",
+};

@@ -760,7 +760,14 @@ export class SessionMessageInbox {
       return undefined;
     }
     const runId = runtime.state.activeRunId;
-    if (runtime.capabilities.steer !== "supported" || runtime.state.phase !== "running" || !runId) return undefined;
+    if (
+      runtime.capabilities.steer !== "supported" ||
+      runtime.state.phase !== "running" ||
+      !runId ||
+      runtime.steerReady === false
+    ) {
+      return undefined;
+    }
     const turnContext = this.#liveTurnContext(sessionId);
     return turnContext ? { runtime, runId, turnContext } : undefined;
   }

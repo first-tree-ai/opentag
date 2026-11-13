@@ -78,7 +78,9 @@ The first batch starts a Turn. Further batches steer that same running Turn as s
 connection can accept input, preserving order without waiting for Turn completion. Claude Code
 receives steered input as a stream-json user message on the running process: it joins at the next
 tool boundary, or runs right after the current `result` when no tool call is left, and the Turn
-reports once after the last steered input has started and produced a result. A new request
+reports once after the last steered input has started and produced a result. During Local Pi startup,
+an already-running Turn returns `retry/turn_starting` while Pi is still preparing or accepting its prompt.
+The Server backs off with the follow-up still queued. A new request
 requires fresh authority after a known starting/not-running response. An unconfirmed native result
 keeps its original dispatch correlation. The operation deadline cancels a Local worker's wait
 for a result. If custody settlement has already started, the worker observes its settlement

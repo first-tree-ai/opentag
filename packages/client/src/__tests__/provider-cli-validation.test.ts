@@ -17,6 +17,7 @@ import {
   FeishuTokenExchangeError,
   type ProviderCliValidationRequest,
   ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
 } from "../index.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
@@ -42,6 +43,18 @@ const fence = {
   credentialGeneration: 1,
 };
 const feishuFence = { ...fence, provider: "feishu" as const };
+
+function slackValidationRequest() {
+  return {
+    expectedFingerprint: "v1:test",
+    expectedIdentity: slackIdentity,
+    expiresAt: new Date(Date.now() + 15_000).toISOString(),
+    grant: { provider: "slack" as const, botAccessToken: "xoxb-test-token" },
+    requestId: fence.requestId,
+    targetPath: "/bin/true",
+    version: "4.10.0",
+  };
+}
 
 function feishuValidationRequest() {
   return {
@@ -600,7 +613,81 @@ exit 1
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("allows only one process and returns validation_busy to the waiter", async () => {
+  it("runs queued Agents, accounts, providers, and credential generations in FIFO order", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execFile = vi.fn<NonNullable<ProviderCliValidationRunnerOptions["execFile"]>>(
+      async (_file, _args, { env }) => {
+        if (env.SLACK_BOT_TOKEN === "xoxb-test-token") {
+          await gate;
+          throw new Error("provider connection failed");
+        }
+        if (env.SLACK_BOT_TOKEN === "xoxb-other-team") {
+          return { stdout: '{"ok":true,"team_id":"T2","user_id":"U2","bot_id":"B2"}', stderr: "" };
+        }
+        if (env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN === "tenant-test-token") {
+          expect(env.SLACK_BOT_TOKEN).toBeUndefined();
+          return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
+        }
+        return { stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}', stderr: "" };
+      },
+    );
+    const runner = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      exchangeFeishuToken: async () => "tenant-test-token",
+      verifyTarget: async () => true,
+    });
+    const first = runner.run(slackValidationRequest(), fence);
+    await vi.waitFor(() => expect(execFile).toHaveBeenCalledTimes(1));
+    const otherAccount = {
+      ...fence,
+      requestId: "other-account",
+      agentId: "other-agent",
+      integrationId: "other-integration",
+    };
+    const otherProvider = { ...feishuFence, requestId: "feishu-request", integrationId: "feishu-integration" };
+    const nextGeneration = { ...fence, requestId: "next-generation", credentialGeneration: 2 };
+    const results = Promise.all([
+      first,
+      runner.run(
+        {
+          ...slackValidationRequest(),
+          requestId: otherAccount.requestId,
+          expectedIdentity: { ...slackIdentity, teamId: "T2", botUserId: "U2", botId: "B2" },
+          grant: { provider: "slack", botAccessToken: "xoxb-other-team" },
+        },
+        otherAccount,
+      ),
+      runner.run({ ...feishuValidationRequest(), requestId: otherProvider.requestId }, otherProvider),
+      runner.run(
+        {
+          ...slackValidationRequest(),
+          requestId: nextGeneration.requestId,
+          grant: { provider: "slack", botAccessToken: "xoxb-rotated" },
+        },
+        nextGeneration,
+      ),
+    ]);
+    await Promise.resolve();
+    expect(execFile).toHaveBeenCalledTimes(1);
+    release();
+    await expect(results).resolves.toEqual([
+      { ...fence, status: "retrying", reason: "provider_unreachable" },
+      { ...otherAccount, status: "ready" },
+      { ...otherProvider, status: "ready" },
+      { ...nextGeneration, status: "ready" },
+    ]);
+    expect(
+      execFile.mock.calls.map(([, , { env }]) => env.SLACK_BOT_TOKEN ?? env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN),
+    ).toEqual(["xoxb-test-token", "xoxb-other-team", "tenant-test-token", "xoxb-rotated"]);
+    expect(new Set(execFile.mock.calls.map(([, , { cwd }]) => cwd)).size).toBe(4);
+  });
+
+  it("bounds the queue and immediately frees cancelled waiting slots", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -611,23 +698,89 @@ exit 1
       return { stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}', stderr: "" };
     });
     const runner = new ProviderCliValidationRunner({ home, execFile, verifyTarget: async () => true });
-    const request = {
-      expectedFingerprint: "v1:test",
-      expectedIdentity: slackIdentity,
-      expiresAt: new Date(Date.now() + 15_000).toISOString(),
-      grant: { provider: "slack" as const, botAccessToken: "xoxb-secret-token" },
-      requestId: fence.requestId,
-      targetPath: "/bin/true",
-      version: "4.10.0",
-    };
-    const first = runner.run(request, fence);
+    const active = new AbortController();
+    const first = runner.run(slackValidationRequest(), fence, active.signal);
     await vi.waitFor(() => expect(execFile).toHaveBeenCalledTimes(1));
-    await expect(runner.run(request, fence)).resolves.toMatchObject({
-      status: "retrying",
-      reason: "validation_busy",
+    const cancelled = new AbortController();
+    const waiting = Array.from({ length: 8 }, (_, index) => {
+      const requestId = `waiting-${index}`;
+      return runner.run(
+        { ...slackValidationRequest(), requestId },
+        { ...fence, requestId },
+        index === 0 ? cancelled.signal : undefined,
+      );
     });
-    release();
-    await expect(first).resolves.toMatchObject({ status: "ready" });
+    const overflowFence = { ...fence, requestId: "overflow" };
+    const overflowRequest = { ...slackValidationRequest(), requestId: overflowFence.requestId };
+    try {
+      await expect(runner.run(overflowRequest, overflowFence)).resolves.toEqual({
+        ...overflowFence,
+        status: "retrying",
+        reason: "validation_busy",
+      });
+      cancelled.abort();
+      await expect(waiting[0]).rejects.toHaveProperty("name", "AbortError");
+      await expect(runner.run(overflowRequest, overflowFence, cancelled.signal)).rejects.toHaveProperty(
+        "name",
+        "AbortError",
+      );
+      const replacement = runner.run(overflowRequest, overflowFence);
+      active.abort();
+      const aborted = expect(first).rejects.toHaveProperty("name", "AbortError");
+      await Promise.resolve();
+      expect(execFile).toHaveBeenCalledTimes(1);
+      release();
+      await aborted;
+      await expect(Promise.all(waiting.slice(1))).resolves.toEqual(
+        Array.from({ length: 7 }, (_, index) => ({ ...fence, requestId: `waiting-${index + 1}`, status: "ready" })),
+      );
+      await expect(replacement).resolves.toEqual({ ...overflowFence, status: "ready" });
+      expect(execFile).toHaveBeenCalledTimes(9);
+    } finally {
+      release();
+      await Promise.allSettled([first, ...waiting]);
+    }
+  });
+
+  it("expires a queued grant before the active probe ends and rechecks the target at execution", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execFile = vi.fn(async () => {
+      await gate;
+      return { stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}', stderr: "" };
+    });
+    let targetChanged = false;
+    const verifyTarget = vi.fn(async () => !targetChanged);
+    const runner = new ProviderCliValidationRunner({ home, execFile, verifyTarget });
+    const active = runner.run(slackValidationRequest(), fence);
+    await vi.waitFor(() => expect(execFile).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    const expired = { ...fence, requestId: "expired" };
+    const drifted = { ...fence, requestId: "drifted" };
+    const expiring = runner.run(
+      { ...slackValidationRequest(), requestId: expired.requestId, expiresAt: new Date(Date.now() + 25).toISOString() },
+      expired,
+    );
+    const waiting = runner.run({ ...slackValidationRequest(), requestId: drifted.requestId }, drifted);
+    try {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(expiring).resolves.toEqual({ ...expired, status: "retrying", reason: "validation_expired" });
+      expect(verifyTarget).toHaveBeenCalledTimes(1);
+      targetChanged = true;
+      release();
+      await expect(active).resolves.toEqual({ ...fence, status: "ready" });
+      await expect(waiting).resolves.toEqual({ ...drifted, status: "retrying", reason: "artifact_changed" });
+      expect(execFile).toHaveBeenCalledTimes(1);
+      expect(verifyTarget.mock.calls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      release();
+      await Promise.allSettled([active, expiring, waiting]);
+    }
   });
 
   it("fails closed when startup cleanup fails", async () => {
@@ -892,29 +1045,57 @@ exit 1
       status: "retrying",
       reason: "artifact_changed",
     });
+  });
 
+  it("opens each queued proxy run with its own authority after the previous session closes", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-proxy-queue-"));
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const busyOpen = vi.fn(async () => ({ environment: {}, cleanup: async () => undefined }));
-    const busy = new ProviderCliValidationRunner({
+    const releaseSession = vi.fn(async () => {
+      await gate;
+    });
+    const openProxyValidation = vi.fn(async (request: ProviderCliValidationRequest) => ({
+      environment: { SLACK_BOT_TOKEN: `otrh_${request.validationRunId}` },
+      cleanup: releaseSession,
+    }));
+    const execFile = vi.fn<NonNullable<ProviderCliValidationRunnerOptions["execFile"]>>(async () => ({
+      stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}',
+      stderr: "",
+    }));
+    const runner = new ProviderCliValidationRunner({
       home,
-      execFile: vi.fn(async () => {
-        await gate;
-        return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
-      }),
-      openProxyValidation: busyOpen,
+      execFile,
+      openProxyValidation,
       proxyCredentialMode: true,
+      verifyTarget: async () => true,
     });
-    const pending = busy.run(request, feishuFence);
-    await vi.waitFor(() => expect(busyOpen).toHaveBeenCalledTimes(1));
-    await expect(busy.run(request, feishuFence)).resolves.toMatchObject({
-      status: "retrying",
-      reason: "validation_busy",
-    });
+    const first = runner.run({ ...slackValidationRequest(), agentId: fence.agentId, validationRunId: "first" }, fence);
+    await vi.waitFor(() => expect(releaseSession).toHaveBeenCalledTimes(1));
+    const secondFence = { ...fence, requestId: "second-request", agentId: "second-agent" };
+    const second = runner.run(
+      {
+        ...slackValidationRequest(),
+        requestId: secondFence.requestId,
+        agentId: secondFence.agentId,
+        validationRunId: "second",
+      },
+      secondFence,
+    );
+    await Promise.resolve();
+    expect(openProxyValidation).toHaveBeenCalledTimes(1);
     release();
-    await expect(pending).resolves.toEqual({ ...feishuFence, status: "ready" });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { ...fence, status: "ready" },
+      { ...secondFence, status: "ready" },
+    ]);
+    expect(openProxyValidation.mock.calls.map(([request]) => [request.agentId, request.validationRunId])).toEqual([
+      [fence.agentId, "first"],
+      [secondFence.agentId, "second"],
+    ]);
+    expect(execFile.mock.calls.map(([, , { env }]) => env.SLACK_BOT_TOKEN)).toEqual(["otrh_first", "otrh_second"]);
+    expect(releaseSession).toHaveBeenCalledTimes(2);
   });
 
   it("releases a failing proxy Feishu session and reports the pre-probe mismatch", async () => {

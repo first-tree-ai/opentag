@@ -130,11 +130,12 @@ Slack follows the same model. Explicit methods match first (`auth.test` is the o
 `chat.postMessage` feeds the outbound message capture). Any other Web API method at `/api/<method>`, called with
 `POST` or `GET`, is forwarded to `https://slack.com` except `oauth.*`, `openid.*` and `auth.revoke`, which are refused
 with `operation_not_registered`, as is any other method or casing of an explicit method (for example
-`GET /api/chat.postMessage`), so explicit methods keep their validation, capture and URL rewriting. A method whose
-final verb is a read (`list`, `info`, `history`, `replies`, `members`,
-`get…`, `lookup…`, or any `search.*`) is a read and is sent upstream as a form; any other method is a one-attempt
-write classified by Slack's `ok`. Bodies use the same form and JSON decoding as the explicit methods, up to 1 MiB, with
-the caller's `token` field stripped; a `token` query parameter and multipart bodies are refused with `body_invalid`.
+`GET /api/chat.postMessage`), so explicit methods keep their validation, capture and URL rewriting. Form or JSON
+input is accepted and always sent upstream as a form, because every Web API method accepts form parameters while legacy
+methods ignore JSON; structured JSON values become JSON-encoded form fields. Bodies are bounded at 1 MiB, with the
+caller's `token` field stripped. A method is classified as a read when its lowercased final verb is a known read
+(`list`, `info`, `history`, `replies`, `members`, `conversations`, `identity`), ends in `info` or `logs`, starts with
+`get` or `lookup`, or the method is any `search.*`; any other method is a one-attempt write classified by Slack's `ok`; a `token` query parameter and multipart bodies are refused with `body_invalid`.
 JSON responses keep the private file URL rewriting to execution handles. The same switch turns Slack passthrough off.
 
 When the proxy refuses or cannot complete a Feishu or Slack call, the Client's loopback endpoint answers with a

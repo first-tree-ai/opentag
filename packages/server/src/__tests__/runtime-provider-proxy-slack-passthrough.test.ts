@@ -95,9 +95,17 @@ describe("Slack passthrough registry", () => {
     expect(registry.match("POST", "/api/chat.postMessage")?.operation.operationId).toBe("chat.postMessage");
     expect(registry.match("POST", "/api/auth.test")?.operation.validationAllowed).toBe(true);
     for (const [method, path, kind, body] of [
-      ["POST", "/api/pins.add", "write", "json"],
-      ["POST", "/api/admin.conversations.create", "write", "json"],
-      ["POST", "/api/conversations.setTopic", "write", "json"],
+      ["POST", "/api/pins.add", "write", "form"],
+      ["POST", "/api/admin.conversations.create", "write", "form"],
+      ["POST", "/api/conversations.setTopic", "write", "form"],
+      ["POST", "/api/users.conversations", "read", "form"],
+      ["POST", "/api/users.identity", "read", "form"],
+      ["POST", "/api/dnd.teamInfo", "read", "form"],
+      ["POST", "/api/team.billableInfo", "read", "form"],
+      ["POST", "/api/team.accessLogs", "read", "form"],
+      ["POST", "/api/team.integrationLogs", "read", "form"],
+      ["POST", "/api/Bookmarks.List", "read", "form"],
+      ["POST", "/api/Users.GetPresence", "read", "form"],
       ["POST", "/api/bookmarks.list", "read", "form"],
       ["POST", "/api/users.getPresence", "read", "form"],
       ["POST", "/api/users.lookupByEmail", "read", "form"],
@@ -145,7 +153,7 @@ describe("Slack passthrough registry", () => {
 });
 
 describe("Slack passthrough adapter", () => {
-  it("forwards a JSON write without the caller token, classifies it, and skips capture", async () => {
+  it("forwards JSON write input as a form without the caller token, classifies it, and skips capture", async () => {
     const { instance, calls, logger, capture } = adapter(() => json({ ok: true }));
     const response = await instance.handle(
       request({ body: textBody('{"channel":"C1","timestamp":"1.2","token":"otrh_local"}') }),
@@ -153,13 +161,36 @@ describe("Slack passthrough adapter", () => {
     );
     expect(JSON.parse(await readBody(response.body))).toEqual({ ok: true });
     expect(calls[0]?.url).toBe("https://slack.com/api/pins.add");
-    expect(JSON.parse(bodyText(calls[0]))).toEqual({ channel: "C1", timestamp: "1.2" });
+    expect(bodyText(calls[0])).toBe("channel=C1&timestamp=1.2");
+    expect(calls[0]?.init.headers).toMatchObject({ "content-type": "application/x-www-form-urlencoded" });
     expect(calls[0]?.init.headers).toMatchObject({ authorization: "Bearer real-token" });
     expect(capture).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
       { code: "PROVIDER_PROXY_PASSTHROUGH", provider: "slack", method: "POST", path: "/api/pins.add" },
       "Provider proxy passthrough request",
     );
+  });
+
+  it("sends form-only reads outside the verb list as forms", async () => {
+    const { instance, calls } = adapter(() => json({ ok: true, channels: [] }));
+    await instance.handle(
+      request({
+        path: "/api/users.conversations",
+        body: textBody('{"types":"private_channel","limit":1,"cursor":"next-page"}'),
+      }),
+      authorization(),
+    );
+    expect(bodyText(calls[0])).toBe("types=private_channel&limit=1&cursor=next-page");
+    expect(calls[0]?.init.headers).toMatchObject({ "content-type": "application/x-www-form-urlencoded" });
+  });
+
+  it("serializes structured JSON values as form fields for writes", async () => {
+    const { instance, calls } = adapter(() => json({ ok: true }));
+    await instance.handle(
+      request({ path: "/api/chat.postEphemeral", body: textBody('{"channel":"C1","blocks":[{"type":"divider"}]}') }),
+      authorization(),
+    );
+    expect(new URLSearchParams(bodyText(calls[0])).get("blocks")).toBe('[{"type":"divider"}]');
   });
 
   it("relays Slack rejections and reports unconfirmed writes as unknown", async () => {

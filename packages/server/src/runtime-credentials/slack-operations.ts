@@ -13,7 +13,20 @@ const SLACK_METHOD_NAME = /^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/;
 /** Credential issuance, user sign-in, and revocation stay refused even with passthrough on. */
 const PASSTHROUGH_DENIED_PREFIXES = ["oauth.", "openid."];
 const PASSTHROUGH_DENIED_METHODS = new Set(["auth.revoke"]);
-const READ_METHOD_VERBS = new Set(["list", "info", "history", "replies", "members", "get", "test"]);
+const READ_METHOD_VERBS = new Set([
+  "list",
+  "info",
+  "history",
+  "replies",
+  "members",
+  "get",
+  "test",
+  "conversations",
+  "identity",
+]);
+/** Compound read verbs such as `dnd.teamInfo`, `team.billableInfo`, or `team.accessLogs`. */
+const READ_VERB_SUFFIXES = ["info", "logs"];
+const READ_VERB_PREFIXES = ["get", "lookup"];
 
 /**
  * Slack file-object fields that require the caller token: private download URLs and the
@@ -121,21 +134,28 @@ const EXPLICIT_METHOD_NAMES = new Set(
   SLACK_OPERATIONS.map((operation) => operation.pathTemplate.slice("/api/".length).toLowerCase()),
 );
 
-/** Read when the method's final verb is a known read (`*.list`, `*.info`, `users.getPresence`, `search.*`). */
-function slackMethodKind(method: string): ProviderOperation["kind"] {
-  const parts = method.split(".");
+/**
+ * Write-outcome classification only (request encoding does not depend on it): a method is a read
+ * when its lowercased final verb is a known read (`*.list`, `*.info`, `users.conversations`),
+ * ends in a read suffix (`dnd.teamInfo`, `team.accessLogs`), starts with `get`/`lookup`, or it is
+ * any `search.*` method. A misclassified read only loses the unknown-outcome reporting of writes.
+ */
+function slackMethodKind(lowered: string): ProviderOperation["kind"] {
+  const parts = lowered.split(".");
   const verb = parts.at(-1) ?? "";
-  if (parts[0] === "search" || READ_METHOD_VERBS.has(verb) || verb.startsWith("get") || verb.startsWith("lookup")) {
-    return "read";
-  }
-  return "write";
+  const read =
+    parts[0] === "search" ||
+    READ_METHOD_VERBS.has(verb) ||
+    READ_VERB_SUFFIXES.some((suffix) => verb.endsWith(suffix)) ||
+    READ_VERB_PREFIXES.some((prefix) => verb.startsWith(prefix));
+  return read ? "read" : "write";
 }
 
 /**
  * Generic Slack operation for any other Web API method when passthrough is enabled. The App's own
- * scopes are the only limit, except for `oauth.*`, `openid.*`, and `auth.revoke`. Bodies use the
- * same form/JSON decoding as the explicit table (multipart is not accepted), the caller's token is
- * always stripped, and JSON responses keep the protected-URL rewriting.
+ * scopes are the only limit, except for `oauth.*`, `openid.*`, and `auth.revoke`. Bodies accept
+ * form or JSON input and are always sent upstream as a form (multipart is not accepted), the
+ * caller's token is always stripped, and JSON responses keep the protected-URL rewriting.
  */
 export const SLACK_PASSTHROUGH: ProviderPassthroughRule = {
   resolve(method, path) {
@@ -149,15 +169,16 @@ export const SLACK_PASSTHROUGH: ProviderPassthroughRule = {
     // Slack accepts GET and any casing for a method, so another spelling of an explicit method
     // would skip its validation scope, capture, or rewriting; only the explicit entry may serve it.
     if (EXPLICIT_METHOD_NAMES.has(lowered)) return undefined;
-    const kind = slackMethodKind(name);
+    const kind = slackMethodKind(lowered);
     return {
       operationId: "slack.passthrough",
       provider: "slack",
       method,
       pathTemplate: "/api/{method}",
       kind,
-      // Legacy read methods ignore JSON parameters, so reads are sent upstream as forms.
-      body: method === "GET" ? "none" : kind === "read" ? "form" : "json",
+      // Every Web API method accepts form parameters while legacy ones ignore JSON, so JSON input
+      // is always normalized to a form upstream.
+      body: method === "GET" ? "none" : "form",
       response: "auto",
       passthrough: true,
       maxBodyBytes: PASSTHROUGH_BODY,

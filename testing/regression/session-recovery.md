@@ -325,6 +325,16 @@ command outside the Agent's command rules, such as `ps -ax -o pid,command | grep
 3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
 4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.
 
+## IM messages during a pending approval
+
+1. With a Local Codex test double, start a DM Turn and leave its approval pending. Send another DM. Confirm the
+   Server retains the follow-up in its delivery queue and the Provider receives no steer for it.
+2. Repeat with Approve, Deny, and Provider-side expiry. Keep the original Turn running after the approval resolves
+   and confirm the queued message steers into it once, ahead of later messages. If the original Turn ends first,
+   confirm the queued message runs as a new Turn.
+3. Replay a steer that was already accepted before the approval. Confirm the existing receipt is returned and the
+   Provider receives the message only once.
+
 ## Steered Session messages
 
 1. Leave `OPENTAG_RUNTIME_CREDENTIAL_MODE` unset (the default Local credential mode). While a visible Session's IM Turn

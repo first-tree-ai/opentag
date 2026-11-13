@@ -190,7 +190,7 @@ const STEER_SETTLE_TIMEOUT_MS = 10_000;
 
 interface RunningTurn {
   readonly abort: AbortController;
-  readonly approvals: Map<string, string>;
+  readonly approvals: Map<string, { providerRequestId: string; responding: boolean }>;
   readonly owner: LiveTurnOwner;
   readonly reportVersion: number;
   /** `waiting`: between attempts, for a used-up quota window to reset; steers join the retry input. */
@@ -346,7 +346,8 @@ export class AgentTurnRunner {
     ) {
       return steerResult(request, "rejected", "target_mismatch");
     }
-    if (turn.phase === "starting") return steerResult(request, "retry", "turn_starting");
+    // Both waits are temporary. Release the Server's steer claim so it can try this Turn again.
+    if (turn.phase === "starting" || turn.approvals.size > 0) return steerResult(request, "retry", "turn_starting");
     if (turn.phase === "waiting") return this.#joinWaitingTurn(turn, request, semanticHash);
     const runtime = turn.runtime;
     if (turn.phase !== "running" || !runtime) {
@@ -405,6 +406,12 @@ export class AgentTurnRunner {
     const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
     if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
     if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+
+    // An approval can arrive while we persist the retry input.
+    if (turn.approvals.size > 0) {
+      await this.#retries.removeSteer(request).catch(() => undefined);
+      return steerResult(request, "retry", "turn_starting");
+    }
 
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
@@ -497,10 +504,11 @@ export class AgentTurnRunner {
   async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
     const { type: _type, decision: _decision, ...identity } = request;
     const turn = this.#turns.get(request.turnId);
-    const providerRequestId = turn?.approvals.get(request.requestId);
+    const approval = turn?.approvals.get(request.requestId);
     if (
       !turn?.runtime ||
-      providerRequestId === undefined ||
+      !approval ||
+      approval.responding ||
       turn.phase !== "running" ||
       turn.owner.request.sessionId !== request.sessionId ||
       turn.owner.request.deliveryId !== request.deliveryId ||
@@ -509,15 +517,16 @@ export class AgentTurnRunner {
       Date.parse(turn.expiresAt) <= this.#now()
     )
       return { ...identity, type: "approval:result", status: "stale" };
-    turn.approvals.delete(request.requestId);
+    approval.responding = true;
     try {
       await turn.runtime.respond({
         expectedRunId: request.turnId,
-        requestId: providerRequestId,
+        requestId: approval.providerRequestId,
         kind: "approval",
         decision: request.decision,
         scope: "run",
       });
+      turn.approvals.delete(request.requestId);
       return { ...identity, type: "approval:result", status: "applied" };
     } catch {
       return { ...identity, type: "approval:result", status: "stale" };
@@ -541,6 +550,7 @@ export class AgentTurnRunner {
       trace.record(event);
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
+      this.#forgetResolvedApproval(turn, event);
       if (event.type === "run_started" && event.runId === owner.turnId) {
         this.#activity.start(owner.request, owner.turnId);
         await this.#bindingStore.updateUnresolved(
@@ -562,6 +572,13 @@ export class AgentTurnRunner {
       }
       await this.#onRuntimeEvent?.(event);
     });
+  }
+
+  #forgetResolvedApproval(turn: RunningTurn, event: AgentRuntimeEvent): void {
+    if (event.type !== "interaction_resolved" || event.runId !== turn.owner.turnId) return;
+    for (const [id, approval] of turn.approvals) {
+      if (approval.providerRequestId === event.requestId) turn.approvals.delete(id);
+    }
   }
 
   async #requestApproval(
@@ -587,7 +604,7 @@ export class AgentTurnRunner {
       return;
     }
     const requestId = randomUUID();
-    turn.approvals.set(requestId, request.requestId);
+    turn.approvals.set(requestId, { providerRequestId: request.requestId, responding: false });
     await this.#connection.send({
       type: "approval:request",
       requestId,
@@ -821,6 +838,7 @@ export class AgentTurnRunner {
     } finally {
       this.#activity.end(owner.turnId);
       releaseObserver();
+      turn.approvals.clear();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */

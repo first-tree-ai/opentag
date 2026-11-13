@@ -3915,6 +3915,7 @@ describe("IM binding persistence", () => {
     ["target_mismatch", "rejected", "target_mismatch", undefined],
     ["stale_generation", "rejected", "stale_generation", undefined],
     ["input_conflict", "rejected", "input_conflict", undefined],
+    ["steer_unsupported", "deferred", undefined, "steer_unsupported"],
     ["steer_state_unknown", "deferred", undefined, "steer_state_unknown"],
   ] as const)(
     "preserves %s steer evidence and replays only a known no-effect input after the root reports",

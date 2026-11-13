@@ -22,7 +22,7 @@ import type {
   SessionPreparationOptions,
   SessionPreparationResult,
 } from "./session-binding-store.js";
-import type { SessionCliProofManager } from "./session-cli-proof-manager.js";
+import type { SessionCliProofManager, StoredSessionCliProof } from "./session-cli-proof-manager.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
 const logger = createLogger("runtime-session-manager");
@@ -136,7 +136,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #providerCliReplyWritableRoot?: SessionRuntimeManagerOptions["providerCliReplyWritableRoot"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
-  readonly #prepares = new Set<Promise<SessionPreparationResult>>();
+  readonly #prepares = new Set<Promise<unknown>>();
   readonly #starts = new Set<Promise<AgentRuntime>>();
   readonly #closeFailures: unknown[] = [];
   #closing = false;
@@ -198,6 +198,20 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // holding a ready Session whose runtime entry this manager never recorded.
     if (!current) return true;
     return current.proofId !== request.sessionCliProof?.proofId;
+  }
+
+  async refreshSessionProof(sessionId: string, proof: StoredSessionCliProof): Promise<void> {
+    this.#assertOpen();
+    const current = this.#sessions.get(sessionId);
+    if (!current?.proofPath || current.proofId === proof.proofId) return;
+    const operation = this.#proofManager.materialize(sessionId, proof);
+    this.#prepares.add(operation);
+    try {
+      current.proofPath = await operation;
+      current.proofId = proof.proofId;
+    } finally {
+      this.#prepares.delete(operation);
+    }
   }
 
   prepareSession(

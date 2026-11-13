@@ -104,7 +104,7 @@ import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { routeApprovalDecision, SessionMessageApprovals } from "./session-message-approvals.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
-import { SessionReconciler } from "./session-reconciler.js";
+import { SESSION_CLI_PROOF_REFRESH_FAILED, SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
@@ -1488,7 +1488,11 @@ export function createClientRuntimeHandlers(
       const replay = recovery.afterReconciled(request, result);
       // Session messages that waited for this Session's preparation (e.g. after a restart) may run, or,
       // while a resumed Turn is `running`, be steered into it.
-      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
+      if (
+        request.desired === "ready" &&
+        (result.status === "ready" || result.status === "running") &&
+        result.reason !== SESSION_CLI_PROOF_REFRESH_FAILED
+      ) {
         prepared?.sessionPrepared(request.sessionId);
       }
       if (request.desired === "ready" && result.status === "rejected") {

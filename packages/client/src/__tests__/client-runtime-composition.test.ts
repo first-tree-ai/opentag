@@ -1334,6 +1334,10 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       { desired: "ready", sessionId: "no-reason" } as never,
       { status: "rejected" } as never,
     );
+    await withRecovery.onReconciled(
+      { desired: "ready", sessionId: "failed-proof-refresh" } as never,
+      { status: "running", reason: "session_cli_proof_refresh_failed" } as never,
+    );
     // A ready Session releases waiting Session messages; so does a resumed Turn (`running`), to steer them in.
     expect(prepared.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);
     expect(prepared.reconcileRejected.mock.calls).toEqual([

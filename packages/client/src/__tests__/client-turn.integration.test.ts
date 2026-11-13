@@ -39,6 +39,7 @@ import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/ru
 import { MemoryRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
 import { sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
+import { readSessionCliProofFile, SessionCliProofManager } from "../runtime/session-cli-proof-manager.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -278,6 +279,14 @@ describe("Agent Runtime Client Turn vertical", () => {
       releaseTerminal = resolveGate;
     });
     const fixture = await runtimeFixture(terminalGate);
+    const initialProof = { proofId: randomUUID(), token: "p".repeat(32) };
+    await expect(
+      fixture.reconciler.reconcile({
+        ...fixture.reconcileRequest,
+        requestId: randomUUID(),
+        sessionCliProof: initialProof,
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
     const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-1", "offline"));
     await accepted.onAcceptedSent?.();
     await vi.waitFor(async () => {
@@ -296,6 +305,21 @@ describe("Agent Runtime Client Turn vertical", () => {
     fixture.recovery.afterReconciled(stopped, active);
     expect(fixture.connection.reports()).toHaveLength(0);
     expect(fixture.custody.admission.get("session-1")?.phase).toBe("active");
+
+    fixture.connection.setState("stopped");
+    const proofPath = fixture.proofManager.pathForSession(stopped.sessionId);
+    await expect(readSessionCliProofFile(proofPath)).resolves.toEqual(initialProof);
+    fixture.connection.setState("registered");
+    const newProof = { proofId: randomUUID(), token: "q".repeat(32) };
+    await expect(
+      fixture.reconciler.reconcile({
+        ...fixture.reconcileRequest,
+        requestId: randomUUID(),
+        sessionCliProof: newProof,
+      }),
+    ).resolves.toMatchObject({ status: "running", turn: { turnId: "turn-1", deliveryId: "delivery-1" } });
+    await expect(readSessionCliProofFile(proofPath)).resolves.toEqual(newProof);
+    expect(fixture.clients).toHaveLength(1);
 
     fixture.connection.setState("stopped");
     releaseTerminal?.();
@@ -751,11 +775,13 @@ async function runtimeFixture(
             : {}),
         });
   const providers = await providerRegistry(factory);
+  const proofManager = new SessionCliProofManager(home);
   const runtimeManager = new SessionRuntimeManager({
     environment: { ...process.env, HOME: home },
     home,
     bindingStore: store,
     ensureProviderReady: (providerId, signal) => providers.ensureReady(providerId, signal),
+    proofManager,
     providers,
     providerEnvironmentPath: () => "/tmp/provider-env.sh",
     workspace,
@@ -820,6 +846,7 @@ async function runtimeFixture(
     connection,
     custody,
     logs,
+    proofManager,
     record,
     reconciler,
     reconcileRequest: reconcile,

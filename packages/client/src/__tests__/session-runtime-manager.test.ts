@@ -32,6 +32,7 @@ import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
+import { readSessionCliProofFile, SessionCliProofManager } from "../runtime/session-cli-proof-manager.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import {
   SessionRuntimeManager as ProductionSessionRuntimeManager,
@@ -231,6 +232,100 @@ describe("SessionRuntimeManager", () => {
     expect(manager.requiresSessionPreparation(rotated)).toBe(false);
     expect(proofManager.materialize).toHaveBeenLastCalledWith(rotated.sessionId, rotated.sessionCliProof);
     await manager.close();
+  });
+
+  it.each(["running", "reporting"] as const)("refreshes the proof file of a %s Turn on reconnect", async (phase) => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-active-session-proof-"));
+    homes.push(home);
+    const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore });
+    const factory = new FakeFactory();
+    const proofManager = new SessionCliProofManager(home);
+    const materialize = vi.spyOn(proofManager, "materialize");
+    const manager = new SessionRuntimeManager({
+      bindingStore,
+      home,
+      proofManager,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const installationId = randomUUID();
+    const sessionId = randomUUID();
+    const agentId = randomUUID();
+    const reconciler = new SessionReconciler({ installationId, preparation: manager, localPolicy: manager });
+    const snapshotForAgent = { ...snapshot(1), agentId };
+    const initial = {
+      ...reconcile(installationId, snapshotForAgent),
+      sessionId,
+      agentId,
+      sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
+    };
+    const rotated = {
+      ...initial,
+      sessionCliProof: { proofId: randomUUID(), token: "q".repeat(32) },
+      sessionMessage: {
+        messageId: randomUUID(),
+        sourceSessionId: randomUUID(),
+        content: { kind: "text" as const, text: "Follow up" },
+      },
+    };
+    const reconcileFrame = (fields: Partial<SessionReconcileRequest> = {}) =>
+      reconciler.reconcile({ ...rotated, ...fields, requestId: randomUUID() });
+    const turn = { turnId: "turn-1", deliveryId: "delivery-1" };
+
+    try {
+      await expect(reconciler.reconcile(initial)).resolves.toMatchObject({ status: "ready" });
+      const runtime = await manager.ensureRuntime(sessionId);
+      const proofPath = factory.created[0]?.workspace.environment?.OPENTAG_SESSION_PROOF_FILE ?? "";
+      expect(proofPath).toBe(proofManager.pathForSession(sessionId));
+      const readProof = () => readSessionCliProofFile(proofPath);
+      await expect(readProof()).resolves.toEqual(initial.sessionCliProof);
+      reconciler.setActivity(sessionId, { phase, ...turn });
+      materialize.mockClear();
+
+      await expect(reconcileFrame({ installationId: randomUUID() })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "target_mismatch",
+      });
+      const otherAgent = randomUUID();
+      await expect(
+        reconcileFrame({ agentId: otherAgent, runtime: { ...snapshotForAgent, agentId: otherAgent } }),
+      ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
+      await expect(reconcileFrame({ placementGeneration: 0 })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "stale_generation",
+      });
+      await expect(reconcileFrame({ placementGeneration: 2 })).resolves.toMatchObject({
+        status: "busy",
+        reason: "active_turn",
+      });
+      await expect(reconcileFrame({ runtime: { ...snapshot(2), agentId } })).resolves.toMatchObject({
+        status: "busy",
+        reason: "agent_configuration_busy",
+      });
+      await expect(reconcileFrame({ sessionCliProof: undefined })).resolves.toMatchObject({ status: phase, turn });
+      await expect(readProof()).resolves.toEqual(initial.sessionCliProof);
+      expect(materialize).not.toHaveBeenCalled();
+
+      materialize.mockRejectedValueOnce(new Error("write failed"));
+      const failed = await reconcileFrame();
+      expect(failed).toMatchObject({ status: phase, turn, reason: "session_cli_proof_refresh_failed" });
+      expect(failed.inlineMessageReady).toBeUndefined();
+      expect(manager.requiresSessionPreparation(rotated)).toBe(true);
+      await expect(readProof()).resolves.toEqual(initial.sessionCliProof);
+
+      await expect(reconcileFrame()).resolves.toMatchObject({ status: phase, turn, inlineMessageReady: true });
+      await expect(readProof()).resolves.toEqual(rotated.sessionCliProof);
+      expect(manager.requiresSessionPreparation(rotated)).toBe(false);
+      expect(manager.runtime(sessionId)).toBe(runtime);
+      expect(factory.created).toHaveLength(1);
+      expect(materialize).toHaveBeenCalledTimes(2);
+      await expect(reconcileFrame()).resolves.toMatchObject({ status: phase, turn, inlineMessageReady: true });
+      expect(materialize).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.close();
+    }
   });
 
   it.each([undefined, false, true])(

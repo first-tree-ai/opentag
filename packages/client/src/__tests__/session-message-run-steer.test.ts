@@ -218,6 +218,37 @@ describe("a Session message steered into a Session message Run", () => {
     expect(inbox.pendingCount).toBe(0);
   });
 
+  it("leaves Session messages in FIFO order until the running runtime is ready to steer", async () => {
+    const { attempts, runtime, steers, state } = harness();
+    const startingRuntime = { ...runtime, steerReady: false };
+    const schedule = vi.fn<RuntimeRetryScheduler["schedule"]>(() => ({ cancel: () => undefined }));
+    const inbox = makeInbox(startingRuntime, { timeoutScheduler: { schedule } });
+    const { message } = conversation();
+    const [first, second, third] = [message("first"), message("second"), message("third")];
+    await inbox.accept(first);
+    const attempt = await started(attempts, 1);
+    await inbox.accept(second);
+    await inbox.accept(third);
+
+    await vi.waitFor(() => expect(schedule).toHaveBeenCalledWith(2, expect.any(Function)));
+    expect(runtime.steer).not.toHaveBeenCalled();
+    expect(inbox.queuedCount).toBe(2);
+    expect(inbox.getState(second.messageId)?.status).toBe("accepted");
+
+    startingRuntime.steerReady = true;
+    schedule.mock.calls.find(([delay]) => delay === 2)?.[1]();
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(0));
+    expect(steers.map(({ runId, texts }) => [runId, texts.at(-1)])).toEqual([
+      [state.activeRunId, "second"],
+      [state.activeRunId, "third"],
+    ]);
+    attempt.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(1);
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
+    expect(inbox.getState(third.messageId)?.status).toBe("succeeded");
+  });
+
   it("does not steer a restored quota wait into a running Run before its time", async () => {
     const { attempts, runtime, steers } = harness();
     const { message } = conversation();

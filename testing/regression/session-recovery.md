@@ -258,6 +258,16 @@ inside a successful child Run. Exercise these results with the existing Session 
 4. Replay the pending outcome after restarting the reporter. Confirm the work does not run again and the Server reuses
    the notice ID. Repeat with a v4 Server and confirm the report waits until collaboration v5 is negotiated.
 
+## Local Pi steering during prompt startup
+
+1. Start a Local Pi IM Turn with a controlled Pi RPC process. Hold prompt acceptance after
+   `run_started` and send an IM follow-up. Confirm that the Client promptly returns
+   `retry/turn_starting`, the Server keeps the follow-up queued, and Pi receives no steer.
+2. Release prompt acceptance before the Turn ends. Confirm the retried follow-up joins that
+   Turn once, and a repeated request returns the same accepted outcome without a second steer.
+3. While a Local Pi Turn is waiting for prompt acceptance, queue two Session messages. Confirm
+   they remain queued during startup and join that Turn in FIFO order once Pi accepts the prompt.
+
 ## Local IM steer receipt after the delivery deadline
 
 1. Use a controlled Local Runtime to start an IM Turn. Send an ordered follow-up, hold its

@@ -397,6 +397,8 @@ export interface AgentRuntime {
   readonly capabilities: AgentRuntimeCapabilities;
   readonly state: Readonly<AgentRuntimeLifecycleState>;
   readonly binding: AgentRuntimeBinding | undefined;
+  /** False while a steer-capable Provider cannot yet accept new input for its active Run. */
+  readonly steerReady?: boolean;
 
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   steer(request: AgentSteerRequest): Promise<AgentSteerReceipt>;

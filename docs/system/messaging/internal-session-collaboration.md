@@ -525,6 +525,8 @@ On a Local Computer a Session message is steered into the Session's IM Turn when
 that Turn's retry and the Turn resumed after a process interruption
 ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). A steered message has no count of its own: it
 shares the count of the Turn it joined, so they retry together and fail together.
+While Pi is preparing or accepting its prompt, the Local inbox keeps the message at the head of its FIFO
+and rechecks on its existing steer retry interval.
 
 - **Model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their original order
   among the Turn's IM steers, and stay `running`, without being repeated if the conversation already holds them. They are not

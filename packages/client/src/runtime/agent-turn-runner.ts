@@ -359,6 +359,7 @@ export class AgentTurnRunner {
     if (runtime.state.phase !== "running" || runtime.state.activeRunId !== request.expectedTurnId) {
       return steerResult(request, "deferred", "turn_not_running");
     }
+    if (runtime.steerReady === false) return steerResult(request, "retry", "turn_starting");
 
     turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
     const steering = this.#steerRunningTurn(turn, runtime, request, semanticHash);

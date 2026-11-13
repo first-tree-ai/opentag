@@ -1840,17 +1840,19 @@ describe("AgentTurnRunner", () => {
     await runner.settled();
   });
 
-  it("steers only a matching running root and reuses the durable receipt", async () => {
+  it.each([false, true])("steers matching roots and replays receipts (retry store: %s)", async (withStore) => {
     let resolvePrompt!: (result: AgentRunResult) => void;
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
     let receipt: RecordedSteerInput | undefined;
+    let steerReady: boolean | undefined = false;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
     const steer = vi
       .fn()
       .mockRejectedValueOnce(new Error("steer failed"))
       .mockResolvedValue({ outcome: Promise.resolve("processed") });
+    const appendSteer = vi.fn(async () => "appended" as const);
     const markReporting = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -1893,6 +1895,9 @@ describe("AgentTurnRunner", () => {
         ensureRuntime: async () => ({
           capabilities,
           state: runtimeState,
+          get steerReady() {
+            return steerReady;
+          },
           steer,
           prompt: async () => {
             await observer?.({ type: "run_started", runId: "turn-1" });
@@ -1915,6 +1920,9 @@ describe("AgentTurnRunner", () => {
         }),
       } as unknown as ImResourceFetcher,
       credentialEnvironment: credentialEnvironment(),
+      ...(withStore
+        ? { retries: { appendSteer, removeSteer: vi.fn(async () => undefined), update: vi.fn(async () => undefined) } }
+        : {}),
     });
     const request = steerRequest();
     runner.start(liveOwner(delivery()));
@@ -1934,20 +1942,34 @@ describe("AgentTurnRunner", () => {
     runtimeState.activeRunId = "turn-other";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
     runtimeState.activeRunId = "turn-1";
+    const successfulRequest = { ...request, requestId: randomUUID(), deliveryId: "delivery-5" };
+    for (const requestId of [successfulRequest.requestId, randomUUID()]) {
+      await expect(runner.steer({ ...successfulRequest, requestId })).resolves.toMatchObject({
+        status: "retry",
+        reason: "turn_starting",
+      });
+    }
+    expect(appendSteer).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+    expect(bindingStore.recordSteer).not.toHaveBeenCalled();
+
+    steerReady = undefined;
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     await expect(
       runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-4" }),
     ).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
-    const successfulRequest = { ...request, requestId: randomUUID(), deliveryId: "delivery-5" };
-    await expect(runner.steer(successfulRequest)).resolves.toMatchObject({
+    steerReady = true;
+    await expect(runner.steer({ ...successfulRequest, requestId: randomUUID() })).resolves.toMatchObject({
       status: "steered",
       expectedTurnId: "turn-1",
     });
+    steerReady = false;
     await expect(runner.steer({ ...successfulRequest, requestId: randomUUID() })).resolves.toMatchObject({
       status: "steered",
     });
     expect(steer).toHaveBeenCalledTimes(3);
     expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
+    if (withStore) expect(appendSteer).toHaveBeenCalledTimes(3);
     expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
     await expect(
       runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-6", expectedTurnId: "turn-other" }),

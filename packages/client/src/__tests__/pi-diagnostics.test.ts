@@ -16,6 +16,7 @@ import {
 import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
   createRunnerPerformanceStderrSink,
+  emitRunnerPerformance,
   type RunnerPerformanceLogRecord,
   safeRunnerErrorCode,
   traceRunnerOperation,
@@ -372,7 +373,10 @@ describe("Cloud Pi diagnostics", () => {
     const stderr = new PassThrough();
     const stderrChunks: string[] = [];
     stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
-    const stderrSink = createRunnerPerformanceStderrSink(stderr);
+    let defaultRunnerVersion: string | undefined = "0.8.2";
+    const stderrSink = createRunnerPerformanceStderrSink(stderr, () => ({
+      runnerVersion: defaultRunnerVersion,
+    }));
 
     let now = 100;
     const result = await traceRunnerOperation(
@@ -414,11 +418,39 @@ describe("Cloud Pi diagnostics", () => {
         sealed: true,
       }),
     ]);
-    expect(JSON.parse(stderrChunks.join("").trim())).toMatchObject({
-      operation: "runner.workspace.save",
-      durationMs: 6000,
-      slow: true,
+    emitRunnerPerformance(stderrSink, {
+      operation: "runner.native_sandbox.probe",
+      durationMs: 25,
+      outcome: "success",
+      metrics: { runnerVersion: "0.9.0" },
     });
+    defaultRunnerVersion = undefined;
+    emitRunnerPerformance(stderrSink, {
+      operation: "runner.native_sandbox.start",
+      durationMs: 40,
+      outcome: "success",
+    });
+    const stderrRecords = stderrChunks
+      .join("")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(stderrRecords).toEqual([
+      expect.objectContaining({
+        operation: "runner.workspace.save",
+        durationMs: 6000,
+        slow: true,
+        runnerVersion: "0.8.2",
+      }),
+      expect.objectContaining({
+        operation: "runner.native_sandbox.probe",
+        runnerVersion: "0.9.0",
+      }),
+      expect.objectContaining({
+        operation: "runner.native_sandbox.start",
+        runnerVersion: "unknown",
+      }),
+    ]);
 
     const hostileError = new Error("original business failure");
     Object.defineProperty(hostileError, "code", {

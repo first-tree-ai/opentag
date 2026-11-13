@@ -1,12 +1,16 @@
 import type { RuntimeCredentialProvider } from "@opentag/shared";
 
 export type ProviderOperationMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-export type ProviderOperationBody = "none" | "json" | "form" | "stream";
-export type ProviderOperationResponse = "stream" | "json";
+/** `auto` streams multipart bodies and forwards any other body as bounded raw bytes. */
+export type ProviderOperationBody = "none" | "json" | "form" | "stream" | "auto";
+/** `auto` parses JSON content types and streams any other response (downloads). */
+export type ProviderOperationResponse = "stream" | "json" | "auto";
 
 /**
- * One registered provider operation. The table ships with the Server; there is no wildcard
- * operation and no caller-selected upstream.
+ * One provider operation. Explicit operations ship with the Server and always match first; a
+ * provider passthrough rule may then supply a generic operation for any other path under its
+ * fixed origin and prefix (see {@link ProviderPassthroughRule}). The caller never selects the
+ * upstream origin.
  */
 export interface ProviderOperation {
   operationId: string;
@@ -16,6 +20,8 @@ export interface ProviderOperation {
   kind: "read" | "write";
   body: ProviderOperationBody;
   response: ProviderOperationResponse;
+  /** Generic operation supplied by a passthrough rule rather than the explicit table. */
+  passthrough?: boolean;
   /** Read-only identity operations a validation-purpose capability may call. */
   validationAllowed?: boolean;
   maxBodyBytes?: number;
@@ -80,13 +86,25 @@ interface CompiledTemplate {
 }
 
 /**
- * Method + normalized-path registry over the concrete operation table. Query strings never
+ * Fallback for requests no explicit operation matches. It receives the normalized path (no query)
+ * and returns the generic operation to apply, or `undefined` when the path is outside its prefix
+ * or on its denylist.
+ */
+export interface ProviderPassthroughRule {
+  resolve(method: string, path: string): ProviderOperation | undefined;
+}
+
+/**
+ * Method + normalized-path registry over the concrete operation table, with an optional
+ * passthrough rule consulted only after every explicit template misses. Query strings never
  * influence template identity beyond the operation's own registration.
  */
 export class ProviderOperationRegistry {
   readonly #templates = new Map<string, CompiledTemplate[]>();
+  readonly #passthrough: ProviderPassthroughRule | undefined;
 
-  constructor(operations: readonly ProviderOperation[]) {
+  constructor(operations: readonly ProviderOperation[], passthrough?: ProviderPassthroughRule) {
+    this.#passthrough = passthrough;
     for (const operation of operations) {
       const normalized = normalizeProxyPath(operation.pathTemplate);
       if (!normalized || normalized.query) throw new Error(`Invalid operation path template ${operation.pathTemplate}`);
@@ -104,7 +122,8 @@ export class ProviderOperationRegistry {
       const params = matchTemplateSegments(candidate.segments, segments);
       if (params) return { operation: candidate.operation, params, query: normalized.query };
     }
-    return undefined;
+    const operation = this.#passthrough?.resolve(method, normalized.path);
+    return operation ? { operation, params: {}, query: normalized.query } : undefined;
   }
 }
 
@@ -151,4 +170,16 @@ export async function bufferProxyBody(body: AsyncIterable<Uint8Array>, maxBytes:
     offset += chunk.byteLength;
   }
   return merged;
+}
+
+/**
+ * Path for audit logs: keeps API words and version segments, replaces every segment that may be
+ * an identifier (digits, uppercase, or other characters) with `{id}`. Never logs query values.
+ */
+export function redactProxyPath(path: string): string {
+  const [pathname = ""] = path.split("?", 1);
+  return pathname
+    .split("/")
+    .map((segment) => (segment === "" || /^(?:v\d+|[a-z]+(?:[_-][a-z]+)*)$/.test(segment) ? segment : "{id}"))
+    .join("/");
 }

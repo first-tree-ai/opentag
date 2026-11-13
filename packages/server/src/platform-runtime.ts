@@ -122,6 +122,7 @@ export async function createPlatformRuntime(options: {
   const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
     slackWorkingStatus: options.slackWorkingStatus,
+    providerProxyPassthrough: options.config.providerProxyPassthrough,
     onCredentialFailure: options.onCredentialFailure,
     database: options.database,
     cipher: options.cipher,

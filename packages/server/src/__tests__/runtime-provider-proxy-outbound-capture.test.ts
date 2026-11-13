@@ -278,7 +278,7 @@ describe("ImProviderProxyAdapter outbound capture", () => {
       registry: new ProviderOperationRegistry(SLACK_OPERATIONS),
       urlHandles: new RuntimeUrlHandleStore(),
       fetchImpl: upstream.fetchImpl,
-      logger: { error: (fields) => logs.push(fields), warn: (fields) => logs.push(fields) },
+      logger: { error: (fields) => logs.push(fields), info: () => undefined, warn: (fields) => logs.push(fields) },
       outboundCapture: {
         capture: async () => {
           throw new Error("Failed query parameters include synthetic-private-message-body");

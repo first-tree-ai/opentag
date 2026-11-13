@@ -1,8 +1,13 @@
 import { FEISHU_TENANT_TOKEN_LOCAL_SENTINEL } from "@opentag/shared";
-import type { ProviderOperation } from "./operation-registry.js";
+import type { ProviderOperation, ProviderPassthroughRule } from "./operation-registry.js";
 
 const JSON_BODY = 128 * 1024;
 const JSON_RESPONSE = 2 * 1024 * 1024;
+const PASSTHROUGH_BODY = 1024 * 1024;
+const PASSTHROUGH_JSON_RESPONSE = 10 * 1024 * 1024;
+const PASSTHROUGH_METHODS = new Set<string>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+/** `/open-apis/<domain>/...` domains the passthrough refuses: token issuance and user login. */
+const PASSTHROUGH_DENIED_DOMAINS = new Set(["auth", "authen"]);
 
 interface FeishuOperationShape {
   operationId: string;
@@ -32,10 +37,10 @@ function op(shape: FeishuOperationShape): ProviderOperation {
 }
 
 /**
- * Feishu/Lark operation table covering the official CLI instruction business domains. The origin
- * is fixed by the bound brand; SSO/login (`/open-apis/authen/*`), event, and admin domains are
- * deliberately absent and therefore rejected. The tenant token endpoint is answered locally and
- * never exposes the real platform token.
+ * Explicit Feishu/Lark operations. They match before the passthrough rule and carry behavior the
+ * generic operation lacks: the tenant token endpoint is answered locally and never exposes the
+ * real platform token, bot info is allowed for validation, and message create/reply feed the
+ * outbound capture. The origin is fixed by the bound brand.
  */
 export const FEISHU_OPERATIONS: readonly ProviderOperation[] = [
   op({
@@ -191,3 +196,31 @@ export const FEISHU_OPERATIONS: readonly ProviderOperation[] = [
     body: "stream",
   }),
 ];
+
+/**
+ * Generic Feishu operation for any other `/open-apis/` call when passthrough is enabled. The App's
+ * own scopes are the only limit, except for the `auth` and `authen` domains, which stay refused
+ * (the tenant token endpoint keeps its explicit local answer). GET is a read; every other method
+ * is a write with one upstream attempt and no replay.
+ */
+export const FEISHU_PASSTHROUGH: ProviderPassthroughRule = {
+  resolve(method, path) {
+    if (!PASSTHROUGH_METHODS.has(method)) return undefined;
+    const [, prefix, domain] = path.split("/");
+    // A plain domain word only: an encoded or odd segment could alias a denied domain upstream.
+    if (prefix !== "open-apis" || !domain || !/^[a-z][a-z0-9_-]*$/i.test(domain)) return undefined;
+    if (PASSTHROUGH_DENIED_DOMAINS.has(domain.toLowerCase())) return undefined;
+    return {
+      operationId: "feishu.passthrough",
+      provider: "feishu",
+      method: method as ProviderOperation["method"],
+      pathTemplate: "/open-apis/{path}",
+      kind: method === "GET" ? "read" : "write",
+      body: method === "GET" ? "none" : "auto",
+      response: "auto",
+      passthrough: true,
+      maxBodyBytes: PASSTHROUGH_BODY,
+      maxResponseBytes: PASSTHROUGH_JSON_RESPONSE,
+    };
+  },
+};

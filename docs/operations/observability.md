@@ -310,6 +310,11 @@ existing transport and GitHub allowlists. Unknown codes use `upstream_unavailabl
 contain only provider and controlled code; they omit raw error messages, paths, headers, bodies,
 capabilities, and identities.
 
+Each provider proxy call forwarded by the passthrough rule rather than an explicit operation emits one
+`info` record with `code="PROVIDER_PROXY_PASSTHROUGH"`, `provider`, `method`, and a redacted `path` in
+which every segment that may be an identifier is replaced by `{id}`. The record never carries the query
+string, request or response bodies, headers, capabilities, or tokens.
+
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
 `durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, and Turn/resource

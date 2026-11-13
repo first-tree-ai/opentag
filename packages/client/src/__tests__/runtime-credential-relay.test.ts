@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { type WebSocket as ServerWebSocket, WebSocketServer } from "ws";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import {
   RuntimeCredentialEnvironmentManager,
@@ -610,7 +612,7 @@ describe("RuntimeCredentialRelay", () => {
 
 function customTicketResponder(
   scheduler: ManualScheduler,
-  onTicket: (requestId: unknown) => Record<string, unknown>,
+  onTicket: (requestId: unknown) => Record<string, unknown> | undefined,
 ): (frame: RuntimeBusinessFrame) => Record<string, unknown> | undefined {
   return (frame) => {
     if (frame.type === "runtime:execution:open") return openResultFrame(frame.requestId, ["github"], scheduler.now);
@@ -716,6 +718,174 @@ describe("RuntimeCredentialRelay data connection retry", () => {
     harness.scheduler.advance(250);
     await rejection;
     expect(ticketCalls).toBe(2);
+  });
+
+  it("bounds ticket acquisition by the remaining open budget and does not start a handshake after the deadline", async () => {
+    const harness = relayHarness({
+      providers: ["github"],
+      openBudgetMs: 300,
+    });
+    let ticketCalls = 0;
+    harness.connection.setResponder(
+      customTicketResponder(harness.scheduler, (requestId) => {
+        ticketCalls += 1;
+        if (ticketCalls === 1) {
+          return ticketResultFrame(requestId, harness.scheduler.now);
+        }
+        // Delayed second ticket response: never arrives before the remaining 50 ms budget expires.
+        return undefined;
+      }),
+    );
+
+    let connectAttempts = 0;
+    const openPromise = RuntimeCredentialRelay.open(
+      {
+        ...harness.relayOptions,
+        dataConnectionFactory: async (input) => {
+          harness.dataInputs.push(input);
+          connectAttempts += 1;
+          throw Object.assign(new Error("WebSocket closed with 4401 proxy_auth_invalid"), {
+            name: "RuntimeProxyDataError",
+            code: "auth_failed",
+          });
+        },
+      },
+      harness.subject,
+    );
+    const rejection = expect(openPromise).rejects.toMatchObject({
+      name: "RuntimeCredentialRelayError",
+      code: "execution_timeout",
+    });
+
+    await tick(15);
+    expect(connectAttempts).toBe(1);
+    expect(ticketCalls).toBe(1);
+    // Advance past the 250 ms retry backoff; 50 ms of openBudgetMs remains for the second ticket request.
+    harness.scheduler.advance(250);
+    await tick(15);
+    expect(ticketCalls).toBe(2);
+    expect(connectAttempts).toBe(1);
+    // Advancing the remaining 50 ms times out the ticket request without starting a second handshake.
+    harness.scheduler.advance(50);
+    await rejection;
+    expect(connectAttempts).toBe(1);
+  });
+
+  it("bounds each handshake attempt by the remaining open budget and closes any late data connection", async () => {
+    const harness = relayHarness({
+      providers: ["github"],
+      openBudgetMs: 300,
+    });
+    const lateConnection = new FakeDataConnection();
+    let resolveLateHandshake: ((value: RuntimeProxyDataConnectionLike) => void) | undefined;
+    let connectAttempts = 0;
+
+    const openPromise = RuntimeCredentialRelay.open(
+      {
+        ...harness.relayOptions,
+        notReadyRetryMs: 50,
+        dataConnectionFactory: (input) => {
+          harness.dataInputs.push(input);
+          connectAttempts += 1;
+          if (connectAttempts === 1) {
+            harness.scheduler.advance(200);
+            return Promise.reject(
+              Object.assign(new Error("WebSocket closed with 4401 proxy_auth_invalid"), {
+                name: "RuntimeProxyDataError",
+                code: "auth_failed",
+              }),
+            );
+          }
+          return new Promise<RuntimeProxyDataConnectionLike>((resolve) => {
+            resolveLateHandshake = resolve;
+          });
+        },
+      },
+      harness.subject,
+    );
+    const rejection = expect(openPromise).rejects.toMatchObject({
+      name: "RuntimeCredentialRelayError",
+      code: "data_connect_failed",
+    });
+
+    await tick(15);
+    expect(connectAttempts).toBe(1);
+    expect(harness.dataInputs[0]?.handshakeTimeoutMs).toBe(300);
+
+    // Advance 50 ms retry backoff (now at 250 ms elapsed; 50 ms budget remains).
+    harness.scheduler.advance(50);
+    await tick(15);
+    expect(connectAttempts).toBe(2);
+    expect(harness.dataInputs[1]?.handshakeTimeoutMs).toBe(50);
+    expect(harness.dataInputs[1]?.signal?.aborted).toBe(false);
+
+    // Advance the remaining 50 ms budget: the second handshake aborts at the 300 ms deadline.
+    harness.scheduler.advance(50);
+    await rejection;
+    expect(harness.dataInputs[1]?.signal?.aborted).toBe(true);
+
+    // If the underlying factory resolves late after the deadline, the relay immediately closes it.
+    resolveLateHandshake?.(lateConnection);
+    await tick(10);
+    expect(lateConnection.closeCalls).toBe(1);
+  });
+
+  it("bounds retried loopback WebSocket handshakes with the default factory by the remaining open budget", async () => {
+    const serverSockets: ServerWebSocket[] = [];
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("No WebSocketServer address");
+
+    let wsConnections = 0;
+    server.on("connection", (socket) => {
+      wsConnections += 1;
+      serverSockets.push(socket);
+      const attempt = wsConnections;
+      socket.on("message", () => {
+        if (attempt === 1) {
+          // Simulate a sibling container during rolling update that does not recognize the ticket.
+          socket.close(4401, "proxy_auth_invalid");
+        }
+        // Attempt 2 intentionally never sends `ready` so the handshake hangs until deadline.
+      });
+    });
+
+    try {
+      const harness = relayHarness({
+        providers: ["github"],
+        openBudgetMs: 300,
+      });
+      const {
+        dataConnectionFactory: _unusedFactory,
+        scheduler: _unusedScheduler,
+        ...defaultRelayOptions
+      } = harness.relayOptions;
+      const startedAt = Date.now();
+      await expect(
+        RuntimeCredentialRelay.open(
+          {
+            ...defaultRelayOptions,
+            now: () => Date.now(),
+            notReadyRetryMs: 50,
+            openBudgetMs: 300,
+            serverUrl: `http://127.0.0.1:${address.port}`,
+          },
+          harness.subject,
+        ),
+      ).rejects.toMatchObject({
+        name: "RuntimeCredentialRelayError",
+        code: "data_connect_failed",
+      });
+      const elapsedMs = Date.now() - startedAt;
+      expect(wsConnections).toBe(2);
+      // Must settle near the 300 ms openBudgetMs instead of waiting 15,000 ms on the second handshake.
+      expect(elapsedMs).toBeLessThan(1_500);
+      await expect.poll(() => serverSockets[1]?.readyState).toBe(3);
+    } finally {
+      for (const socket of serverSockets) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

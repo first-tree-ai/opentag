@@ -4,6 +4,7 @@ import type {
   SlackAutoSetupRuntimeRequest,
   SlackAutoSetupRuntimeResult,
   TurnActivityResult,
+  TurnQuotaWaitResult,
 } from "@opentag/shared";
 import {
   type AgentRuntimeOptions,
@@ -75,6 +76,7 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnActivityResult?(result: TurnActivityResult): void;
+  handleQuotaWaitResult?(result: TurnQuotaWaitResult): void;
   handleSessionMessageOutcomeResult?(result: SessionMessageOutcomeResult): void;
   handleSessionRecoverResult?(result: SessionRecoverResult): void;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
@@ -323,8 +325,7 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "turn:activity:result") this.#options.handleTurnActivityResult?.(frame);
-    // This Client sends no quota-wait notices yet; a result is never expected.
-    if (frame.type === "turn:quota-wait:result") return;
+    if (frame.type === "turn:quota-wait:result") this.#options.handleQuotaWaitResult?.(frame);
     if (frame.type === "session:message:outcome:result") this.#options.handleSessionMessageOutcomeResult?.(frame);
     if (frame.type === "session:recover:result") this.#options.handleSessionRecoverResult?.(frame);
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);

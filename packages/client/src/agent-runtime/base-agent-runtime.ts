@@ -359,7 +359,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         if (event.type === "quota_wait_changed") {
           if (event.waiting) record.limitNotice?.pause();
           else record.limitNotice?.resume();
-          record.request.onQuotaWaitChanged?.(event.waiting);
+          record.request.onQuotaWaitChanged?.(event.waiting, event.resetsAt);
         }
         await this.#dispatch(dispatched);
       },

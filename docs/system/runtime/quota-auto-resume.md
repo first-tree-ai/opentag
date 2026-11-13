@@ -103,6 +103,13 @@ longer. The Server writes it from the reset time the Client sends in `turn:quota
 ([Runtime protocol](runtime-protocol.md#quota-wait-notice)); the Client sends no copy. The creating Session of an
 internal Session is not told.
 
-> **Planned — not yet implemented.** Tracking: #1519
+The Client sends `turn:quota-wait` for an IM Turn when the Server negotiated `runtime.quotaWait`, and not when the
+Bot only observes the conversation:
 
-The Client sends `turn:quota-wait` for a waiting IM Turn.
+- with the resume time when a persisted wait starts, and with Claude Code's reset time when its in-process wait
+  starts or moves;
+- with `ended` when Claude Code's wait ends, and when the Turn's next attempt starts after a quota wait, a restarted
+  daemon included.
+
+The `sequence` is taken from the clock, so a restarted daemon is never taken for an older sender. Sending is best
+effort: a frame that cannot be sent, or a notice the Server could not write, is only logged, and the wait goes on.

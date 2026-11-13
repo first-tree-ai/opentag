@@ -23,6 +23,7 @@ import type {
   SlackFeedbackScope,
 } from "./im-feedback-store.js";
 import { renderFeedbackText } from "./im-feedback-text.js";
+import { sessionTaskUrl } from "./im-session-link.js";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -266,6 +267,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
+  /** Links the card's Session ID to the Session's Task page when the context says that page can be opened. */
+  #linked(card: FeedbackCard, context: FeedbackMessageContext): FeedbackCard {
+    if (!context.taskAgentId) return card;
+    return { ...card, sessionUrl: sessionTaskUrl(this.publicUrl, context.taskAgentId, card.sessionId) };
+  }
+
   async #context(target: FeedbackTarget): Promise<FeedbackMessageContext> {
     try {
       return await this.store.messageContext(target);
@@ -476,7 +483,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (signal) =>
           this.#deliver(
             target,
-            feedbackCard(target, action, context.language, context.runtime),
+            this.#linked(feedbackCard(target, action, context.language, context.runtime), context),
             context,
             signal,
             failureGoesToSender(target),
@@ -500,7 +507,15 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, leg),
+        (signal) =>
+          this.#deliver(
+            target,
+            this.#linked(waitingCard(context.language, target.sessionId, reason), context),
+            context,
+            signal,
+            true,
+            leg,
+          ),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
@@ -561,12 +576,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const messageId = target.cardMessageId;
     if (!messageId) return;
-    const { language, runtime } = await this.#context(target);
+    const context = await this.#context(target);
+    const { language, runtime } = context;
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         if (target.messageFormat === "text_v1") return this.#updateText(target, messageId, action, language, signal);
-        const card = feedbackCard(target, action, language, runtime);
+        const card = this.#linked(feedbackCard(target, action, language, runtime), context);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>
@@ -671,7 +687,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       const sent = await this.#feishuSenderCreate(
         target,
-        await this.#withOrigin(target, feedbackCard(target, undefined, context.language), context, signal),
+        await this.#withOrigin(
+          target,
+          this.#linked(feedbackCard(target, undefined, context.language), context),
+          context,
+          signal,
+        ),
         context,
         signal,
         target.providerRequestId,

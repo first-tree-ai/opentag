@@ -189,6 +189,7 @@ describe("native feedback transport", () => {
           content: "电脑恢复后会自动处理",
         },
       },
+      { tag: "note", elements: [{ tag: "lark_md", content: `Session：${t.sessionId}` }] },
     ]);
   });
   it("sends the Slack offline notice as an attachment card in the input's thread", async () => {
@@ -215,6 +216,10 @@ describe("native feedback transport", () => {
               type: "mrkdwn",
               text: "Messages will be handled after the computer reconnects.",
             },
+          },
+          {
+            type: "context",
+            elements: [{ type: "mrkdwn", text: `Session: ${t.sessionId}` }],
           },
         ],
       },
@@ -975,7 +980,7 @@ it("keeps link and mention syntax in an actor's display name inert, leaving only
   expect(slack).toContain("Saved and environment released");
 });
 
-it("renders no visible link or button on any card (Gandy 11-10)", () => {
+it("renders no visible link or button on any card other than its Session ID line", () => {
   const cards = [
     ...[...TurnFailureReasonSchema.options, "input_expired", "input_rejected", null].flatMap((code) =>
       [false, true].map((batchRetryBlocked) =>
@@ -983,15 +988,54 @@ it("renders no visible link or button on any card (Gandy 11-10)", () => {
       ),
     ),
     feedbackCard({ ...target(), state: "workspace_blocked", errorCode: "workspace_failed" }, undefined, "en"),
-    waitingCard("zh"),
-    waitingCard("en", "parked"),
+    waitingCard("zh", "s"),
+    waitingCard("en", "s", "parked"),
   ];
   for (const card of cards) {
-    const slack = JSON.stringify(slackCardMessage(card, "f", "zh"));
-    expect(slack).not.toMatch(/<https?:|"actions"|"button"/u);
+    const slack = JSON.stringify(slackCardMessage({ ...card, sessionUrl: "https://app.example.test/t" }, "f", "zh"));
+    expect(slack.replaceAll(`<https://app.example.test/t|${card.sessionId}>`, "")).not.toMatch(
+      /<https?:|"actions"|"button"/u,
+    );
     const feishu = feishuCardContent(card, "https://app.example.test/im-feedback/f", "zh");
     expect(feishu.replaceAll("[​](https://app.example.test/im-feedback/f)", "")).not.toMatch(/\]\(|"button"|"action"/u);
   }
+});
+
+it("ends every card, including an edited status card, with the full Session ID", () => {
+  const sessionId = "f76fc68f-43a0-4b0d-8493-480680c1888b";
+  const failure = feedbackCard({ ...target(), sessionId, errorCode: "provider_quota_exceeded" }, undefined, "zh");
+  const done = feedbackCard({ ...target(), sessionId, state: "completed" }, undefined, "en");
+  const notice = waitingCard("en", sessionId, "parked");
+  const feishu = JSON.parse(feishuCardContent(failure, "https://app.example.test/im-feedback/f", "zh"));
+  expect(feishu.elements.at(-1)).toEqual({
+    tag: "note",
+    elements: [{ tag: "lark_md", content: `Session：${sessionId}` }],
+  });
+  for (const card of [done, notice]) {
+    const slack = slackCardMessage(card, "f", "en");
+    expect(slack.attachments[0]?.blocks.at(-1)).toEqual({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `Session: ${sessionId}` }],
+    });
+    // The notification preview stays the title and body only.
+    expect(slack.attachments[0]?.fallback).not.toContain(sessionId);
+  }
+});
+
+it("links the card's Session ID to its Task page only when the context says the page can be opened", async () => {
+  const { messenger, cooldown } = harness();
+  const t: FeedbackTarget = { ...target("feishu"), errorCode: "provider_rate_limited" };
+  cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false, taskAgentId: "agent-1" });
+  mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "r", chat_id: t.channelId } });
+  await messenger.post(t);
+  const linked = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content);
+  expect(linked.elements.at(-1).elements[0].content).toBe(
+    `Session：[${t.sessionId}](https://app.example.test/agents/agent-1/tasks/${t.sessionId})`,
+  );
+  cooldown.messageContext.mockResolvedValue({ language: "zh", direct: false });
+  await messenger.post({ ...t, id: randomUUID() });
+  const plain = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[1]?.[0].data.content);
+  expect(plain.elements.at(-1).elements[0].content).toBe(`Session：${t.sessionId}`);
 });
 
 describe("cards sent to the sender's direct message", () => {
@@ -1293,7 +1337,7 @@ describe("the origin line on a card sent to the sender", () => {
     mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "r", chat_id: "channel" } });
     await messenger.post({ ...quota("feishu"), errorCode: "provider_rate_limited" });
     const card = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content);
-    expect(card.elements).toHaveLength(1);
+    expect(card.elements.map((element: { tag: string }) => element.tag)).toEqual(["div", "note"]);
     expect(mocks.feishu.im.v1.chat.get).not.toHaveBeenCalled();
   });
 });

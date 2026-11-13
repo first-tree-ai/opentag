@@ -40,7 +40,7 @@ that can be arranged, or with a delivery row set to `pending` and `last_error_co
 database:
 
 1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
-   one red card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+   one red card titled “排队中” with the body “前一条完成后处理”, placed like the offline notice, whose only link is its Session ID line. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
@@ -51,8 +51,9 @@ database:
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
-   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no link or button, and no sentence about whether
-   operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
+   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no button, and no sentence about whether
+   operations ran, and the failed reaction appears. Its last line is small grey text “Session：<full Session ID>”; clicking
+   the ID opens that Session's Task page. On Slack the attachment bar is red, and no copy of the text
    shows above the card.
 2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
@@ -61,9 +62,10 @@ With an IM test binding and a runtime that can be made to fail on request:
 4. Make the model authentication fail. Expected: the card names the Agent’s tool, for example “Claude Code 未登录或登录已失效”
    with “请在 Agent 所在电脑登录 Claude Code” (Codex and Pi likewise), and no link. Only an Agent on the Cloud Computer
    keeps the generic “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号”.
-5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
+   Every card here ends with the Session ID line; it is the card's only visible link.
+5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, no button, and the Session ID line.
    As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
-   turns green in place and reads only 已保存. Repeat with Discard, which asks for the
+   turns green in place and reads only 已保存, keeping the Session ID line. Repeat with Discard, which asks for the
    permanent-loss confirmation first and ends as 已放弃改动.
 6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
    (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:

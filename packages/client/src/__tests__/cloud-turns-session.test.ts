@@ -18,7 +18,11 @@ import type {
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
-import type { CloudSessionSteerRequest, CloudSessionSteerResult } from "../runner/cloud-steer-control.js";
+import type {
+  CloudImJoinRequest,
+  CloudSessionSteerRequest,
+  CloudSessionSteerResult,
+} from "../runner/cloud-steer-control.js";
 import type { CloudWorkerCompletion } from "../runner/cloud-turn-worker.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { CloudWorkspaceError } from "../runner/cloud-workspace.js";
@@ -164,6 +168,10 @@ function settledOf(sent: RunnerClientFrame[]) {
     RunnerClientFrame,
     { type: "session:message:settled" }
   >[];
+}
+
+function receiptsOf(sent: RunnerClientFrame[], deliveryId: string) {
+  return sent.filter((frame) => frame.type === "delivery:received" && frame.deliveryId === deliveryId);
 }
 
 function sessionReceiptsOf(sent: RunnerClientFrame[]) {
@@ -723,6 +731,226 @@ describe("CloudTurnRunner Session collaboration", () => {
     h.finish({ outcome: "completed", executionEffects: "completed" });
     await waitFor(() => settledOf(h.sent).length === 3, "refused steer FIFO");
     expect(h.prompts).toEqual([h.message.messageId, first.messageId, second.messageId]);
+    await h.runner.close();
+  });
+
+  function joinHarness(sessionKind: "internal" | "visible", results: string[] = [], checkpoint?: () => Promise<void>) {
+    const root = sessionMessage();
+    const outboxContext = {
+      provider: "feishu",
+      sessionKind: "thread",
+      chatId: "oc_visible",
+      threadId: "omt_visible",
+    } satisfies RuntimeImOutboxContext;
+    const delivery = cloudDeliveryFixture({
+      sessionId: root.targetSessionId,
+      agentId: root.agentId,
+      runtime: root.runtime,
+    });
+    const started = deferred<void>();
+    const finish = deferred<ExecResult>();
+    const joined: string[] = [];
+    const kinds: string[] = [];
+    const h = harness({
+      message: root,
+      worker: async ({ stdin }) => {
+        kinds.push((JSON.parse(stdin) as { kind: string }).kind);
+        if (kinds.length !== 1) return completedExec("after");
+        started.resolve();
+        return finish.promise;
+      },
+      runnerOptions: {
+        sessionSteeringEnabled: () => true,
+        steeringEnabled: () => true,
+        ...(checkpoint ? { checkpoint } : {}),
+        openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-im" }),
+        sandbox: {
+          name: "ots-cloud-turn-test",
+          exec: async (_node, _args, options) => {
+            const { request } = JSON.parse(options?.stdin as string) as {
+              request: CloudImJoinRequest | CloudSessionSteerRequest;
+            };
+            const key = request.type === "im:join" ? request.delivery.deliveryId : request.message.messageId;
+            expect(await journal.read(key)).toMatchObject({ phase: "started" });
+            joined.push(key);
+            return { code: 0, stderr: "", stdout: JSON.stringify(results.shift() ?? "accepted") };
+          },
+          openDuplex: () => {
+            throw new Error("unexpected native duplex");
+          },
+        },
+      },
+    });
+    return {
+      ...h,
+      root,
+      outboxContext,
+      delivery,
+      joined,
+      kinds,
+      async start() {
+        await h.runner.handleSessionMessageRun(
+          sessionRunFrame(root, sessionKind, sessionKind === "visible" ? outboxContext : undefined),
+        );
+        await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(root.requestId));
+        await started.promise;
+        await h.runner.handleDeliveryRun(deliveryRunFrame(delivery));
+        await h.runner.handleVerified(deliveryVerifiedFrame(delivery.requestId));
+      },
+      finish(completion: CloudWorkerCompletion) {
+        finish.resolve({
+          code: completion.outcome === "completed" ? 0 : 1,
+          stdout: JSON.stringify({ kind: "result", completion }),
+          stderr: "",
+        });
+      },
+      reports: () =>
+        h.sent.flatMap((frame) =>
+          frame.type === "delivery:report" && frame.report.deliveryId === delivery.deliveryId ? [frame.report] : [],
+        ),
+    };
+  }
+
+  it("joins a queued IM delivery into a running visible Session message Turn and reports it with that Turn", async () => {
+    const h = joinHarness("visible");
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join");
+    expect(h.joined).toEqual([h.delivery.deliveryId]);
+    h.runner.onChannelClosed();
+    await h.runner.reconcile();
+    expect(h.reports()).toEqual([]);
+    h.finish({
+      outcome: "completed",
+      executionEffects: "completed",
+      finalText: "session answer",
+      imJoins: { [h.delivery.deliveryId]: "processed" },
+    });
+    await waitFor(() => h.reports().length === 1, "joined IM report");
+    expect(h.reports()[0]).toMatchObject({ outcome: "completed", executionEffects: "completed" });
+    expect(h.reports()[0]).not.toHaveProperty("finalText");
+    expect(settledOf(h.sent)).toEqual([
+      expect.objectContaining({ messageId: h.message.messageId, outcome: "completed" }),
+    ]);
+    expect(h.kinds).toEqual(["session-message"]);
+    await h.runner.close();
+  });
+
+  it("returns an unstarted IM join to the FIFO head and shares a failed Turn's reason", async () => {
+    const h = joinHarness("visible");
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join");
+    h.finish({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_timeout",
+      imJoins: { [h.delivery.deliveryId]: "not_started" },
+    });
+    await waitFor(() => h.reports().length === 1, "IM delivery runs on its own after the Turn");
+    expect(h.kinds).toEqual(["session-message", "turn"]);
+    expect(h.reports()[0]).toMatchObject({ outcome: "completed" });
+    await h.runner.close();
+  });
+
+  it("reports a joined IM delivery with the reason of the Turn that failed after taking it", async () => {
+    const h = joinHarness("visible");
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join");
+    h.finish({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_timeout",
+      imJoins: { [h.delivery.deliveryId]: "processed" },
+    });
+    await waitFor(() => h.reports().length === 1, "joined IM report");
+    expect(h.reports()[0]).toMatchObject({ outcome: "failed", errorReason: "turn_timeout" });
+    await h.runner.close();
+  });
+
+  it.each([["refused"], ["retry"]])("runs an IM delivery the Turn %s after that Turn instead", async (result) => {
+    const h = joinHarness("visible", [result]);
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join attempt");
+    h.finish({ outcome: "completed", executionEffects: "completed" });
+    await waitFor(() => h.reports().length === 1, "IM delivery after the Turn");
+    expect(h.kinds).toEqual(["session-message", "turn"]);
+    await h.runner.close();
+  });
+
+  it("reports a joined IM delivery as a workspace failure when the shared checkpoint fails", async () => {
+    const h = joinHarness("visible", [], async () => {
+      throw new Error("save failed");
+    });
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join");
+    h.finish({
+      outcome: "completed",
+      executionEffects: "completed",
+      imJoins: { [h.delivery.deliveryId]: "processed" },
+    });
+    await waitFor(() => h.reports().length === 1, "joined IM report");
+    expect(h.reports()[0]).toMatchObject({ outcome: "failed", errorReason: "workspace_failed" });
+    expect(h.reports()[0]).not.toHaveProperty("finalText");
+    expect(settledOf(h.sent)[0]).toMatchObject({ messageId: h.message.messageId, outcome: "failed" });
+    await h.runner.close();
+  });
+
+  it("re-announces an unstarted IM join after a channel change and runs it on the new grant", async () => {
+    const h = joinHarness("visible");
+    await h.start();
+    await waitFor(() => h.joined.length === 1, "IM join");
+    h.runner.onChannelClosed();
+    const receiptsBefore = receiptsOf(h.sent, h.delivery.deliveryId).length;
+    h.finish({
+      outcome: "completed",
+      executionEffects: "completed",
+      imJoins: { [h.delivery.deliveryId]: "not_started" },
+    });
+    await waitFor(
+      () => receiptsOf(h.sent, h.delivery.deliveryId).length > receiptsBefore,
+      "fresh receipt for the unstarted join",
+    );
+    expect(await journal.read(h.delivery.deliveryId)).toMatchObject({ phase: "received" });
+    await h.runner.handleVerified(deliveryVerifiedFrame(h.delivery.requestId));
+    await waitFor(() => h.reports().length === 1, "IM delivery on the new grant");
+    expect(h.kinds).toEqual(["session-message", "turn"]);
+    await h.runner.close();
+  });
+
+  it("keeps a Session steer ahead of a later IM join when both did not start", async () => {
+    const h = joinHarness("visible");
+    const followUp = sessionMessage({
+      agentId: h.root.agentId,
+      runtime: h.root.runtime,
+      targetSessionId: h.root.targetSessionId,
+      content: { kind: "text", text: "follow up" },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.root, "visible", h.outboxContext));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.root.requestId));
+    await waitFor(() => h.kinds.length === 1, "root Turn");
+    await h.runner.handleSessionMessageRun(sessionRunFrame(followUp));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(followUp.requestId));
+    await h.runner.handleDeliveryRun(deliveryRunFrame(h.delivery));
+    await h.runner.handleVerified(deliveryVerifiedFrame(h.delivery.requestId));
+    await waitFor(() => h.joined.length === 2, "Session steer then IM join");
+    expect(h.joined).toEqual([followUp.messageId, h.delivery.deliveryId]);
+    h.finish({
+      outcome: "completed",
+      executionEffects: "completed",
+      sessionSteers: { [followUp.messageId]: "not_started" },
+      imJoins: { [h.delivery.deliveryId]: "not_started" },
+    });
+    await waitFor(() => h.kinds.length === 3, "both run after the Turn");
+    expect(h.kinds).toEqual(["session-message", "session-message", "turn"]);
+    await h.runner.close();
+  });
+
+  it("keeps an IM delivery behind an internal Session message Turn", async () => {
+    const h = joinHarness("internal");
+    await h.start();
+    h.finish({ outcome: "completed", executionEffects: "completed" });
+    await waitFor(() => h.reports().length === 1, "IM delivery after the internal Turn");
+    expect(h.joined).toEqual([]);
+    expect(h.kinds).toEqual(["session-message", "turn"]);
     await h.runner.close();
   });
 

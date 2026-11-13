@@ -305,6 +305,34 @@ The private parent-to-worker document is paired within the pinned Runner image. 
 Session collaboration wire versions 1 through 3, journal file layout, and database schema. Older Runners
 receive the same frames and wait for the active Turn to finish.
 
+### IM delivery joining a Session message Turn
+
+The Server steers an IM message only into a running IM Turn: it picks the target from IM deliveries alone, so it
+cannot see a Session message Turn (an internal collaboration message or a scheduled message) that occupies the
+Runner. It dispatches the IM message with `delivery:run`, and the Runner decides. When the FIFO head is a verified
+IM delivery and the active Turn is a visible Session message Turn of the same Session, Agent, and placement, the
+Runner journals the delivery as started and relays `im:join` with the whole delivery through the same control
+socket; the worker steers the IM input into the running Run. Internal Session Turns, IM Turns, an expired delivery
+window or grant, and a disabled IM or Session steering capability keep the delivery in the FIFO, as before.
+
+- **Replies.** The joined input is the IM input an IM Turn would get, with its provider reference and reply role,
+  so the Agent answers in the IM conversation where the message was posted.
+- **Session result.** The Session message Turn settles to its own Session unchanged.
+- **IM report.** After the Turn's checkpoint, the delivery is reported under its own Turn identity with the joined
+  Turn's outcome and without final text, which belongs to the Session message: a processed input completes with
+  the Turn, a failed Turn passes its reason, and a missing receipt is `turn_state_unknown`. IM feedback cards apply
+  as to any IM delivery.
+- **Effective outcome.** Joined deliveries share the outcome the Turn settled with after cleanup and the workspace
+  checkpoint: a failed checkpoint reports them as `workspace_failed`, never as completed.
+- **No effect.** An explicit `not_started` receipt, or a `retry` or `refused` relay answer, keeps the delivery in
+  its own FIFO slot, where it runs as its own Turn with its own window after the active Turn. Session steers and IM
+  joins that did not start keep their arrival order. After a channel change the slot's grant is gone, so the
+  Runner re-announces the received entry for a fresh grant in the same position. An uncertain relay stops further
+  joins in that Turn. A live reconnect re-announces the started receipt instead of reporting unknown.
+
+No Server, wire, journal format, or database change is involved; joins and Session steers share the limit of 16 per
+Turn.
+
 ### Model retry ownership
 
 The model proxy is the sole automatic retry owner for each managed Cloud model call, including

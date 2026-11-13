@@ -72,6 +72,7 @@ import {
 import {
   CLOUD_SESSION_STEER_LIMIT,
   CLOUD_STEER_RELAY_SOURCE,
+  type CloudImJoinRequest,
   type CloudSessionSteerRequest,
   type CloudSessionSteerResult,
   CloudSessionSteerResultSchema,
@@ -265,6 +266,10 @@ interface ActiveTurn {
   execution?: Promise<void>;
   steering?: { token: string; turnId: string };
   readonly sessionSteers: Map<string, { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }>;
+  /** IM deliveries that joined this visible Session message Turn instead of waiting behind it. */
+  readonly imJoins: Map<string, { entry: CloudJournalDeliveryEntry; queued: QueuedDeliveryVerified }>;
+  /** Session steers and IM joins in arrival order, so a fallback keeps their FIFO order. */
+  readonly joinOrder: string[];
   sessionSteerRetry?: ReturnType<typeof setTimeout>;
   sessionSteeringBlocked?: boolean;
 }
@@ -946,7 +951,7 @@ export class CloudTurnRunner {
     frame: RunnerCloudDeliveryVerifiedFrame,
     generation: number,
   ): Promise<void> {
-    if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
+    if (!this.#queue.has(entry.requestId) && this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
       this.#log(`cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`);
       return;
     }
@@ -1020,7 +1025,11 @@ export class CloudTurnRunner {
   async #settleEntryCancellation(kind: CloudJournalEntry["kind"], entryKey: string): Promise<void> {
     if (!this.#cancelRequested.has(entryKey)) return;
     const entry = await this.#options.journal.read(entryKey);
-    if (entry?.phase === "started" && this.#active?.sessionSteers.has(entryKey)) return;
+    if (
+      entry?.phase === "started" &&
+      (this.#active?.sessionSteers.has(entryKey) || this.#active?.imJoins.has(entryKey))
+    )
+      return;
     this.#cancelRequested.delete(entryKey);
     if (entry?.kind !== kind || entry.phase !== "received") return;
     this.#assertCurrentScope(entry);
@@ -1149,7 +1158,10 @@ export class CloudTurnRunner {
       return;
     }
     if (entry.phase !== "started") return;
-    if (this.#active?.kind === "delivery" && this.#active.entryKey === entry.deliveryId) {
+    if (
+      (this.#active?.kind === "delivery" && this.#active.entryKey === entry.deliveryId) ||
+      this.#active?.imJoins.has(entry.deliveryId)
+    ) {
       // A live execution in this process is never rewritten as unknown by a reconnect.
       this.#sendReceipt(entry);
       return;
@@ -1393,6 +1405,8 @@ export class CloudTurnRunner {
       settle,
       settled,
       sessionSteers: new Map(),
+      imJoins: new Map(),
+      joinOrder: [],
     };
     this.#active = active;
     try {
@@ -1502,14 +1516,16 @@ export class CloudTurnRunner {
       active.abort.signal.aborted ||
       active.sessionSteeringBlocked ||
       active.sessionSteerRetry ||
-      active.sessionSteers.size >= CLOUD_SESSION_STEER_LIMIT
+      active.sessionSteers.size + active.imJoins.size >= CLOUD_SESSION_STEER_LIMIT
     )
       return false;
     // Joined entries keep their queue slots until the Run settles. Only the unjoined FIFO head
     // may steer, so a refusal cannot let a later message pass it.
-    const next = [...this.#queue.values()].find(
-      (queued) => queued.kind === "delivery" || !active.sessionSteers.has(queued.messageId),
+    const next = [...this.#queue.values()].find((queued) =>
+      queued.kind === "delivery" ? !active.imJoins.has(queued.deliveryId) : !active.sessionSteers.has(queued.messageId),
     );
+    if (next?.kind === "delivery" && next.generation === this.#channelGeneration)
+      return this.#joinDeliveryQueueHead(active, next, steering);
     if (next?.kind !== "session-message" || next.generation !== this.#channelGeneration) return false;
     const entry = await this.#options.journal.read(next.messageId);
     if (entry?.kind !== "session-message" || entry.phase !== "received" || entry.requestId !== next.frame.requestId) {
@@ -1541,6 +1557,7 @@ export class CloudTurnRunner {
     // Reconnect and process loss must see a potentially started input before it can reach Pi.
     const started = await this.#options.journal.markSessionStarted(entry.messageId, entry.scope);
     active.sessionSteers.set(entry.messageId, { entry: started, queued: next });
+    active.joinOrder.push(entry.messageId);
     const stillAuthorized =
       !this.#closed &&
       active.steering === steering &&
@@ -1555,8 +1572,9 @@ export class CloudTurnRunner {
     }
     const received = await this.#options.journal.requeueUnstartedSessionSteer(started);
     active.sessionSteers.delete(entry.messageId);
+    forgetJoin(active, entry.messageId);
     if (next.generation !== this.#channelGeneration) {
-      this.#reverifySessionSteers([{ entry: received, queued: next }]);
+      this.#reverifyJoined([{ kind: "session-message", entry: received, queued: next }]);
     } else if (result === "retry" && active.steering === steering) {
       active.sessionSteerRetry = setTimeout(() => {
         active.sessionSteerRetry = undefined;
@@ -1568,10 +1586,145 @@ export class CloudTurnRunner {
     return false;
   }
 
+  /**
+   * An IM delivery at the FIFO head joins a running visible Session message Turn of the same Session instead of
+   * waiting behind it, so its own window never runs out unexecuted. It is reported with that Turn's outcome when the
+   * Turn settles. Any other running Turn keeps today's order.
+   */
+  async #joinDeliveryQueueHead(
+    active: ActiveTurn,
+    next: QueuedDeliveryVerified,
+    steering: NonNullable<ActiveTurn["steering"]>,
+  ): Promise<boolean> {
+    const entry = await this.#joinableDelivery(active, next, steering);
+    if (entry === "dropped") return true;
+    if (!entry) return false;
+    const request: CloudImJoinRequest = { type: "im:join", expectedTurnId: steering.turnId, delivery: entry.delivery };
+    if (Buffer.byteLength(JSON.stringify(request)) > RUNTIME_MAX_FRAME_BYTES) return false;
+    // Reconnect and process loss must see a potentially started input before it can reach Pi.
+    const started = await this.#options.journal.markStarted(entry.deliveryId, entry.scope);
+    active.imJoins.set(entry.deliveryId, { entry: started, queued: next });
+    active.joinOrder.push(entry.deliveryId);
+    const stillAuthorized =
+      !this.#closed &&
+      active.steering === steering &&
+      !active.abort.signal.aborted &&
+      !this.#cancelRequested.has(entry.deliveryId) &&
+      next.generation === this.#channelGeneration;
+    const result = stillAuthorized ? await this.#relayControl(active, steering.token, request) : "refused";
+    if (result === "accepted") return true;
+    if (result === "uncertain") {
+      active.sessionSteeringBlocked = true;
+      return false;
+    }
+    const received = await this.#options.journal.requeueUnstartedJoin(started);
+    active.imJoins.delete(entry.deliveryId);
+    forgetJoin(active, entry.deliveryId);
+    if (next.generation !== this.#channelGeneration)
+      this.#reverifyJoined([{ kind: "delivery", entry: received, queued: next }]);
+    else this.#afterRefusedJoin(active, steering, next, result);
+    return false;
+  }
+
+  /** The received delivery that may join the active Turn, `dropped` for a stale queue slot, or nothing. */
+  async #joinableDelivery(
+    active: ActiveTurn,
+    next: QueuedDeliveryVerified,
+    steering: NonNullable<ActiveTurn["steering"]>,
+  ): Promise<CloudJournalDeliveryEntry | "dropped" | undefined> {
+    if (active.kind !== "session-message" || !this.#options.steeringEnabled?.()) return undefined;
+    const root = await this.#options.journal.read(active.entryKey);
+    if (root?.kind !== "session-message" || root.sessionKind !== "visible") return undefined;
+    const entry = await this.#options.journal.read(next.deliveryId);
+    if (entry?.kind !== "delivery" || entry.phase !== "received" || entry.requestId !== next.frame.requestId) {
+      this.#queue.delete(next.frame.requestId);
+      return "dropped";
+    }
+    this.#assertCurrentScope(entry);
+    if (entry.steer || this.#admit(entry.delivery, next.frame)) return undefined;
+    if (active.steering !== steering || this.#cancelRequested.has(entry.deliveryId)) return undefined;
+    return entry;
+  }
+
+  #afterRefusedJoin(
+    active: ActiveTurn,
+    steering: NonNullable<ActiveTurn["steering"]>,
+    next: QueuedDeliveryVerified,
+    result: CloudSessionSteerResult,
+  ): void {
+    if (result === "retry" && active.steering === steering && next.generation === this.#channelGeneration) {
+      active.sessionSteerRetry = setTimeout(() => {
+        active.sessionSteerRetry = undefined;
+        this.#scheduleDrain();
+      }, 1_000).unref();
+    } else {
+      active.sessionSteeringBlocked = true;
+    }
+  }
+
+  /** Report one joined IM delivery with the Turn's effective outcome, or hand back an unstarted one. */
+  async #settleImJoin(
+    active: ActiveTurn,
+    join: { entry: CloudJournalDeliveryEntry; queued: QueuedDeliveryVerified },
+    completion: CloudWorkerCompletion,
+    effective: TurnCompletion,
+  ): Promise<JoinedSlot | undefined> {
+    const { entry, queued } = join;
+    const cancelled = this.#cancelRequested.delete(entry.deliveryId) || active.abort.signal.aborted;
+    const receipt = completion.imJoins?.[entry.deliveryId];
+    if (!cancelled && !this.#closed && receipt === "not_started") {
+      // Its queue slot is still in place on the same channel; a closed channel needs a fresh grant.
+      const received = await this.#options.journal.requeueUnstartedJoin(entry);
+      return queued.generation !== this.#channelGeneration ? { kind: "delivery", entry: received, queued } : undefined;
+    }
+    this.#queue.delete(entry.requestId);
+    await this.#reportTerminal(entry, cancelled ? JOIN_CANCELLED : joinedCompletion(receipt, effective));
+    return undefined;
+  }
+
+  /** Settle Session steers and IM joins in arrival order; slots that need a new grant go back in that order. */
+  async #settleJoined(
+    active: ActiveTurn,
+    completion: CloudWorkerCompletion,
+    rootOutcome: CloudJournalSettlementOutcome,
+    effective: TurnCompletion,
+  ): Promise<void> {
+    const reverify: JoinedSlot[] = [];
+    for (const key of active.joinOrder) {
+      const steer = active.sessionSteers.get(key);
+      const join = active.imJoins.get(key);
+      const slot = steer
+        ? await this.#settleSessionSteer(active, steer, completion, rootOutcome)
+        : join
+          ? await this.#settleImJoin(active, join, completion, effective)
+          : undefined;
+      if (slot) reverify.push(slot);
+    }
+    // A disconnected channel revoked these slots' grants, but later work must still wait its turn.
+    this.#reverifyJoined(reverify);
+  }
+
+  #reverifyJoined(slots: JoinedSlot[]): void {
+    if (slots.length === 0) return;
+    this.#queue = new Map([...slots.map((slot) => [slot.entry.requestId, slot.queued] as const), ...this.#queue]);
+    for (const slot of slots) {
+      if (slot.kind === "delivery") this.#sendReceipt(slot.entry);
+      else this.#sendSessionProgress(slot.entry);
+    }
+  }
+
   async #relaySessionSteer(
     active: ActiveTurn,
     token: string,
     request: CloudSessionSteerRequest,
+  ): Promise<CloudSessionSteerResult> {
+    return this.#relayControl(active, token, request);
+  }
+
+  async #relayControl(
+    active: ActiveTurn,
+    token: string,
+    request: CloudSessionSteerRequest | CloudImJoinRequest,
   ): Promise<CloudSessionSteerResult> {
     try {
       const response = await this.#options.sandbox.exec(
@@ -1581,40 +1734,33 @@ export class CloudTurnRunner {
       );
       if (response.code === 0) return CloudSessionSteerResultSchema.parse(JSON.parse(response.stdout));
     } catch (error) {
+      const key = request.type === "im:join" ? request.delivery.deliveryId : request.message.messageId;
       this.#log(
-        `Cloud Session steer was unconfirmed for ${request.message.messageId}: ${error instanceof Error ? error.name : "unknown error"}`,
+        `Cloud ${request.type} was unconfirmed for ${key}: ${error instanceof Error ? error.name : "unknown error"}`,
       );
     }
     return "uncertain";
   }
 
-  #reverifySessionSteers(steers: { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }[]): void {
-    if (steers.length === 0) return;
-    const slots = steers.map(({ entry, queued }) => [entry.requestId, queued] as const);
-    this.#queue = new Map([...slots, ...this.#queue]);
-    for (const { entry } of steers) this.#sendSessionProgress(entry);
-  }
-
-  async #settleSessionSteers(
+  async #settleSessionSteer(
     active: ActiveTurn,
+    steer: { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified },
     completion: CloudWorkerCompletion,
     rootOutcome: CloudJournalSettlementOutcome,
-  ): Promise<void> {
-    const reverify: { entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }[] = [];
-    for (const { entry, queued } of active.sessionSteers.values()) {
-      const cancelled = this.#cancelRequested.delete(entry.messageId) || active.abort.signal.aborted;
-      const receipt = completion.sessionSteers?.[entry.messageId];
-      if (!cancelled && !this.#closed && receipt === "not_started") {
-        const received = await this.#options.journal.requeueUnstartedSessionSteer(entry);
-        if (queued.generation !== this.#channelGeneration) reverify.push({ entry: received, queued });
-        continue;
-      }
-      this.#queue.delete(entry.requestId);
-      const outcome = cancelled ? "cancelled" : sessionSteerSettlement(receipt, rootOutcome);
-      await this.#settleSessionTerminal(entry, outcome, false, undefined, completion.errorReason);
+  ): Promise<JoinedSlot | undefined> {
+    const { entry, queued } = steer;
+    const cancelled = this.#cancelRequested.delete(entry.messageId) || active.abort.signal.aborted;
+    const receipt = completion.sessionSteers?.[entry.messageId];
+    if (!cancelled && !this.#closed && receipt === "not_started") {
+      const received = await this.#options.journal.requeueUnstartedSessionSteer(entry);
+      return queued.generation !== this.#channelGeneration
+        ? { kind: "session-message", entry: received, queued }
+        : undefined;
     }
-    // A disconnected channel revoked these slots' grants, but later work must still wait its turn.
-    this.#reverifySessionSteers(reverify);
+    this.#queue.delete(entry.requestId);
+    const outcome = cancelled ? "cancelled" : sessionSteerSettlement(receipt, rootOutcome);
+    await this.#settleSessionTerminal(entry, outcome, false, undefined, completion.errorReason);
+    return undefined;
   }
 
   /**
@@ -1701,8 +1847,14 @@ export class CloudTurnRunner {
     // Hold occupation through namespace cleanup, checkpoint and durable terminal evidence.
     const cleanup = await this.#cleanupInterrupted(completion);
     const rootOutcome = await work.settle(current, cleanup.completion, true);
-    if (active.sessionSteers.size > 0) {
-      await this.#enqueue(() => this.#settleSessionSteers(active, completion, rootOutcome));
+    if (active.joinOrder.length > 0) {
+      // Joined IM deliveries share the outcome the root settled with, including a failed checkpoint.
+      const effective =
+        rootOutcome !== sessionSettlementOutcome(cleanup.completion) &&
+        cleanup.completion.executionEffects !== "not_started"
+          ? workspaceSaveFailure(cleanup.completion)
+          : cleanup.completion;
+      await this.#enqueue(() => this.#settleJoined(active, completion, rootOutcome, effective));
     }
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
@@ -2578,6 +2730,39 @@ function sessionSettlementOutcome(completion: TurnCompletion): CloudJournalSettl
     return completion.executionEffects === "completed" ? "completed" : "unknown";
   }
   return "failed";
+}
+
+type JoinedSlot =
+  | { kind: "session-message"; entry: CloudJournalSessionEntry; queued: QueuedSessionVerified }
+  | { kind: "delivery"; entry: CloudJournalDeliveryEntry; queued: QueuedDeliveryVerified };
+
+function forgetJoin(active: ActiveTurn, key: string): void {
+  const index = active.joinOrder.indexOf(key);
+  if (index >= 0) active.joinOrder.splice(index, 1);
+}
+
+const JOIN_CANCELLED: TurnCompletion = {
+  errorReason: "client_shutdown",
+  executionEffects: "may_have_occurred",
+  outcome: "cancelled",
+};
+
+/**
+ * A joined IM delivery shares the Turn it joined: processed input completes with it, and any other end is that
+ * Turn's failure. Its final text belongs to the Session message, so the IM report carries none.
+ */
+function joinedCompletion(
+  receipt: import("../agent-runtime/types.js").AgentSteerOutcome | undefined,
+  root: TurnCompletion,
+): TurnCompletion {
+  if (receipt === undefined) return UNKNOWN_COMPLETION;
+  if (root.outcome !== "completed") {
+    const { finalText: _text, ...failed } = root;
+    return failed;
+  }
+  return receipt === "processed"
+    ? { executionEffects: "completed", outcome: "completed" }
+    : { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
 }
 
 function sessionSteerSettlement(

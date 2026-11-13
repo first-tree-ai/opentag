@@ -692,6 +692,19 @@ export class CloudJournal {
     });
   }
 
+  /** Return an IM join with explicit no-effect evidence to the same verified FIFO slot. */
+  async requeueUnstartedJoin(join: CloudJournalDeliveryEntry): Promise<CloudJournalDeliveryEntry> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedDeliveryEntry(join.deliveryId, join.scope);
+      if (entry.phase !== "started" || entry.turnId !== join.turnId || entry.requestId !== join.requestId) {
+        throw new CloudJournalError("invalid_transition", "The IM join no longer owns this attempt");
+      }
+      const next: CloudJournalDeliveryEntry = { ...entry, phase: "received" };
+      await this.#write(entry.deliveryId, next);
+      return next;
+    });
+  }
+
   /** Return a steer with explicit no-effect evidence to the same verified FIFO slot. */
   async requeueUnstartedSessionSteer(steer: CloudJournalSessionEntry): Promise<CloudJournalSessionEntry> {
     return this.#mutate(async () => {

@@ -37,6 +37,18 @@ The other fences are unchanged: Session ended, internal Session authority, Agent
 placement generation, Computer owner, binding status, Slack installation, Cloud Sandbox allocation, Cloud control
 credential, current control connection and accepted custody.
 
+### Why it is a plain column
+
+`agents.access_generation` is an `integer NOT NULL DEFAULT 1` column with no index (migration `0075`, added with
+#1424). yuezengwu approved this shape on 2026-11-13, after asking whether it could live in JSON instead:
+
+- Nothing queries by it. It is read with the Agent row by primary key and compared with the value the execution pinned.
+  It is written only by the four withdrawals above, each as `+ 1` in the same transaction. An index would add nothing.
+- `agents` has no JSON column, so JSON would still need a migration.
+- The JSON in `agent_runtime_configs` is the saved configuration, which every save rewrites. The counter must not move
+  with a save, which is the point of this design.
+- A plain column keeps `NOT NULL` and the atomic increment in the database instead of in code.
+
 A validation execution still compares the revision. It is a short Server-issued check of one configuration, and a save
 makes its result meaningless.
 

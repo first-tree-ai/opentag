@@ -2097,6 +2097,107 @@ describe("GitHub proxy typed HTTP failures (Cloud CONNECT)", () => {
   });
 });
 
+describe("Feishu and Slack proxy typed HTTP failures", () => {
+  it.each([
+    ["operation_not_registered", 403],
+    ["validation_scope", 403],
+    ["body_too_large", 413],
+    ["body_invalid", 400],
+    ["write_outcome_unknown", 502],
+    ["upstream_unavailable", 503],
+    ["secret-token-value", 503],
+  ] as const)("maps Feishu %s to a native error body without raw errors", async (code, status) => {
+    const harness = await startAdapter({
+      response: () => {
+        throw new RuntimeProxyDataError("stream_error", "private raw credential", undefined, code);
+      },
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "open.feishu.cn", ca);
+    try {
+      writeRequest(tunnel, {
+        method: "GET",
+        path: "/open-apis/docx/v1/documents/doc1",
+        headers: { authorization: "Bearer otrh_valid" },
+      });
+      const response = await readHttpResponse(tunnel);
+      const expected = code === "secret-token-value" ? "upstream_unavailable" : code;
+      expect(response.status).toBe(status);
+      expect(response.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(response.body)).toEqual({ code: expected, msg: expected });
+      expect(response.body).not.toContain("private raw credential");
+    } finally {
+      tunnel.destroy();
+    }
+  });
+
+  it("maps a Feishu tenant-token stream failure through the same codes", async () => {
+    const harness = await startAdapter({
+      localHandleFor: () => "otrh_feishu_handle",
+      response: () => {
+        throw new RuntimeProxyDataError("stream_error", "raw", undefined, "body_invalid");
+      },
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "open.feishu.cn", ca);
+    try {
+      writeRequest(tunnel, {
+        body: JSON.stringify({ app_id: "cli-app", app_secret: "not-a-real-secret" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        path: "/open-apis/auth/v3/tenant_access_token/internal",
+      });
+      const response = await readHttpResponse(tunnel);
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({ code: "body_invalid", msg: "body_invalid" });
+    } finally {
+      tunnel.destroy();
+    }
+  });
+
+  it.each([
+    [
+      new RuntimeProxyDataError("stream_error", "raw", undefined, "operation_not_registered"),
+      403,
+      "operation_not_registered",
+    ],
+    [new RuntimeProxyDataError("open_timeout", "raw"), 504, "timeout"],
+    [new RuntimeProxyDataError("queue_full", "raw"), 503, "upstream_unavailable"],
+    [new Error("raw"), 503, "upstream_unavailable"],
+  ] as const)("maps Slack failure %# to a native error body", async (error, status, code) => {
+    const harness = await startAdapter({
+      response: () => {
+        throw error;
+      },
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const port = Number(new URL(harness.adapter.slackApiHost).port);
+    const response = await new Promise<{ body: string; status: number }>((resolve, reject) => {
+      const request = https.request(
+        {
+          ca,
+          headers: { ...SLACK_FORM_HEADERS, authorization: "Bearer otrh_valid" },
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/api/admin.users.list",
+          port,
+        },
+        (incoming) => {
+          let body = "";
+          incoming.on("data", (chunk: Buffer) => {
+            body += chunk.toString("utf8");
+          });
+          incoming.on("end", () => resolve({ body, status: incoming.statusCode ?? 0 }));
+        },
+      );
+      request.on("error", reject);
+      request.end("limit=1");
+    });
+    expect(response.status).toBe(status);
+    expect(JSON.parse(response.body)).toEqual({ ok: false, error: code, code });
+  });
+});
+
 describe("native HTTP protocol compatibility", () => {
   it.each([false, true])("supports old-server reads and explicitly gates HEAD (v2=%s)", async (version2) => {
     const readyVersion = version2 ? { httpVersion: 2 } : {};

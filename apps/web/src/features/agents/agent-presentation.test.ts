@@ -479,6 +479,27 @@ describe("Server status reasons across the list and dependency rows", () => {
     expect(agentMessagingStatus(detail).action).toBeUndefined();
   });
 
+  it.each([
+    ["messaging_cli_check_timed_out", "Messaging CLI check timed out"],
+    ["credential_validation_timeout", "Messaging credential check timed out"],
+    ["credential_rate_limited", "Messaging credential check rate limited"],
+    ["credential_provider_unreachable", "Messaging provider unreachable"],
+  ] as const)("names a self-resolving %s on the messaging row instead of Cannot receive messages", (reason, label) => {
+    const agent = boundAgent();
+    const detail = applyAgentStatus(agent, statusForReason(agent, reason, true));
+    expect(agentMessagingStatus(detail)).toEqual({ label, tone: "warning" });
+    expect(agentMessagingStatus(detail)).toEqual(agentCardStatus(listed(detail)));
+  });
+
+  it.each(["messaging_cli_unavailable", "credential_validation_failed"] as const)(
+    "keeps Cannot receive messages for the confirmed failure %s",
+    (reason) => {
+      const agent = boundAgent();
+      const detail = applyAgentStatus(agent, statusForReason(agent, reason, true));
+      expect(agentMessagingStatus(detail)).toMatchObject({ label: "Cannot receive messages", tone: "warning" });
+    },
+  );
+
   it("keeps continuing setup for an Agent whose messaging was never connected", () => {
     const agent = boundAgent();
     const list = listed(applyAgentStatus(agent, statusForReason(agent, "im_not_connected", false)));

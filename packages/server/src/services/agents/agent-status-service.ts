@@ -243,8 +243,11 @@ export class AgentStatusService {
     if (selfCheck?.problems.some((problem) => problem.part === "messaging_cli" && problem.reason === "check_timed_out"))
       return problem("messaging_cli_check_timed_out");
     if (artifact?.status !== "ready") {
-      if (initial || (!selfCheck && (!artifact || artifact.status === "checking"))) return initializing(selfCheck);
-      return problem("messaging_cli_unavailable");
+      const preparing = !artifact || artifact.status === "checking";
+      if (initial || (!selfCheck && preparing)) return initializing(selfCheck);
+      // A CLI still being prepared (for example after the daemon restarts) has not failed: it is a
+      // check that has not answered yet, which resolves on its own, so it never reads as unavailable.
+      return problem(preparing ? "messaging_cli_check_timed_out" : "messaging_cli_unavailable");
     }
     const credential = this.registry
       .providerCliCredentialReadiness(computerId, now.getTime())

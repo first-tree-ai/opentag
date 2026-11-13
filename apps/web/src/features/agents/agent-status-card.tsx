@@ -119,14 +119,15 @@ function AgentStatusRow({
       <span className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 @min-[24rem]/agent-status:flex-nowrap">
         <strong className="shrink-0 font-semibold text-kumo-strong">{name}</strong>
         <span
-          className={`inline-flex shrink-0 items-center gap-1.5 font-medium ${status.action ? "text-kumo-link" : "text-kumo-default"}`}
+          className={`inline-flex min-w-0 max-w-full items-center gap-1.5 font-medium ${status.action ? "text-kumo-link" : "text-kumo-default"}`}
           data-state={status.tone}
         >
           <span
             aria-hidden="true"
             className={`size-1.5 shrink-0 rounded-full bg-current ${dependencyStatusClassName(status.tone)}`}
           />
-          <span className="whitespace-nowrap" data-ui="agent-status-label">
+          {/* A longer Server verdict wraps inside the card instead of running past its edge at 320px. */}
+          <span className="min-w-0 [overflow-wrap:anywhere]" data-ui="agent-status-label">
             {status.label}
           </span>
           {status.action ? (

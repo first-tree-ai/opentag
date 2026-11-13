@@ -111,13 +111,21 @@ function handoffDependencyState(
   handoff: ImBindingHandoffStatus | undefined,
   bindingEvidenceConfirmed: boolean,
   handoffEvidenceConfirmed: boolean,
+  runtimeStatus: ProviderReadinessStatus | null,
 ): HandoffDependencyState {
   if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) return "unconfirmed";
   if (!binding) return "not_connected";
   if (binding.bindingState === "provisioning") return "setting_up";
   if (binding.bindingState !== "active") return "action_required";
   if (handoff?.handoffReady) return "ready";
-  return isHandoffChecking(handoff) ? "checking" : "action_required";
+  if (isHandoffChecking(handoff)) return "checking";
+  /*
+   * The Server also answers `handoffReady: false` while the Agent's runtime is not ready, for example
+   * while it is re-checked after the daemon restarts. That verdict belongs to the runtime row; it
+   * says nothing about the channel, so messaging stays unconfirmed instead of reading as broken.
+   */
+  if (handoff?.bindingState === "active" && !handoff.providerCli && runtimeStatus !== "ready") return "unconfirmed";
+  return "action_required";
 }
 
 function handoffDependency(
@@ -186,7 +194,13 @@ export function projectAgentAvailability(
   const cloudComputer = computer?.kind === "cloud";
   const computerReady = computer?.connectionStatus === "online";
   const runtimeDependency = agentRuntimeDependency(agent, computer, cloudRuntime);
-  const handoffState = handoffDependencyState(binding, handoff, bindingEvidenceConfirmed, handoffEvidenceConfirmed);
+  const handoffState = handoffDependencyState(
+    binding,
+    handoff,
+    bindingEvidenceConfirmed,
+    handoffEvidenceConfirmed,
+    runtimeDependency.status,
+  );
   const dependencies: AgentAvailability["dependencies"] = {
     computer: computerDependency(agent, computer),
     runtime: runtimeDependency,

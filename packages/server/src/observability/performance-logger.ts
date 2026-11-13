@@ -138,6 +138,7 @@ export interface PerformanceLogger {
 
 const performanceContextStorage = new AsyncLocalStorage<PerformanceExecutionContext>();
 const contextLoggers = new WeakMap<PerformanceExecutionContext, PerformanceLogger>();
+const contextAttributes = new WeakMap<PerformanceExecutionContext, Record<string, unknown>>();
 
 export function getCurrentPerformanceContext(): PerformanceExecutionContext | undefined {
   return performanceContextStorage.getStore();
@@ -146,6 +147,19 @@ export function getCurrentPerformanceContext(): PerformanceExecutionContext | un
 export function getCurrentPerformanceLogger(): PerformanceLogger | undefined {
   const current = performanceContextStorage.getStore();
   return current ? contextLoggers.get(current) : undefined;
+}
+
+export function setCurrentPerformanceAttributes(attributes: Record<string, unknown>): void {
+  const current = performanceContextStorage.getStore();
+  if (!current) return;
+  let target = contextAttributes.get(current);
+  if (!target) {
+    target = {};
+    contextAttributes.set(current, target);
+  }
+  for (const [key, value] of Object.entries(attributes)) {
+    if (value !== undefined) target[key] = value;
+  }
 }
 
 export function runWithPerformanceContext<T>(context: PerformanceExecutionContext, fn: () => T): T {
@@ -352,6 +366,7 @@ export function createPerformanceLogger(
           {
             ...basePayload,
             ...copyDefinedContextIds(childContext),
+            ...contextAttributes.get(childContext),
             ...extraAttributes,
             endedAt,
             durationMs,
@@ -372,6 +387,7 @@ export function createPerformanceLogger(
           {
             ...basePayload,
             ...copyDefinedContextIds(childContext),
+            ...contextAttributes.get(childContext),
             ...extraAttributes,
             ...(code ? { code, errorCode: code } : {}),
             endedAt,

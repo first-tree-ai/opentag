@@ -2751,7 +2751,7 @@ describe("FeishuConnectionManager", () => {
   it("connects candidate bindings with bounded concurrency so a slow binding does not block other candidates", async () => {
     const value = await connectionFixture();
     const agentService = new AgentService(connectionDatabase.database);
-    const totalBindings = 10;
+    const totalBindings = 18;
     const bindingIds: string[] = [];
 
     for (let index = 0; index < totalBindings; index += 1) {
@@ -2822,13 +2822,13 @@ describe("FeishuConnectionManager", () => {
       manager.start();
       const maintainPromise = manager.maintain();
 
-      // Even while cli_conc_0 is blocked, the remaining 9 bindings should all complete via the other 7 workers.
+      // Even while cli_conc_0 is blocked, the remaining bindings should all complete via the other 15 workers.
       await vi.waitFor(() => {
         expect(completedAppIds).toHaveLength(totalBindings - 1);
       });
       expect(completedAppIds).not.toContain("cli_conc_0");
       expect(maxConcurrentValidations).toBeGreaterThan(1);
-      expect(maxConcurrentValidations).toBeLessThanOrEqual(8);
+      expect(maxConcurrentValidations).toBeLessThanOrEqual(16);
 
       releaseSlowBinding?.();
       await maintainPromise;

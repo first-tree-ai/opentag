@@ -359,6 +359,38 @@ describe("Runtime approvals", () => {
     expect(await s.owner.decide(s.action())).toBe("resolved");
   });
 
+  it.each([
+    { name: "missing", next: () => undefined },
+    {
+      name: "changed",
+      next: (scope: { authority: object }) => ({ ...scope, authority: { ...scope.authority, configRevision: 3 } }),
+    },
+  ])("declines through the socket-owning replica when authority is $name at another replica", async ({ next }) => {
+    const s = setup();
+    await s.owner.request(s.request, s.context);
+    const other = new RuntimeApprovalOwner({
+      ...s.options,
+      serverInstanceId: randomUUID(),
+      registry: { ...s.registry, isCurrentConnection: () => false },
+    });
+    const scope = await s.load();
+    s.load.mockResolvedValue(next(scope) as never);
+    expect(await other.decide(s.action())).toBe("unavailable");
+    await other.poll();
+    expect(s.registry.send).not.toHaveBeenCalled();
+    expect(s.messenger.finish).not.toHaveBeenCalled();
+    await s.owner.poll();
+    expect(s.row().status).toBe("stale");
+    expect(s.registry.send).toHaveBeenCalledWith(
+      s.context.computerId,
+      s.context.instanceId,
+      expect.objectContaining({ type: "approval:decision", requestId: s.request.requestId, decision: "decline" }),
+      s.context.connectionId,
+    );
+    await s.owner.poll();
+    expect(s.messenger.finish).toHaveBeenCalledWith(expect.objectContaining({ status: "stale" }));
+  });
+
   it("expires a pending request without applying a late approval", async () => {
     const s = setup();
     s.request.commandPresentation = { command: "git push", reason: "Push?" };

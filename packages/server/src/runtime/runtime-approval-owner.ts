@@ -223,8 +223,10 @@ export class RuntimeApprovalOwner {
     const refused = !scope ? "authority_missing" : !sameAuthority(row, scope) ? "authority_changed" : undefined;
     if (refused) {
       // The request can never be decided now. Close it at once so the card loses its buttons and the Run is
-      // declined, instead of offering buttons that keep failing until the request expires.
-      await this.invalidate(row, this.current(row));
+      // declined, instead of offering buttons that keep failing until the request expires. Only the replica
+      // holding the runtime socket can send the decline, so another replica records one for it to deliver.
+      if (this.current(row)) await this.invalidate(row, true);
+      else await this.#recordRefusal(row);
       return { outcome: "unavailable", reason: refused };
     }
     const updated = await this.options.store.update(row.id, "pending", { status: action.decision });
@@ -243,6 +245,25 @@ export class RuntimeApprovalOwner {
       return { outcome: "recorded" };
     }
     return { outcome: "resolved", reason: "concurrent_update" };
+  }
+
+  /**
+   * Leaves a decline for the socket-owning replica. Its poll rechecks authority, finds it still refused, and
+   * invalidates the approval there, which sends the decline to the Run and then closes the card.
+   */
+  async #recordRefusal(row: PendingApproval): Promise<void> {
+    if (!(await this.options.store.update(row.id, "pending", { status: "decline" }))) return;
+    this.options.logger?.info(
+      {
+        module: "runtime-approval",
+        operation: "approval.transition",
+        outcome: "decline",
+        approvalId: row.id,
+        previousStatus: row.status,
+        status: "decline",
+      },
+      "Runtime approval refused at another replica",
+    );
   }
 
   poll(): Promise<void> {

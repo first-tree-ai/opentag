@@ -110,6 +110,22 @@ Slack read methods use native URL-encoded `--data` parameters (for example `slac
 because legacy Slack endpoints ignore JSON parameters when the Local CLI talks to Slack directly. Message writes keep
 `--json`. In proxy mode the Server also accepts JSON reads and normalizes their upstream encoding.
 
+In proxy mode the Server matches each Feishu call against an explicit operation table first. Those entries keep their
+special handling: the tenant token endpoint is answered locally with an execution handle instead of the real token,
+bot info is the only call a validation-purpose capability may make, and message create and reply feed the outbound
+message capture. Any other call under `/open-apis/` with `GET`, `POST`, `PUT`, `PATCH` or `DELETE` is forwarded to the
+bound brand's fixed origin, so the Feishu App's own scopes are the only limit. The `auth` and `authen` domains stay
+refused with `operation_not_registered`. A forwarded path must route exactly as written: empty (trailing) segments,
+fragments, `;`, dot segments (encoded or not), and percent-escapes of letters, digits, `-`, `.`, `_`, `~` or `;` are
+refused, so the path checked against the explicit table and the denylist is the path Feishu routes. Other RFC 3986
+path characters and escapes stay allowed, so Sheets A1 ranges such as `sheet!A1:B2` work raw or encoded. A forwarded `GET` is a read; any other method is a write with exactly one
+upstream attempt, and an outcome the proxy cannot confirm is reported as `write_outcome_unknown`, never retried.
+Forwarded request bodies are passed through byte for byte: multipart bodies as a stream, others buffered up to
+1 MiB. A JSON response is parsed (up to 10 MiB) so writes can be classified by Feishu's `code`; any other response,
+such as a file download, is streamed. The real token never reaches the Agent in either path. Setting the Server
+variable `OPENTAG_PROVIDER_PROXY_PASSTHROUGH=off` (default `on`; any other value fails startup) turns the proxy back
+into an exact allowlist of the explicit table.
+
 When the proxy refuses or cannot complete a Feishu or Slack call, the Client's loopback endpoint answers with a
 closed reason code in the provider's native error shape (`{"code","msg"}` for Feishu, `{"ok":false,"error"}` for
 Slack) and a matching HTTP status: `403` for `operation_not_registered` and `validation_scope`, `400` for

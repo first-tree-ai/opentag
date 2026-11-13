@@ -108,7 +108,14 @@ export interface ImProviderProxyAdapterOptions {
   outboundCapture?: OutboundWriteCapture;
   /** Test/deployment override for the bounded capture-port wait; defaults to the proxy budget. */
   captureWaitMs?: number;
-  logger?: Pick<ServiceLogger, "error" | "warn">;
+  logger?: Pick<ServiceLogger, "error" | "info" | "warn">;
+}
+
+interface PreparedBody {
+  bytes: Uint8Array;
+  parsed: unknown;
+  /** The request body is forwarded as an unbuffered stream (uploads, multipart). */
+  stream: boolean;
 }
 
 /**
@@ -134,6 +141,18 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     const match = this.#matchOperation(request, authorization);
     const headers = sanitizeRequestHeaders(request.headers);
+    if (match.operation.passthrough) {
+      // Audit trail for calls outside the explicit table: no body, query values, or credentials.
+      this.#options.logger?.info(
+        {
+          code: "PROVIDER_PROXY_PASSTHROUGH",
+          provider: request.provider,
+          method: match.operation.method,
+          path: match.operation.auditPath?.(request.path) ?? "{redacted}",
+        },
+        "Provider proxy passthrough request",
+      );
+    }
     const prepared = await this.#prepareBody(match, request, headers);
     if (match.operation.localResponse) {
       return this.#localResponse(match.operation, prepared.parsed, request);
@@ -154,7 +173,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
 
   async #executeForward(
     match: ProviderOperationMatch,
-    prepared: { bytes: Uint8Array; parsed: unknown },
+    prepared: PreparedBody,
     headers: Record<string, string>,
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
@@ -172,9 +191,9 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       return answerFeishuTokenRefusal(error);
     }
     try {
-      const response = await this.#fetchUpstream(operation, prepared.bytes, headers, request, material);
+      const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
       this.#hintHttpCredentialFailure(response.status, authorization);
-      return operation.response === "stream"
+      return streamsResponse(operation, response)
         ? this.#streamResponse(match, response)
         : await this.#jsonResponse(match, request, authorization, material, prepared, response);
     } catch (error) {
@@ -197,17 +216,21 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     match: ProviderOperationMatch,
     request: ProviderProxyRequest,
     headers: Record<string, string>,
-  ): Promise<{ bytes: Uint8Array; parsed: unknown }> {
+  ): Promise<PreparedBody> {
     const operation = match.operation;
     const maxBytes = operation.maxBodyBytes ?? 128 * 1024;
     try {
       if (operation.body === "none") {
         const bytes = await bufferProxyBody(request.body, 0);
-        return { bytes, parsed: undefined };
+        return { bytes, parsed: undefined, stream: false };
       }
-      if (operation.body === "stream") {
+      if (operation.body === "stream" || (operation.body === "auto" && isMultipart(headers["content-type"]))) {
         // Upload/file streams are never buffered; their content type is passed through upstream.
-        return { bytes: new Uint8Array(0), parsed: undefined };
+        return { bytes: new Uint8Array(0), parsed: undefined, stream: true };
+      }
+      if (operation.body === "auto") {
+        // Passthrough bodies are forwarded byte-for-byte with the caller's content type.
+        return { bytes: await bufferProxyBody(request.body, maxBytes), parsed: undefined, stream: false };
       }
       const slackKind = request.provider === "slack" ? slackBufferedBodyKind(headers["content-type"]) : undefined;
       if (slackKind === "unsupported") {
@@ -222,7 +245,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
         slackKind,
       });
       if (prepared.bytes.byteLength > maxBytes) throw new RuntimeProxyError("body_too_large");
-      return prepared;
+      return { ...prepared, stream: false };
     } catch (error) {
       if (error instanceof ProviderProxyBodyTooLargeError) throw new RuntimeProxyError("body_too_large");
       if (error instanceof SyntaxError) throw new RuntimeProxyError("body_invalid");
@@ -241,7 +264,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
 
   async #fetchUpstream(
     operation: ProviderOperation,
-    bodyBytes: Uint8Array,
+    prepared: PreparedBody,
     headers: Record<string, string>,
     request: ProviderProxyRequest,
     material: RuntimeProviderMaterial,
@@ -259,11 +282,11 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
       headers: upstreamHeaders(operation.body, upstreamRequestHeaders, material.token),
     };
-    if (operation.body === "stream") {
+    if (prepared.stream) {
       init.body = Readable.from(request.body);
       init.duplex = "half";
-    } else if (operation.body !== "none" && bodyBytes.byteLength > 0) {
-      init.body = bodyBytes;
+    } else if (operation.body !== "none" && prepared.bytes.byteLength > 0) {
+      init.body = prepared.bytes;
     }
     try {
       return await this.#fetch(url, init);
@@ -304,7 +327,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
-    prepared: { bytes: Uint8Array; parsed: unknown },
+    prepared: PreparedBody,
     response: Response,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
@@ -315,7 +338,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       const outcome = classifyWriteOutcome({ payload, provider: request.provider, status: response.status });
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
       if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
-      if (outcome.state === "succeeded") {
+      if (outcome.state === "succeeded" && !operation.passthrough) {
         await this.#captureConfirmedWrite(match, request, authorization, prepared.parsed, payload);
       }
     }
@@ -476,6 +499,18 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     throw new RuntimeProxyError("handle_invalid");
   }
+}
+
+function isMultipart(contentType: string | undefined): boolean {
+  return (contentType ?? "").trim().toLowerCase().startsWith("multipart/");
+}
+
+/** Whether the upstream response is relayed as a stream rather than parsed as bounded JSON. */
+function streamsResponse(operation: ProviderOperation, response: Response): boolean {
+  if (operation.response !== "auto") return operation.response === "stream";
+  const [mediaType = ""] = (response.headers.get("content-type") ?? "").split(";", 1);
+  const normalized = mediaType.trim().toLowerCase();
+  return !(normalized === "application/json" || normalized.endsWith("+json"));
 }
 
 function isSlackCredentialFailure(payload: unknown): boolean {

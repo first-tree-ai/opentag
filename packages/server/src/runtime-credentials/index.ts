@@ -17,7 +17,7 @@ import {
 import { RuntimeProviderProxyTransport } from "./data-transport.js";
 import { PostgresRuntimeExecutionAuthority, type RuntimeExecutionAuthority } from "./execution-authority.js";
 import { RuntimeExecutionRegistry } from "./execution-registry.js";
-import { FEISHU_OPERATIONS } from "./feishu-operations.js";
+import { FEISHU_OPERATIONS, FEISHU_PASSTHROUGH } from "./feishu-operations.js";
 import { exchangeFeishuTenantToken, FeishuTenantTokenCache } from "./feishu-tenant-token.js";
 import { type RuntimeGitHubAdmission, UnavailableRuntimeGitHubAdmission } from "./github-admission.js";
 import { ImProviderMaterialResolver } from "./im-material.js";
@@ -78,6 +78,11 @@ export * from "./write-outcome.js";
 export interface RuntimeCredentialServicesOptions {
   onCredentialFailure?: import("./provider-proxy-adapter.js").ImProviderProxyAdapterOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
+  /**
+   * Whether Feishu calls outside the explicit operation table pass through to the provider
+   * (`OPENTAG_PROVIDER_PROXY_PASSTHROUGH`). Off keeps the explicit table as an exact allowlist.
+   */
+  providerProxyPassthrough?: boolean;
   database: DatabaseClient;
   cipher: ApplicationCipher;
   registry: ConnectionRegistry;
@@ -429,18 +434,19 @@ function createImAdapters(
   outboundCapture: ImOutboundCapture,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
+  const passthrough = options.providerProxyPassthrough === true;
   const defaults = [
-    ["slack", SLACK_OPERATIONS],
-    ["feishu", FEISHU_OPERATIONS],
+    ["slack", SLACK_OPERATIONS, undefined],
+    ["feishu", FEISHU_OPERATIONS, passthrough ? FEISHU_PASSTHROUGH : undefined],
   ] as const;
-  for (const [provider, operations] of defaults) {
+  for (const [provider, operations, passthroughRule] of defaults) {
     if (adapters.has(provider)) continue;
     const providerFetch = resolveProviderFetch(options, provider);
     adapters.set(
       provider,
       new ImProviderProxyAdapter({
         provider,
-        registry: new ProviderOperationRegistry(operations),
+        registry: new ProviderOperationRegistry(operations, passthroughRule),
         urlHandles,
         outboundCapture,
         onCredentialFailure: options.onCredentialFailure,

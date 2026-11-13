@@ -311,11 +311,11 @@ contain only provider and controlled code; they omit raw error messages, paths, 
 capabilities, and identities.
 
 Each provider proxy call forwarded by the passthrough rule rather than an explicit operation emits one
-`info` record with `code="PROVIDER_PROXY_PASSTHROUGH"`, `provider`, `method`, and a redacted `path`. The
-path keeps only `open-apis`, the domain word, the version, and words from a fixed list of Feishu route
-words; every other segment becomes `{id}` whatever its shape, and a path without a version segment is
-redacted entirely. The record never carries the query string, request or response bodies, headers,
-capabilities, or tokens.
+`info` record with `code="PROVIDER_PROXY_PASSTHROUGH"`, `provider`, `method`, and a `path`. Feishu paths
+keep only `open-apis`, the domain word, the version, and words from a fixed list of Feishu route words;
+every other segment becomes `{id}` whatever its shape, and a path without a version segment is redacted
+entirely. Slack paths are the fixed `/api/<method>` and are logged as is. The record never carries the
+query string, request or response bodies, headers, capabilities, or tokens.
 
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic

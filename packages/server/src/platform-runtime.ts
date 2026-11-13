@@ -123,7 +123,6 @@ export async function createPlatformRuntime(options: {
   const credentials = createRuntimeCredentialServices({
     slackWorkingStatus: options.slackWorkingStatus,
     onCredentialFailure: options.onCredentialFailure,
-    publicOrigin: options.config.publicUrl,
     database: options.database,
     cipher: options.cipher,
     registry: options.registry,

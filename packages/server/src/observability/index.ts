@@ -67,6 +67,7 @@ export {
   resolvePerformanceLoggingConfig,
   runWithPerformanceContext,
   safePerformanceErrorCode,
+  setCurrentPerformanceAttributes,
   updateCurrentPerformanceContext,
 } from "./performance-logger.js";
 export {

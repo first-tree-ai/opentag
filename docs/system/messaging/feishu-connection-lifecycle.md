@@ -223,9 +223,13 @@ migration applied still reports those Agents as disconnected, with both channel 
 
 ## Recovery and concurrency
 
-The existing setup timer scans candidates in bounded keyset batches. It checks the saved
-next-check time, uses bounded concurrency and jitter, and respects provider `Retry-After`.
-Manual POST checks use the same admission. GET requests remain read-only.
+The setup timer scans candidates in bounded keyset batches. For the first 15 minutes after a
+candidate is saved, it uses the saved next-check time, which includes a 60-second base wait,
+jitter, and any longer provider `Retry-After` after a waiting result. At ages of 15 minutes,
+1 hour, and 24 hours, the timer also requires at least 5 minutes, 30 minutes, and 2 hours,
+respectively, since the last observed check. A candidate with no observation is eligible for
+its first check at the saved next-check time. Manual POST checks use that saved time and
+share the same claim and concurrency limits. GET requests remain read-only.
 Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
 This uses the existing attempt DTO and Account ownership checks, independently of the active
 binding: a working connection must not hide its saved same-App reauthorization. No open attempt

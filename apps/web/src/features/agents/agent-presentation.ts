@@ -631,7 +631,16 @@ export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatu
   };
 }
 
+/*
+ * A messaging check that timed out, was rate limited or could not reach the provider has not found
+ * the channel broken; the Computer retries it on its own. The row names that verdict the way the
+ * Agent's card does, and only a confirmed failure reads as "Cannot receive messages".
+ */
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  return pendingMessagingCheck(agent) ?? currentMessagingStatus(agent);
+}
+
+function currentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
   if (agent.status === "suspended" && agent.serverStatus?.state !== "computer_offline") {
     return storedMessagingStatus(agent);
   }
@@ -709,6 +718,20 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     label: agentMessagingConnectionLabel(binding),
     tone: messagingConnectionTone(binding),
   };
+}
+
+const PENDING_MESSAGING_CHECKS: ReadonlySet<AgentStatusReason> = new Set([
+  "messaging_cli_check_timed_out",
+  "credential_validation_timeout",
+  "credential_rate_limited",
+  "credential_provider_unreachable",
+]);
+
+function pendingMessagingCheck(agent: AgentDetailView): AgentDependencyStatus | undefined {
+  const reason = agent.serverStatus?.reason;
+  if (!reason || !PENDING_MESSAGING_CHECKS.has(reason) || agent.status === "suspended") return undefined;
+  if (agent.messaging.kind !== "ready" || agent.messaging.value?.bindingState !== "active") return undefined;
+  return serverStatusPresentation(agent);
 }
 
 function storedMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {

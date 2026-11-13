@@ -1123,7 +1123,17 @@ out of the temporary MCP configuration buys no access after the turn.
 The token is fetched through its own `runtime:mcp:gateway` frame rather than returned with the
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
-the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+the upstream endpoint URL against the Server origin it already pinned; only the fixed path crosses
+the wire. On a local Computer, the Client hands the Provider a Run-scoped loopback endpoint
+(`http://127.0.0.1:<port>/api/v1/mcp`) with a local `otmg_local_` bearer and forwards each POST to the
+pinned Server origin with the current `otmg_` execution token. Because `RuntimeMcpGatewayTokenStore`
+and `RuntimeExecutionRegistry` are in-memory on the Server, a rolling deploy or restart during a live
+Run drops the in-memory `otmg_` token and execution record while the Provider still holds the launch
+configuration prepared at the start of the Run. When `/api/v1/mcp` rejects a request strictly before
+dispatch (`401` when the token store lost the bearer, `404` when the execution record is missing, or
+`409` when the control connection was replaced), the loopback forwarder refreshes the `otmg_` bearer
+in single-flight — re-acquiring on the active execution relay when still open, or opening a
+replacement MCP-only execution over the reconnected control channel — and replays the POST once.
 
 ### Claude Code native configuration
 

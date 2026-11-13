@@ -15,7 +15,6 @@ import {
 } from "./im-credential-environment-manager.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import {
-  MCP_GATEWAY_PATH,
   RUNTIME_CREDENTIAL_CAPABILITY,
   RUNTIME_MCP_GATEWAY_CAPABILITY,
   RUNTIME_PROVIDER_PROXY_CAPABILITY,
@@ -33,6 +32,7 @@ import {
   type RuntimeProxyDataConnectionFactory,
   type RuntimeRelayScheduler,
 } from "./runtime-credential-relay.js";
+import { RuntimeMcpGatewayLoopback } from "./runtime-mcp-gateway-loopback.js";
 import { RuntimeProxyLoopbackAdapter, type RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-adapter.js";
 import {
   buildRuntimeProxyEnvironment,
@@ -135,6 +135,8 @@ export interface RuntimeCredentialEnvironmentManagerOptions {
    */
   readonly legacyMcpGateway?: boolean;
   readonly logger?: Pick<ClientLogger, "debug" | "warn">;
+  /** Optional fetch implementation for the local MCP gateway loopback (tests). */
+  readonly mcpGatewayFetch?: typeof fetch;
   /**
    * Explicit mode selection. `"proxy"` never falls back to raw materials; `"legacy"`
    * keeps the existing Local raw-credential projection. Default `"legacy"`.
@@ -178,6 +180,14 @@ interface ActiveProxyExecution {
   readonly webSocketDirectory?: string;
 }
 
+interface ActiveMcpGateway {
+  readonly executionId: string;
+  readonly loopback: RuntimeMcpGatewayLoopback;
+  relay: RuntimeCredentialRelay;
+  ownsRelay: boolean;
+  closed: boolean;
+}
+
 /**
  * Runtime credential environment lifecycle with explicit proxy mode. Proxy mode opens
  * a trusted execution through the control connection, holds short-lived capabilities
@@ -192,8 +202,8 @@ export class RuntimeCredentialEnvironmentManager {
   readonly #options: RuntimeCredentialEnvironmentManagerOptions;
   readonly #platform: NodeJS.Platform;
   readonly #proxyExecutions = new Map<string, ActiveProxyExecution>();
-  /** Legacy mode: the MCP-only execution per Session, keyed to the preparation it belongs to. */
-  readonly #legacyServices = new Map<string, { executionId: string; relay: RuntimeCredentialRelay }>();
+  /** Per-Session MCP gateway loopback and its current execution relay, keyed to the preparation it belongs to. */
+  readonly #mcpGateways = new Map<string, ActiveMcpGateway>();
   readonly #store?: RuntimeProxyMaterialStore;
   readonly #startupCleanup?: Promise<ImCredentialEnvironmentError | undefined>;
   #closed = false;
@@ -369,14 +379,20 @@ export class RuntimeCredentialEnvironmentManager {
 
   async cleanup(sessionId: string, executionId?: string): Promise<void> {
     if (this.#mode === "legacy") {
-      await this.#closeLegacyServices(sessionId, executionId);
+      await this.#closeMcpGateway(sessionId, executionId);
       return this.#requireLegacy().cleanup(sessionId, executionId);
     }
     const active = this.#proxyExecutions.get(sessionId);
-    if (executionId !== undefined && active && active.executionId !== executionId) {
+    const mcpGateway = this.#mcpGateways.get(sessionId);
+    if (
+      executionId !== undefined &&
+      ((active && active.executionId !== executionId) ||
+        (!active && mcpGateway && mcpGateway.executionId !== executionId))
+    ) {
       // Stale cleanup for a replaced execution: successor material stays untouched.
       return;
     }
+    await this.#closeMcpGateway(sessionId, executionId);
     const targetExecutionId = executionId ?? active?.executionId;
     if (active) {
       this.#proxyExecutions.delete(sessionId);
@@ -393,8 +409,8 @@ export class RuntimeCredentialEnvironmentManager {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    await Promise.all([...this.#mcpGateways.keys()].map((sessionId) => this.#closeMcpGateway(sessionId)));
     if (this.#mode === "legacy") {
-      await Promise.all([...this.#legacyServices.keys()].map((sessionId) => this.#closeLegacyServices(sessionId)));
       return this.#requireLegacy().close();
     }
     const startupFailure = await this.#startupCleanup;
@@ -415,7 +431,7 @@ export class RuntimeCredentialEnvironmentManager {
     this.#requireStore();
     const relay = await this.#openProxyRelay(request, request.run, signal);
     try {
-      return await this.#materializeProxyExecution(request.sessionId, relay, signal);
+      return await this.#materializeProxyExecution(request, relay, signal);
     } catch (error) {
       await relay.close("materialization_failed").catch(() => undefined);
       throw toEnvironmentError(error);
@@ -455,18 +471,27 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   /**
-   * Fetch this execution's MCP gateway bearer, if the Server granted the service.
+   * Fetch this execution's MCP gateway bearer and start a Session-local loopback proxy, if the
+   * Server granted the service.
    *
    * Soft-fails for the same reason the web gateway does: losing MCP tools must never cost the Agent
-   * its turn. The URL is composed against the pinned Server origin, never taken from the Server.
+   * its turn. The upstream URL is composed against the pinned Server origin, never taken from the
+   * Server, and the Turn receives the local loopback URL and bearer so mid-turn Server restarts can
+   * refresh the upstream `otmg_` token transparently.
    */
-  async #prepareMcpGateway(relay: RuntimeCredentialRelay): Promise<PreparedMcpGatewayLaunch | undefined> {
+  async #prepareMcpGateway(
+    relay: RuntimeCredentialRelay,
+    request: RuntimeCredentialPrepareSubject,
+    executionId: string,
+    ownsRelay: boolean,
+  ): Promise<PreparedMcpGatewayLaunch | undefined> {
     const serverUrl = this.#options.serverUrl;
     if (!serverUrl) return undefined;
+    let initialToken: string;
     try {
       const granted = await relay.acquireMcpGatewayToken();
       if (!granted) return undefined;
-      return { url: new URL(MCP_GATEWAY_PATH, serverUrl).toString(), token: granted.token };
+      initialToken = granted.token;
     } catch (error) {
       /*
        * Losing the gateway must never cost the Agent its turn, so every failure here degrades to
@@ -479,6 +504,86 @@ export class RuntimeCredentialEnvironmentManager {
         "The MCP gateway could not be prepared for this execution",
       );
       return undefined;
+    }
+    await this.#closeMcpGateway(request.sessionId);
+    let state: ActiveMcpGateway | undefined;
+    let loopback: RuntimeMcpGatewayLoopback;
+    try {
+      loopback = await RuntimeMcpGatewayLoopback.start({
+        serverUrl,
+        initialToken,
+        ...(this.#options.mcpGatewayFetch ? { fetchImpl: this.#options.mcpGatewayFetch } : {}),
+        logger: this.#logger,
+        refreshToken: async () => {
+          if (!state || state.closed || this.#closed) return undefined;
+          return this.#refreshMcpGatewayToken(request, state);
+        },
+      });
+    } catch (error) {
+      this.#logger.warn(
+        { code: "mcp_gateway_unavailable", reason: runtimeProxyErrorReason(error) },
+        "The MCP gateway loopback could not be started for this execution",
+      );
+      return undefined;
+    }
+    state = {
+      executionId,
+      loopback,
+      relay,
+      ownsRelay,
+      closed: false,
+    };
+    this.#mcpGateways.set(request.sessionId, state);
+    return { url: loopback.url, token: loopback.token };
+  }
+
+  async #refreshMcpGatewayToken(
+    request: RuntimeCredentialPrepareSubject,
+    state: ActiveMcpGateway,
+  ): Promise<string | undefined> {
+    if (!state.relay.signal.aborted) {
+      try {
+        const granted = await state.relay.acquireMcpGatewayToken();
+        if (granted) return granted.token;
+      } catch (error) {
+        this.#logger.debug(
+          { code: "mcp_gateway_existing_relay_refresh_failed", reason: runtimeProxyErrorReason(error) },
+          "Existing execution could not re-issue MCP gateway token; opening replacement MCP execution",
+        );
+      }
+    }
+    if (!request.run || state.closed || this.#closed) return undefined;
+    const sandbox = this.#options.sandboxForSession?.(request.sessionId);
+    const replacement = await RuntimeCredentialRelay.openServices(this.#relayOptions(), {
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      runId: randomUUID(),
+      sessionId: request.sessionId,
+      source: request.run.source,
+      ...(sandbox ? { sandbox } : {}),
+      services: ["mcp"],
+    });
+    try {
+      if (state.closed || this.#closed) {
+        await replacement.close("execution_cleanup").catch(() => undefined);
+        return undefined;
+      }
+      const granted = await replacement.acquireMcpGatewayToken();
+      if (!granted || state.closed || this.#closed) {
+        await replacement.close("mcp_not_granted").catch(() => undefined);
+        return undefined;
+      }
+      const previousRelay = state.relay;
+      const shouldClosePrevious = state.ownsRelay;
+      state.relay = replacement;
+      state.ownsRelay = true;
+      if (shouldClosePrevious) {
+        await previousRelay.close("mcp_execution_replaced").catch(() => undefined);
+      }
+      return granted.token;
+    } catch (error) {
+      await replacement.close("mcp_refresh_failed").catch(() => undefined);
+      throw error;
     }
   }
 
@@ -539,7 +644,7 @@ export class RuntimeCredentialEnvironmentManager {
     ) {
       return undefined;
     }
-    await this.#closeLegacyServices(request.sessionId);
+    await this.#closeMcpGateway(request.sessionId);
     let relay: RuntimeCredentialRelay;
     try {
       relay = await RuntimeCredentialRelay.openServices(
@@ -561,27 +666,31 @@ export class RuntimeCredentialEnvironmentManager {
       );
       return undefined;
     }
-    const mcp = await this.#prepareMcpGateway(relay);
+    const mcp = await this.#prepareMcpGateway(relay, request, executionId, true);
     if (!mcp) {
       await relay.close("mcp_not_granted").catch(() => undefined);
       return undefined;
     }
-    this.#legacyServices.set(request.sessionId, { executionId, relay });
     return mcp;
   }
 
-  async #closeLegacyServices(sessionId: string, executionId?: string): Promise<void> {
-    const entry = this.#legacyServices.get(sessionId);
+  async #closeMcpGateway(sessionId: string, executionId?: string): Promise<void> {
+    const entry = this.#mcpGateways.get(sessionId);
     if (!entry || (executionId !== undefined && entry.executionId !== executionId)) return;
-    this.#legacyServices.delete(sessionId);
-    await entry.relay.close("execution_cleanup").catch(() => undefined);
+    this.#mcpGateways.delete(sessionId);
+    entry.closed = true;
+    await entry.loopback.close().catch(() => undefined);
+    if (entry.ownsRelay) {
+      await entry.relay.close("execution_cleanup").catch(() => undefined);
+    }
   }
 
   async #materializeProxyExecution(
-    sessionId: string,
+    request: RuntimeCredentialPrepareSubject,
     relay: RuntimeCredentialRelay,
     signal?: AbortSignal,
   ): Promise<PreparedRuntimeCredentialEnvironment> {
+    const sessionId = request.sessionId;
     const store = this.#requireStore();
     await this.#closeReplacedProxyExecution(sessionId, store);
     signal?.throwIfAborted();
@@ -640,7 +749,7 @@ export class RuntimeCredentialEnvironmentManager {
       await contextTreeGateway?.listen("socket");
       adapter = await this.#startProxyAdapter(relay, layout, contextTreeGateway);
       const active = await this.#activateProxyExecution(
-        sessionId,
+        request,
         relay,
         store,
         layout,
@@ -650,6 +759,7 @@ export class RuntimeCredentialEnvironmentManager {
       );
       return this.#preparedProxyResult(sessionId, relay, store, active);
     } catch (error) {
+      await this.#closeMcpGateway(sessionId).catch(() => undefined);
       await contextTreeGateway?.close().catch(() => undefined);
       await adapter?.close().catch(() => undefined);
       await store.cleanupExecution(sessionId, relay.executionId).catch(() => undefined);
@@ -659,6 +769,7 @@ export class RuntimeCredentialEnvironmentManager {
 
   /** One active execution per Session: close the replaced execution and its material first. */
   async #closeReplacedProxyExecution(sessionId: string, store: RuntimeProxyMaterialStore): Promise<void> {
+    await this.#closeMcpGateway(sessionId);
     const previous = this.#proxyExecutions.get(sessionId);
     if (!previous) return;
     this.#proxyExecutions.delete(sessionId);
@@ -698,7 +809,7 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async #activateProxyExecution(
-    sessionId: string,
+    request: RuntimeCredentialPrepareSubject,
     relay: RuntimeCredentialRelay,
     store: RuntimeProxyMaterialStore,
     layout: ReturnType<RuntimeProxyMaterialStore["executionLayout"]>,
@@ -706,6 +817,7 @@ export class RuntimeCredentialEnvironmentManager {
     adapter: RuntimeProxyLoopbackAdapter,
     contextTreeGateway?: ContextTreeCommandGateway,
   ): Promise<ActiveProxyExecution> {
+    const sessionId = request.sessionId;
     const environment = buildRuntimeProxyEnvironment({
       executionId: relay.executionId,
       adapterCaCertPath: adapter.caCertPath,
@@ -734,7 +846,7 @@ export class RuntimeCredentialEnvironmentManager {
     const imProvider = providers.includes("feishu") ? "feishu" : providers.includes("slack") ? "slack" : undefined;
     const outboxContext = imProvider ? runtimeProxyOutboxContext(relay.cliMetadataFor(imProvider)) : undefined;
     const webGateway = await this.#startWebGateway(relay);
-    const mcp = await this.#prepareMcpGateway(relay);
+    const mcp = await this.#prepareMcpGateway(relay, request, relay.executionId, false);
     const web = webGateway
       ? {
           extensionPath: this.#options.webTools?.extensionPath ?? "",

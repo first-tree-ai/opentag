@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { RuntimeImOutboxContext } from "@opentag/shared";
@@ -28,6 +29,7 @@ import {
 import {
   RuntimeCredentialRelay,
   RuntimeCredentialRelayError,
+  type RuntimeCredentialRelayOptions,
   type RuntimeProxyDataConnectionFactory,
   type RuntimeRelayScheduler,
 } from "./runtime-credential-relay.js";
@@ -127,6 +129,11 @@ export interface RuntimeCredentialEnvironmentManagerOptions {
   readonly home: string;
   /** Optional legacy seam (tests); production composition uses the default. */
   readonly legacy?: (options: ImCredentialEnvironmentManagerOptions) => ImCredentialEnvironmentManager;
+  /**
+   * Legacy mode only: open an MCP-only execution so bound MCP Servers reach the Provider.
+   * Default on; `false` restores the credential-free legacy path.
+   */
+  readonly legacyMcpGateway?: boolean;
   readonly logger?: Pick<ClientLogger, "debug" | "warn">;
   /**
    * Explicit mode selection. `"proxy"` never falls back to raw materials; `"legacy"`
@@ -185,6 +192,8 @@ export class RuntimeCredentialEnvironmentManager {
   readonly #options: RuntimeCredentialEnvironmentManagerOptions;
   readonly #platform: NodeJS.Platform;
   readonly #proxyExecutions = new Map<string, ActiveProxyExecution>();
+  /** Legacy mode: the MCP-only execution per Session, keyed to the preparation it belongs to. */
+  readonly #legacyServices = new Map<string, { executionId: string; relay: RuntimeCredentialRelay }>();
   readonly #store?: RuntimeProxyMaterialStore;
   readonly #startupCleanup?: Promise<ImCredentialEnvironmentError | undefined>;
   #closed = false;
@@ -292,9 +301,24 @@ export class RuntimeCredentialEnvironmentManager {
   ): Promise<PreparedRuntimeCredentialEnvironment> {
     if (this.#mode === "legacy") {
       const prepared = await this.#requireLegacy().prepare(request, signal);
-      return { ...prepared, providers: [prepared.provider] };
+      const mcp = await this.#prepareLegacyMcp(request, prepared.executionId, signal);
+      return { ...prepared, providers: [prepared.provider], ...(mcp ? { mcp } : {}) };
     }
     return this.#prepareProxy(request, signal);
+  }
+
+  /**
+   * Legacy-mode internal Sessions receive no IM grant; they get only the MCP service execution.
+   * Resolves `undefined` when there is nothing to deliver, so the Run proceeds as before.
+   */
+  async prepareLegacyServices(
+    request: RuntimeCredentialPrepareSubject,
+    signal?: AbortSignal,
+  ): Promise<PreparedRuntimeCredentialEnvironment | undefined> {
+    if (this.#mode !== "legacy" || this.#closed) return undefined;
+    const executionId = randomUUID();
+    const mcp = await this.#prepareLegacyMcp(request, executionId, signal);
+    return mcp ? { executionId, path: "", mcp } : undefined;
   }
 
   /**
@@ -345,6 +369,7 @@ export class RuntimeCredentialEnvironmentManager {
 
   async cleanup(sessionId: string, executionId?: string): Promise<void> {
     if (this.#mode === "legacy") {
+      await this.#closeLegacyServices(sessionId, executionId);
       return this.#requireLegacy().cleanup(sessionId, executionId);
     }
     const active = this.#proxyExecutions.get(sessionId);
@@ -368,7 +393,10 @@ export class RuntimeCredentialEnvironmentManager {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#mode === "legacy") return this.#requireLegacy().close();
+    if (this.#mode === "legacy") {
+      await Promise.all([...this.#legacyServices.keys()].map((sessionId) => this.#closeLegacyServices(sessionId)));
+      return this.#requireLegacy().close();
+    }
     const startupFailure = await this.#startupCleanup;
     const sessions = [...this.#proxyExecutions.keys()];
     await Promise.all(sessions.map((sessionId) => this.cleanup(sessionId)));
@@ -463,17 +491,7 @@ export class RuntimeCredentialEnvironmentManager {
     const requestedServices = this.#requestedProxyServices();
     try {
       return await RuntimeCredentialRelay.open(
-        {
-          connection: this.#options.connection,
-          ...(this.#options.dataConnectionFactory
-            ? { dataConnectionFactory: this.#options.dataConnectionFactory }
-            : {}),
-          logger: this.#logger,
-          ...(this.#options.now ? { now: this.#options.now } : {}),
-          ...(this.#options.openBudgetMs ? { openBudgetMs: this.#options.openBudgetMs } : {}),
-          ...(this.#options.scheduler ? { scheduler: this.#options.scheduler } : {}),
-          serverUrl: this.#options.serverUrl ?? "",
-        },
+        this.#relayOptions(),
         {
           agentId: request.agentId,
           placementGeneration: request.placementGeneration,
@@ -488,6 +506,75 @@ export class RuntimeCredentialEnvironmentManager {
     } catch (error) {
       throw toEnvironmentError(error);
     }
+  }
+
+  #relayOptions(): RuntimeCredentialRelayOptions {
+    return {
+      connection: this.#options.connection,
+      ...(this.#options.dataConnectionFactory ? { dataConnectionFactory: this.#options.dataConnectionFactory } : {}),
+      logger: this.#logger,
+      ...(this.#options.now ? { now: this.#options.now } : {}),
+      ...(this.#options.openBudgetMs ? { openBudgetMs: this.#options.openBudgetMs } : {}),
+      ...(this.#options.scheduler ? { scheduler: this.#options.scheduler } : {}),
+      serverUrl: this.#options.serverUrl ?? "",
+    };
+  }
+
+  /**
+   * Legacy mode keeps raw IM grants, but MCP tools still need a Server execution to carry the
+   * gateway bearer. Open one that requests only the `mcp` service: no provider grant is acquired
+   * and no proxy data channel is opened. Every failure degrades to "no MCP tools this Run".
+   */
+  async #prepareLegacyMcp(
+    request: RuntimeCredentialPrepareSubject,
+    executionId: string,
+    signal?: AbortSignal,
+  ): Promise<PreparedMcpGatewayLaunch | undefined> {
+    const connection = this.#options.connection;
+    if (
+      this.#options.legacyMcpGateway === false ||
+      !request.run ||
+      connection.capabilityVersion(RUNTIME_CREDENTIAL_CAPABILITY) !== 1 ||
+      connection.capabilityVersion(RUNTIME_MCP_GATEWAY_CAPABILITY) !== 1
+    ) {
+      return undefined;
+    }
+    await this.#closeLegacyServices(request.sessionId);
+    let relay: RuntimeCredentialRelay;
+    try {
+      relay = await RuntimeCredentialRelay.openServices(
+        this.#relayOptions(),
+        {
+          agentId: request.agentId,
+          placementGeneration: request.placementGeneration,
+          runId: request.run.runId,
+          sessionId: request.sessionId,
+          source: request.run.source,
+          services: ["mcp"],
+        },
+        signal,
+      );
+    } catch (error) {
+      this.#logger.warn(
+        { code: "mcp_gateway_unavailable", reason: runtimeProxyErrorReason(error) },
+        "The legacy-mode MCP execution could not be opened",
+      );
+      return undefined;
+    }
+    const mcp = await this.#prepareMcpGateway(relay);
+    if (!mcp) {
+      await relay.close("mcp_not_granted").catch(() => undefined);
+      return undefined;
+    }
+    this.#legacyServices.set(request.sessionId, { executionId, relay });
+    return mcp;
+  }
+
+  async #closeLegacyServices(sessionId: string, executionId?: string): Promise<void> {
+    const entry = this.#legacyServices.get(sessionId);
+    if (!entry || (executionId !== undefined && entry.executionId !== executionId)) return;
+    this.#legacyServices.delete(sessionId);
+    await entry.relay.close("execution_cleanup").catch(() => undefined);
   }
 
   async #materializeProxyExecution(

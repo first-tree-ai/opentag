@@ -1595,18 +1595,33 @@ function claudeCodeRunResult(
     status: "failed",
     output,
     ...(terminal.usage ? { usage: terminal.usage } : {}),
-    error: withQuotaReset(
-      {
-        code:
-          providerFailureCode(terminal.subtype) !== "provider_error"
-            ? providerFailureCode(terminal.subtype)
-            : providerFailureCode(assistantError, terminal.apiErrorStatus),
-        message: terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`,
-      },
-      quotaResetAt,
-    ),
+    error: withQuotaReset(claudeCodeRunError(terminal, assistantError), quotaResetAt),
     diagnostics,
   };
+}
+
+function claudeCodeRunError(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentRunError {
+  const message = terminal.errors[0] ?? terminal.result ?? `Claude Code failed: ${terminal.subtype}`;
+  const declared =
+    providerFailureCode(terminal.subtype) !== "provider_error"
+      ? providerFailureCode(terminal.subtype)
+      : providerFailureCode(assistantError, terminal.apiErrorStatus);
+  // Claude Code files any 403 as a login failure, including a block page from the API's network edge.
+  if (
+    (declared === "provider_authentication_failed" || declared === "provider_access_denied") &&
+    isEdgeBlockPage(message)
+  ) {
+    return { code: "provider_connection_failed", message };
+  }
+  return { code: declared, message };
+}
+
+/**
+ * A 403 whose body is an HTML block page from the network edge (Cloudflare's "Attention Required!") rather
+ * than an API error: the request never reached the model API, so a later retry can succeed.
+ */
+function isEdgeBlockPage(message: string): boolean {
+  return /\b403\b/.test(message) && /attention required|cloudflare|<html/i.test(message);
 }
 
 /** A rate-limited or quota failure after a rejected usage window is that used-up quota, with its reset. */

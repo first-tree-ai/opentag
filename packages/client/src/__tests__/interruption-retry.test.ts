@@ -28,6 +28,7 @@ import {
   RETRY_RESET_AFTER_MS,
   RUN_TIME_RECORD_INTERVAL_MS,
   recoverableFailure,
+  retryDelayMs,
   START_FAILURE_RETRY_DELAY_MS,
   type TurnRetryRecord,
   TurnRetryStore,
@@ -73,6 +74,7 @@ describe("interruption classification and continuation", () => {
       "client_shutdown",
       "daemon_crash",
       "provider_process_exited",
+      "provider_connection_failed",
     ]) {
       expect(recoverableFailure(reason)).toBe(reason);
     }
@@ -99,9 +101,18 @@ describe("interruption classification and continuation", () => {
     expect(buildContinuationNotice({ reason: "provider_rate_limited", at: "T" })).toContain(
       "(HTTP 429) (automatic retry).",
     );
+    expect(buildContinuationNotice({ reason: "provider_connection_failed", at: "T" })).toContain(
+      "because the model API could not be reached or its network edge refused the request (automatic retry).",
+    );
     expect(buildContinuationNotice({ reason: "provider_start_failed", at: "T" })).toContain(
       "because the model CLI failed to start before doing any work (automatic retry).",
     );
+  });
+
+  it("waits as long after an unreachable model API as after a 429", () => {
+    expect(retryDelayMs("provider_connection_failed")).toBe(RATE_LIMIT_RETRY_DELAY_MS);
+    expect(retryDelayMs("provider_rate_limited")).toBe(RATE_LIMIT_RETRY_DELAY_MS);
+    expect(retryDelayMs("provider_process_exited")).toBe(0);
   });
 
   it("allows a start failure one retry and every other reason the shared limit", () => {

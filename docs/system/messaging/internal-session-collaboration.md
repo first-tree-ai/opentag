@@ -294,7 +294,7 @@ person for an IM message. So when a message's Run ends without completing, the S
 kind of Session the target is. A scheduled message has no sender: its notice goes to an internal target's creator
 (`created_by_session_id`), and a visible target produces none:
 
-- Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
+- Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429 or an unreachable model API, gets at most 2
   automatic retries; one whose model CLI failed to start, or whose Provider could not be made ready, gets one. As described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal

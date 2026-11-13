@@ -119,7 +119,9 @@ enough to reach the server replica holding the runtime socket, and the card is r
 runtime acknowledges the answer. A failed card update is retried while the server is running. Duplicate clicks, wrong users, expired requests, changed bindings,
 changed permission settings, and replaced runtime connections cannot approve an action. A refused click
 tells the person why: already decided or closed, expired, asked of someone else, or no longer valid for its
-run. The Server logs the refusal reason with the approval ID.
+run. The Server logs the refusal reason with the approval ID. A click that finds the request no longer valid for its
+run closes it at once: the Run is declined and the card shows its final state instead of keeping buttons that
+cannot work.
 
 Requests expire with the existing turn deadline. A replacement runtime connection invalidates requests
 tied to its old connection in the registration transaction. Decision delivery checks the durable

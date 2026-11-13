@@ -1005,11 +1005,41 @@ async function serveOnce(
 ): Promise<ConnectionOutcome> {
   // The previous connection drained before this one starts; its interrupt no longer applies.
   state.credentialInterrupt = undefined;
-  const authStarted = performance.now();
   const authRequestId = randomUUID();
-  const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
-    maxPayload: 256 * 1024,
-  });
+  const authStarted = performance.now();
+  let openedAt: number | undefined;
+  const emitAuthPerformance = (
+    connectionOutcome: ConnectionOutcome["kind"] | "welcomed",
+    scope?: RunnerWelcomeFrame,
+  ) => {
+    const endedAt = performance.now();
+    emitRunnerPerformance(state.onPerformanceLog, {
+      operation: "runner.connection.auth",
+      durationMs: endedAt - authStarted,
+      outcome: connectionOutcome === "welcomed" || connectionOutcome === "renewed" ? "success" : "error",
+      metrics: {
+        sandboxName: config.sandboxName,
+        requestId: authRequestId,
+        connectionOutcome,
+        wsOpenDurationMs: Math.round((openedAt ?? endedAt) - authStarted),
+        ...(openedAt === undefined ? {} : { authRoundTripMs: Math.round(endedAt - openedAt) }),
+        ...(scope && {
+          sandboxId: scope.sandboxId,
+          sessionId: scope.sessionId,
+          environmentGeneration: scope.environmentGeneration,
+        }),
+      },
+    });
+  };
+  let socket: WebSocket;
+  try {
+    socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
+      maxPayload: 256 * 1024,
+    });
+  } catch (error) {
+    emitAuthPerformance("closed");
+    throw error;
+  }
   return new Promise((resolve) => {
     let closed = false,
       authenticated = false,
@@ -1068,14 +1098,7 @@ async function serveOnce(
     const finish = (kind: ConnectionOutcome["kind"] = "closed") => {
       if (closed) return;
       closed = true;
-      if (!welcome) {
-        emitRunnerPerformance(state.onPerformanceLog, {
-          operation: "runner.connection.auth",
-          durationMs: performance.now() - authStarted,
-          outcome: kind === "renewed" ? "success" : "error",
-          metrics: { sandboxName: config.sandboxName, requestId: authRequestId, connectionOutcome: kind },
-        });
-      }
+      if (!welcome) emitAuthPerformance(kind);
       state.persistenceFailure = undefined;
       clearTimeout(authTimer);
       clearInterval(heartbeatTimer);
@@ -1135,7 +1158,8 @@ async function serveOnce(
         ...(state.workspace?.ready ? { workspaceRestored: true } : {}),
       });
     };
-    socket.on("open", () =>
+    socket.on("open", () => {
+      openedAt = performance.now();
       send({
         type: "auth",
         requestId: authRequestId,
@@ -1155,8 +1179,8 @@ async function serveOnce(
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
           : {}),
-      }),
-    );
+      });
+    });
     const onWelcome = (data: RunnerWelcomeFrame) => {
       const rejection = runnerWelcomeRejection(
         data,
@@ -1185,19 +1209,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.lastWelcomedScope = bridge.scope;
-      emitRunnerPerformance(state.onPerformanceLog, {
-        operation: "runner.connection.auth",
-        durationMs: performance.now() - authStarted,
-        outcome: "success",
-        metrics: {
-          sandboxName: config.sandboxName,
-          sandboxId: data.sandboxId,
-          sessionId: data.sessionId,
-          environmentGeneration: data.environmentGeneration,
-          requestId: authRequestId,
-          connectionOutcome: "welcomed",
-        },
-      });
+      emitAuthPerformance("welcomed", data);
       bridge.cloudEnabled = cloudCapable;
       bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;

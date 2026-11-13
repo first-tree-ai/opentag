@@ -45,6 +45,7 @@ vi.mock("@larksuiteoapi/node-sdk", () => ({
     im = { v1: { message: { create: sdk.create, reply: sdk.reply, patch: sdk.patch } } };
   },
   LoggerLevel: { error: "error" },
+  defaultHttpInstance: {},
   Domain: { Feishu: "https://open.feishu.cn", Lark: "https://open.larksuite.com" },
 }));
 

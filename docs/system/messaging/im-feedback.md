@@ -380,6 +380,12 @@ Cooldown-storage failure stops admission as soon as it is observed, before waiti
 settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
+A reaction failure before any mutation can reach the provider keeps the last known applied reaction. A failure
+after a possible or partial mutation keeps the applied reaction unknown. Transient failures keep their retry
+schedule and honor provider retry hints. A Feishu access-control refusal (21001) settles automatic reaction work
+for that target revision and emits a bounded warning. A later revision can request a fresh projection. Card delivery
+and readback keep their own retry rules. Feedback and approval SDK clients suppress raw provider diagnostics.
+
 Before a new message request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the conversation the card was sent to for this Bot
 and feedback identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds

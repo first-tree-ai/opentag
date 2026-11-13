@@ -183,6 +183,11 @@ describe("provider CLI validation classification", () => {
       { code: 99991401, msg: "ip not in whitelist" },
       { status: "needs_attention", reason: "credential_rejected" },
     ],
+    [
+      "access-control policy refusal (21001)",
+      { code: 21001, msg: "Access denied by access control policy" },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
     ["app id unauthorized (10005)", { code: 10005 }, { status: "needs_attention", reason: "credential_rejected" }],
     [
       "app_id and app_secret mismatch (20002)",

@@ -2,8 +2,12 @@ import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
 import { WebClient } from "@slack/web-api";
 import type { runtimeApprovals } from "../db/schema/index.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
-import { feishuDomainForWorkspaceBrand } from "../services/im-bindings/feishu/adapter.js";
-import { numericProviderCode } from "../services/im-bindings/feishu/setup-check.js";
+import {
+  createFeishuHttpInstance,
+  feishuDomainForWorkspaceBrand,
+  REDACTING_SDK_LOGGER,
+} from "../services/im-bindings/feishu/adapter.js";
+import { FEISHU_POLICY_DENIED_CODE, numericProviderCode } from "../services/im-bindings/feishu/setup-check.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
 
 type Approval = typeof runtimeApprovals.$inferSelect;
@@ -175,7 +179,9 @@ export class ApprovalMessenger {
         appId: material.appId,
         appSecret: material.appSecret,
         domain: feishuDomainForWorkspaceBrand(material.teamBrand),
+        logger: REDACTING_SDK_LOGGER,
         loggerLevel: LoggerLevel.error,
+        httpInstance: createFeishuHttpInstance(),
       }),
       modelSettingsUrl: this.modelSettingsUrl(material.agentId),
     };
@@ -223,6 +229,7 @@ function isConfirmedSlackNonDelivery(error: unknown): boolean {
 function isConfirmedFeishuNonDelivery(error: unknown): boolean {
   if (error instanceof ExternalCallPolicyError) return false;
   const code = numericProviderCode(error);
+  if (code === FEISHU_POLICY_DENIED_CODE) return false;
   if (code !== undefined && CONFIRMED_FEISHU_NON_DELIVERY_CODES.has(code)) return true;
   const message =
     error instanceof Error

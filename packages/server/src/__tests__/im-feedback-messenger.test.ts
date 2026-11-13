@@ -839,7 +839,10 @@ describe("shared Slack cooldown transport", () => {
   it("checks the deadline separately before each reaction method", async () => {
     const h = harness();
     h.cooldown.slackCooldownRemaining.mockResolvedValueOnce(0).mockResolvedValueOnce(30_000);
-    await expect(h.messenger.reaction(target(), "warning")).rejects.toMatchObject({ retryAfterMs: 30_000 });
+    await expect(h.messenger.reaction(target(), "warning")).rejects.toMatchObject({
+      knownNotApplied: false,
+      retryAfterMs: 30_000,
+    });
     expect(mocks.slack.reactions.remove).toHaveBeenCalledOnce();
     expect(mocks.slack.reactions.add).not.toHaveBeenCalled();
   });
@@ -1092,6 +1095,16 @@ describe("cards sent to the sender's direct message", () => {
     await messenger.post({ ...quota("feishu"), threadKey: null });
     expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledTimes(2);
     expect(mocks.feishu.im.v1.message.create.mock.calls[0]?.[0].params).toEqual({ receive_id_type: "chat_id" });
+  });
+  it("does not fall back to the conversation after a Feishu access policy refusal", async () => {
+    const h = harness();
+    mocks.feishu.im.v1.message.create.mockResolvedValueOnce({ code: 21001 });
+    await expect(h.messenger.post(quota("feishu"))).rejects.toMatchObject({
+      code: "IM_FEEDBACK_SEND_POLICY_DENIED",
+      knownNotApplied: true,
+      permanent: true,
+    });
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
   });
   it("falls back to the conversation when Feishu refuses the message or the sender is a bot", async () => {
     const { messenger } = harness();

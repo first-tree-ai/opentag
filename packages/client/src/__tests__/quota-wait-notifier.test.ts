@@ -46,6 +46,24 @@ describe("QuotaWaitNotifier", () => {
     expect(f.frames[2]?.resetAt).toBeUndefined();
   });
 
+  it("keeps sequences increasing through a reset update, the end and the next wait within one millisecond", async () => {
+    const f = fixture();
+    f.notifier.waiting(request, "turn-1", "2026-11-13T12:00:00.000Z");
+    f.notifier.waiting(request, "turn-1", "2026-11-13T13:00:00.000Z");
+    f.notifier.ended(request, "turn-1");
+    f.notifier.waiting(request, "turn-1", "2026-11-13T13:00:00.000Z");
+    f.notifier.ended(request, "turn-1");
+    await vi.waitFor(() => expect(f.frames).toHaveLength(5));
+    expect(f.frames.map((frame) => frame.sequence)).toEqual([1_000, 1_001, 1_002, 1_003, 1_004]);
+    expect(f.frames.map((frame) => frame.ended ?? frame.resetAt)).toEqual([
+      "2026-11-13T12:00:00.000Z",
+      "2026-11-13T13:00:00.000Z",
+      true,
+      "2026-11-13T13:00:00.000Z",
+      true,
+    ]);
+  });
+
   it.each([
     ["the Server did not negotiate it", { enabled: false }, {}],
     ["the Bot only observes the conversation", {}, { replyRole: "observer" }],

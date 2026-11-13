@@ -32,6 +32,7 @@ import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { SlackAutoSetupRuntimeRequestSchema } from "./slack-auto-setup.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
+import { TurnQuotaWaitRequestSchema, TurnQuotaWaitResultSchema } from "./turn-quota-wait.js";
 
 export {
   AGENT_SLUG_MAX_LENGTH,
@@ -1498,6 +1499,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionRecoverResultSchema,
   TurnReportResultSchema,
   TurnActivityResultSchema,
+  TurnQuotaWaitResultSchema,
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeOptionsRequestFrameSchema,
   AgentRuntimeOptionsCancelFrameSchema,
@@ -1524,6 +1526,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   TurnActivityRequestSchema,
+  TurnQuotaWaitRequestSchema,
   RuntimeImCredentialGrantRequestSchema,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliPrewarmResultFrameSchema,

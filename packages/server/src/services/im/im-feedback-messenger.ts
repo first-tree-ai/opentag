@@ -568,6 +568,30 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     }
   }
 
+  /** Rewrites a plain message that `postConversationText` sent. */
+  async updateConversationText(target: ConversationTextTarget, messageId: string, text: string): Promise<void> {
+    await this.#run(
+      `${target.provider}.feedback.update`,
+      async (signal) => {
+        if (target.provider === "slack") {
+          const { api } = await this.#slack(target, signal);
+          const r = await this.#slackCall({ ...target, provider: "slack" }, () =>
+            api.chat.update({ channel: target.channelId, ts: messageId, text }),
+          );
+          if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
+          return;
+        }
+        const { api } = await this.#feishu(target, signal);
+        const r = await api.im.v1.message.update({
+          path: { message_id: messageId },
+          data: { msg_type: "text", content: JSON.stringify({ text }) },
+        });
+        if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
+      },
+      { maxAttempts: 1, timeoutMs: 8_000 },
+    );
+  }
+
   /**
    * Refreshes a sent failure message in place, in the format it was sent in: a card stays a card,
    * including one from before plain text (sent with `update_multi`), and a plain-text message stays text,

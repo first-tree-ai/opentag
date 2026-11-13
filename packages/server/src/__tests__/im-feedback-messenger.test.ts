@@ -947,6 +947,27 @@ describe("postConversationText", () => {
     });
   });
 
+  it("rewrites a plain message it sent, on Slack and Feishu", async () => {
+    const h = harness();
+    mocks.slack.chat.update.mockResolvedValue({ ok: true });
+    await h.messenger.updateConversationText({ ...scope, provider: "slack" }, "1.2", "later");
+    expect(mocks.slack.chat.update).toHaveBeenLastCalledWith({ channel: "channel", ts: "1.2", text: "later" });
+    mocks.feishu.im.v1.message.update.mockResolvedValue({ code: 0 });
+    await h.messenger.updateConversationText({ ...scope, provider: "feishu", installationId: null }, "om_1", "later");
+    expect(mocks.feishu.im.v1.message.update).toHaveBeenLastCalledWith({
+      path: { message_id: "om_1" },
+      data: { msg_type: "text", content: JSON.stringify({ text: "later" }) },
+    });
+    mocks.slack.chat.update.mockResolvedValue({ ok: false });
+    await expect(
+      h.messenger.updateConversationText({ ...scope, provider: "slack" }, "1.2", "later"),
+    ).rejects.toMatchObject({ code: "IM_FEEDBACK_UPDATE_FAILED" });
+    mocks.feishu.im.v1.message.update.mockResolvedValue({ code: 500 });
+    await expect(
+      h.messenger.updateConversationText({ ...scope, provider: "feishu", installationId: null }, "om_1", "later"),
+    ).rejects.toMatchObject({ code: "IM_FEEDBACK_UPDATE_FAILED" });
+  });
+
   it("classifies a send that returned no message as unknown", async () => {
     const h = harness();
     mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 500 });

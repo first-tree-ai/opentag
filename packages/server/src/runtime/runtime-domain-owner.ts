@@ -1,4 +1,9 @@
-import type { TurnActivityRequest, TurnActivityResult } from "@opentag/shared";
+import type {
+  TurnActivityRequest,
+  TurnActivityResult,
+  TurnQuotaWaitRequest,
+  TurnQuotaWaitResult,
+} from "@opentag/shared";
 import {
   type AgentTraceBatch,
   type ClientRuntimeBusinessFrame,
@@ -144,6 +149,8 @@ export interface RuntimeDomainOwnerOptions {
   logger?: ServiceLogger;
   maxPendingRequests?: number;
   onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
+  /** An IM Turn waits for a used-up model quota (`runtime.quotaWait` v1); the Server writes the notice. */
+  onTurnQuotaWait?(frame: TurnQuotaWaitRequest, context: RuntimeBusinessContext): Promise<TurnQuotaWaitResult>;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
   /**
    * Session-collaboration v4 Run outcome report from the exact current connection. Called only
@@ -301,6 +308,7 @@ export class RuntimeDomainOwner {
       | "onSessionRecover"
       | "onTrace"
       | "onTurnActivity"
+      | "onTurnQuotaWait"
       | "prepareReconcile"
     >;
   readonly #pending = new Map<string, PendingRequest>();
@@ -329,6 +337,7 @@ export class RuntimeDomainOwner {
       onSessionMessageOutcome: options.onSessionMessageOutcome,
       onSessionRecover: options.onSessionRecover,
       onTurnActivity: options.onTurnActivity,
+      onTurnQuotaWait: options.onTurnQuotaWait,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
@@ -851,7 +860,7 @@ export class RuntimeDomainOwner {
       if (frame.type === "im:credential") return this.#rejectCredentialGrant(frame, context, "placement_stale");
       return undefined;
     }
-    if (frame.type === "turn:activity") return this.#handleActivity(frame, context);
+    if (isTurnSignal(frame)) return this.#handleTurnSignal(frame, context);
     if (
       frame.type === "turn:report" &&
       (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] ?? 1) < requiredTurnReportVersion(frame)
@@ -936,6 +945,32 @@ export class RuntimeDomainOwner {
     }
     const decision = await this.#options.onSessionRecover(frame, context);
     return sessionRecoverResult(frame, decision.status, decision.reason);
+  }
+
+  /** Liveness and quota-wait signals of a running IM Turn. */
+  #handleTurnSignal(
+    frame: TurnActivityRequest | TurnQuotaWaitRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnActivityResult | TurnQuotaWaitResult> | TurnActivityResult | TurnQuotaWaitResult {
+    return frame.type === "turn:activity"
+      ? this.#handleActivity(frame, context)
+      : this.#handleQuotaWait(frame, context);
+  }
+
+  #handleQuotaWait(
+    frame: TurnQuotaWaitRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnQuotaWaitResult> | TurnQuotaWaitResult {
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.quotaWait] === 1 && this.#options.onTurnQuotaWait) {
+      return this.#options.onTurnQuotaWait(frame, context);
+    }
+    return {
+      type: "turn:quota-wait:result",
+      requestId: frame.requestId,
+      turnId: frame.turnId,
+      sequence: frame.sequence,
+      status: "unsupported_capability",
+    };
   }
 
   #handleActivity(
@@ -1504,9 +1539,14 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
 type DomainBusinessResult =
   | TurnReportResult
   | TurnActivityResult
+  | TurnQuotaWaitResult
   | RuntimeImCredentialGrantResult
   | SessionMessageOutcomeResult
   | SessionRecoverResult;
+
+function isTurnSignal(frame: DomainBusinessFrame): frame is TurnActivityRequest | TurnQuotaWaitRequest {
+  return frame.type === "turn:activity" || frame.type === "turn:quota-wait";
+}
 
 function isConnectionScoped(frame: DomainBusinessFrame): frame is SessionMessageOutcomeReport | SessionRecoverRequest {
   return frame.type === "session:message:outcome" || frame.type === "session:recover";
@@ -1557,7 +1597,12 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "runtime:credential-failure")
     return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
-  if (frame.type === "im:deliver:result" || frame.type === "turn:report" || frame.type === "turn:activity")
+  if (
+    frame.type === "im:deliver:result" ||
+    frame.type === "turn:report" ||
+    frame.type === "turn:activity" ||
+    frame.type === "turn:quota-wait"
+  )
     return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:steer:result") return `delivery:${frame.rootDeliveryId}`;
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;

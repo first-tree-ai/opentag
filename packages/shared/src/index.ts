@@ -857,4 +857,10 @@ export {
   type TurnActivityResult,
   TurnActivityResultSchema,
 } from "./turn-activity.js";
+export {
+  type TurnQuotaWaitRequest,
+  TurnQuotaWaitRequestSchema,
+  type TurnQuotaWaitResult,
+  TurnQuotaWaitResultSchema,
+} from "./turn-quota-wait.js";
 export * from "./web-tools.js";

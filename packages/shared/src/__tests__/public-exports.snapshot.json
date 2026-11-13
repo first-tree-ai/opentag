@@ -996,6 +996,8 @@
   "TurnOutgoingReplySchema",
   "TurnOutgoingReplySnapshotSchema",
   "TurnOutgoingReplyUnavailableReasonSchema",
+  "TurnQuotaWaitRequestSchema",
+  "TurnQuotaWaitResultSchema",
   "TurnReportRequestSchema",
   "TurnReportResultSchema",
   "UnbindAgentMessagingRequestSchema",

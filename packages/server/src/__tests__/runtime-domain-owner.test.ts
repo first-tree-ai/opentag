@@ -16,6 +16,7 @@ import {
   type SessionReconcileResult,
   type SessionRecoverRequest,
   type TurnActivityRequest,
+  type TurnQuotaWaitRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -2295,6 +2296,38 @@ it("close waits for an original send callback after rejecting its pending caller
   } finally {
     release.resolve();
     await pending;
+    await f.owner.close();
+  }
+});
+
+it("routes a quota wait only when the Client negotiated it, and answers unsupported otherwise", async () => {
+  const onTurnQuotaWait = vi.fn(async (frame: TurnQuotaWaitRequest) => ({
+    type: "turn:quota-wait:result" as const,
+    requestId: frame.requestId,
+    turnId: frame.turnId,
+    sequence: frame.sequence,
+    status: "recorded" as const,
+  }));
+  const f = await ownerFixture(1000, { onTurnQuotaWait });
+  const frame: TurnQuotaWaitRequest = {
+    type: "turn:quota-wait",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    sessionId: randomUUID(),
+    agentId: randomUUID(),
+    turnId: randomUUID(),
+    placementGeneration: 1,
+    sequence: 1,
+    resetAt: "2026-11-13T12:00:00.000Z",
+  };
+  try {
+    expect(await f.owner.handle(frame, f.context)).toMatchObject({ status: "unsupported_capability" });
+    expect(onTurnQuotaWait).not.toHaveBeenCalled();
+    expect(
+      await f.owner.handle(frame, { ...f.context, negotiatedCapabilities: { [RUNTIME_CAPABILITY.quotaWait]: 1 } }),
+    ).toMatchObject({ type: "turn:quota-wait:result", status: "recorded" });
+    expect(onTurnQuotaWait).toHaveBeenCalledOnce();
+  } finally {
     await f.owner.close();
   }
 });

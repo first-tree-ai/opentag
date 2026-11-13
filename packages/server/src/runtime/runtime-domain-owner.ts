@@ -202,12 +202,14 @@ interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionR
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
   kind: "delivery";
   inputHash: string;
+  completing?: boolean;
 }
 
 interface PendingSteer extends PendingBase<RuntimeImSteerRequest, RuntimeImSteerResult> {
   kind: "steer";
   inputHash: string;
   semanticHash: string;
+  completing?: boolean;
 }
 
 interface PendingSessionMessage extends PendingBase<AnySessionMessageDeliveryRequest, SessionMessageDeliveryResult> {
@@ -555,14 +557,14 @@ export class RuntimeDomainOwner {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "target_ended" || dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
+    if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
+    if (dispatch === "stale_generation") {
+      throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
+    }
     try {
-      signal?.throwIfAborted();
-      if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
-      if (dispatch === "target_ended" || dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
-      if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
-      if (dispatch === "stale_generation") {
-        throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
-      }
       return this.#request(
         "steer",
         computerId,
@@ -776,14 +778,14 @@ export class RuntimeDomainOwner {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
+    if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
+    if (dispatch === "stale_generation") {
+      throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
+    }
     try {
-      signal?.throwIfAborted();
-      if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
-      if (dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
-      if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
-      if (dispatch === "stale_generation") {
-        throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
-      }
       return this.#request(
         "delivery",
         computerId,
@@ -796,8 +798,7 @@ export class RuntimeDomainOwner {
         signal,
       ) as Promise<ImMessageDeliveryResult>;
     } catch (error) {
-      if (dispatch === "dispatched")
-        await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);
+      await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);
       throw error;
     }
   }
@@ -1180,14 +1181,14 @@ export class RuntimeDomainOwner {
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request, expectedConnectionId);
-    if (signal) {
+    if (signal && (pending.kind === "delivery" || pending.kind === "steer" || joinReconcileSettlement)) {
       const abort = () => {
+        if (this.#pending.get(request.requestId) !== pending || pendingRequestCompleting(pending)) return;
         if (pending.kind === "steer" || pending.kind === "delivery") {
           expire(signal.reason, true);
           return;
         }
-        if (pending.kind !== "reconcile" || !joinReconcileSettlement) return;
-        if (this.#pending.get(request.requestId) !== pending || pending.completing) return;
+        if (pending.kind !== "reconcile") return;
         this.#pending.delete(request.requestId);
         clearTimeout(timer);
         // A cancelled waiter still owns an admitted send until its actual callback settles.
@@ -1307,6 +1308,7 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
+    markImResultCompleting(pending);
     if (result.status === "accepted") {
       if (!result.turnId) return;
       const custody = await this.#custody.acceptDelivery(attempt.request, attempt.inputHash, result.turnId, context);
@@ -1345,6 +1347,7 @@ export class RuntimeDomainOwner {
     const expired = this.#expiredImRequests.get(result.requestId);
     const attempt = pending?.kind === "steer" ? pending : expired?.kind === "steer" ? expired : undefined;
     if (!attempt || !this.#matchesContext(attempt, context) || !steerResultMatches(attempt.request, result)) return;
+    markImResultCompleting(pending);
     if (result.status === "steered") {
       const custody = await this.#custody.recordSteered(
         attempt.request,
@@ -1642,6 +1645,14 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   }
   if (frame.type === "provider-cli:prewarm:result") return `provider-cli:prewarm:${frame.requestId}`;
   return `turn:${frame.turnId}`;
+}
+
+function markImResultCompleting(pending: PendingRequest | undefined): void {
+  if (pending?.kind === "delivery" || pending?.kind === "steer") pending.completing = true;
+}
+
+function pendingRequestCompleting(pending: PendingRequest): boolean {
+  return "completing" in pending && Boolean(pending.completing);
 }
 
 function requestOwnerMatches(

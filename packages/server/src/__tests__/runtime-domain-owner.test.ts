@@ -585,7 +585,7 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
-  it.each(["delivery", "steer"] as const)("releases a new %s dispatch cancelled before send", async (kind) => {
+  it.each(["delivery", "steer"] as const)("retains a new %s dispatch cancelled before send", async (kind) => {
     const f = await ownerFixture();
     const custody = new MemoryRuntimeCustodyStore();
     const controller = new AbortController();
@@ -607,11 +607,7 @@ describe("RuntimeDomainOwner", () => {
           : owner.requestSteer(f.computerId, f.instanceId, steer, undefined, controller.signal);
       await expect(operation).rejects.toBe(cancelled);
       expect(f.frames).toEqual([]);
-      expect(release).toHaveBeenCalledExactlyOnceWith(
-        kind === "delivery" ? request : steer,
-        expect.any(String),
-        "retry",
-      );
+      expect(release).not.toHaveBeenCalled();
     } finally {
       await owner.close();
       await f.owner.close();

@@ -80,8 +80,9 @@ receives steered input as a stream-json user message on the running process: it 
 tool boundary, or runs right after the current `result` when no tool call is left, and the Turn
 reports once after the last steered input has started and produced a result. A new request
 requires fresh authority after a known starting/not-running response. An unconfirmed native result
-keeps its original dispatch correlation. The Local worker releases its wait at the operation
-deadline. While the Runtime Domain Owner retains the correlation, it still settles an exact late
+keeps its original dispatch correlation. The operation deadline cancels a Local worker's wait
+for a result. If custody settlement has already started, the worker observes its settlement
+through the existing grace period. While the Runtime Domain Owner retains the correlation, it still settles an exact late
 success from the same Computer instance against the original Turn. An exact late Local retry or
 deferral that proves no input was sent releases the frozen dispatch and batch for ordered delivery.
 If the Root ends while the input is still unconfirmed, the delivery can enter

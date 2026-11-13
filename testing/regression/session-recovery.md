@@ -258,6 +258,18 @@ inside a successful child Run. Exercise these results with the existing Session 
 4. Replay the pending outcome after restarting the reporter. Confirm the work does not run again and the Server reuses
    the notice ID. Repeat with a v4 Server and confirm the report waits until collaboration v5 is negotiated.
 
+## Local IM steer receipt after the delivery deadline
+
+1. Use a controlled Local Runtime to start an IM Turn. Send an ordered follow-up, hold its
+   `im:steer:result` past the Server worker deadline, then return it before the Root Turn reports.
+2. Return `steered` and replay the receipt. Confirm that the follow-up stays with the original Turn
+   and the Server never delivers it as a new Turn.
+3. Repeat with `turn_not_running` or `turn_starting`. Complete the Root and verify that queued
+   messages run once in their original order. A receipt reporting `steer_state_unknown` keeps its
+   original dispatch and must never start a new Turn for that input.
+4. In each run, confirm that expiry of the Local waiter does not emit
+   `IM_DELIVERY_OPERATION_LATE_SETTLE`.
+
 ## Cloud Session message steering
 
 1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that

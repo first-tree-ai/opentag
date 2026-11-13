@@ -30,6 +30,7 @@ import { executeProviderCliTurnPlan } from "../index.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { ClaudeCodeProcess } from "../providers/claude-code/process-wire.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import { createClientRuntimeHandlers } from "../runtime/client-runtime-composition.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import { InterruptedWorkRecovery } from "../runtime/interrupted-work-recovery.js";
@@ -1324,6 +1325,66 @@ describe("SessionMessageInbox", () => {
     expect(onRunOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "failed", reason: "provider_start_failed" }),
     );
+    inbox.stop();
+  });
+
+  it.each([
+    {
+      name: "a readiness probe past its deadline",
+      error: new AgentRuntimeProviderUnavailableError("claude-code", {
+        ready: false,
+        issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
+      }),
+      retried: true,
+      reason: "provider_start_failed",
+    },
+    {
+      name: "a missing model login",
+      error: new AgentRuntimeProviderUnavailableError("claude-code", {
+        ready: false,
+        issues: [{ code: "credential_missing", message: "Claude Code is not logged in" }],
+      }),
+      retried: false,
+      reason: "runtime_failed",
+    },
+  ])("treats $name before the Provider ran as a start failure only when waiting can help", async (example) => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const ensureRuntime = vi.fn(async () => {
+      throw example.error;
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => 1_000,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: ensureRuntime as never, sessionKind: vi.fn(() => "internal" as const) },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    if (example.retried) {
+      expect(retries.map((retry) => retry.delay)).toEqual([5_000]);
+      retries[0]?.task();
+      await vi.waitFor(() => expect(ensureRuntime).toHaveBeenCalledTimes(2));
+      await inbox.settled();
+      expect(retries).toHaveLength(1);
+    } else {
+      expect(retries).toEqual([]);
+      expect(ensureRuntime).toHaveBeenCalledOnce();
+    }
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed", reason: example.reason }));
     inbox.stop();
   });
 

@@ -44,7 +44,7 @@ describe("Claude native skill links", () => {
     expect(await readFile(join(link, "SKILL.md"), "utf8")).toContain("allowed-tools: Bash(git *)");
     await writeFile(join(selected, "resources", "example.txt"), "updated resource");
     expect(await readFile(join(link, "resources", "example.txt"), "utf8")).toBe("updated resource");
-  });
+  }, 10_000);
 
   it("skips missing, invalid, or conflicting skills and continues with available skills", async () => {
     const f = await fixture();

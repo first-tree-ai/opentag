@@ -170,6 +170,15 @@ Thread Session never compacts.
    If writing the Session report itself failed, do not claim a durable completed
    report or send an invented success.
 
+## Local Session CLI proof refresh after reconnect
+
+1. Start a Turn on the authorized Local test Computer and keep its daemon and Provider Run alive while its
+   WebSocket disconnects and reconnects. While the same Turn is still active, trigger a ready reconcile for that
+   Session through normal Session message dispatch.
+2. Expected: the running Turn's next authorized Session CLI request succeeds after the ready reconcile completes.
+   The Turn continues with its original identity, and eligible inline messages can use the active Session.
+   Repeat while the Turn is reporting and check that its report can still settle.
+
 ## Retained report replay after reconnect
 
 1. On the authorized test Computer, disconnect its runtime transport after a Turn finishes locally

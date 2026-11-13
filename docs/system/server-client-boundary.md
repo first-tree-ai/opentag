@@ -208,6 +208,12 @@ persisted the interrupted turn. Duplicates are acceptable.
   pending and the daemon asks for another reconcile. Before and during the resume the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
+- When the daemon stays up across a transport reconnect, a ready reconcile
+  for the running or reporting Turn can carry a fresh Session CLI proof. For
+  the current placement and matching configuration, the Client replaces the
+  credential in the file already used by that Turn. If the write fails, the
+  reconcile reports `session_cli_proof_refresh_failed` alongside the Turn's
+  current status and defers any inline Session message.
 - The daemon owns each recovery until the Session is actually prepared: after
   `scheduled` it waits for the ready reconcile, and sends the request again
   when the reconcile does not arrive. A refused reconcile, a refused request

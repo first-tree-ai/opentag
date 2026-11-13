@@ -232,6 +232,7 @@ function executionRecord(
     accountId: fixtureState.bootstrap.userId,
     agentId: overrides.exactAgent ?? fixtureState.agent.id,
     agentRevision: overrides.agentRevision ?? fixtureState.agent.revision,
+    agentAccessGeneration: 1,
     sessionId: overrides.exactSession ?? fixtureState.session.id,
     computerId: overrides.exactComputer ?? fixtureState.computer.id,
     instanceId: INSTANCE_ID,
@@ -270,13 +271,17 @@ describe("PostgresRuntimeScopeResolver", () => {
     const record = executionRecord(registry, state);
     expect(snapshot && resolver.assertExecutionFence(record, snapshot)).toBeUndefined();
 
+    // A configuration save leaves the execution's access alone; a withdrawn right to run ends it.
     await state.database
       .update(agents)
       .set({ revision: state.agent.revision + 1 })
       .where(eq(agents.id, state.agent.id));
-    const advanced = await resolver.load(state.session.id);
-    expect(advanced && resolver.assertExecutionFence(record, advanced)).toBe("agent_revision_changed");
-    const updated = { ...record, agentRevision: state.agent.revision + 1 };
+    const saved = await resolver.load(state.session.id);
+    expect(saved && resolver.assertExecutionFence(record, saved)).toBeUndefined();
+    await state.database.update(agents).set({ accessGeneration: 2 }).where(eq(agents.id, state.agent.id));
+    const withdrawn = await resolver.load(state.session.id);
+    expect(withdrawn && resolver.assertExecutionFence(record, withdrawn)).toBe("agent_access_changed");
+    const updated = { ...record, agentAccessGeneration: 2 };
     registry.update(updated);
 
     await state.database
@@ -912,7 +917,7 @@ function credentialOwnerStack(state: Awaited<ReturnType<typeof fixture>>, option
 }
 
 describe("Local internal collaboration MCP execution", () => {
-  it("checks accepted message authority and live revision without inheriting IM credentials", async () => {
+  it("checks accepted message authority and live access without inheriting IM credentials", async () => {
     const state = await fixture();
     const [internal] = await state.database
       .insert(sessions)
@@ -1007,6 +1012,10 @@ describe("Local internal collaboration MCP execution", () => {
         .update(agents)
         .set({ revision: state.agent.revision + 1 })
         .where(eq(agents.id, state.agent.id));
+      await expect(authorizer.authorize({ executionId: record.executionId })).resolves.toMatchObject({
+        agentId: state.agent.id,
+      });
+      await state.database.update(agents).set({ accessGeneration: 2 }).where(eq(agents.id, state.agent.id));
       await expect(authorizer.authorize({ executionId: record.executionId })).rejects.toMatchObject({
         code: "execution_closed",
       });

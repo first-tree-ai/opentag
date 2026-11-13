@@ -101,6 +101,7 @@ import type { RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-ad
 import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
+import { routeApprovalDecision, SessionMessageApprovals } from "./session-message-approvals.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
 import { SessionReconciler } from "./session-reconciler.js";
@@ -916,8 +917,14 @@ export async function createClientRuntime(
   const turnRetries = new TurnRetryStore(options.home);
   const channelActivity = ChannelActivityStore.forHome(options.home);
   let runner: AgentTurnRunner;
+  const sessionMessageApprovals = new SessionMessageApprovals({
+    runtimeManager,
+    connection,
+    logger: moduleLogger("session-message-approvals"),
+  });
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    approvals: sessionMessageApprovals,
     backgroundWork,
     channelActivity,
     cliCommand: options.cliCommand ?? "opentag",
@@ -1021,7 +1028,7 @@ export async function createClientRuntime(
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
-    handleApproval: runner.respondToApproval.bind(runner),
+    handleApproval: routeApprovalDecision(sessionMessageApprovals, runner),
     availabilityTester,
     async getRuntimeOptions(frame, signal) {
       const factory = factories.find((factory) => factory.manifest.providerId === frame.provider);

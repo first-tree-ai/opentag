@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { AgentScheduleLastDispatch } from "@opentag/shared";
+import { type AgentScheduleLastDispatch, isSessionCreatorReportReason } from "@opentag/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
@@ -309,6 +309,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   async #scheduledNotice(
     input: RunOutcomeNoticeInput,
   ): Promise<ScheduledRunNotice | RunOutcomeNoticeStatus | undefined> {
+    if (isSessionCreatorReportReason(input.reason)) return undefined;
     let scheduled: { occurrence: ScheduledOccurrence; authorized: boolean } | undefined;
     try {
       scheduled = await this.#readScheduledRun(input);

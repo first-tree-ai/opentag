@@ -8,6 +8,7 @@ import {
   RUNTIME_PROTOCOL_V2,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
+  SESSION_CREATOR_REPORT_REASON,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionMessageOutcomeReport,
@@ -212,7 +213,13 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
-  it.each([undefined, 3, 4])("gates Session Run outcome reports on collaboration version %s", async (version) => {
+  it.each([
+    [undefined, "timed_out", "turn_timeout", false],
+    [3, "timed_out", "turn_timeout", false],
+    [4, "timed_out", "turn_timeout", true],
+    [4, "failed", SESSION_CREATOR_REPORT_REASON.failed, false],
+    [5, "failed", SESSION_CREATOR_REPORT_REASON.failed, true],
+  ] as const)("gates Session collaboration v%s outcome %s reason %s", async (version, outcome, reason, supported) => {
     const onSessionMessageOutcome = vi.fn(async () => "notified" as const);
     const h = await ownerFixture(1_000, { onSessionMessageOutcome });
     const frame: SessionMessageOutcomeReport = {
@@ -222,15 +229,14 @@ describe("RuntimeDomainOwner", () => {
       targetSessionId: randomUUID(),
       agentId: randomUUID(),
       placementGeneration: 1,
-      outcome: "timed_out",
-      reason: "turn_timeout",
+      outcome,
+      reason,
     };
     try {
       const context: RuntimeBusinessContext = {
         ...h.context,
         negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionCollaboration]: version } : {},
       };
-      const supported = version === 4;
       expect(await h.owner.handle(frame, context)).toEqual({
         type: "session:message:outcome:result",
         requestId: frame.requestId,

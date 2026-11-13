@@ -100,6 +100,9 @@ export class AgentRunEventValidator {
         assertIdentifier(event.code, "provider warning code");
         assertText(event.message, "provider warning message");
         return;
+      case "quota_wait_changed":
+        assertQuotaWait(event.waiting, event.resetsAt);
+        return;
       case "provider_event":
         assertIdentifier(event.providerId, "provider event providerId");
         if (!Number.isSafeInteger(event.schemaVersion) || event.schemaVersion < 1) {
@@ -177,4 +180,10 @@ function assertBackgroundWorkEnd(event: {
   }
   if (event.detail !== undefined) assertText(event.detail, "background work detail");
   if (event.outputPath !== undefined) assertText(event.outputPath, "background work output path");
+}
+
+function assertQuotaWait(waiting: unknown, resetsAt: string | undefined): void {
+  if (typeof waiting !== "boolean") throw protocolError("provider emitted an invalid quota wait");
+  if (resetsAt !== undefined && Number.isNaN(Date.parse(resetsAt)))
+    throw protocolError("provider emitted an invalid quota reset time");
 }

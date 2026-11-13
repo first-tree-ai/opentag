@@ -19,9 +19,11 @@ import { InterruptedWorkRecovery, type InterruptedWorkRecoveryOptions } from "..
 import {
   buildContinuationNotice,
   MAX_AUTOMATIC_RETRIES,
+  MAX_QUOTA_WAITS,
   MAX_RECORDED_STEERS,
   nextRetry,
   parseTurnRetryRecord,
+  quotaResumeAt,
   RATE_LIMIT_RETRY_DELAY_MS,
   RETRY_RESET_AFTER_MS,
   RUN_TIME_RECORD_INTERVAL_MS,
@@ -120,6 +122,42 @@ describe("interruption classification and continuation", () => {
   });
 });
 
+describe("quota resume time", () => {
+  const now = Date.parse("2026-11-12T10:00:00.000Z");
+  const minutes = (value: number) => new Date(now + value * 60_000).toISOString();
+
+  it("resumes 2 minutes after the reset, or after a 15, 30, then 60-minute backoff without one", () => {
+    expect(quotaResumeAt(minutes(60), 1, now)).toBe(minutes(62));
+    // A reset already past: the window is back now.
+    expect(quotaResumeAt(minutes(-5), 1, now)).toBe(minutes(2));
+    expect(quotaResumeAt(undefined, 1, now)).toBe(minutes(17));
+    expect(quotaResumeAt("soon", 2, now)).toBe(minutes(32));
+    expect(quotaResumeAt(undefined, 3, now)).toBe(minutes(62));
+    expect(quotaResumeAt(undefined, 9, now)).toBe(minutes(62));
+    // A reset more than 7 days away is not believed.
+    expect(quotaResumeAt(minutes(7 * 24 * 60 + 1), 1, now)).toBe(minutes(17));
+    expect(quotaResumeAt(minutes(7 * 24 * 60), 1, now)).toBe(minutes(7 * 24 * 60 + 2));
+  });
+
+  it("keeps a quota wait's resume time and count in the Turn's record", () => {
+    const request = delivery();
+    const record = {
+      ...turnRetryRecord(request, "turn-1"),
+      quotaWaits: 2,
+      interruption: { reason: "provider_quota_exceeded" as const, at: "T", resumeAt: minutes(62) },
+    };
+    expect(parseTurnRetryRecord(JSON.parse(JSON.stringify(record)))).toMatchObject({
+      quotaWaits: 2,
+      interruption: { reason: "provider_quota_exceeded", resumeAt: minutes(62) },
+    });
+    const unreadable = { ...record, interruption: { ...record.interruption, resumeAt: "later" } };
+    expect(parseTurnRetryRecord(unreadable).interruption).toEqual({ reason: "provider_quota_exceeded", at: "T" });
+    expect(buildContinuationNotice(record.interruption)).toContain(
+      "because the model quota was used up; OpenTag waited for it to reset and resumed automatically (automatic retry).",
+    );
+  });
+});
+
 describe("trackRunTime", () => {
   it("records actual running time, and does not count the Computer sleeping", async () => {
     vi.useFakeTimers();
@@ -141,6 +179,20 @@ describe("trackRunTime", () => {
     // A clock moved backwards adds nothing.
     clock -= 60 * 60_000;
     expect(await tracker.finish()).toBe(0);
+  });
+
+  it("does not count a paused stretch, such as an in-process quota wait", async () => {
+    let clock = 0;
+    const tracker = trackRunTime(
+      () => clock,
+      async () => undefined,
+    );
+    clock += 1_000;
+    tracker.pause();
+    clock += 60 * 60_000;
+    tracker.resume();
+    clock += 500;
+    expect(await tracker.finish()).toBe(1_500);
   });
 });
 
@@ -638,6 +690,219 @@ describe("AgentTurnRunner automatic retry", () => {
     await h.runner.settled();
     expect(h.prompt).toHaveBeenCalledTimes(2);
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it("waits for a used-up window to reset plus 2 minutes, then resumes with the quota notice", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const retryAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    h.prompt
+      .mockImplementationOnce(async () => quotaUsedUp(retryAt))
+      .mockImplementationOnce(async () => ({
+        runId: "turn-1",
+        status: "completed",
+        output: [],
+      }));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({
+      retries: 0,
+      quotaWaits: 1,
+      interruption: {
+        reason: "provider_quota_exceeded",
+        resumeAt: new Date(Date.parse(retryAt) + 120_000).toISOString(),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(62 * 60_000 - 1);
+    expect(h.prompt).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(promptItems(h.prompt, 1)[0]?.text).toContain("the model quota was used up");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it.each([
+    ["a billing failure", { quotaKind: "billing" as const }, {}],
+    ["a quota failure of no known kind", {}, {}],
+    ["a fourth quota wait in a row", { quotaKind: "usage_window" as const }, { quotaWaits: MAX_QUOTA_WAITS }],
+  ])("reports %s at once", async (_name, error, record) => {
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), ...record });
+    h.prompt.mockImplementationOnce(async () => ({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_quota_exceeded", message: "quota", ...error },
+    }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_quota_exceeded" }),
+      3,
+    );
+  });
+
+  it("starts the quota count over after a run of 5 minutes", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, {
+      ...turnRetryRecord(h.request, "turn-1"),
+      quotaWaits: MAX_QUOTA_WAITS,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({ quotaWaits: 1, retryRanMs: 0 });
+    h.runner.stop();
+    await h.runner.settled();
+  });
+
+  it.each([
+    ["reports the quota failure when its wait cannot be recorded", false],
+    ["leaves a quota wait to the restarted daemon when the daemon stops while it is recorded", true],
+  ])("%s", async (_name, stop) => {
+    const h = runnerHarness({ restartRetry: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const update = h.retries.update;
+    h.retries.update = async (sessionId, turnId, change) =>
+      update(sessionId, turnId, (current) => {
+        const next = change(current);
+        if (next.interruption?.reason !== "provider_quota_exceeded") return next;
+        if (!stop) throw new Error("disk");
+        h.runner.stop();
+        return next;
+      });
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    if (stop) {
+      expect(h.create).not.toHaveBeenCalled();
+      expect(h.records.get(h.request.sessionId)?.interruption).toMatchObject({ reason: "provider_quota_exceeded" });
+    } else {
+      expect(h.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "failed", errorReason: "provider_quota_exceeded" }),
+        3,
+      );
+    }
+  });
+
+  it("starts the quota waits over after a 5-minute run that ended with another retry", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, {
+      ...turnRetryRecord(h.request, "turn-1"),
+      quotaWaits: MAX_QUOTA_WAITS,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    h.prompt.mockImplementationOnce(rateLimited);
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({ quotaWaits: 0, retryRanMs: 0 });
+    h.runner.stop();
+    await h.runner.settled();
+  });
+
+  it("starts the automatic retries over after a 5-minute run that ended in a quota wait", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, {
+      ...turnRetryRecord(h.request, "turn-1"),
+      retries: MAX_AUTOMATIC_RETRIES,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.records.get(h.request.sessionId)).toMatchObject({ retries: 0, quotaWaits: 1, retryRanMs: 0 });
+    h.runner.stop();
+    await h.runner.settled();
+  });
+
+  it("lets a message steered during a quota wait join the retry, which runs it once", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.retries.appendSteer = async (steer) => {
+      const record = h.records.get(h.request.sessionId);
+      if (!record || !steer) return "missing";
+      h.records.set(h.request.sessionId, { ...record, steers: [...record.steers, steer] });
+      return "appended";
+    };
+    h.prompt
+      .mockImplementationOnce(async () => quotaUsedUp(undefined))
+      .mockImplementationOnce(async () => ({
+        runId: "turn-1",
+        status: "completed",
+        output: [],
+      }));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(h.runner.steer(steerRequest(h.request, "while waiting"))).resolves.toMatchObject({
+      status: "steered",
+    });
+    // No Provider process takes it now: the receipt makes it part of the Turn.
+    expect(h.runtime.steer).not.toHaveBeenCalled();
+    expect(h.recordSteer).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(17 * 60_000);
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(promptItems(h.prompt, 1)[0]?.text).toContain("the model quota was used up");
+    expect(promptItems(h.prompt, 1).at(-1)?.text).toContain("while waiting");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it.each([
+    ["past the steer limit", "full", undefined, "steer_unsupported"],
+    ["when the Turn's record is gone", "missing", undefined, "turn_not_running"],
+    ["when it cannot be captured", "throw", undefined, "turn_not_running"],
+    ["when its receipt cannot be recorded", "appended", new Error("disk"), "turn_not_running"],
+  ] as const)(
+    "leaves a message steered during a quota wait with the Server %s",
+    async (_name, capture, receiptError, reason) => {
+      vi.useFakeTimers();
+      const h = runnerHarness();
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      h.retries.appendSteer = async () => {
+        if (capture === "throw") throw new Error("disk");
+        return capture;
+      };
+      if (receiptError) {
+        h.recordSteer.mockRejectedValueOnce(receiptError);
+        h.retries.removeSteer.mockRejectedValueOnce(new Error("disk"));
+      }
+      h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+      h.runner.start(owner(h.request));
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(h.runner.steer(steerRequest(h.request, "while waiting"))).resolves.toMatchObject({
+        status: "deferred",
+        reason,
+      });
+      if (receiptError) expect(h.retries.removeSteer).toHaveBeenCalledOnce();
+      h.runner.stop();
+      await h.runner.settled();
+    },
+  );
+
+  it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness({ restartRetry: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt.mockImplementationOnce(async () => quotaUsedUp(undefined));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    h.runner.stop();
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.records.get(h.request.sessionId)?.interruption).toMatchObject({
+      reason: "provider_quota_exceeded",
+      resumeAt: expect.any(String),
+    });
   });
 
   it("leaves a rate-limited Turn for the restarted daemon when the daemon stops during the wait", async () => {
@@ -1251,6 +1516,48 @@ describe("InterruptedWorkRecovery", () => {
     f.recovery.stop();
   });
 
+  it("asks the Server to recover a quota wait only when it is due", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse("2026-11-05T00:00:00.000Z"));
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    const resumeAt = "2026-11-05T01:00:00.000Z";
+    records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      quotaWaits: 1,
+      interruption: { reason: "provider_quota_exceeded", at: "T", resumeAt },
+    });
+    const f = recoveryFixture(records);
+    f.version = 1;
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    // Counted when it failed: a restart costs no retry.
+    expect(records.get(request.sessionId)).toMatchObject({ retries: 0, interruption: { resumeAt } });
+    expect(f.recovery.pending(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId })).toBe(true);
+    f.setState("registered");
+    expect(f.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60 * 60_000 - 1);
+    expect(f.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.sent).toEqual([expect.objectContaining({ type: "session:recover", turnId: "turn-1" })]);
+    f.recovery.stop();
+  });
+
+  it("starts the quota waits over at a restart after a 5-minute run", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      quotaWaits: MAX_QUOTA_WAITS,
+      retryRanMs: RETRY_RESET_AFTER_MS,
+    });
+    const f = recoveryFixture(records);
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    expect(records.get(request.sessionId)).toMatchObject({ quotaWaits: 0, retryRanMs: 0 });
+    f.recovery.stop();
+  });
+
   it("does not spend a retry on restarts while the retry never began", async () => {
     const records = new Map<string, TurnRetryRecord>();
     const request = delivery();
@@ -1807,6 +2114,20 @@ function promptItems(prompt: { mock: { calls: unknown[][] } }, call: number): Ar
 
 async function startFailed(): Promise<AgentRunResult> {
   return { runId: "turn-1", status: "failed", output: [], error: { code: "provider_start_failed", message: "spawn" } };
+}
+
+function quotaUsedUp(retryAt: string | undefined): AgentRunResult {
+  return {
+    runId: "turn-1",
+    status: "failed",
+    output: [],
+    error: {
+      code: "provider_quota_exceeded",
+      message: "You've hit your limit",
+      quotaKind: "usage_window",
+      ...(retryAt ? { retryAt } : {}),
+    },
+  };
 }
 
 async function rateLimited(): Promise<AgentRunResult> {

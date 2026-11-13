@@ -295,9 +295,7 @@ describe("PiAgentRuntime", () => {
       client.complete();
       await vi.waitFor(() => expect(background()).toHaveLength(1));
       await new Promise((resolve) => setImmediate(resolve));
-      await (
-        runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> }
-      ).tellProviderAboutBackgroundWork("quiet for a while");
+      await (runtime as unknown as { tellProvider(text: string): Promise<void> }).tellProvider("quiet for a while");
       expect(client.commands.at(-1)).toEqual({
         type: "prompt",
         message: "quiet for a while",

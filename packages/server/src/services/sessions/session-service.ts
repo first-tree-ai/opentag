@@ -860,6 +860,7 @@ export class SessionService {
    * go to an internal target's creator instead, so notices can only climb the creation tree from
    * there and never bounce between two Sessions. A recipient that has ended is replaced by the
    * nearest active Session up its own creation chain, so the notice still reaches someone.
+   * A report delivery notice is for the Local internal Session's direct creator.
    *
    * An unlocked eligibility read: the reported message must be stored and addressed to that active
    * Session. The facts only select the notice route; the subsequent `authorizeAndRecordMessage`
@@ -868,10 +869,12 @@ export class SessionService {
   async resolveRunOutcomeNotice(input: {
     childSessionId: string;
     messageId: string;
+    creatorOnly?: boolean;
   }): Promise<{ recipientSessionId: string; installationId: string } | undefined> {
     const [row] = await this.#database
       .select({
         creatorSessionId: sessions.createdBySessionId,
+        computerKind: computers.kind,
         installationId: computers.currentInstallationId,
         content: sessionMessages.content,
         kind: sessions.kind,
@@ -890,6 +893,11 @@ export class SessionService {
       )
       .limit(1);
     if (!row) return undefined;
+    if (input.creatorOnly) {
+      return row.kind === "internal" && row.computerKind === "local" && row.creatorSessionId
+        ? { recipientSessionId: row.creatorSessionId, installationId: row.installationId }
+        : undefined;
+    }
     const stored = { id: input.messageId, sourceSessionId: row.sourceSessionId, content: row.content };
     const isNotice = isRunOutcomeNotice(stored) || isDeliveryFailureNotice(stored);
     const sender = !isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;

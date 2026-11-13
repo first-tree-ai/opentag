@@ -324,6 +324,16 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   accepted it. After a Server or daemon restart, the reporter replays its durable report under the current connection
   with the same deterministic notice ID through the target's message deduplication. The Server's in-memory
   tasks are an optimization, not a durable delivery queue; the existing one-day reporter limit still applies.
+- A Local Codex child can finish its work while its report to the creator fails. After a completed Session message Run,
+  the Client checks the Codex command receipts for direct invocations of the managed `session send <creator> --message`
+  with literal arguments. It records one creator report notice when a receipt shows failure or unconfirmed delivery.
+  An accepted receipt for the same message ID and text resolves an earlier attempt within that Run. An unconfirmed attempt
+  stays unknown after a later rejection. The notice distinguishes a definite failure from an unknown delivery result.
+  It carries no command output or report text. The child Run stays succeeded and the existing outcome reporter delivers the
+  notice to the direct creator under the same connection, placement, and collaboration checks. The Server derives the
+  recipient from the creation relationship and verifies the stored message that started the Run. The notice starts with
+  `[openTag notice] Child Session report delivery` and shares the Run notice's deterministic message ID. If the completed Run
+  already has a background follow-up failure, its existing Run outcome notice takes precedence.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
@@ -345,7 +355,7 @@ send it again under the same ID at any age.
 The notice is an ordinary SessionMessage from the target to the recipient. A sender that is also the creator gets one notice,
 since there is one recipient. It uses the existing authorization, lock order, activity projection, and delivery, including the
 visible-Session callback rules. A visible recipient's callback Run decides what to tell the user; openTag does not forward
-anything to IM. The text starts with `[openTag notice] Internal Session Run did not complete`
+anything to IM. An incomplete Run notice starts with `[openTag notice] Internal Session Run did not complete`
 (`SESSION_RUN_OUTCOME_NOTICE_HEADER`), whichever kind of Session the target is. A notice means the target's result for that
 message will not arrive on its own. It names the target, the reported message, the outcome, and a stable reason code, never
 provider output. It also says that the target keeps its context and that `opentag session send <session-id>` continues it.
@@ -355,9 +365,9 @@ Safety rules:
 
 - The source authority is the reporting connection: the Local Computer's current connection, or the exact Cloud Runner
   connection that settled the Run. A stale or superseded connection gets `stale_generation`.
-- The reported message must be a stored SessionMessage addressed to an active Session. Completed Runs, ended targets, and
-  unknown messages are ignored, and so is a message with no recipient. An ended recipient rejects the notice through normal
-  authorization.
+- Both notices require a stored SessionMessage addressed to an active Session and an authorized recipient. An incomplete
+  Run notice reports work or a background follow-up that did not complete. An ended creator rejects a creator report notice
+  through normal authorization.
 - The notice ID is UUIDv5 over the target Session and reported message IDs. Report retries, Runner settlement replays,
   and concurrent reports converge on one `session_messages` row; an accepted notice is never delivered again.
 - A notice never goes back to its own sender, so notices cannot bounce between two Sessions. If a Session's Run fails while
@@ -367,7 +377,7 @@ Safety rules:
   must have sent it. The ID is public and `session_messages.id` is global, so ordinary create/send cannot record a new row under a
   version 5 UUID: no Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one
   notice, which is then ignored and logged.
-- A recipient that has ended is replaced by the nearest active Session up its own creation chain
+- For an incomplete Run notice, a recipient that has ended is replaced by the nearest active Session up its own creation chain
   (`created_by_session_id`). If the sender and its creator have both ended, the notice goes to the creator's creator,
   and so on up to the visible root. The search stops without a notice when the chain reaches the reporting Session
   itself, when it reaches an ended Session with no creator, or past 32 levels.
@@ -386,7 +396,9 @@ The Local CLI transport requires `runtime.sessionCollaboration` capability versi
 origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
 that negotiated 4 or later; against an older Server it keeps the report pending (bounded) and never sends the frame.
 The Server answers `unsupported_capability` to a report on a connection below version 4. An older Client never reports,
-so its timed-out child produces no notice. Version checks use `>=`. Visible callback delivery also requires
+so its timed-out child produces no notice. Version 5 adds the two creator report delivery reasons to the same frame.
+The Client keeps these notices pending for a compatible Server while ordinary Run outcome reporting continues on v4.
+Version checks use `>=`. Visible callback delivery also requires
 `runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is
 older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.

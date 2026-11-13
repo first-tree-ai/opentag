@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "access_generation" integer DEFAULT 1 NOT NULL;

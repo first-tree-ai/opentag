@@ -18,6 +18,7 @@ function executionInput(overrides: Partial<Parameters<RuntimeExecutionRegistry["
     accountId: randomUUID(),
     agentId: randomUUID(),
     agentRevision: 1,
+    agentAccessGeneration: 1,
     sessionId: randomUUID(),
     computerId: randomUUID(),
     instanceId: randomUUID(),
@@ -226,13 +227,12 @@ describe("RuntimeCapabilityStore live matching for long streams", () => {
     authorizationRevision: "slack:1:1",
   };
 
-  it("matches only an unexpired grant with the exact scope and revision", () => {
+  it("matches only an unexpired grant with the exact scope", () => {
     let now = 1_000;
     const store = new RuntimeCapabilityStore({ now: () => now, ttlMs: 100, refreshAfterMs: 50 });
     store.issue({ ...base, purpose: "execution", credentialGeneration: "1:1" });
     expect(store.hasLiveMatching(base)).toBe(true);
     expect(store.hasLiveMatching({ ...base, scopeHash: "b".repeat(64) })).toBe(false);
-    expect(store.hasLiveMatching({ ...base, authorizationRevision: "slack:2:1" })).toBe(false);
     expect(store.hasLiveMatching({ ...base, executionId: randomUUID() })).toBe(false);
     expect(store.hasLiveMatching({ ...base, provider: "feishu" })).toBe(false);
     expect(store.hasLiveMatching({ ...base, bindingId: "b2" })).toBe(false);

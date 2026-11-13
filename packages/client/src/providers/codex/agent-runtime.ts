@@ -228,6 +228,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #backgroundCommands = new Map<string, string>();
   /** What the next turn must carry: a finished command's result or input steered during a wait. */
   #wakeInputs: WakeInput[] = [];
+  /** Platform notices no turn could take. They go with the next turn, and never cause one past the Run's work. */
+  #heldNotices: WakeInput[] = [];
   /** Present while the Run waits between turns for background work. */
   #wait?: { resolve(): void };
   /** The turn in progress carries nothing but background results, after the input was answered. */
@@ -296,6 +298,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#openCommands.clear();
     this.#backgroundCommands.clear();
     this.#wakeInputs = [];
+    this.#heldNotices = [];
     this.#finishedUsage = undefined;
     this.#followUpOnly = false;
     this.#resetTurn();
@@ -440,7 +443,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   /** Waits for a reason to start another turn. Undefined means the Run was aborted. */
   async #waitForWake(signal: AbortSignal): Promise<WakeInput[] | undefined> {
-    while (this.#wakeInputs.length === 0 && !this.#providerFailure) {
+    while (this.#wakeInputs.length === 0 && this.#heldNotices.length === 0 && !this.#providerFailure) {
       if (signal.aborted) return undefined;
       await new Promise<void>((resolve) => {
         this.#wait = { resolve };
@@ -451,7 +454,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     // The original turn has completed, so nothing else would carry the App Server's failure.
     if (this.#providerFailure) throw this.#providerFailure;
     if (signal.aborted) return undefined;
-    return this.#wakeInputs.splice(0);
+    return [...this.#wakeInputs.splice(0), ...this.#heldNotices.splice(0)];
   }
 
   /**
@@ -492,9 +495,29 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#wait?.resolve();
   }
 
-  /** It reaches the model with the next turn, which starts now if the Run is waiting between turns. */
-  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
-    this.#wakeInputs.push({ item: { type: "text", text } });
+  /**
+   * Into the running turn if there is one, without making that turn's failure the Run's. Otherwise it
+   * reaches the model with the next turn, which starts now if the Run is waiting between turns. It never
+   * keeps a Run alive: a turn that ended with no work left ends the Run, and the notice with it.
+   */
+  protected override async tellProvider(text: string): Promise<void> {
+    const run = this.providerContext;
+    if (!run) return;
+    if (!this.#wait && this.#providerTurnId) {
+      const accepted = await this.#client
+        .request("turn/steer", {
+          threadId: this.#threadId,
+          input: codexInput([{ type: "text", text }]),
+          expectedTurnId: this.#providerTurnId,
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      // The answer can arrive after this Run ended and another began; the notice is about this one only.
+      if (accepted || this.providerContext !== run) return;
+    }
+    this.#heldNotices.push({ item: { type: "text", text } });
     this.#wait?.resolve();
   }
 
@@ -541,6 +564,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       response,
       requireRecord(request.params, `${request.method} has invalid params`),
     );
+    // Queue the explanation on the active turn before Codex resumes from its decision-only response.
+    if (response.kind === "approval" && response.decision === "decline" && response.reason) {
+      void this.tellProvider(`[OpenTag approval notice]\n${response.reason}`);
+    }
     await this.#client.respondServerRequest(request.id, result);
     this.#wireInteractions.delete(response.requestId);
   }

@@ -92,6 +92,7 @@ function sessionSnapshot(overrides: Partial<RuntimeScopeSnapshot> = {}): Runtime
       id: AGENT,
       status: "active",
       revision: 4,
+      accessGeneration: 1,
       computerId: COMPUTER,
       createdByUserId: "00000000-0000-4000-8000-0000000000e1",
     },
@@ -153,6 +154,7 @@ function execution(
     accountId: "00000000-0000-4000-8000-0000000000e1",
     agentId: AGENT,
     agentRevision: 4,
+    agentAccessGeneration: 1,
     sessionId: SESSION,
     computerId: COMPUTER,
     instanceId: "instance-1",
@@ -344,18 +346,40 @@ describe("RuntimeCredentialBroker.acquire", () => {
     expect(outcome).toEqual({ status: "rejected", code: "credential_scope_denied" });
   });
 
-  it("rejects a stale binding generation pinned at capability issue time", async () => {
+  it("serves a running Turn's next request with the binding's current credential", async () => {
+    const scopeResolver = new FakeScopeResolver();
+    const resolve = vi.fn(async () => ({ kind: "bearer" as const, token: "real-token", origin: "https://slack.com" }));
+    const { broker, executions } = createBroker({ scopeResolver, material: { resolve } });
+    const record = execution(executions, [slackProvider()]);
+    const outcome = await broker.acquire({ execution: record, provider: "slack", bindingId: BINDING });
+    if (outcome.status !== "succeeded") throw new Error("expected grant");
+    const request = () => broker.beginRequest({ capability: outcome.token, provider: "slack", bindingId: BINDING });
+    const open = await request();
+    expect(open.credentialGeneration).toBe("3:7");
+
+    scopeResolver.session = sessionSnapshot({ binding: bindingSnapshot({ credentialGeneration: 4 }) });
+
+    // A stream opened on the old credential ends at its next revalidation.
+    await expect(broker.revalidate(open)).rejects.toMatchObject({ code: "credential_stale" });
+    // The capability issued before the rotation serves the new one, with no renewal in between.
+    const rotated = await request();
+    expect(rotated.credentialGeneration).toBe("4:7");
+    expect(rotated.authorizationRevision).toBe("slack:4:7");
+    await rotated.resolveMaterial();
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ credentialGeneration: "4:7" }));
+    await expect(broker.revalidate(rotated)).resolves.toBeUndefined();
+  });
+
+  it("refuses a running Turn's next request once the binding is disabled", async () => {
     const scopeResolver = new FakeScopeResolver();
     const { broker, executions } = createBroker({ scopeResolver });
     const record = execution(executions, [slackProvider()]);
     const outcome = await broker.acquire({ execution: record, provider: "slack", bindingId: BINDING });
     if (outcome.status !== "succeeded") throw new Error("expected grant");
-    scopeResolver.session = sessionSnapshot({
-      binding: bindingSnapshot({ credentialGeneration: 4 }),
-    });
+    scopeResolver.violation = "binding_inactive";
     await expect(
       broker.beginRequest({ capability: outcome.token, provider: "slack", bindingId: BINDING }),
-    ).rejects.toMatchObject({ code: "credential_stale" });
+    ).rejects.toMatchObject({ code: "binding_inactive" });
   });
 });
 
@@ -488,7 +512,7 @@ describe("RuntimeCredentialBroker data-request fences", () => {
   it("rechecks the fence after an asynchronous material boundary", async () => {
     const scopeResolver = new FakeScopeResolver();
     const resolveMaterial = vi.fn(async () => {
-      scopeResolver.violation = "agent_revision_changed";
+      scopeResolver.violation = "agent_access_changed";
       return { kind: "bearer" as const, token: "real-token", origin: "https://slack.com" };
     });
     const { broker, executions } = createBroker({ scopeResolver, material: { resolve: resolveMaterial } });

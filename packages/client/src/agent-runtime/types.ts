@@ -59,6 +59,13 @@ export interface AgentPromptRequest {
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;
   readonly signal?: AbortSignal;
+  /** How long until the Run's duration limit stops it, so the Session can be warned before that. */
+  readonly durationLimitInMs?: number;
+  /**
+   * Told when the Provider starts or stops waiting in-process for a used-up quota window to reset
+   * (`quota_wait_changed`), so the caller can stop the Run's budget during the wait. Never persisted.
+   */
+  readonly onQuotaWaitChanged?: (waiting: boolean) => void;
   /**
    * Compact the existing native conversation before this input, keeping its identity. A failed
    * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.
@@ -115,6 +122,8 @@ export interface AgentApprovalResponse extends AgentInteractionIdentity {
   readonly decision: "accept" | "decline" | "cancel";
   readonly scope?: "run" | "runtime";
   readonly value?: JsonValue;
+  /** Model-facing explanation for a decline. */
+  readonly reason?: string;
 }
 
 export interface AgentQuestionResponse extends AgentInteractionIdentity {
@@ -155,6 +164,11 @@ export interface AgentRunError {
   readonly message: string;
   /** When a used-up model quota is available again, as the model CLI reported it. */
   readonly retryAt?: string;
+  /**
+   * What kind of `provider_quota_exceeded` this is: a subscription window that resets by itself, or billing
+   * (no balance or credit). Only a `usage_window` failure waits for the reset; without a kind, none does.
+   */
+  readonly quotaKind?: "usage_window" | "billing";
 }
 
 export interface AgentRunResult {
@@ -324,6 +338,11 @@ export type AgentProviderRunEvent =
       readonly outputPath?: string;
     }
   | { readonly type: "provider_warning"; readonly code: string; readonly message: string }
+  /**
+   * The provider is holding the Run open while it waits for a used-up usage window to reset, then retries by
+   * itself. The Run's duration budget does not run while `waiting` is true.
+   */
+  | { readonly type: "quota_wait_changed"; readonly waiting: boolean; readonly resetsAt?: string }
   | {
       readonly type: "provider_event";
       readonly providerId: string;

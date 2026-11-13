@@ -229,6 +229,19 @@ Thread Session never compacts.
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+### Creator report delivery from a Local Codex child
+
+Use a Codex App Server test double to emit completed command items for the managed `session send <creator> --message`
+inside a successful child Run. Exercise these results with the existing Session collaboration connection.
+
+1. With an accepted receipt, the creator gets the report through the normal delivery path and receives no failure notice.
+2. With a rejected receipt, the creator gets one child report delivery notice with outcome `failed`. With a synthetic
+   `SERVICE_UNAVAILABLE` receipt, the notice instead reports `unknown`. In both cases the child Run stays succeeded.
+3. Emit repeated uncertain results followed by acceptance with the original message ID and text in the same Run. Confirm
+   there is no notice. Acceptance under a different ID or with different text leaves the original outcome unresolved.
+4. Replay the pending outcome after restarting the reporter. Confirm the work does not run again and the Server reuses
+   the notice ID. Repeat with a v4 Server and confirm the report waits until collaboration v5 is negotiated.
+
 ## Cloud Session message steering
 
 1. Start a child with a long-running Pi Turn. Send two distinct instructions using `session send`. Confirm that
@@ -275,11 +288,34 @@ Codex and Pi (on Pi with `background_bash`).
    naming the command.
 4. Kill the Provider process (only it, not the daemon) during the wait. Expected: the message is retried with the
    continuation notice, and it names the command as possibly still running.
-5. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
+5. Give a Run a 20-minute `maxDurationMs` and keep it busy. Expected: about 2 minutes before the limit the Session reads
+   `[openTag notice] This Run reaches its duration limit`, and the Run stops at the limit with no extra time.
+6. Ask a Session to check something in 30 minutes. Expected: it creates a Schedule and no background process, and the firing
+   is a new Run.
+7. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
    Sandbox with the continuation notice, and reports one result.
-6. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+8. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
    and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
    after that reply.
+
+## Approval requests in Session message Runs
+
+Needs a real Local Claude Code Agent and a real Local Codex Agent with approvals on (the default `on-request`), and a
+command outside the Agent's command rules, such as `ps -ax -o pid,command | grep -c node || echo none`.
+
+1. On Claude Code, send a visible Session a request to create an internal Session whose message asks it to run that
+   command and reply with the output. Expected: within seconds an approval card appears in that visible Session's
+   conversation, naming the internal Session and the command, with the sender of your request as the approver.
+2. Approve. Expected: the command runs, the child replies with its output, and the record is `succeeded`.
+3. Repeat and deny. Expected: the child is told the action was declined and replies that it needs approval.
+4. Repeat and leave the card alone. Expected: after 10 minutes the card shows the request expired, the child is told
+   nobody answered, and the Run ends normally instead of waiting for its duration limit.
+5. Repeat 1 to 3 on Codex. Expected: the same; on a decline the reason appears as an OpenTag approval notice on the
+   active turn alongside the native decline.
+6. Have a Schedule start the chain in a conversation with no earlier human message. Expected: no card; the request is
+   declined at once and the child says the step needs approval.
+7. Send the same request directly in an IM conversation (an IM Turn). Expected: the normal approval card for the
+   sender, unchanged.
 
 ## Schedules on an internal Session
 
@@ -288,6 +324,16 @@ Codex and Pi (on Pi with `background_bash`).
 2. When it fires, the message runs in that Session and nothing is posted to IM.
 3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
 4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.
+
+## IM messages during a pending approval
+
+1. With a Local Codex test double, start a DM Turn and leave its approval pending. Send another DM. Confirm the
+   Server retains the follow-up in its delivery queue and the Provider receives no steer for it.
+2. Repeat with Approve, Deny, and Provider-side expiry. Keep the original Turn running after the approval resolves
+   and confirm the queued message steers into it once, ahead of later messages. If the original Turn ends first,
+   confirm the queued message runs as a new Turn.
+3. Replay a steer that was already accepted before the approval. Confirm the existing receipt is returned and the
+   Provider receives the message only once.
 
 ## Steered Session messages
 

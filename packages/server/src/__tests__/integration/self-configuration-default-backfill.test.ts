@@ -17,7 +17,7 @@ import { startPostgresTestContainer } from "./postgres-test-container.js";
  */
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const THROUGH_0071_IDX = 71;
-const CURRENT_MIGRATION_COUNT = 76;
+const CURRENT_MIGRATION_COUNT = 77;
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const ACCOUNT = "00000000-0000-4000-8000-000000000501";
 
@@ -75,19 +75,13 @@ describe("self-configuration default backfill", () => {
     try {
       await migrateDatabase(databaseUrl, throughPrevious);
       await client.database.insert(users).values({ id: ACCOUNT, email: "self@example.com", displayName: "Self" });
-      await client.database.insert(agents).values(
-        Object.entries(fixtures).map(([name, fixture]) => ({
-          id: fixture.id,
-          createdByUserId: ACCOUNT,
-          name: `agent-${name.toLowerCase()}`,
-          displayName: `Agent ${name}`,
-          runtimeProvider: "codex" as const,
-          status: fixture.status,
-          selfConfigurationEnabled: fixture.enabled,
-          revision: 3,
-          updatedAt: EARLY,
-        })),
-      );
+      // Raw SQL: the Drizzle table would also write columns from migrations after this point.
+      for (const [name, fixture] of Object.entries(fixtures)) {
+        await client.sql`
+          insert into agents (id, created_by_user_id, name, display_name, runtime_provider, status, self_configuration_enabled, revision, updated_at)
+          values (${fixture.id}, ${ACCOUNT}, ${`agent-${name.toLowerCase()}`}, ${`Agent ${name}`}, 'codex', ${fixture.status}, ${fixture.enabled}, 3, ${EARLY.toISOString()})
+        `;
+      }
       await client.database
         .insert(agentRuntimeConfigs)
         .values(

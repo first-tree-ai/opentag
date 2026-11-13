@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import {
   crossesConversation,
   type EffectiveRuntimeSnapshot,
+  isSessionCreatorReportReason,
   RUNTIME_CAPABILITY,
   RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RunnerCloudSessionMessageReceivedFrame,
+  SESSION_CREATOR_REPORT_REASON,
   SESSION_STOP_ANSWER_BUDGET_MS,
   type SessionCliCommandResponse,
   type SessionCliCreateRequest,
@@ -1195,10 +1197,19 @@ export class SessionCollaborationService {
     input: RunOutcomeNoticeInput,
   ): Promise<PreparedRunOutcomeNotice | RunOutcomeNoticeStatus> {
     const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+    const creatorOnly = isSessionCreatorReportReason(input.reason);
+    if (
+      creatorOnly &&
+      ((input.outcome !== "failed" && input.outcome !== "unknown") ||
+        input.reason !== SESSION_CREATOR_REPORT_REASON[input.outcome])
+    ) {
+      return "ignored";
+    }
     try {
       const notice = await this.#sessions.resolveRunOutcomeNotice({
         childSessionId: input.childSessionId,
         messageId: input.messageId,
+        ...(creatorOnly ? { creatorOnly: true } : {}),
       });
       if (!notice) return "ignored";
       const attempt = await this.#sessions.authorizeAndRecordMessage({

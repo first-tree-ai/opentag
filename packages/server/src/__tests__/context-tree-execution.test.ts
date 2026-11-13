@@ -12,6 +12,7 @@ function fixture() {
     accountId: randomUUID(),
     agentId: randomUUID(),
     agentRevision: 3,
+    agentAccessGeneration: 1,
     computerId: randomUUID(),
     computerKind: "local",
     connectionId: "connection",
@@ -47,7 +48,7 @@ describe("Context Tree execution scope", () => {
   it.each([
     "accountId",
     "agentId",
-    "agentRevision",
+    "agentAccessGeneration",
     "sessionId",
     "computerId",
     "instanceId",
@@ -91,16 +92,19 @@ describe("Context Tree execution scope", () => {
       ),
     ).toBe(false);
   });
-  it("denies a running turn every tree once its Agent's selection changes mid-turn", () => {
+  it("follows the current selection on a running turn across a configuration save", () => {
     const { parent, child, snapshot } = fixture();
     const added = { kind: "git", repository: "acme/notes", path: ".", ref: "main" } as const;
-    // A saved selection change advances the Agent revision, so a child opened afterwards
-    // carries the new revision while the running turn's parent keeps the one it started with.
     const parentExecutionId = parent.executionId;
-    for (const tree of [target, added]) {
-      const later = { ...child, agentRevision: parent.agentRevision + 1, contextTree: { ...tree, parentExecutionId } };
-      expect(contextTreeExecutionIsCurrent(later, parent, { ...snapshot, contextTrees: [target, added] })).toBe(false);
-    }
+    // A child opened after the save carries the new revision, while the running turn's parent keeps its own.
+    const later = (tree: typeof target | typeof added) => ({
+      ...child,
+      agentRevision: parent.agentRevision + 1,
+      contextTree: { ...tree, parentExecutionId },
+    });
+    const selection = { ...snapshot, contextTrees: [added] };
+    expect(contextTreeExecutionIsCurrent(later(added), parent, selection)).toBe(true);
+    expect(contextTreeExecutionIsCurrent(later(target), parent, selection)).toBe(false);
   });
   it("closing the parent closes dependent executions without touching an unrelated execution", () => {
     const { parent, child, executions } = fixture();

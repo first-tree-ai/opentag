@@ -887,6 +887,15 @@ export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "ca
  * Managed instructions describe notices by this exact header, so both sides share one constant.
  */
 export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+export const SESSION_CREATOR_REPORT_NOTICE_HEADER = "[openTag notice] Child Session report delivery";
+export const SESSION_CREATOR_REPORT_REASON = {
+  failed: "creator_report_delivery_failed",
+  unknown: "creator_report_delivery_unknown",
+} as const;
+
+export function isSessionCreatorReportReason(reason: string): boolean {
+  return reason === SESSION_CREATOR_REPORT_REASON.failed || reason === SESSION_CREATOR_REPORT_REASON.unknown;
+}
 
 /** The first line of the Server's notice that an accepted Session message could not be delivered. */
 export const SESSION_DELIVERY_FAILURE_NOTICE_HEADER = "[openTag notice] Session message was not delivered";
@@ -1437,8 +1446,14 @@ const RuntimeApprovalIdentitySchema = z.object({
   requestId: RuntimeRequestIdSchema,
   turnId: RuntimeOpaqueIdSchema,
   sessionId: RuntimeOpaqueIdSchema,
+  /** The IM delivery of the Turn; with `source: "session-message"`, the Session message whose own Run asks. */
   deliveryId: RuntimeOpaqueIdSchema,
   placementGeneration: z.number().int().positive(),
+  /**
+   * Set only with `runtime.sessionMessageApproval`: the request comes from a Session message Run, which has no IM
+   * input of its own. Absent means an IM Turn. Decisions echo it.
+   */
+  source: z.literal("session-message").optional(),
 });
 export const RuntimeApprovalRequestSchema = RuntimeApprovalIdentitySchema.extend({
   type: z.literal("approval:request"),

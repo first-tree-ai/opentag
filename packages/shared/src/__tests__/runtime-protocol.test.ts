@@ -100,8 +100,8 @@ describe("runtime protocol", () => {
    * v4 adds the Client Run outcome report; a v3 peer negotiates 3 and never exchanges it.
    * The outer Runtime protocol version does not move.
    */
-  it("negotiates Session collaboration v2 with frozen peers, v3 with scheduled peers, and v5 with new peers", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 5 });
+  it("negotiates Session collaboration with v2 through v6 peers", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 6 });
     expect(RUNTIME_PROTOCOL_VERSION).toBe(RUNTIME_PROTOCOL_V2);
     const frozenV2 = { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 } };
     expect(negotiateRuntimeCapabilities(frozenV2, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({
@@ -117,9 +117,21 @@ describe("runtime protocol", () => {
       ),
     ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 3 });
     expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 4 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 4 });
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 5 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 5 });
+    expect(
       negotiateRuntimeCapabilities(RUNTIME_SERVER_CAPABILITY_OFFERS, RUNTIME_SERVER_CAPABILITY_OFFERS),
     ).toMatchObject({
-      [RUNTIME_CAPABILITY.sessionCollaboration]: 5,
+      [RUNTIME_CAPABILITY.sessionCollaboration]: 6,
     });
     // A legacy peer without the capability negotiates nothing rather than falling to v1.
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});

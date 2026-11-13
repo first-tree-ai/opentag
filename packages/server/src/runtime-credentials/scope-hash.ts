@@ -3,16 +3,19 @@ import type { RuntimeCredentialProvider } from "@opentag/shared";
 import type { RuntimeGitHubAdmissionResult } from "./github-admission.js";
 import type { RuntimeExecutionRecord } from "./types.js";
 
+/**
+ * The credential generation is deliberately outside the hash: a capability authorizes this execution's use of the
+ * binding, and each request resolves whatever credential the binding holds now.
+ */
 export function computeImScopeHash(
   execution: RuntimeExecutionRecord,
   provider: RuntimeCredentialProvider,
   bindingId: string,
-  credentialGeneration: string,
 ): string {
   return createHash("sha256")
     .update(
       JSON.stringify([
-        1,
+        2,
         execution.executionId,
         execution.runId,
         execution.agentRevision,
@@ -20,7 +23,6 @@ export function computeImScopeHash(
         execution.purpose,
         provider,
         bindingId,
-        credentialGeneration,
         null,
         execution.sandbox
           ? [execution.sandbox.sandboxId, execution.sandbox.resourceUid, execution.sandbox.environmentGeneration]

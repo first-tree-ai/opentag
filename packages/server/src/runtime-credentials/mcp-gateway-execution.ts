@@ -40,7 +40,7 @@ function fenceViolationError(violation: RuntimeFenceViolation): McpGatewayError 
     case "ownership_mismatch":
       return new McpGatewayError("execution_closed", "The execution ownership fence changed");
     default:
-      // placement_stale / agent_mismatch / agent_inactive / agent_revision_changed / sandbox_mismatch:
+      // placement_stale / agent_mismatch / agent_inactive / agent_access_changed / sandbox_mismatch:
       // a stale generation or replaced owner can never keep using the execution.
       return new McpGatewayError("execution_closed", "The execution fence is stale");
   }

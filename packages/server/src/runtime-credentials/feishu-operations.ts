@@ -7,6 +7,7 @@ const PASSTHROUGH_BODY = 1024 * 1024;
 const PASSTHROUGH_JSON_RESPONSE = 10 * 1024 * 1024;
 const PASSTHROUGH_METHODS = new Set<string>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 /** `/open-apis/<domain>/...` domains the passthrough refuses: token issuance and user login. */
+const PASSTHROUGH_SEGMENT = /^[A-Za-z0-9_.~-]+$/;
 const PASSTHROUGH_DENIED_DOMAINS = new Set(["auth", "authen"]);
 
 interface FeishuOperationShape {
@@ -206,8 +207,11 @@ export const FEISHU_OPERATIONS: readonly ProviderOperation[] = [
 export const FEISHU_PASSTHROUGH: ProviderPassthroughRule = {
   resolve(method, path) {
     if (!PASSTHROUGH_METHODS.has(method)) return undefined;
-    const [, prefix, domain] = path.split("/");
-    // A plain domain word only: an encoded or odd segment could alias a denied domain upstream.
+    const segments = path.split("/").slice(1);
+    // Plain segments only: a percent-encoding or an empty (trailing) segment could make the path
+    // Feishu routes differ from the one checked here and against the explicit table.
+    if (!segments.every((segment) => PASSTHROUGH_SEGMENT.test(segment))) return undefined;
+    const [prefix, domain] = segments;
     if (prefix !== "open-apis" || !domain || !/^[a-z][a-z0-9_-]*$/i.test(domain)) return undefined;
     if (PASSTHROUGH_DENIED_DOMAINS.has(domain.toLowerCase())) return undefined;
     return {

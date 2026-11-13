@@ -66,7 +66,8 @@ export function normalizeProxyPath(raw: string): { path: string; query: string }
   if (raw.length === 0 || raw.length > MAX_PATH_BYTES || !raw.startsWith("/")) return undefined;
   for (const char of raw) {
     const code = char.charCodeAt(0);
-    if (code < 0x20 || code === 0x7f || char === "\\") return undefined;
+    // A fragment is never part of a request target and is dropped before the upstream request.
+    if (code < 0x20 || code === 0x7f || char === "\\" || char === "#") return undefined;
   }
   const [pathname, ...queryParts] = raw.split("?");
   const query = queryParts.join("?");
@@ -75,7 +76,10 @@ export function normalizeProxyPath(raw: string): { path: string; query: string }
   if (lowered.includes("%2f") || lowered.includes("%5c") || lowered.includes("%00")) return undefined;
   const segments = pathname.split("/").slice(1);
   for (const segment of segments) {
-    if (segment === "." || segment === "..") return undefined;
+    // Encoded dot segments (`%2e`, `.%2E`, ...) are resolved by URL parsing before the upstream
+    // request, so they would let the authorized path differ from the path actually sent.
+    const decodedDots = segment.replace(/%2e/gi, ".");
+    if (decodedDots === "." || decodedDots === "..") return undefined;
   }
   return { path: pathname, query };
 }
@@ -172,14 +176,25 @@ export async function bufferProxyBody(body: AsyncIterable<Uint8Array>, maxBytes:
   return merged;
 }
 
+const STATIC_ROUTE_WORD = /^[a-z]+(?:_[a-z]+)*$/;
+const VERSION_SEGMENT = /^v\d+$/;
+
 /**
- * Path for audit logs: keeps API words and version segments, replaces every segment that may be
- * an identifier (digits, uppercase, or other characters) with `{id}`. Never logs query values.
+ * Feishu path for audit logs. Feishu routes read `/open-apis/<namespace...>/<version>/` followed
+ * by alternating resource and identifier segments, so only the namespace words, the version, and
+ * resource-position words are kept; every identifier-position segment becomes `{id}` whatever its
+ * shape, as does every segment of a path without a version. Never logs query values.
  */
 export function redactProxyPath(path: string): string {
   const [pathname = ""] = path.split("?", 1);
-  return pathname
-    .split("/")
-    .map((segment) => (segment === "" || /^(?:v\d+|[a-z]+(?:[_-][a-z]+)*)$/.test(segment) ? segment : "{id}"))
-    .join("/");
+  const segments = pathname.split("/").slice(1);
+  const versionIndex = segments.findIndex((segment) => VERSION_SEGMENT.test(segment));
+  const redacted = segments.map((segment, index) => {
+    if (index === 0 && segment === "open-apis") return segment;
+    if (versionIndex < 0) return "{id}";
+    if (index <= versionIndex) return index === versionIndex || STATIC_ROUTE_WORD.test(segment) ? segment : "{id}";
+    const resourcePosition = (index - versionIndex) % 2 === 1;
+    return resourcePosition && STATIC_ROUTE_WORD.test(segment) ? segment : "{id}";
+  });
+  return `/${redacted.join("/")}`;
 }

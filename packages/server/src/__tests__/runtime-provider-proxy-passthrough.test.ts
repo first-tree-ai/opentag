@@ -139,6 +139,17 @@ describe("Feishu passthrough registry", () => {
       ["GET", "/open-apis/"],
       ["GET", "/api/tools/open/other"],
       ["HEAD", "/open-apis/bitable/v1/apps"],
+      // Aliases that URL parsing or Feishu routing would resolve to a denied or explicit path.
+      ["POST", "/open-apis/docx/%2e%2e/auth/v3/tenant_access_token/internal"],
+      ["POST", "/open-apis/drive/%2E%2e/authen/v1/access_token"],
+      ["POST", "/open-apis/drive/.%2e/authen/v1/access_token"],
+      ["POST", "/open-apis/drive/%2e./authen/v1/access_token"],
+      ["POST", "/open-apis/drive/%2e/v1/files"],
+      ["POST", "/open-apis/im/v1/messages/om_123/reply#frag"],
+      ["POST", "/open-apis/im/v1/%6dessages?receive_id_type=chat_id"],
+      ["POST", "/open-apis/im/v1/messages/"],
+      ["GET", "/open-apis/im/v1/messages/om_1?x=#y"],
+      ["GET", "/open-apis/im/v1/messages/%2e%2e"],
     ] as const) {
       expect(registry.match(method, path), `${method} ${path}`).toBeUndefined();
     }
@@ -155,7 +166,21 @@ describe("Feishu passthrough registry", () => {
       "/open-apis/bitable/v1/apps/{id}/tables/{id}/records",
     );
     expect(redactProxyPath("/open-apis/im/v1/chats/oc_0123abcd/members")).toBe("/open-apis/im/v1/chats/{id}/members");
-    expect(redactProxyPath("/open-apis/docx/v1/documents/batch_get")).toBe("/open-apis/docx/v1/documents/batch_get");
+    expect(redactProxyPath("/open-apis/docx/v1/documents/doxcn1/raw_content")).toBe(
+      "/open-apis/docx/v1/documents/{id}/raw_content",
+    );
+    // Identifier positions are redacted whatever their shape, including lowercase words.
+    expect(redactProxyPath("/open-apis/contact/v3/users/alice?user_id_type=user_id")).toBe(
+      "/open-apis/contact/v3/users/{id}",
+    );
+    expect(redactProxyPath("/open-apis/contact/v3/users/synthetic-private-user/x_y")).toBe(
+      "/open-apis/contact/v3/users/{id}/x_y",
+    );
+    expect(redactProxyPath("/open-apis/drive/explorer/v2/root_folder/meta")).toBe(
+      "/open-apis/drive/explorer/v2/root_folder/{id}",
+    );
+    expect(redactProxyPath("/open-apis/im/v1/Messages/om_1")).toBe("/open-apis/im/v1/{id}/{id}");
+    expect(redactProxyPath("/open-apis/alice/bob")).toBe("/open-apis/{id}/{id}");
   });
 });
 

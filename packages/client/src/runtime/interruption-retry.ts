@@ -249,8 +249,9 @@ export function buildContinuationNotice(interruption: Interruption): string {
   const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
   return [
     `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry).`,
-    "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
-    "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+    "Your conversation history is intact: continue from where you stopped, and do not redo steps already completed.",
+    "Check your history for the work already done, including replies already sent, and do not repeat replies or side effects that already happened.",
+    "The original request follows for reference; it may duplicate a message already in your history and is not a new request.",
   ].join(" ");
 }
 

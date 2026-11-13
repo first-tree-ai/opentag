@@ -243,15 +243,19 @@ export class RuntimeConnection {
     return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
   }
 
-  /** Composition must advertise only the credential path it actually installed. */
-  setCredentialProxyEnabled(enabled: boolean): void {
+  /**
+   * Composition must advertise only the credential path it actually installed. Legacy mode may
+   * still open service-only executions (MCP gateway), which ride on `runtimeCredential` alone; the
+   * Server treats a Client as proxy mode only when `providerProxy` is negotiated too.
+   */
+  setCredentialProxyEnabled(enabled: boolean, options: { legacyExecutions?: boolean } = {}): void {
     if (this.#hasRun) throw new Error("Credential proxy mode must be configured before connecting");
     const selfCheckEnabled = this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat] !== undefined;
     this.#supportedCapabilities = { ...RUNTIME_CLIENT_CAPABILITY_OFFERS };
     if (!selfCheckEnabled) delete this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat];
     delete this.#supportedCapabilities[RUNTIME_CAPABILITY.githubUserTask];
     if (!enabled) {
-      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
+      if (!options.legacyExecutions) delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
       delete this.#supportedCapabilities[RUNTIME_CAPABILITY.providerProxy];
       delete this.#supportedCapabilities[RUNTIME_CAPABILITY.contextTreeExecution];
     }

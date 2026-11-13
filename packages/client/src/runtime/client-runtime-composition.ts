@@ -294,6 +294,11 @@ export interface CreateClientRuntimeOptions {
    */
   readonly credentialMode?: RuntimeCredentialMode;
   /**
+   * Legacy mode only: deliver bound MCP Servers through an MCP-only execution. Default on;
+   * `false` keeps legacy mode free of runtime executions.
+   */
+  readonly legacyMcpGateway?: boolean;
+  /**
    * Proxy mode injection seam for Cloud host composition. Local proxy mode uses the
    * production defaults (loopback TLS, openssl CA, real WSS client).
    */
@@ -794,7 +799,9 @@ export async function createClientRuntime(
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const credentialMode = options.credentialMode ?? "legacy";
-  connection.setCredentialProxyEnabled(credentialMode === "proxy");
+  connection.setCredentialProxyEnabled(credentialMode === "proxy", {
+    legacyExecutions: options.legacyMcpGateway !== false,
+  });
   const contextTree = new ContextTreeManager({
     environment: sourceEnvironment,
     codexHome,
@@ -1539,6 +1546,7 @@ export function createCredentialEnvironment(
     home: options.home,
     logger,
     mode: options.credentialMode ?? "legacy",
+    ...(options.legacyMcpGateway === false ? { legacyMcpGateway: false } : {}),
     serverUrl: connection.serverUrl,
     ...(runtimeCredentials?.dataConnectionFactory
       ? { dataConnectionFactory: runtimeCredentials.dataConnectionFactory }

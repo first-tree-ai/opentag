@@ -4026,6 +4026,168 @@ describe("IM binding persistence", () => {
     },
   );
 
+  it.each([
+    { response: { status: "steered" }, followUpState: "steered" },
+    { response: { status: "retry", reason: "turn_starting" }, followUpState: "accepted" },
+    { response: { status: "deferred", reason: "turn_not_running" }, followUpState: "accepted" },
+    { response: { status: "deferred", reason: "steer_state_unknown" }, followUpState: "terminal_rejected" },
+  ] as const)(
+    "settles a Local steer result received after the worker deadline ($response)",
+    async ({ response, followUpState }) => {
+      const value = await fixture();
+      let domain: RuntimeDomainOwner | undefined;
+      let worker: ImDeliveryWorker | undefined;
+      try {
+        const instanceId = crypto.randomUUID();
+        await value.database
+          .update(computers)
+          .set({ currentInstanceId: instanceId })
+          .where(eq(computers.id, value.computer.id));
+        const inbox = new ImMessageInbox(value.database);
+        await inbox.ingest(value.imBindingId, 1, inbound("Ev-late-steer-root"));
+        const dispatch = deferred<RuntimeImSteerRequest>();
+        const runtime = await respondingRuntime({
+          database: value.database,
+          computerId: value.computer.id,
+          instanceId,
+          installationId: value.computer.currentInstallationId,
+          negotiatedCapabilities: { [RUNTIME_CAPABILITY.imSteer]: 1 },
+          requestTimeoutMs: 30_060,
+          onFrame: (frame) => {
+            if (frame.type === "im:steer") dispatch.resolve(frame as unknown as RuntimeImSteerRequest);
+          },
+        });
+        domain = runtime.domain;
+        const diagnostic = vi.fn();
+        const release = vi.spyOn(runtime.custody, "releaseSteerDispatch");
+        let retryAt = 0;
+        worker = imDeliveryWorker({
+          database: value.database,
+          registry: runtime.registry,
+          domain,
+          onDiagnostic: diagnostic,
+          now: () => new Date(Math.max(Date.now(), retryAt)),
+        });
+        await worker.runOnce();
+        const [root] = await value.database.select().from(imMessageDeliveries);
+        if (!root?.turnId) throw new Error("Root Turn custody was not accepted");
+
+        const followUp = inbound("Ev-late-steer-follow-up");
+        followUp.message.externalId = "1000.2";
+        followUp.message.revisionKey = "created:1000.2";
+        followUp.message.occurredAt = new Date("2026-08-19T00:00:02.000Z");
+        const [deliveryId] = (await inbox.ingest(value.imBindingId, 1, followUp)).deliveryIds;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const inFlight = worker.runOnce();
+        const request = await dispatch.promise;
+        await vi.advanceTimersByTimeAsync(30_100);
+        await inFlight;
+        vi.useRealTimers();
+        await release.mock.results[0]?.value;
+        const later = inbound("Ev-late-steer-later-input");
+        later.message.externalId = "1000.3";
+        later.message.revisionKey = "created:1000.3";
+        later.message.occurredAt = new Date("2026-08-19T00:00:03.000Z");
+        const [laterId] = (await inbox.ingest(value.imBindingId, 1, later)).deliveryIds;
+        const row = async () =>
+          (
+            await value.database
+              .select()
+              .from(imMessageDeliveries)
+              .where(eq(imMessageDeliveries.id, request.deliveryId))
+          )[0];
+        expect(await row()).toMatchObject({
+          dispatchRequestId: request.requestId,
+          lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
+        });
+
+        const result = {
+          type: "im:steer:result",
+          requestId: request.requestId,
+          deliveryId: request.deliveryId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          rootDeliveryId: request.rootDeliveryId,
+          expectedTurnId: request.expectedTurnId,
+          ...response,
+        } as const;
+        await domain.handle({ ...result, expectedTurnId: "other-turn" }, runtime.context);
+        const frozen = await row();
+        expect(frozen).toMatchObject({ dispatchRequestId: request.requestId });
+        if (frozen?.dispatchPayload?.type !== "im:steer") throw new Error("Missing frozen steer payload");
+        await expect(
+          domain.requestSteer(runtime.context.computerId, instanceId, frozen.dispatchPayload),
+        ).rejects.toMatchObject({
+          code: "timeout",
+        });
+        expect(runtime.frames.filter((frame) => (frame as { type: string }).type === "im:steer")).toHaveLength(1);
+        await domain.handle(result, runtime.context);
+        const settled = await row();
+        await domain.handle(result, runtime.context);
+        expect(await row()).toEqual(settled);
+        if (followUpState === "steered") {
+          expect(settled).toMatchObject({ state: "steered", lastErrorCode: null, steerTargetDeliveryId: root.id });
+        } else if (followUpState === "terminal_rejected") {
+          expect(settled).toMatchObject({
+            state: "pending",
+            dispatchRequestId: request.requestId,
+            lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN",
+          });
+        } else {
+          expect(settled).toMatchObject({
+            state: "pending",
+            dispatchRequestId: null,
+            dispatchInputHash: null,
+            dispatchPayload: null,
+            lastErrorCode: null,
+          });
+        }
+        expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_OPERATION_LATE_SETTLE", expect.anything());
+        expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_OPERATION_ABANDONED", expect.anything());
+
+        await expect(
+          domain.handle(
+            turnReportFor({ ...root, agentId: value.agent.id, deliveryId: root.id, turnId: root.turnId }),
+            runtime.context,
+          ),
+        ).resolves.toMatchObject({ status: "recorded" });
+        retryAt = settled?.nextAttemptAt.getTime() ?? 0;
+        await worker.runOnce();
+        if (followUpState === "terminal_rejected") await worker.runOnce();
+        const directIds = () =>
+          runtime.frames
+            .map((frame) => frame as DirectImMessageDeliveryRequest)
+            .filter((frame) => frame.type === "im:deliver")
+            .map((frame) => frame.deliveryId);
+        expect(await row()).toMatchObject({ state: followUpState });
+        if (followUpState === "accepted") {
+          expect(directIds()).toEqual([root.id, deliveryId]);
+          const accepted = await row();
+          expect(accepted?.turnId).toBe(`turn-${request.deliveryId}`);
+          await expect(
+            domain.handle(
+              turnReportFor({
+                ...request,
+                agentId: value.agent.id,
+                turnId: `turn-${request.deliveryId}`,
+              }),
+              runtime.context,
+            ),
+          ).resolves.toMatchObject({ status: "recorded" });
+          await worker.runOnce();
+          expect(directIds()).toEqual([root.id, deliveryId, laterId]);
+        } else {
+          expect(directIds()).toEqual([root.id, laterId]);
+        }
+      } finally {
+        vi.useRealTimers();
+        await domain?.close();
+        await worker?.stop();
+        await value.sql.end();
+      }
+    },
+  );
+
   it.each(["report first", "result first"] as const)(
     "settles a declined steer and delivers subsequent inputs once in order (%s)",
     async (order) => {

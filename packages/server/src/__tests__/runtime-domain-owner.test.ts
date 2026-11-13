@@ -585,6 +585,39 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
+  it.each(["delivery", "steer"] as const)("releases a new %s dispatch cancelled before send", async (kind) => {
+    const f = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const controller = new AbortController();
+    const cancelled = new Error("operation cancelled");
+    const request = deliveryRequest();
+    const steer = steerRequest(request);
+    const release = vi.spyOn(custody, kind === "delivery" ? "releaseDeliveryDispatch" : "releaseSteerDispatch");
+    vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockImplementation(
+      async () => {
+        controller.abort(cancelled);
+        return "dispatched" as const;
+      },
+    );
+    const owner = new RuntimeDomainOwner(f.registry, custody);
+    try {
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, request, undefined, controller.signal)
+          : owner.requestSteer(f.computerId, f.instanceId, steer, undefined, controller.signal);
+      await expect(operation).rejects.toBe(cancelled);
+      expect(f.frames).toEqual([]);
+      expect(release).toHaveBeenCalledExactlyOnceWith(
+        kind === "delivery" ? request : steer,
+        expect.any(String),
+        "retry",
+      );
+    } finally {
+      await owner.close();
+      await f.owner.close();
+    }
+  });
+
   it("maps custody and resend failures to request errors", async () => {
     const fixture = await ownerFixture();
     await expect(fixture.owner.resend(randomUUID())).rejects.toMatchObject({ code: "not_pending" });
@@ -677,7 +710,12 @@ describe("RuntimeDomainOwner", () => {
     } as RuntimeImSteerResult;
     await owner.handle(result, fixture.context);
     expect(await pending).toEqual(result);
-    expect(release).toHaveBeenCalledWith(request, expect.any(String), disposition);
+    expect(release).toHaveBeenCalledWith(
+      request,
+      expect.any(String),
+      disposition,
+      disposition === "turn_not_running" || disposition === "retry" ? fixture.context : undefined,
+    );
     owner.close();
   });
 
@@ -1230,6 +1268,28 @@ describe("RuntimeDomainOwner", () => {
       await expect(fixture.owner.handle(turnReport(), fixture.context)).resolves.toMatchObject({ status: "recorded" });
     } finally {
       fixture.owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels the direct delivery wait while retaining late acceptance", async () => {
+    vi.useFakeTimers();
+    const fixture = await ownerFixture();
+    try {
+      const request = deliveryRequest();
+      const controller = new AbortController();
+      const cancelled = new Error("operation cancelled");
+      const result = fixture.owner
+        .requestDelivery(fixture.computerId, fixture.instanceId, request, undefined, controller.signal)
+        .catch((error: unknown) => error);
+      await waitForDeliveryFrame(fixture.frames, request.requestId);
+      controller.abort(cancelled);
+      await expect(result).resolves.toBe(cancelled);
+
+      await fixture.owner.handle(acceptedResult(request), fixture.context);
+      expect(await fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: "turn-1" });
+    } finally {
+      await fixture.owner.close();
       vi.useRealTimers();
     }
   });

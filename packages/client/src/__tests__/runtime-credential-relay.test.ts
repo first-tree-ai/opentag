@@ -608,6 +608,117 @@ describe("RuntimeCredentialRelay", () => {
   });
 });
 
+function customTicketResponder(
+  scheduler: ManualScheduler,
+  onTicket: (requestId: unknown) => Record<string, unknown>,
+): (frame: RuntimeBusinessFrame) => Record<string, unknown> | undefined {
+  return (frame) => {
+    if (frame.type === "runtime:execution:open") return openResultFrame(frame.requestId, ["github"], scheduler.now);
+    if (frame.type === "runtime:credential:acquire") return acquireResultFrame(frame, undefined, scheduler.now);
+    if (frame.type === "runtime:proxy:ticket") return onTicket(frame.requestId);
+    if (frame.type === "runtime:execution:close") return closeResultFrame(frame.requestId);
+    return undefined;
+  };
+}
+
+describe("RuntimeCredentialRelay data connection retry", () => {
+  it("mints a fresh single-use ticket and retries when data connection establishment fails within openBudgetMs", async () => {
+    const harness = relayHarness({ providers: ["github"] });
+    const issuedTickets = ["t1".padEnd(43, "1"), "t2".padEnd(43, "2"), "t3".padEnd(43, "3")];
+    let ticketIndex = 0;
+    harness.connection.setResponder(
+      customTicketResponder(harness.scheduler, (requestId) => {
+        const ticket = issuedTickets[ticketIndex] ?? TICKET;
+        ticketIndex += 1;
+        return {
+          ...ticketResultFrame(requestId, harness.scheduler.now),
+          ticket,
+        };
+      }),
+    );
+
+    let connectAttempts = 0;
+    const openPromise = RuntimeCredentialRelay.open(
+      {
+        ...harness.relayOptions,
+        dataConnectionFactory: async (input) => {
+          harness.dataInputs.push(input);
+          connectAttempts += 1;
+          if (connectAttempts < 3) {
+            throw Object.assign(new Error("WebSocket closed with 4401 proxy_auth_invalid"), {
+              name: "RuntimeProxyDataError",
+              code: "auth_failed",
+            });
+          }
+          return harness.dataConnection;
+        },
+      },
+      harness.subject,
+    );
+
+    await tick(15);
+    expect(connectAttempts).toBe(1);
+    harness.scheduler.advance(250);
+    await tick(15);
+    expect(connectAttempts).toBe(2);
+    harness.scheduler.advance(250);
+    const relay = await openPromise;
+    try {
+      expect(connectAttempts).toBe(3);
+      expect(harness.dataInputs.map((input) => input.ticket)).toEqual(issuedTickets);
+      const ticketRequests = harness.connection.requests.filter((frame) => frame.type === "runtime:proxy:ticket");
+      expect(ticketRequests).toHaveLength(3);
+    } finally {
+      await relay.close("test");
+    }
+  });
+
+  it("retries owner_unavailable ticket rejections and fails once openBudgetMs is exhausted", async () => {
+    const harness = relayHarness({
+      providers: ["github"],
+      openBudgetMs: 400,
+    });
+    let ticketCalls = 0;
+    harness.connection.setResponder(
+      customTicketResponder(harness.scheduler, (requestId) => {
+        ticketCalls += 1;
+        if (ticketCalls === 1) {
+          return {
+            type: "runtime:proxy:ticket:result",
+            requestId,
+            status: "rejected",
+            code: "owner_unavailable",
+          };
+        }
+        return ticketResultFrame(requestId, harness.scheduler.now);
+      }),
+    );
+
+    const openPromise = RuntimeCredentialRelay.open(
+      {
+        ...harness.relayOptions,
+        dataConnectionFactory: async () => {
+          throw Object.assign(new Error("WebSocket closed with 4401 proxy_auth_invalid"), {
+            name: "RuntimeProxyDataError",
+            code: "auth_failed",
+          });
+        },
+      },
+      harness.subject,
+    );
+    const rejection = expect(openPromise).rejects.toMatchObject({
+      name: "RuntimeCredentialRelayError",
+      code: "data_connect_failed",
+    });
+
+    await tick(15);
+    expect(ticketCalls).toBe(1);
+    harness.scheduler.advance(250);
+    await rejection;
+    expect(ticketCalls).toBe(2);
+  });
+});
+
 describe("runtime proxy error reasons", () => {
   it("never renders exception messages, capabilities, tickets, or handles", () => {
     const secret = "otrh_capability_or_ticket_secret";

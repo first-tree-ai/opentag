@@ -240,6 +240,10 @@ order is the back link, the title, the overview, then the conversation. On a wid
 the right column first. This is deliberate: one order at every width reads the outcome before the record,
 and placing the conversation first would put the facts after a long conversation on a narrow page.
 
+When the reader scrolls into history, **Jump to latest** returns to the end of the conversation and
+focuses the latest entry. Tab continues from that entry, and scrolling back into history brings the
+button back.
+
 A request's grey fill follows the width of its message: a long message still spreads across its column, and
 Agent replies have no fill. Why: a one-line request in a column-wide panel read as a large empty box. Message
 order, paging and scroll anchoring are unchanged.

@@ -27,18 +27,34 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
+ * - `provider_process_exited`: the Provider's process died under a live daemon (crash, out of memory).
+ * - `provider_quota_exceeded`: a model subscription window was used up (`quotaKind: usage_window`); the work
+ *   waits for its reset with a limit of its own. A billing failure is not retried.
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited" | "provider_start_failed";
+export type InterruptionReason =
+  | "daemon_crash"
+  | "client_shutdown"
+  | "provider_rate_limited"
+  | "provider_start_failed"
+  | "provider_process_exited"
+  | "provider_quota_exceeded";
 
 const REASONS = new Set<InterruptionReason>([
   "daemon_crash",
   "client_shutdown",
   "provider_rate_limited",
   "provider_start_failed",
+  "provider_process_exited",
+  "provider_quota_exceeded",
 ]);
 
 /** Failures of the model itself, retried in place and counted when they fail, not when the retry begins. */
-const IN_PLACE = new Set<InterruptionReason>(["provider_rate_limited", "provider_start_failed"]);
+const IN_PLACE = new Set<InterruptionReason>([
+  "provider_rate_limited",
+  "provider_start_failed",
+  "provider_process_exited",
+  "provider_quota_exceeded",
+]);
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -52,6 +68,33 @@ const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 /** A model CLI that failed to start gets a short pause before its one retry. */
 export const START_FAILURE_RETRY_DELAY_MS = 5_000;
+
+/** At most this many quota waits in a row; they do not use the count of automatic retries. */
+export const MAX_QUOTA_WAITS = 3;
+/** A quota wait resumes this long after the reset, so the reset has surely happened. */
+export const QUOTA_RESUME_AFTER_RESET_MS = 120_000;
+/** A reset further away than this is not believed, and the backoff applies. */
+const MAX_QUOTA_RESET_AHEAD_MS = 7 * 24 * 60 * 60_000;
+/** Without a usable reset, the 1st, 2nd and 3rd waits in a row last this long. */
+const QUOTA_BACKOFF_MS = [15 * 60_000, 30 * 60_000, 60 * 60_000] as const;
+
+/** When the `wait`-th quota wait in a row (from 1) resumes: the reset, or the backoff, plus 2 minutes. */
+export function quotaResumeAt(retryAt: string | undefined, wait: number, now: number): string {
+  const reset = retryAt === undefined ? Number.NaN : Date.parse(retryAt);
+  const base =
+    Number.isFinite(reset) && reset - now <= MAX_QUOTA_RESET_AHEAD_MS
+      ? Math.max(reset, now)
+      : now + (QUOTA_BACKOFF_MS[Math.min(Math.max(wait, 1), QUOTA_BACKOFF_MS.length) - 1] ?? QUOTA_BACKOFF_MS[2]);
+  return new Date(base + QUOTA_RESUME_AFTER_RESET_MS).toISOString();
+}
+
+/**
+ * For a write that clears the latest retry's run time: a run long enough to start the retry count over starts the
+ * quota waits over too, whatever ended it.
+ */
+export function quotaWaitsAfterRun(record: { retryRanMs?: number }): { quotaWaits?: number } {
+  return (record.retryRanMs ?? 0) >= RETRY_RESET_AFTER_MS ? { quotaWaits: 0 } : {};
+}
 
 /** At most this many retries in a row for a reason; a start failure is retried once. */
 export function retryLimit(reason: InterruptionReason): number {
@@ -73,6 +116,8 @@ export interface Interruption {
   reason: InterruptionReason;
   /** ISO time the interruption was observed; for a crash, the time it was detected on restart. */
   at: string;
+  /** A quota wait: not to be retried before this ISO time. */
+  resumeAt?: string;
 }
 
 /** The durable retry count of a Turn or of a Session message running on its own. */
@@ -101,18 +146,24 @@ export function nextRetry(
  * tick that comes far too late means the Computer slept or the clock moved: that gap is not run time,
  * so it counts as two intervals at most, and never as negative.
  */
-export function trackRunTime(
-  now: () => number,
-  record: (ranMs: number) => Promise<unknown>,
-): { finish(): Promise<number> } {
+export interface RunTimeTracker {
+  /** Resolves with the run time not yet recorded, once no recording is in flight. */
+  finish(): Promise<number>;
+  /** A provider waiting in-process for a quota reset is not running: that time is not run time. */
+  pause(): void;
+  resume(): void;
+}
+
+export function trackRunTime(now: () => number, record: (ranMs: number) => Promise<unknown>): RunTimeTracker {
   // `pending` is the run time not yet recorded. One write at a time, and it drops only once a write
   // commits, so a failed or slow write can neither lose time nor count it twice.
   let pending = 0;
   let observedAt = now();
+  let paused = false;
   let writing: Promise<void> | undefined;
   const observe = (): number => {
     const at = now();
-    pending += Math.min(Math.max(0, at - observedAt), MAX_RUN_TIME_TICK_MS);
+    if (!paused) pending += Math.min(Math.max(0, at - observedAt), MAX_RUN_TIME_TICK_MS);
     observedAt = at;
     return at;
   };
@@ -133,19 +184,36 @@ export function trackRunTime(
   }, RUN_TIME_RECORD_INTERVAL_MS);
   timer.unref();
   return {
-    // Resolves with the run time not yet recorded, once no recording is in flight.
     finish: async () => {
       clearInterval(timer);
       await writing;
       observe();
       return pending;
     },
+    pause: () => {
+      observe();
+      paused = true;
+    },
+    resume: () => {
+      observe();
+      paused = false;
+    },
   };
 }
 
-/** Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. */
-export function recoverableFailure(reason: string | undefined): InterruptionReason | undefined {
+/** A recorded interruption's reason, a quota wait included; undefined when it is none of them. */
+export function interruptionReason(reason: string | undefined): InterruptionReason | undefined {
   return reason !== undefined && REASONS.has(reason as InterruptionReason) ? (reason as InterruptionReason) : undefined;
+}
+
+/**
+ * Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. A used-up quota
+ * is not one of them: only a `usage_window` quota waits, which the failure code alone does not tell.
+ */
+export function recoverableFailure(reason: string | undefined): InterruptionReason | undefined {
+  return reason !== undefined && reason !== "provider_quota_exceeded" && REASONS.has(reason as InterruptionReason)
+    ? (reason as InterruptionReason)
+    : undefined;
 }
 
 function describeInterruption(reason: InterruptionReason): string {
@@ -158,6 +226,10 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model API rate-limited the request (HTTP 429)";
     case "provider_start_failed":
       return "the model CLI failed to start before doing any work";
+    case "provider_process_exited":
+      return "the Provider process exited unexpectedly";
+    case "provider_quota_exceeded":
+      return "the model quota was used up; OpenTag waited for it to reset and resumed automatically";
   }
 }
 
@@ -202,6 +274,8 @@ export interface TurnRetryRecord {
   interruption?: Interruption;
   /** The latest retry is counted but has not begun, so a restart before it begins must not count it again. */
   retryNotStarted?: boolean;
+  /** Quota waits in a row, against `MAX_QUOTA_WAITS`; a run of 5 minutes or more resets them. */
+  quotaWaits?: number;
 }
 
 /** Bound on steered messages kept per Turn; further messages are not steered but queued by the Server. */
@@ -356,8 +430,6 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   ) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
   }
-  const ranMs = Number.isSafeInteger(candidate.ranMs) ? (candidate.ranMs as number) : undefined;
-  const retryRanMs = Number.isSafeInteger(candidate.retryRanMs) ? (candidate.retryRanMs as number) : undefined;
   return {
     schemaVersion: 1,
     agentId: request.agentId,
@@ -369,11 +441,29 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     ...parseSteerConversations(candidate.steerConversations),
     retries: candidate.retries as number,
     ...(candidate.retryNotStarted === true ? { retryNotStarted: true } : {}),
-    ...(ranMs !== undefined ? { ranMs } : {}),
-    ...(retryRanMs !== undefined ? { retryRanMs } : {}),
-    ...(interruption
-      ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
-      : {}),
+    ...optionalCounts(candidate),
+    ...(interruption ? { interruption: parseInterruption(interruption) } : {}),
+  };
+}
+
+/** Counts that older records lack; an unreadable one is left out. */
+function optionalCounts(
+  candidate: Record<string, unknown>,
+): Pick<TurnRetryRecord, "ranMs" | "retryRanMs" | "quotaWaits"> {
+  const counts: { ranMs?: number; retryRanMs?: number; quotaWaits?: number } = {};
+  for (const key of ["ranMs", "retryRanMs", "quotaWaits"] as const) {
+    if (Number.isSafeInteger(candidate[key])) counts[key] = candidate[key] as number;
+  }
+  return counts;
+}
+
+function parseInterruption(value: Record<string, unknown>): Interruption {
+  const resumeAt =
+    typeof value.resumeAt === "string" && Number.isFinite(Date.parse(value.resumeAt)) ? value.resumeAt : undefined;
+  return {
+    reason: value.reason as InterruptionReason,
+    at: value.at as string,
+    ...(resumeAt ? { resumeAt } : {}),
   };
 }
 

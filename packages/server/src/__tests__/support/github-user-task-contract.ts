@@ -162,6 +162,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       accountId: f.account.id,
       agentId: f.agent.id,
       agentRevision: 1,
+      agentAccessGeneration: 1,
       sessionId,
       computerId: randomUUID(),
       instanceId: randomUUID(),

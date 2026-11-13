@@ -14,9 +14,13 @@ import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../provid
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("ClaudeCodeAgentRuntime", () => {
-  it.each(["accept", "decline"] as const)(
-    "bridges a local permission decision (%s) to the original process",
-    async (decision) => {
+  it.each([
+    ["accept", undefined],
+    ["decline", undefined],
+    ["decline", "No one could approve this action."],
+  ] as const)(
+    "bridges a local permission decision (%s, reason %s) to the original process",
+    async (decision, reason) => {
       const processes: ScriptedClaudeCodeProcess[] = [];
       const events: AgentRuntimeEvent[] = [];
       const request = createRequest((event) => {
@@ -59,6 +63,7 @@ describe("ClaudeCodeAgentRuntime", () => {
         kind: "approval",
         decision,
         scope: "run",
+        ...(reason ? { reason } : {}),
       });
       expect(processes[0]?.sent).toContainEqual({
         type: "control_response",
@@ -68,7 +73,7 @@ describe("ClaudeCodeAgentRuntime", () => {
           response:
             decision === "accept"
               ? { behavior: "allow", updatedInput: { command: "git push" } }
-              : { behavior: "deny", message: "The user declined this action." },
+              : { behavior: "deny", message: reason ?? "The user declined this action." },
         },
       });
       await expect(run).resolves.toMatchObject({ status: "completed" });
@@ -214,7 +219,6 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__example_tool$/));
     expect(processes[0]?.args).not.toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__Read$/));
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
-    expect(processes[0]?.args).not.toContain("--disallowedTools");
     await runtime.close();
   });
 
@@ -363,6 +367,30 @@ describe("ClaudeCodeAgentRuntime", () => {
       replacement.finish();
       await expect(run).resolves.toMatchObject({ status: "completed", output: [{ text: "done" }] });
       expect(missing).toHaveLength(1);
+      await runtime.close();
+    });
+
+    it("keeps an answered Run completed when the new conversation's later turn fails", async () => {
+      const { factory, replacement } = recovering();
+      replacement.followUpFailed = true;
+      const runtime = await factory.resume({ ...createRequest(() => undefined), binding: BINDING });
+      const run = runtime.prompt({ runId: "run", input: input("continue") });
+      await vi.waitFor(() => expect(replacement.executing).toBe(true));
+      replacement.emit(result("answer", 1, 0.01, 5), false);
+      replacement.emit(
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          session_id: SESSION_ID,
+          errors: ["429"],
+          duration_ms: 1,
+          num_turns: 1,
+        },
+        true,
+      );
+      replacement.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed", followUpFailure: { message: "429" } });
       await runtime.close();
     });
 
@@ -773,9 +801,8 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     }
   });
 
-  it("adds no output for a result Claude Code generated itself, and reports abandoned background work", async () => {
+  it("adds no output for a result Claude Code generated itself", async () => {
     const steerable = new SteerableClaudeCodeProcess();
-    steerable.abandonedBackgroundWork = ["Run the suite (local_bash)"];
     const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
     try {
       const run = runtime.prompt({ runId: "resume-run", input: input("work") });
@@ -786,8 +813,114 @@ describe("ClaudeCodeAgentRuntime steer", () => {
       await expect(run).resolves.toMatchObject({
         status: "completed",
         output: [{ type: "text", text: "answer" }],
-        abandonedBackgroundWork: ["Run the suite (local_bash)"],
       });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("completes a Run whose input was answered when a later turn failed", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    steerable.followUpFailed = true;
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "follow-up", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit(result("answer", 1, 0.01, 5), false);
+      steerable.emit(
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          session_id: SESSION_ID,
+          errors: ["429"],
+          duration_ms: 1,
+          num_turns: 1,
+        },
+        true,
+      );
+      steerable.finish();
+      const settled = await run;
+      expect(settled).toMatchObject({ status: "completed", followUpFailure: { message: "429" } });
+      expect(settled.error).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("passes a background work notice to the process, and has nowhere to send one between Runs", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const notice = vi.fn(async () => undefined);
+    Object.assign(steerable, { notice });
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    const tell = runtime as unknown as { tellProvider(text: string): Promise<void> };
+    try {
+      await tell.tellProvider("between Runs");
+      const run = runtime.prompt({ runId: "notice", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      await tell.tellProvider("quiet");
+      expect(notice).toHaveBeenCalledExactlyOnceWith("quiet");
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("does not offer native cron tools, whose jobs would end with the Run", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    let args: readonly string[] = [];
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: (_cwd, seen) => {
+        args = seen;
+        return steerable;
+      },
+    });
+    const runtime = await factory.create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "cron", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      expect(args.join(" ")).toContain("--disallowedTools CronCreate,CronDelete,CronList");
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports background work as provider-neutral events", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await steerableFactory(steerable).create(createRequest((event) => void events.push(event)));
+    try {
+      const run = runtime.prompt({ runId: "bg-run", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit({ type: "opentag/background_work", items: [{ id: "a", label: "suite" }] }, false);
+      steerable.emit(
+        { type: "opentag/background_finished", id: "a", status: "completed", detail: "ok", outputPath: "/o" },
+        false,
+      );
+      steerable.emit({ type: "opentag/background_finished", id: "b", status: "failed" }, false);
+      steerable.emit({ type: "opentag/background_finished", id: "c", status: "killed" }, false);
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+      expect(events.filter((event) => event.type.startsWith("background_work"))).toEqual([
+        { type: "background_work_changed", runId: "bg-run", items: [{ id: "a", label: "suite" }] },
+        {
+          type: "background_work_finished",
+          runId: "bg-run",
+          id: "a",
+          status: "completed",
+          detail: "ok",
+          outputPath: "/o",
+        },
+        { type: "background_work_finished", runId: "bg-run", id: "b", status: "failed" },
+        { type: "background_work_finished", runId: "bg-run", id: "c", status: "stopped" },
+      ]);
     } finally {
       await runtime.close();
     }
@@ -935,8 +1068,8 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly steered: Readonly<Record<string, unknown>>[] = [];
   executing = false;
   refuse = false;
-  abandonedBackgroundWork?: readonly string[];
   #onMessage?: (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
+  followUpFailed = false;
   #finish?: () => void;
 
   execute(
@@ -950,7 +1083,7 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#finish = () =>
         resolve({
           stderr: "",
-          ...(this.abandonedBackgroundWork ? { abandonedBackgroundWork: this.abandonedBackgroundWork } : {}),
+          ...(this.followUpFailed ? { followUpFailed: true } : {}),
         });
     });
   }

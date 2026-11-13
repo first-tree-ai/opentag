@@ -8,7 +8,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
-import { agents, computers, imBindings, users } from "../../db/schema/index.js";
+import { computers, imBindings, users } from "../../db/schema/index.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 /**
@@ -18,7 +18,7 @@ import { startPostgresTestContainer } from "./postgres-test-container.js";
  */
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const THROUGH_0067_IDX = 67;
-const CURRENT_MIGRATION_COUNT = 77;
+const CURRENT_MIGRATION_COUNT = 78;
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const ACCOUNT = "00000000-0000-4000-8000-000000000201";
 const COMPUTER = "00000000-0000-4000-8000-000000000202";
@@ -140,16 +140,13 @@ describe("terminal setup slot backfill", () => {
         arch: "x64",
         clientVersion: "0.0.1",
       });
-      await client.database.insert(agents).values(
-        Object.entries(fixtures).map(([name, fixture]) => ({
-          id: fixture.agent,
-          createdByUserId: ACCOUNT,
-          computerId: COMPUTER,
-          name: `agent-${name.toLowerCase()}`,
-          displayName: `Agent ${name}`,
-          runtimeProvider: "codex" as const,
-        })),
-      );
+      // Raw SQL: the Drizzle table would also write columns from migrations after this point.
+      for (const [name, fixture] of Object.entries(fixtures)) {
+        await client.sql`
+          insert into agents (id, created_by_user_id, computer_id, name, display_name, runtime_provider)
+          values (${fixture.agent}, ${ACCOUNT}, ${COMPUTER}, ${`agent-${name.toLowerCase()}`}, ${`Agent ${name}`}, 'codex')
+        `;
+      }
       await client.database.insert(imBindings).values([
         { ...terminalNeverActivated(fixtures.canceled.binding, "canceled"), agentId: fixtures.canceled.agent },
         { ...terminalNeverActivated(fixtures.expired.binding, "expired"), agentId: fixtures.expired.agent },

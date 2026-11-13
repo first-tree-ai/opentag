@@ -6,7 +6,12 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
-import { RUNTIME_CAPABILITY, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
+import {
+  RUNTIME_CAPABILITY,
+  SESSION_CREATOR_REPORT_NOTICE_HEADER,
+  SESSION_CREATOR_REPORT_REASON,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+} from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
@@ -66,17 +71,27 @@ beforeEach(async () => {
 });
 
 describe("Session collaboration authority", () => {
-  it("persists one notice before answering retry, then records acceptance outside the reporting frame", async () => {
+  it.each([
+    ["timed_out", "turn_timeout", SESSION_RUN_OUTCOME_NOTICE_HEADER],
+    ["failed", SESSION_CREATOR_REPORT_REASON.failed, SESSION_CREATOR_REPORT_NOTICE_HEADER],
+    ["unknown", SESSION_CREATOR_REPORT_REASON.unknown, SESSION_CREATOR_REPORT_NOTICE_HEADER],
+  ] as const)("persists and delivers one %s notice outside the reporting frame", async (outcome, reason, header) => {
     const fixture = await createFixture();
     const gate = deferred<void>();
     const stack = await createCollaborationFixture(fixture, { beforeReconcileResult: () => gate.promise });
-    const input = outcomeNoticeInput(fixture, stack);
+    const input = { ...outcomeNoticeInput(fixture, stack), outcome, reason };
     const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
     const notice = async () =>
       (await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId)))[0];
     try {
       await expect(stack.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
-      expect(await notice()).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
+      expect(await notice()).toMatchObject({
+        lastOutcome: "unknown",
+        attemptCount: 1,
+        sourceSessionId: input.childSessionId,
+        targetSessionId: stack.source.sessionId,
+        content: expect.stringContaining(header),
+      });
       await Promise.all(Array.from({ length: 8 }, () => stack.service.notifyRunOutcomeInBackground(input)));
       expect(await notice()).toMatchObject({ lastOutcome: "unknown", attemptCount: 1 });
       expect(stack.frames).not.toContain("message");

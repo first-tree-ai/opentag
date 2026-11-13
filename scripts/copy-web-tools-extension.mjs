@@ -17,7 +17,12 @@ import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const WEB_TOOLS_EXTENSION_FILES = ["web-tools.mjs", "web-tools.mjs.map"];
+export const WEB_TOOLS_EXTENSION_FILES = [
+  "web-tools.mjs",
+  "web-tools.mjs.map",
+  "background-work.mjs",
+  "background-work.mjs.map",
+];
 export const WEB_TOOLS_EXTENSION_DESTINATIONS = ["dist/pi-extensions", "dist/cli/pi-extensions"];
 
 /**

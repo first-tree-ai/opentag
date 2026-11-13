@@ -1,5 +1,5 @@
 {
-  "id": "d93fe81a-e848-488e-86b4-994410571d74",
+  "id": "f9ef7d2b-2fef-40a3-99be-f3fed54f5dcb",
   "prevId": "74d70e48-aa1b-4c58-a968-b47f33ed9ad7",
   "version": "7",
   "dialect": "postgresql",
@@ -403,6 +403,13 @@
         },
         "revision": {
           "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "access_generation": {
+          "name": "access_generation",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -4247,15 +4254,9 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_session_unreported_accepted_idx": {
-          "name": "im_message_deliveries_session_unreported_accepted_idx",
+        "im_message_deliveries_unreported_accepted_idx": {
+          "name": "im_message_deliveries_unreported_accepted_idx",
           "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
             {
               "expression": "accepted_at",
               "isExpression": false,
@@ -4264,6 +4265,12 @@
             },
             {
               "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

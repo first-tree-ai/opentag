@@ -119,3 +119,21 @@ it("returns a known no-effect result when the worker socket has not opened", asy
   });
   expect(JSON.parse(result)).toMatchObject({ status: "retry", reason: "turn_starting" });
 });
+
+it("tells an IM join to retry when the worker socket has not opened", async () => {
+  const delivery = cloudDeliveryFixture();
+  const result = await new Promise<string>((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath(randomUUID())]);
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child
+      .on("error", reject)
+      .on("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`relay ${code}`))));
+    child.stdin.end(
+      JSON.stringify({ token: randomUUID(), request: { type: "im:join", expectedTurnId: randomUUID(), delivery } }),
+    );
+  });
+  expect(JSON.parse(result)).toBe("retry");
+});

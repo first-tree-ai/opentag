@@ -218,6 +218,32 @@ describe("a Session message steered into a Session message Run", () => {
     expect(inbox.pendingCount).toBe(0);
   });
 
+  it("does not steer a restored quota wait into a running Run before its time", async () => {
+    const { attempts, runtime, steers } = harness();
+    const { message } = conversation();
+    const [first, waiting] = [message("first"), message("waiting")];
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write(record(first, "accepted", { acceptedAt: 1_000 }));
+    await persistence.write(
+      record(waiting, "retryable", {
+        acceptedAt: 2_000,
+        quotaWaits: 1,
+        interruption: { reason: "provider_quota_exceeded", at: "T" },
+        nextAttemptAt: Date.now() + 300,
+      }),
+    );
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const attempt = await started(attempts, 1);
+    expect(attempt.texts.at(-1)).toBe("first");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(steers).toHaveLength(0);
+    await vi.waitFor(() => expect(steers.map((steer) => steer.texts.at(-1))).toEqual(["waiting"]), { timeout: 2_000 });
+    attempt.finish();
+    await inbox.settled();
+    expect(inbox.getState(waiting.messageId)?.status).toBe("succeeded");
+  });
+
   it("stays in the FIFO and runs after the Run when the runtime cannot steer", async () => {
     const { attempts, runtime } = harness({ steer: "unsupported" });
     const inbox = makeInbox(runtime);
@@ -302,8 +328,8 @@ describe("a Session message steered into a Session message Run", () => {
   });
 });
 
-describe("background work left at the end of a Session message Run", () => {
-  it("reports for the Run's own message, and a message steered into it succeeds without a report", async () => {
+describe("a later turn failing after a Session message Run answered its input", () => {
+  it("reports for the Run's own message, and neither message runs again", async () => {
     const { attempts, runtime, steers } = harness();
     const outcomes: SessionMessageRunOutcomeEvent[] = [];
     const inbox = makeInbox(runtime, { outcomes });
@@ -314,7 +340,7 @@ describe("background work left at the end of a Session message Run", () => {
     await inbox.accept(second);
     await vi.waitFor(() => expect(steers).toHaveLength(1));
     await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
-    attempt.finish({ abandonedBackgroundWork: ["background shell"] });
+    attempt.finish({ followUpFailure: { code: "provider_rate_limited", message: "429" } });
     await inbox.settled();
     expect(inbox.getState(first.messageId)?.status).toBe("succeeded");
     expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
@@ -322,7 +348,7 @@ describe("background work left at the end of a Session message Run", () => {
       expect.objectContaining({
         messageId: first.messageId,
         outcome: "unknown",
-        reason: "background_work_possibly_stopped",
+        reason: "provider_rate_limited",
       }),
     ]);
     expect(attempts).toHaveLength(1);

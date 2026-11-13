@@ -41,7 +41,14 @@ export interface RuntimeSlackInstallationSnapshot {
  * Agent, Computer, and provider installation rows at their current revisions.
  */
 export interface RuntimeValidationScopeSnapshot {
-  agent: { id: string; status: string; revision: number; computerId: string | null; createdByUserId: string };
+  agent: {
+    id: string;
+    status: string;
+    revision: number;
+    accessGeneration: number;
+    computerId: string | null;
+    createdByUserId: string;
+  };
   binding: RuntimeBindingSnapshot;
   slackInstallation: RuntimeSlackInstallationSnapshot | null;
   computer: { id: string; kind: "local" | "cloud"; ownerAccountId: string };
@@ -60,6 +67,7 @@ export interface RuntimeScopeSnapshot {
     id: string;
     status: string;
     revision: number;
+    accessGeneration: number;
     computerId: string | null;
     createdByUserId: string;
   };
@@ -80,6 +88,7 @@ export type RuntimeFenceViolation =
   | "agent_mismatch"
   | "agent_inactive"
   | "agent_revision_changed"
+  | "agent_access_changed"
   | "placement_stale"
   | "ownership_mismatch"
   | "binding_inactive"
@@ -122,6 +131,7 @@ export class RuntimeScopeResolver {
         agentId: agents.id,
         agentStatus: agents.status,
         agentRevision: agents.revision,
+        agentAccessGeneration: agents.accessGeneration,
         agentComputerId: agents.computerId,
         agentCreatedByUserId: agents.createdByUserId,
         placementComputerId: sessionPlacements.computerId,
@@ -187,6 +197,7 @@ export class RuntimeScopeResolver {
         id: row.agentId,
         status: row.agentStatus,
         revision: row.agentRevision,
+        accessGeneration: row.agentAccessGeneration,
         computerId: row.agentComputerId,
         createdByUserId: row.agentCreatedByUserId,
       },
@@ -217,7 +228,9 @@ export class RuntimeScopeResolver {
       return "agent_mismatch";
     }
     if (snapshot.agent.status !== "active") return "agent_inactive";
-    if (snapshot.agent.revision !== record.agentRevision) return "agent_revision_changed";
+    // A configuration save does not end a running Turn's access: each request resolves the current credentials and
+    // grants. Only a withdrawal of the right to run does, and it stays final after a reactivation.
+    if (snapshot.agent.accessGeneration !== record.agentAccessGeneration) return "agent_access_changed";
     if (
       !snapshot.placement ||
       snapshot.placement.computerId !== record.computerId ||
@@ -246,6 +259,7 @@ export class RuntimeScopeResolver {
         agentId: agents.id,
         agentStatus: agents.status,
         agentRevision: agents.revision,
+        agentAccessGeneration: agents.accessGeneration,
         agentComputerId: agents.computerId,
         agentCreatedByUserId: agents.createdByUserId,
         computerId: computers.id,
@@ -266,6 +280,7 @@ export class RuntimeScopeResolver {
         id: row.agentId,
         status: row.agentStatus,
         revision: row.agentRevision,
+        accessGeneration: row.agentAccessGeneration,
         computerId: row.agentComputerId,
         createdByUserId: row.agentCreatedByUserId,
       },

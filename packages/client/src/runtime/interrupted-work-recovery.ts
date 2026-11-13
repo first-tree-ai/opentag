@@ -7,6 +7,7 @@ import {
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   nextRetry,
+  quotaWaitsAfterRun,
   type TurnRetryRecord,
   type TurnRetryStore,
 } from "./interruption-retry.js";
@@ -273,14 +274,21 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       reason: "daemon_crash" as const,
       at: new Date(this.#now()).toISOString(),
     };
-    // Counted before anything runs; a 429 was counted when it failed and its retry has not started. So
-    // was a retry that an earlier start counted and never began: a restart in that wait costs nothing.
-    // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
+    // Counted before anything runs; a 429, a start failure or a Provider exit was counted when it failed and
+    // its retry has not started. So was a retry that an earlier start counted and never began: a restart in
+    // that wait costs nothing. The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
     const counted = countedAtFailure(record.interruption?.reason) || record.retryNotStarted === true;
     const { count, exhausted } = counted
       ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });
-    const spent: TurnRetryRecord = { ...record, interruption, retries: count, retryRanMs: 0, retryNotStarted: true };
+    const spent: TurnRetryRecord = {
+      ...record,
+      interruption,
+      retries: count,
+      retryRanMs: 0,
+      ...quotaWaitsAfterRun(record),
+      retryNotStarted: true,
+    };
     try {
       await this.#options.retries.write(spent);
     } catch {
@@ -334,16 +342,22 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
         turnId: pending.record.turnId,
       });
     }
-    for (const target of targets.values()) {
-      const existing = this.#requests.get(target.sessionId);
-      existing?.timer?.cancel();
-      const request: RecoverRequest = {
-        frame: { type: "session:recover", requestId: randomUUID(), ...target },
-        attempts: existing?.attempts ?? 0,
-      };
-      this.#requests.set(target.sessionId, request);
-      this.#send(target.sessionId, request);
-    }
+    for (const target of targets.values()) this.#open(target);
+  }
+
+  #open(target: Omit<SessionRecoverRequest, "type" | "requestId">): void {
+    const existing = this.#requests.get(target.sessionId);
+    existing?.timer?.cancel();
+    const request: RecoverRequest = {
+      frame: { type: "session:recover", requestId: randomUUID(), ...target },
+      attempts: existing?.attempts ?? 0,
+    };
+    this.#requests.set(target.sessionId, request);
+    // A quota wait asks for its Session only once the quota is back; until then the Turn stays pending.
+    const resumeAt = this.#turns.get(target.sessionId)?.interruption.resumeAt;
+    const waitMs = resumeAt ? Date.parse(resumeAt) - this.#now() : 0;
+    if (waitMs > 0) request.timer = this.#scheduler.schedule(waitMs, () => this.#send(target.sessionId, request));
+    else this.#send(target.sessionId, request);
   }
 
   #send(sessionId: string, request: RecoverRequest): void {

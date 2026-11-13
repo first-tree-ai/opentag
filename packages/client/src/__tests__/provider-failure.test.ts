@@ -1,5 +1,6 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  answeredWithFollowUpFailure,
   piProviderFailureCode,
   providerFailureCode,
   providerProcessFailureCode,
@@ -66,4 +67,16 @@ it.each([
   ["timeout", "provider_error"],
 ])("preserves process failure %s", (code, expected) => {
   expect(providerProcessFailureCode(code)).toBe(expected);
+});
+
+describe("answeredWithFollowUpFailure", () => {
+  it("completes the Run and carries the failure, with or without one", () => {
+    const error = { code: "provider_rate_limited", message: "429" } as const;
+    expect(answeredWithFollowUpFailure({ status: "failed", output: [], error })).toEqual({
+      status: "completed",
+      output: [],
+      followUpFailure: error,
+    });
+    expect(answeredWithFollowUpFailure({ status: "failed" })).toEqual({ status: "completed" });
+  });
 });

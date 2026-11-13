@@ -2,13 +2,23 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { AgentRuntimeOptionsSchema, RuntimeModelSchema, RuntimeReasoningEffortSchema } from "@opentag/shared";
+import {
+  AgentRuntimeOptionsSchema,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_EXECUTION_MAX_LIFETIME_MS,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+} from "@opentag/shared";
 import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
-import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import {
+  answeredWithFollowUpFailure,
+  providerFailureCode,
+  providerProcessFailureCode,
+} from "../../agent-runtime/provider-failure.js";
 import {
   isNonNegativeNumber,
   parseHttpMcpGateway,
@@ -25,10 +35,12 @@ import {
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
+  type AgentBackgroundWorkItem,
   type AgentHostedTools,
   type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
+  type AgentProviderRunEvent,
   type AgentProviderRunResult,
   type AgentProviderSteerCustody,
   type AgentRunConfiguration,
@@ -64,6 +76,8 @@ import {
   startClaudeCodeHostedToolBridge,
 } from "./hosted-tool-bridge.js";
 import {
+  CLAUDE_CODE_BACKGROUND_FINISHED_FRAME,
+  CLAUDE_CODE_BACKGROUND_WORK_FRAME,
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
   ClaudeCodeProcessError,
@@ -108,7 +122,10 @@ interface ClaudeCodeRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
-  readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly createProcess: (
+    args: readonly string[],
+    quotaWait?: Readonly<Record<string, string>>,
+  ) => ClaudeCodeProcessClient;
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
@@ -185,7 +202,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
   readonly #systemPromptSnapshotOff: boolean;
   readonly #configuration?: AgentRunConfiguration;
-  readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly #createProcess: ClaudeCodeRuntimeOptions["createProcess"];
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
   readonly #skillPaths: readonly string[];
@@ -207,6 +224,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #assistantError?: string;
   /** When Claude Code said a usage window that rejected this Run opens again (`rate_limit_event`). */
   #quotaResetAt?: string;
+  /** Claude Code is retrying by itself until the used-up window resets (unattended retry mode). */
+  #quotaWaiting = false;
   #currentMessageId?: string;
   #sessionExists: boolean;
   #terminalClaimed = false;
@@ -247,6 +266,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
     this.#quotaResetAt = undefined;
+    this.#quotaWaiting = false;
     this.#currentMessageId = undefined;
     this.#terminalClaimed = false;
     this.#resumedRun = false;
@@ -281,7 +301,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           await this.#compactContext(request, context, hostedToolBridge);
         resumed = this.#sessionExists;
         this.#resumedRun = resumed;
-        process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+        process = this.#createProcess(
+          this.#arguments(request, hostedToolBridge),
+          claudeCodeQuotaWaitEnvironment(request.durationLimitInMs),
+        );
       } catch (error) {
         if (context.signal.aborted) throw error;
         logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
@@ -293,7 +316,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       this.#process = process;
       this.#processReady?.resolve(process);
-      let { abandonedBackgroundWork } = await process.execute(
+      let { followUpFailed } = await process.execute(
         claudeCodeInput(request),
         (message, terminal) => this.#enqueue(message, terminal),
         context.signal,
@@ -302,14 +325,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const missing = missingConversation(resumed, this.#terminal);
       if (missing !== undefined) {
         await process.close().catch(logCloseFailure);
-        ({ abandonedBackgroundWork } = await this.#runNewConversation(request, context, hostedToolBridge, missing));
+        ({ followUpFailed } = await this.#runNewConversation(request, context, hostedToolBridge, missing));
       }
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return {
-        ...claudeCodeRunResult(this.#terminal, this.#assistantError, this.#quotaResetAt),
-        ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
-      };
+      return claudeCodeRunOutcome(this.#terminal, this.#assistantError, followUpFailed, this.#quotaResetAt);
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -365,7 +385,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#continuedTerminals.length = 0;
     // An abort that arrived while the first process was exiting interrupted nothing that is still running.
     context.signal.throwIfAborted();
-    const process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+    const process = this.#createProcess(
+      this.#arguments(request, hostedToolBridge),
+      claudeCodeQuotaWaitEnvironment(request.durationLimitInMs),
+    );
     this.#process = process;
     this.#processReady ??= deferredProcess();
     this.#processReady.resolve(process);
@@ -443,6 +466,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
   }
 
+  protected override async tellProvider(text: string): Promise<void> {
+    await this.#process?.notice?.(text);
+  }
+
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     await this.#process?.interrupt();
@@ -464,7 +491,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         response:
           response.decision === "accept"
             ? { behavior: "allow", updatedInput: input }
-            : { behavior: "deny", message: "The user declined this action." },
+            : { behavior: "deny", message: response.reason ?? "The user declined this action." },
       },
     });
     this.#permissions.delete(response.requestId);
@@ -500,6 +527,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
+      // A native cron job lives in this process, which ends with the Run. Recurring work is an OpenTag Schedule.
+      "--disallowedTools",
+      "CronCreate,CronDelete,CronList",
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       ...(this.#systemPromptSnapshotOff ? ["--system-prompt-snapshot", "off"] : []),
@@ -572,6 +602,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 
   async #handleMessage(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
     const type = requireString(message.type, "Claude Code message has no type");
+    if (type === "rate_limit_event") this.#quotaResetAt = usageWindowReset(message, this.#quotaResetAt);
+    await this.#trackQuotaWait(type, message);
     if (type === "stream_event") {
       await this.#handleStreamEvent(requireRecord(message.event, "Claude Code stream event is invalid"));
       return;
@@ -581,7 +613,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "rate_limit_event") {
-      this.#quotaResetAt = rejectedUsageWindowReset(message) ?? this.#quotaResetAt;
       await this.#emitProviderEvent(message);
       return;
     }
@@ -610,7 +641,55 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#handleResult(message, terminal);
       return;
     }
+    if (await this.#handleBackgroundWorkFrame(type, message)) return;
     await this.#emitProviderEvent(message);
+  }
+
+  /**
+   * With `CLAUDE_CODE_RETRY_WATCHDOG`, Claude Code answers a rejected usage window by retrying the same request until
+   * the window resets, reporting a `system/api_retry` for HTTP 429 about every 30 s. That wait starts at the first
+   * such retry after a rejected window and ends with the next frame of any other kind.
+   */
+  async #trackQuotaWait(type: string, message: Readonly<Record<string, unknown>>): Promise<void> {
+    const retry = type === "system" && message.subtype === "api_retry";
+    if (retry && message.error_status === 429 && this.#quotaResetAt !== undefined) {
+      if (this.#quotaWaiting) return;
+      this.#quotaWaiting = true;
+      await this.requireProviderContext().emit({
+        type: "quota_wait_changed",
+        waiting: true,
+        resetsAt: this.#quotaResetAt,
+      });
+      return;
+    }
+    if (!this.#quotaWaiting) return;
+    if (type === "rate_limit_event" && this.#quotaResetAt !== undefined) {
+      // Still rejected: a later reset moves the wait without ending it.
+      await this.requireProviderContext().emit({
+        type: "quota_wait_changed",
+        waiting: true,
+        resetsAt: this.#quotaResetAt,
+      });
+      return;
+    }
+    // Any other frame ends the wait, a retry of another kind (529 and the like) included: that is a capacity wait,
+    // and the Run budget runs through it.
+    this.#quotaWaiting = false;
+    await this.requireProviderContext().emit({ type: "quota_wait_changed", waiting: false });
+  }
+
+  /** The synthetic frames the process adds for background work; false for any other message. */
+  async #handleBackgroundWorkFrame(type: string, message: Readonly<Record<string, unknown>>): Promise<boolean> {
+    if (type === CLAUDE_CODE_BACKGROUND_WORK_FRAME) {
+      await this.requireProviderContext().emit({
+        type: "background_work_changed",
+        items: message.items as readonly AgentBackgroundWorkItem[],
+      });
+      return true;
+    }
+    if (type !== CLAUDE_CODE_BACKGROUND_FINISHED_FRAME) return false;
+    await this.requireProviderContext().emit(backgroundWorkFinished(message));
+    return true;
   }
 
   async #handleResult(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
@@ -878,6 +957,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     args: readonly string[],
     environment?: Readonly<Record<string, string>>,
     pathPrepend?: string,
+    quotaWait?: Readonly<Record<string, string>>,
   ) => ClaudeCodeProcessClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
@@ -894,12 +974,17 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     const prefix = options.process?.args ?? [];
     this.#createProcess =
       options.createProcess ??
-      ((cwd, args, workspaceEnvironment, pathPrepend) =>
+      ((cwd, args, workspaceEnvironment, pathPrepend, quotaWait) =>
         new ClaudeCodeProcess({
           command,
           args: [...prefix, ...args],
           cwd,
-          env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
+          env: composeRuntimeEnvironment(
+            // An explicit setting in the daemon's environment wins.
+            { ...quotaWait, ...environment },
+            workspaceEnvironment,
+            pathPrepend,
+          ),
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
@@ -1049,12 +1134,13 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         binding,
         configuration: request.configuration,
-        createProcess: (args) =>
+        createProcess: (args, quotaWait) =>
           this.#createProcess(
             request.workspace.cwd,
             args,
             request.workspace.environment,
             request.workspace.pathPrepend,
+            quotaWait,
           ),
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
@@ -1071,6 +1157,35 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       });
     }
   }
+}
+
+/** Room left in the execution for preparing the Run and for reporting after it. */
+const QUOTA_WAIT_EXECUTION_MARGIN_MS = 30 * 60_000;
+/** A shorter wait is not worth holding a Provider process for; the Run fails at once, as without the mode. */
+const MIN_QUOTA_WAIT_MS = 60 * 60_000;
+
+/**
+ * Claude Code's unattended retry mode for one Run: on a used-up subscription window it keeps the Run open and
+ * retries at the reset instead of failing at once (`--print` ignores `autoContinueAtUsageLimit`). The Client pauses
+ * the Run budget during that wait.
+ *
+ * The Run's credential execution lives at most `RUNTIME_EXECUTION_MAX_LIFETIME_MS` from its start, and the Run can
+ * still run for its remaining budget besides waiting. So every retry wait together is capped at that lifetime less
+ * the budget and a margin; a reset further away fails the Run with the quota error at once. With no room left, the
+ * mode stays off. An explicit setting in the daemon's environment wins.
+ */
+export function claudeCodeQuotaWaitEnvironment(remainingRunMs: number | undefined): Readonly<Record<string, string>> {
+  const waitMs =
+    RUNTIME_EXECUTION_MAX_LIFETIME_MS -
+    (remainingRunMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS) -
+    QUOTA_WAIT_EXECUTION_MARGIN_MS;
+  if (waitMs < MIN_QUOTA_WAIT_MS) return {};
+  return {
+    CLAUDE_CODE_RETRY_WATCHDOG: "1",
+    CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: String(Math.floor(waitMs)),
+    // Counts every retry wait, capacity retries included.
+    CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS: String(Math.floor(waitMs)),
+  };
 }
 
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -1413,6 +1528,17 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
   };
 }
 
+/** The Run's result. A failure of a turn Claude Code started itself, after the input was answered, does not fail it. */
+function claudeCodeRunOutcome(
+  terminal: ClaudeCodeTerminal,
+  assistantError: string | undefined,
+  followUpFailed: boolean | undefined,
+  quotaResetAt: string | undefined,
+): AgentProviderRunResult {
+  const result = claudeCodeRunResult(terminal, assistantError, quotaResetAt);
+  return followUpFailed && result.status === "failed" ? answeredWithFollowUpFailure(result) : result;
+}
+
 /**
  * Claude Code reports each subscription usage window in a `rate_limit_event` (2.1.319): `rate_limit_info` holds its
  * `status` and `resetsAt` in Unix seconds. A `rejected` window is a used-up quota, and its reset is when to try again.
@@ -1420,8 +1546,18 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
 /** 10000-01-01T00:00:00Z: the first Unix second whose ISO form needs an extended year. */
 const MAX_ISO_UNIX_SECONDS = 253_402_300_800;
 
-function rejectedUsageWindowReset(message: Readonly<Record<string, unknown>>): string | undefined {
+/** The reset of a rejected window; an allowed window clears the one seen before, anything else keeps it. */
+function usageWindowReset(
+  message: Readonly<Record<string, unknown>>,
+  previous: string | undefined,
+): string | undefined {
   const info = message.rate_limit_info;
+  const status = info && typeof info === "object" ? Reflect.get(info, "status") : undefined;
+  if (status === "allowed" || status === "allowed_warning") return undefined;
+  return rejectedUsageWindowReset(info) ?? previous;
+}
+
+function rejectedUsageWindowReset(info: unknown): string | undefined {
   if (!info || typeof info !== "object") return undefined;
   const status = Reflect.get(info, "status");
   const resetsAt = Reflect.get(info, "resetsAt");
@@ -1477,7 +1613,7 @@ function claudeCodeRunResult(
 function withQuotaReset(error: AgentRunError, quotaResetAt: string | undefined): AgentRunError {
   if (!quotaResetAt || (error.code !== "provider_rate_limited" && error.code !== "provider_quota_exceeded"))
     return error;
-  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt };
+  return { ...error, code: "provider_quota_exceeded", retryAt: quotaResetAt, quotaKind: "usage_window" };
 }
 
 function parseUsage(
@@ -1516,4 +1652,16 @@ function toJsonValue(value: unknown): JsonValue {
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
   return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
+}
+
+/** Claude Code's `killed` and `stopped` both mean something stopped the task; anything unrecognized is not a success. */
+function backgroundWorkFinished(frame: Readonly<Record<string, unknown>>): AgentProviderRunEvent {
+  const status = frame.status === "completed" ? "completed" : frame.status === "failed" ? "failed" : "stopped";
+  return {
+    type: "background_work_finished",
+    id: requireString(frame.id, "Claude Code background task has no id"),
+    status,
+    ...(typeof frame.detail === "string" ? { detail: frame.detail } : {}),
+    ...(typeof frame.outputPath === "string" ? { outputPath: frame.outputPath } : {}),
+  };
 }

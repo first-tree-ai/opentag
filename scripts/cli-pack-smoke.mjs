@@ -200,6 +200,10 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       "dist/pi-extensions/web-tools.mjs.map",
       "dist/cli/pi-extensions/web-tools.mjs",
       "dist/cli/pi-extensions/web-tools.mjs.map",
+      "dist/pi-extensions/background-work.mjs",
+      "dist/pi-extensions/background-work.mjs.map",
+      "dist/cli/pi-extensions/background-work.mjs",
+      "dist/cli/pi-extensions/background-work.mjs.map",
     ]) {
       if (!packedPaths.includes(requiredPath)) {
         throw new Error(`npm tarball is missing required path ${requiredPath}`);

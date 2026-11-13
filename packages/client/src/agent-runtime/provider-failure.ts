@@ -1,5 +1,6 @@
 import type { ProviderFailureReason } from "@opentag/shared";
 import type { AgentProviderError } from "./errors.js";
+import type { AgentProviderRunResult } from "./types.js";
 
 const codes = new Map<string, ProviderFailureReason>([
   ["authentication_failed", "provider_authentication_failed"],
@@ -92,4 +93,9 @@ export function providerProcessFailureCode(code: string): AgentProviderError["co
   if (code === "spawn") return "provider_start_failed";
   if (code === "protocol") return "provider_protocol_error";
   return providerFailureCode(code);
+}
+
+/** A failed Run's result once its input is known to be answered: complete, carrying the failure. */
+export function answeredWithFollowUpFailure({ error, ...answered }: AgentProviderRunResult): AgentProviderRunResult {
+  return { ...answered, status: "completed", ...(error ? { followUpFailure: error } : {}) };
 }

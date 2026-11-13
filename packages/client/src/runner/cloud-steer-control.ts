@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import {
+  DirectImMessageDeliveryRequestSchema,
   RUNTIME_MAX_FRAME_BYTES,
   RuntimeImOutboxContextSchema,
   type RuntimeImSteerRequest,
@@ -23,6 +24,20 @@ const CloudSessionSteerRequestSchema = z
 
 export type CloudSessionSteerRequest = z.infer<typeof CloudSessionSteerRequestSchema>;
 
+/**
+ * An IM delivery the Runner received while a Session message Turn of the same visible Session was running. It joins
+ * that Turn instead of waiting behind it; the Runner, not the Server, decides the join.
+ */
+const CloudImJoinRequestSchema = z
+  .object({
+    type: z.literal("im:join"),
+    expectedTurnId: z.string().min(1).max(256),
+    delivery: DirectImMessageDeliveryRequestSchema,
+  })
+  .strict();
+
+export type CloudImJoinRequest = z.infer<typeof CloudImJoinRequestSchema>;
+
 export const CloudSessionSteerResultSchema = z.enum(["accepted", "retry", "refused", "uncertain"]);
 export type CloudSessionSteerResult = z.infer<typeof CloudSessionSteerResultSchema>;
 
@@ -31,7 +46,7 @@ export const CLOUD_SESSION_STEER_LIMIT = 16;
 const ControlPacketSchema = z
   .object({
     token: z.string().uuid(),
-    request: z.union([RuntimeImSteerRequestSchema, CloudSessionSteerRequestSchema]),
+    request: z.union([RuntimeImSteerRequestSchema, CloudSessionSteerRequestSchema, CloudImJoinRequestSchema]),
   })
   .strict();
 
@@ -62,6 +77,7 @@ export async function openCloudSteerControl(input: {
   token: string;
   steer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
   steerSession?(request: CloudSessionSteerRequest): Promise<CloudSessionSteerResult>;
+  joinIm?(request: CloudImJoinRequest): Promise<CloudSessionSteerResult>;
 }): Promise<{ close(): Promise<void> }> {
   const path = cloudSteerSocketPath(input.deliveryId);
   await rm(path, { force: true });
@@ -123,7 +139,7 @@ process.stdin.on("end", () => {
   socket.on("end", () => { process.stdout.write(output); socket.destroy(); });
   socket.on("error", error => {
     if (!connected && ["ENOENT", "ECONNREFUSED"].includes(error.code)) {
-      if (packet.request.type === "session:message:steer") {
+      if (packet.request.type === "session:message:steer" || packet.request.type === "im:join") {
         process.stdout.write(JSON.stringify("retry"));
         return;
       }
@@ -148,7 +164,9 @@ async function handleControlSocket(
     const result =
       value.request.type === "session:message:steer"
         ? ((await input.steerSession?.(value.request)) ?? "refused")
-        : await input.steer?.(value.request);
+        : value.request.type === "im:join"
+          ? ((await input.joinIm?.(value.request)) ?? "refused")
+          : await input.steer?.(value.request);
     if (result !== undefined && !socket.destroyed) socket.end(JSON.stringify(result));
   } catch {
     socket.destroy();

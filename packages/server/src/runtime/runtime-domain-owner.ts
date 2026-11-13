@@ -10,7 +10,9 @@ import {
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
+  isSessionCreatorReportReason,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION,
   RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
@@ -904,7 +906,10 @@ export class RuntimeDomainOwner {
       return sessionOutcomeResult(frame, "stale_generation");
     }
     const version = context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ?? 0;
-    if (version < RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION || !this.#options.onSessionMessageOutcome) {
+    const required = isSessionCreatorReportReason(frame.reason)
+      ? RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION
+      : RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION;
+    if (version < required || !this.#options.onSessionMessageOutcome) {
       return sessionOutcomeResult(frame, "unsupported_capability");
     }
     return sessionOutcomeResult(frame, await this.#options.onSessionMessageOutcome(frame, context));
@@ -1366,8 +1371,10 @@ export class RuntimeDomainOwner {
         });
       }
     }
-    const status = await this.#custody.recordTurn(report, context);
-    return status ? { ...base, status } : undefined;
+    const acknowledgeSuperseded = (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] ?? 1) >= 6;
+    const status = await this.#custody.recordTurn(report, context, { acknowledgeSuperseded });
+    if (!status) return undefined;
+    return { ...base, ...(typeof status === "string" ? { status } : status) };
   }
 
   #matchingDeliveryAttempt(

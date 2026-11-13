@@ -97,6 +97,16 @@ These paths resend the original report and never run the completed model task ag
 The Server still checks current ownership, connection instance, placement and
 terminal settlement before accepting a report.
 
+With `runtime.turnReport` v6, the Server can acknowledge a report as
+`superseded` after verifying that the same delivery and Turn already have a
+different terminal report in the current placement. The Server preserves its
+terminal result and includes its outcome in the acknowledgement. The Client
+releases the exact Turn's local custody, keeps the root input receipt for
+deduplication, and removes the obsolete report from replay. If the Server's
+outcome is unsuccessful, the Client also removes the matching steer receipts
+so the Server can deliver those inputs again. A completed outcome preserves
+them. An ordinary conflict or stale placement leaves local custody fenced.
+
 ### Automatic retry of accepted work
 
 Automatic retry of accepted work belongs to the Local Client daemon; the Server
@@ -114,7 +124,9 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
 - The Run's duration limit counts actual running time across retries and resumes.
-  A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
+  A resume keeps what is left of the budget. A Provider waiting in-process for a
+  used-up quota window to reset is not running, so its budget stands still
+  ([Quota auto-resume](runtime/quota-auto-resume.md)). Reaching the limit (`turn_timeout`)
   is not retried, and neither is any other failure.
 
 Run time is recorded durably about once a minute while a Run works, so a crash

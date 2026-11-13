@@ -193,6 +193,15 @@ describe("runtime domain contract", () => {
     ).toBe(false);
     expect(RuntimeApprovalDecisionSchema.parse(decision)).toEqual(decision);
     expect(RuntimeApprovalResultSchema.parse(result)).toEqual(result);
+    // A Session message Run's request names its source, and its decision and result echo it.
+    for (const frame of [request, decision, result]) {
+      const fromSessionMessage = { ...frame, source: "session-message" };
+      expect(
+        ClientRuntimeBusinessFrameSchema.safeParse(fromSessionMessage).success ||
+          ServerRuntimeBusinessFrameSchema.safeParse(fromSessionMessage).success,
+      ).toBe(true);
+      expect(RuntimeApprovalRequestSchema.safeParse({ ...request, source: "im" }).success).toBe(false);
+    }
     for (const frame of [request, decision, result]) {
       expect(RuntimeFrameEnvelopeSchema.parse(frame).requestId).toBe(identity.requestId);
     }
@@ -278,6 +287,19 @@ describe("runtime domain contract", () => {
         resultHash: report.resultHash,
       }),
     ).toMatchObject({ status: "recorded" });
+  });
+
+  it("requires the Server's terminal outcome for a superseded report result", () => {
+    const base = {
+      type: "turn:report:result",
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      resultHash: "a".repeat(64),
+    };
+    const superseded = { ...base, status: "superseded", terminalOutcome: "unknown" };
+    expect(ServerRuntimeBusinessFrameSchema.parse(superseded)).toEqual(superseded);
+    expect(ServerRuntimeBusinessFrameSchema.safeParse({ ...base, status: "superseded" }).success).toBe(false);
+    expect(ServerRuntimeBusinessFrameSchema.safeParse({ ...superseded, status: "recorded" }).success).toBe(false);
   });
 
   it("B-02 rejects contradictory discriminated fields", () => {

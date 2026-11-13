@@ -14,8 +14,14 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   Provider-neutral execution contract and Provider support.
 - **[Runtime protocol compatibility](runtime-protocol.md)** — protocol,
   schema, and capability versions between Client and Server.
+- **[Background work](background-work.md)** — how a Run waits for background work,
+  stops at its limit, and tells the Session what became of the work.
+- **[Quota auto-resume](quota-auto-resume.md)** — how work waits for a used-up
+  model subscription window to reset and continues by itself.
 - **[Agent permissions](agent-permissions.md)** — permission modes, command
   rules, and IM approval requests.
+- **[Platform access during a Turn](platform-access-during-a-turn.md)** — what a
+  configuration save and a credential change do to a Turn already running.
 - **[Agent self-configuration](agent-self-configuration.md)** — what an Agent
   may change about itself through the CLI.
 - **[Agent status pipeline](computer-status-pipeline.md)** — single-replica registry,

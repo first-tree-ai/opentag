@@ -21,6 +21,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
+import { runBudgetTimer, scheduleUnrefTimeout } from "../agent-runtime/run-budget-timer.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -29,10 +30,11 @@ import type {
   AgentRuntimeEvent,
   AgentSteerOutcome,
   AgentSteerReceipt,
-  JsonValue,
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import { approvalCommandPresentation, approvalDescription } from "./approval-presentation.js";
+import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import {
   beginChannelTurn,
   type ChannelActivityStore,
@@ -46,8 +48,12 @@ import {
   buildContinuationNotice,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
+  MAX_QUOTA_WAITS,
   MAX_RECORDED_STEERS,
   nextRetry,
+  quotaResumeAt,
+  quotaWaitsAfterRun,
+  RETRY_RESET_AFTER_MS,
   recoverableFailure,
   retryDelayMs,
   retryLimit,
@@ -98,6 +104,8 @@ export interface AgentTurnOutgoingReplyCollector {
 }
 
 export interface AgentTurnRunnerOptions {
+  /** What the Session's earlier Runs left to tell it; a Run reads it first and reports its limit there. */
+  backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   readonly bindingStore: SessionBindingStore;
   readonly connection: Pick<RuntimeConnection, "send"> & {
     capabilityVersion?(capability: string): number | undefined;
@@ -185,7 +193,8 @@ interface RunningTurn {
   readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
   readonly reportVersion: number;
-  phase: "starting" | "running" | "reporting";
+  /** `waiting`: between attempts, for a used-up quota window to reset; steers join the retry input. */
+  phase: "starting" | "running" | "reporting" | "waiting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
   expiresAt?: string;
@@ -218,6 +227,8 @@ export interface TurnCompletion {
   readonly usage?: TurnReportHashInput["usage"];
   /** When a used-up model quota is available again; sent only on Turn report v5. */
   readonly retryAt?: string;
+  /** Client-only: whether a used-up quota is a window that resets (it waits) or billing (it does not). */
+  readonly quotaKind?: "usage_window" | "billing";
 }
 
 interface TurnPhaseTimings {
@@ -241,6 +252,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #backgroundWork: AgentTurnRunnerOptions["backgroundWork"];
   readonly #channelActivity: AgentTurnRunnerOptions["channelActivity"];
   readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
@@ -269,6 +281,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#backgroundWork = options.backgroundWork;
     this.#channelActivity = options.channelActivity;
     this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
@@ -334,6 +347,7 @@ export class AgentTurnRunner {
       return steerResult(request, "rejected", "target_mismatch");
     }
     if (turn.phase === "starting") return steerResult(request, "retry", "turn_starting");
+    if (turn.phase === "waiting") return this.#joinWaitingTurn(turn, request, semanticHash);
     const runtime = turn.runtime;
     if (turn.phase !== "running" || !runtime) {
       return steerResult(request, "deferred", "turn_not_running");
@@ -350,6 +364,34 @@ export class AgentTurnRunner {
     turn.steering.add(steering);
     void steering.finally(() => turn.steering.delete(steering));
     return steering;
+  }
+
+  /**
+   * A Turn waiting for the quota to reset has no Provider process: the message joins its retry input with a steer
+   * receipt, and the resumed attempt runs it once with the rest. Past the steer limit it stays with the Server.
+   */
+  #joinWaitingTurn(
+    turn: RunningTurn,
+    request: RuntimeImSteerRequest,
+    semanticHash: string,
+  ): Promise<RuntimeImSteerResult> {
+    turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
+    const joining = (async () => {
+      const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
+      if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
+      if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+      try {
+        await this.#bindingStore.recordSteer(request, semanticHash);
+      } catch {
+        await this.#retries.removeSteer(request).catch(() => undefined);
+        return steerResult(request, "deferred", "turn_not_running");
+      }
+      return steerResult(request, "steered");
+    })();
+    // The retry reads its input only once this is settled.
+    turn.steering.add(joining);
+    void joining.finally(() => turn.steering.delete(joining));
+    return joining;
   }
 
   async #steerRunningTurn(
@@ -529,15 +571,7 @@ export class AgentTurnRunner {
   ): Promise<void> {
     const owner = turn.owner;
     const details = request.details;
-    const action =
-      details && typeof details === "object" && !Array.isArray(details)
-        ? (details.command ?? details.permissions ?? details.grantRoot ?? details)
-        : details;
-    const description = [
-      ...new Set([request.message, action ? describeApprovalAction(redactSensitive(action)) : undefined]),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const description = approvalDescription(request);
     if (request.kind !== "approval" || description.length === 0 || description.length > 6000) {
       // Cancel unsupported dialogs and refuse requests without a reviewable action.
       const response =
@@ -620,7 +654,9 @@ export class AgentTurnRunner {
     }
     await this.#cleanupOutgoingReplies(turnPlanInput, owner.turnId);
     void this.#reportOwner
-      .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
+      .submit(report, (supersedingOutcome) =>
+        this.#custody.recordResult(owner.turnId, report.resultHash, supersedingOutcome),
+      )
       .catch((error: unknown) => {
         this.#logger.warn(
           {
@@ -649,8 +685,9 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      // An in-place retry follows a model failure and waits first; false when an orderly stop interrupts it.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(retryDelayMs(next.reason), shutdownSignal));
+      // An in-place retry follows a model failure; a 429 or a start failure waits first, a Provider exit does
+      // not. False when an orderly stop interrupts the wait.
+      const ready = next && next !== "deferred" && (await this.#waitBeforeRetry(turn, next, shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -687,11 +724,22 @@ export class AgentTurnRunner {
       ? remainingBudgetMs(owner.request.runtime.budget?.maxDurationMs, await this.#ranMs(turn))
       : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
-    const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
-    timer.unref();
+    const budget = runBudgetTimer(scheduleUnrefTimeout, this.#now, timeoutMs, () => timeout.abort("turn_timeout"));
     const runTime = trackRunTime(this.#now, (ranMs) =>
       this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
     );
+    // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
+    const onQuotaWait = (waiting: boolean): void => {
+      if (waiting) {
+        budget.pause();
+        runTime.pause();
+        return;
+      }
+      budget.resume();
+      runTime.resume();
+      /* v8 ignore next -- a resumed budget always has an expiry. */
+      if (budget.expiresAt !== undefined) turn.expiresAt = new Date(budget.expiresAt).toISOString();
+    };
     if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -723,6 +771,7 @@ export class AgentTurnRunner {
         terminalObserved = true;
       });
       const promptStartedAt = this.#now();
+      const input = await this.#turnInput(turn, runtime, interruption);
       const result = await runtime.prompt({
         runId: owner.turnId,
         ...(await beginChannelTurn(
@@ -736,16 +785,10 @@ export class AgentTurnRunner {
          * preparation, at the last moment before the Run dispatch — never
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
-        input: interruption
-          ? buildRetryAgentInput(
-              owner.request,
-              this.#steersToRepeat(turn, runtime),
-              interruption,
-              new Date(this.#now()),
-              this.#sessionMessages.input,
-            )
-          : buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
+        input,
         signal: runSignal,
+        onQuotaWaitChanged: onQuotaWait,
+        durationLimitInMs: Math.max(1, Date.parse(turn.expiresAt as string) - this.#now()),
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
          * one, so a runtime manager with nothing to inject is never consulted at all.
@@ -787,9 +830,10 @@ export class AgentTurnRunner {
         /* v8 ignore next -- credential teardown is best-effort. */
         await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
       }
-      clearTimeout(timer);
+      budget.cancel();
       turn.unrecordedRunMs = await runTime.finish();
     }
+    await this.#recordRunLimit(owner.request.sessionId, completion);
     if (completion.outcome === "completed") {
       this.#logger.info(
         {
@@ -804,6 +848,32 @@ export class AgentTurnRunner {
     return { completion, ...(turnPlanInput ? { turnPlanInput } : {}) };
   }
 
+  /** A Turn's input, after what the Session's earlier Runs left to tell it. */
+  async #turnInput(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    interruption: Interruption | undefined,
+  ): Promise<AgentInput> {
+    const { request } = turn.owner;
+    const input = interruption
+      ? buildRetryAgentInput(
+          request,
+          this.#steersToRepeat(turn, runtime),
+          interruption,
+          new Date(this.#now()),
+          this.#sessionMessages.input,
+        )
+      : buildAgentInput(request, undefined, undefined, new Date(this.#now()));
+    return (await this.#backgroundWork?.forSession(request.sessionId).prefix(input)) ?? input;
+  }
+
+  async #recordRunLimit(sessionId: string, completion: TurnCompletion): Promise<void> {
+    if (completion.errorReason !== "turn_timeout") return;
+    await this.#backgroundWork
+      ?.forSession(sessionId)
+      .recordRunLimit({ reason: "turn_timeout", at: new Date(this.#now()).toISOString() });
+  }
+
   /**
    * Decide what follows a finished attempt. Returns the recorded
    * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
@@ -815,6 +885,9 @@ export class AgentTurnRunner {
     shutdownSignal: AbortSignal,
   ): Promise<Interruption | "deferred" | undefined> {
     if (completion.outcome === "completed") return undefined;
+    if (completion.errorReason === "provider_quota_exceeded" && completion.quotaKind === "usage_window") {
+      return this.#nextQuotaWait(turn, completion, shutdownSignal);
+    }
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
     // A start failure is retried only when it provably ran nothing.
@@ -830,7 +903,7 @@ export class AgentTurnRunner {
         const ran = withRunTime(current, turn.unrecordedRunMs);
         if (restart) return { ...ran, interruption };
         const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs }, retryLimit(reason));
-        return { ...ran, retries: count, retryRanMs: 0, interruption };
+        return { ...ran, retries: count, retryRanMs: 0, ...quotaWaitsAfterRun(ran), interruption };
       });
     } catch {
       return undefined;
@@ -851,6 +924,57 @@ export class AgentTurnRunner {
   }
 
   /** The retry starts: its interruption is done with. False leaves the failure reported. */
+  /**
+   * A used-up subscription window: record when to resume, the reset plus 2 minutes, and wait for it. A daemon
+   * stop leaves the wait to the restarted daemon, which resumes at that time. Quota waits have their own limit.
+   */
+  async #nextQuotaWait(
+    turn: RunningTurn,
+    completion: TurnCompletion,
+    shutdownSignal: AbortSignal,
+  ): Promise<Interruption | "deferred" | undefined> {
+    const now = this.#now();
+    let interruption: Interruption | undefined;
+    let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
+    try {
+      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
+        const ran = withRunTime(current, turn.unrecordedRunMs);
+        // A run long enough starts both counts over: the quota waits and the automatic retries.
+        const productive = ran.retryRanMs >= RETRY_RESET_AFTER_MS;
+        const waits = productive ? 1 : (ran.quotaWaits ?? 0) + 1;
+        if (waits > MAX_QUOTA_WAITS) return { ...ran, quotaWaits: waits };
+        interruption = {
+          reason: "provider_quota_exceeded",
+          at: new Date(now).toISOString(),
+          resumeAt: quotaResumeAt(completion.retryAt, waits, now),
+        };
+        return { ...ran, ...(productive ? { retries: 0 } : {}), quotaWaits: waits, retryRanMs: 0, interruption };
+      });
+    } catch {
+      return undefined;
+    }
+    if (!record || !interruption) return undefined;
+    this.#logger.info(
+      { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId, resumeAt: interruption.resumeAt },
+      "Turn waits for the model quota to reset",
+    );
+    return shutdownSignal.aborted ? "deferred" : interruption;
+  }
+
+  /** False when an orderly stop ends the wait. During a quota wait, steers join the retry input. */
+  async #waitBeforeRetry(turn: RunningTurn, next: Interruption, shutdownSignal: AbortSignal): Promise<boolean> {
+    if (next.resumeAt) turn.phase = "waiting";
+    const ready = await waitUnlessAborted(this.#retryDelay(next), shutdownSignal);
+    // From here a steer waits for the retry to start, rather than joining its input.
+    if (turn.phase === "waiting") turn.phase = "starting";
+    return ready;
+  }
+
+  #retryDelay(interruption: Interruption): number {
+    if (interruption.resumeAt) return Math.max(0, Date.parse(interruption.resumeAt) - this.#now());
+    return retryDelayMs(interruption.reason);
+  }
+
   async #claimRetry(turn: RunningTurn): Promise<boolean> {
     const { sessionId } = turn.owner.request;
     // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
@@ -1320,8 +1444,15 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
     errorReason: providerTurnFailureReason(result.error?.code),
-    ...(result.error?.retryAt ? { retryAt: result.error.retryAt } : {}),
+    ...quotaFields(result.error),
     ...(result.usage ? { usage: result.usage } : {}),
+  };
+}
+
+function quotaFields(error: AgentRunResult["error"]): Pick<TurnCompletion, "retryAt" | "quotaKind"> {
+  return {
+    ...(error?.retryAt ? { retryAt: error.retryAt } : {}),
+    ...(error?.quotaKind ? { quotaKind: error.quotaKind } : {}),
   };
 }
 
@@ -1387,46 +1518,6 @@ export function completionForError(error: unknown, abortReason: unknown, expired
   }
   if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
-}
-
-function approvalCommandPresentation(details: JsonValue | undefined, message: string | undefined) {
-  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
-  if (typeof details.command !== "string" || details.command.length === 0) return {};
-  return {
-    commandPresentation: {
-      command: redactSensitive(details.command),
-      reason: message && message !== details.command ? redactSensitive(message) : "",
-    },
-  };
-}
-
-function describeApprovalAction(value: JsonValue): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(describeApprovalAction).join("\n");
-  if (value && typeof value === "object") {
-    return Object.entries(value)
-      .filter(
-        ([key]) =>
-          ![
-            "threadId",
-            "turnId",
-            "itemId",
-            "approvalId",
-            "environmentId",
-            "reason",
-            "cwd",
-            "commandActions",
-            "availableDecisions",
-            "proposedExecpolicyAmendment",
-          ].includes(key),
-      )
-      .map(
-        ([key, entry]) =>
-          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${key === "arguments" ? JSON.stringify(entry, null, 2) : describeApprovalAction(entry)}`,
-      )
-      .join("\n");
-  }
-  return String(value);
 }
 
 /**

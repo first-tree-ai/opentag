@@ -27,8 +27,10 @@ On a supported Local Computer or Cloud Agent (after selecting **Create App** on 
 The new App and Bot use the Agent's `name`, rather than its separate `displayName`, with existing Slack name validation
 and length limits. No random suffix is added, and this entry does not rename existing Apps.
 
-1. Paste the generated `/slackauthticket …` command into any channel or DM message composer in the target Slack workspace and send it. Review the official CLI's
-   management permissions, and confirm. Slack may be on another device; there is no localhost browser callback.
+1. Copy the generated `/slackauthticket …` command and paste it into any channel or DM message composer in the target
+   Slack workspace. The read-only field wraps to fit the available width, and copying preserves the command verbatim.
+   If clipboard access fails, openTag selects the full command for manual copying. Send the command, review the official
+   CLI's management permissions, and confirm. Slack may be on another device; there is no localhost browser callback.
 2. Copy the challenge code from the confirmation modal in Slack, paste it into openTag and select **Connect**.
 3. openTag creates and installs the fixed App manifest, saves the Bot Token and Signing Secret through existing
    encrypted storage, and configures Events API and Interactivity. Send the Bot a DM and confirm its reply to verify actual delivery.

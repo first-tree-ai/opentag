@@ -844,6 +844,15 @@ export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "ca
  * Managed instructions describe notices by this exact header, so both sides share one constant.
  */
 export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+export const SESSION_CREATOR_REPORT_NOTICE_HEADER = "[openTag notice] Child Session report delivery";
+export const SESSION_CREATOR_REPORT_REASON = {
+  failed: "creator_report_delivery_failed",
+  unknown: "creator_report_delivery_unknown",
+} as const;
+
+export function isSessionCreatorReportReason(reason: string): boolean {
+  return reason === SESSION_CREATOR_REPORT_REASON.failed || reason === SESSION_CREATOR_REPORT_REASON.unknown;
+}
 
 /** The first line of the Server's notice that an accepted Session message could not be delivered. */
 export const SESSION_DELIVERY_FAILURE_NOTICE_HEADER = "[openTag notice] Session message was not delivered";
@@ -973,6 +982,8 @@ export const AgentTraceBatchSchema = z
     }
   });
 
+const TurnReportOutcomeSchema = z.enum(["completed", "failed", "cancelled", "unknown"]);
+
 export const TurnReportRequestSchema = z
   .object({
     type: z.literal("turn:report"),
@@ -982,7 +993,7 @@ export const TurnReportRequestSchema = z
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
-    outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+    outcome: TurnReportOutcomeSchema,
     executionEffects: z.enum(["not_started", "may_have_occurred", "completed"]),
     finalText: byteString(RUNTIME_FINAL_TEXT_MAX_BYTES, "Final text exceeds the 48 KiB limit", 1).optional(),
     errorReason: TurnFailureReasonSchema.optional(),
@@ -1017,15 +1028,24 @@ export const TurnReportRequestSchema = z
     }
   });
 
-export const TurnReportResultSchema = z
+const TurnReportResultBaseSchema = z
   .object({
     type: z.literal("turn:report:result"),
     requestId: RuntimeRequestIdSchema,
     turnId: RuntimeOpaqueIdSchema,
-    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation", "unsupported_capability"]),
     resultHash: RuntimeSha256Schema,
   })
   .strict();
+
+export const TurnReportResultSchema = z.discriminatedUnion("status", [
+  TurnReportResultBaseSchema.extend({
+    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation", "unsupported_capability"]),
+  }),
+  TurnReportResultBaseSchema.extend({
+    status: z.literal("superseded"),
+    terminalOutcome: TurnReportOutcomeSchema,
+  }),
+]);
 
 export const AgentRuntimeOptionsRequestFrameSchema = z
   .object({
@@ -1383,8 +1403,14 @@ const RuntimeApprovalIdentitySchema = z.object({
   requestId: RuntimeRequestIdSchema,
   turnId: RuntimeOpaqueIdSchema,
   sessionId: RuntimeOpaqueIdSchema,
+  /** The IM delivery of the Turn; with `source: "session-message"`, the Session message whose own Run asks. */
   deliveryId: RuntimeOpaqueIdSchema,
   placementGeneration: z.number().int().positive(),
+  /**
+   * Set only with `runtime.sessionMessageApproval`: the request comes from a Session message Run, which has no IM
+   * input of its own. Absent means an IM Turn. Decisions echo it.
+   */
+  source: z.literal("session-message").optional(),
 });
 export const RuntimeApprovalRequestSchema = RuntimeApprovalIdentitySchema.extend({
   type: z.literal("approval:request"),

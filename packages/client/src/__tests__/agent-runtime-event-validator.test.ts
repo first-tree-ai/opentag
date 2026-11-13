@@ -18,6 +18,8 @@ describe("AgentRunEventValidator", () => {
       { type: "usage_updated", usage: { inputTokens: 0, cachedInputTokens: 1, outputTokens: 2 } },
       { type: "usage_updated", usage: {} },
       { type: "provider_warning", code: "notice", message: "warning" },
+      { type: "quota_wait_changed", waiting: true, resetsAt: "2026-11-12T12:00:00.000Z" },
+      { type: "quota_wait_changed", waiting: false },
       { type: "provider_event", providerId: "test", schemaVersion: 1, payload: { value: true } },
       { type: "model_turn_completed", modelTurnId: "turn-1" },
     ] satisfies AgentProviderRunEvent[]) {
@@ -115,6 +117,28 @@ describe("AgentRunEventValidator", () => {
     ).toThrow();
   });
 
+  it("accepts background work and rejects what it cannot read", () => {
+    const validator = new AgentRunEventValidator();
+    validator.accept({ type: "background_work_changed", items: [{ id: "a", label: "suite", outputPath: "/a" }] });
+    validator.accept({ type: "background_work_changed", items: [{ id: "a", label: "suite" }] });
+    validator.accept({ type: "background_work_finished", id: "a", status: "stopped" });
+    validator.accept({
+      type: "background_work_finished",
+      id: "a",
+      status: "completed",
+      detail: "ok",
+      outputPath: "/a",
+    });
+    for (const event of [
+      { type: "background_work_changed", items: "none" },
+      { type: "background_work_finished", id: "a", status: "running" },
+    ]) {
+      expect(() => validator.accept(event as never)).toThrow(
+        expect.objectContaining({ code: "provider_protocol_error" }),
+      );
+    }
+  });
+
   it("rejects an invalid tool completion status without consuming the active lifecycle", () => {
     const validator = new AgentRunEventValidator();
     validator.accept({ type: "tool_started", toolCallId: "tool", name: "read" });
@@ -129,6 +153,15 @@ describe("AgentRunEventValidator", () => {
     expect(() =>
       validator.accept({ type: "tool_completed", toolCallId: "tool", name: "read", status: "failed" }),
     ).not.toThrow();
+  });
+
+  it.each([
+    [{ type: "quota_wait_changed", waiting: "yes" as unknown as boolean }],
+    [{ type: "quota_wait_changed", waiting: true, resetsAt: "soon" }],
+  ] as AgentProviderRunEvent[][])("rejects an invalid quota wait %j", (event) => {
+    expect(() => new AgentRunEventValidator().accept(event)).toThrowError(
+      expect.objectContaining({ code: "provider_protocol_error" }),
+    );
   });
 
   it("normalizes non-Error validation failures into protocol errors", () => {

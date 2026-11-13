@@ -13,6 +13,7 @@ import { prepareContextTreeHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
+import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
 import type {
@@ -68,6 +69,8 @@ export class SessionRuntimeNotPreparedError extends Error {
 }
 
 export interface SessionRuntimeManagerOptions {
+  /** Follows every Run's event stream, so a Session can be told later what became of its background work. */
+  readonly backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
   readonly cliInvocation?: readonly string[];
@@ -112,6 +115,7 @@ export interface SessionRuntimeManagerOptions {
 }
 
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
+  readonly #backgroundWork?: SessionRuntimeManagerOptions["backgroundWork"];
   readonly #bindingStore: SessionBindingStore;
   readonly #cliCommand: string;
   readonly #cliInvocation?: readonly string[];
@@ -139,6 +143,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   #closePromise?: Promise<void>;
 
   constructor(options: SessionRuntimeManagerOptions) {
+    this.#backgroundWork = options.backgroundWork;
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#cliInvocation = options.cliInvocation;
@@ -314,6 +319,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return managed.sessionKind;
   }
 
+  creatorSessionId(sessionId: string): string | undefined {
+    return this.#sessions.get(sessionId)?.creatorSessionId;
+  }
+
   /** The prepared Session's Agent Runtime provider id; undefined when not prepared. */
   providerId(sessionId: string): string | undefined {
     return this.#sessions.get(sessionId)?.providerId;
@@ -341,6 +350,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         bindingPersisted = true;
         this.#assertOpen();
       }
+      await this.#backgroundWork?.forSession(managed.binding.sessionId).apply(event);
       await managed.eventSink?.(event);
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`

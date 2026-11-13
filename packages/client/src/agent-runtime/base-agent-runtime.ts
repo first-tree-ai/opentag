@@ -1,6 +1,9 @@
 import { createLogger } from "../observability/logger.js";
+import { BackgroundWorkWatch } from "./background-work-watch.js";
 import { AgentProviderError, AgentRuntimeError } from "./errors.js";
 import { AgentRunEventValidator } from "./event-validator.js";
+import type { RunBudgetTimer } from "./run-budget-timer.js";
+import { scheduleRunLimitNotice } from "./run-limit-notice.js";
 import type {
   AgentAbortRequest,
   AgentInteractionRequest,
@@ -51,6 +54,8 @@ interface RunRecord {
   signalCleanup?: () => void;
   abortPromise?: Promise<void>;
   providerTerminalClaimed?: boolean;
+  backgroundWorkWatch?: BackgroundWorkWatch;
+  limitNotice?: RunBudgetTimer;
 }
 
 interface OutstandingInteraction {
@@ -221,6 +226,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     return Promise.reject(new AgentRuntimeError("unsupported_capability", "this runtime does not support steer"));
   }
 
+  /** Puts a platform notice in front of the model; a turn it starts is one the Run started by itself. */
+  protected tellProvider(_text: string): Promise<void> {
+    return Promise.resolve();
+  }
+
   protected respondProvider(_response: AgentInteractionResponse): Promise<void> {
     return Promise.reject(
       new AgentRuntimeError("unsupported_capability", "this runtime does not support interactions"),
@@ -293,6 +303,10 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       await record.admissionEvent;
     }
     let result: AgentRunResult;
+    record.backgroundWorkWatch = new BackgroundWorkWatch({
+      notify: (text) => this.tellProvider(text),
+    });
+    record.limitNotice = scheduleRunLimitNotice(record.request.durationLimitInMs, (text) => this.tellProvider(text));
     try {
       await this.#dispatch({ type: "run_started", runId: record.request.runId });
       const providerExecution = Promise.resolve().then(() => this.executeRun(record.request, this.#context(record)));
@@ -302,6 +316,8 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     } catch (error) {
       result = this.#resultForThrownError(record, error);
     }
+    record.backgroundWorkWatch.stop();
+    record.limitNotice?.cancel();
     record.state = "settling";
     this.#interactions.clear();
     if (!this.#sinkFailure) {
@@ -330,6 +346,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     return {
       runId: record.request.runId,
       signal: record.controller.signal,
+      noteBackgroundProgress: (id) => record.backgroundWorkWatch?.progress(id),
       claimTerminal: () => {
         assertCurrent();
         record.providerTerminalClaimed = true;
@@ -337,7 +354,14 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       emit: async (event: AgentProviderRunEvent) => {
         assertCurrent();
         record.eventValidator.accept(event);
-        await this.#dispatch({ ...event, runId: record.request.runId } as AgentRuntimeEvent);
+        const dispatched = { ...event, runId: record.request.runId } as AgentRuntimeEvent;
+        record.backgroundWorkWatch?.observe(dispatched);
+        if (event.type === "quota_wait_changed") {
+          if (event.waiting) record.limitNotice?.pause();
+          else record.limitNotice?.resume();
+          record.request.onQuotaWaitChanged?.(event.waiting);
+        }
+        await this.#dispatch(dispatched);
       },
       updateBinding: async (binding: AgentRuntimeBinding) => {
         assertCurrent();
@@ -393,7 +417,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       ...(error ? { error } : {}),
       ...(result.diagnostics !== undefined ? { providerDiagnostics: result.diagnostics } : {}),
-      ...(result.abandonedBackgroundWork ? { abandonedBackgroundWork: result.abandonedBackgroundWork } : {}),
+      ...(result.followUpFailure ? { followUpFailure: result.followUpFailure } : {}),
     });
   }
 
@@ -679,6 +703,8 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.allowedUnixSockets ? { allowedUnixSockets: immutableSnapshot(request.allowedUnixSockets) } : {}),
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.durationLimitInMs !== undefined ? { durationLimitInMs: request.durationLimitInMs } : {}),
+    ...(request.onQuotaWaitChanged ? { onQuotaWaitChanged: request.onQuotaWaitChanged } : {}),
     ...(request.compactContext ? { compactContext: true } : {}),
   });
 }

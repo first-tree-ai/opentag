@@ -100,8 +100,8 @@ describe("runtime protocol", () => {
    * v4 adds the Client Run outcome report; a v3 peer negotiates 3 and never exchanges it.
    * The outer Runtime protocol version does not move.
    */
-  it("negotiates Session collaboration v2 with frozen peers, v3 with scheduled peers, and v4 with new peers", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 4 });
+  it("negotiates Session collaboration with v2 through v5 peers", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration]).toEqual({ min: 2, max: 5 });
     expect(RUNTIME_PROTOCOL_VERSION).toBe(RUNTIME_PROTOCOL_V2);
     const frozenV2 = { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 } };
     expect(negotiateRuntimeCapabilities(frozenV2, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({
@@ -117,9 +117,15 @@ describe("runtime protocol", () => {
       ),
     ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 3 });
     expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 4 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.sessionCollaboration]: 4 });
+    expect(
       negotiateRuntimeCapabilities(RUNTIME_SERVER_CAPABILITY_OFFERS, RUNTIME_SERVER_CAPABILITY_OFFERS),
     ).toMatchObject({
-      [RUNTIME_CAPABILITY.sessionCollaboration]: 4,
+      [RUNTIME_CAPABILITY.sessionCollaboration]: 5,
     });
     // A legacy peer without the capability negotiates nothing rather than falling to v1.
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
@@ -258,13 +264,13 @@ describe("runtime protocol", () => {
     );
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
-    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(4);
+    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(5);
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
-    expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(5);
+    expect(negotiated[RUNTIME_CAPABILITY.turnReport]).toBe(6);
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.turnReport]).toEqual({ min: 1, max: 5 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.turnReport]).toEqual({ min: 1, max: 6 });
     expect(
       negotiateRuntimeCapabilities(
         { [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 } },

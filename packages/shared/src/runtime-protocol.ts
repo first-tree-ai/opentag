@@ -39,12 +39,13 @@ export const RUNTIME_V0_CAPABILITIES = {
  * contract (`SessionMessageDeliveryRequestSchema`). Version 3 additionally understands the
  * Server-scheduled origin (`SessionMessageDeliveryRequestV3Schema`): a peer that negotiated only
  * version 2 must never receive a scheduled message. Version 4 adds the Client-to-Server Run outcome
- * report (`SessionMessageOutcomeReportSchema`) and implies version 3. Version checks are `>=`.
+ * report (`SessionMessageOutcomeReportSchema`). Version 5 adds creator report delivery outcomes. Version checks are `>=`.
  * The outer Runtime protocol version does not move for these capability extensions.
  */
 export const RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION = 2 as const;
 export const RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION = 3 as const;
 export const RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION = 4 as const;
+export const RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION = 5 as const;
 
 export const RUNTIME_CAPABILITY = {
   contextTreeSettings: "runtime.contextTreeSettings",
@@ -53,6 +54,7 @@ export const RUNTIME_CAPABILITY = {
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   approvalPresentation: "runtime.approvalPresentation",
+  sessionMessageApproval: "runtime.sessionMessageApproval",
   channelTarget: "runtime.channelTarget",
   selfCheckHeartbeat: "runtime.selfCheckHeartbeat",
   imDelivery: "runtime.imDelivery",
@@ -84,6 +86,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.approvalPresentation]: { min: 1, max: 1 },
+  // v1: `approval:request` may come from a Session message Run (`source: "session-message"`).
+  [RUNTIME_CAPABILITY.sessionMessageApproval]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.selfCheckHeartbeat]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 3 },
@@ -97,7 +101,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.contextTreeExecution]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: {
     min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
-    max: RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
+    max: RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION,
   },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionMessageReconcile]: { min: 1, max: 1 },
@@ -105,8 +109,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.sessionRecovery]: { min: 1, max: 1 },
   // v1: the Client compares Agent configuration per Session, so the Server may run its Sessions concurrently.
   [RUNTIME_CAPABILITY.sessionConfiguration]: { min: 1, max: 1 },
-  // v5 adds `retryAt` to a quota failure.
-  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 5 },
+  // v5 adds `retryAt` to a quota failure. v6 acknowledges a superseded report.
+  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 6 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },

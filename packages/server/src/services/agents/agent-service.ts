@@ -973,7 +973,12 @@ export class AgentService {
       const now = this.#now();
       const [updated] = await transaction
         .update(agents)
-        .set({ status: "suspended", updatedAt: now, revision: sql`${agents.revision} + 1` })
+        .set({
+          status: "suspended",
+          updatedAt: now,
+          revision: sql`${agents.revision} + 1`,
+          accessGeneration: sql`${agents.accessGeneration} + 1`,
+        })
         .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
         .returning();
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before suspension");
@@ -1071,6 +1076,7 @@ export class AgentService {
           .set({
             computerId: target.id,
             revision: sql`${agents.revision} + 1`,
+            accessGeneration: sql`${agents.accessGeneration} + 1`,
             updatedAt: now,
           })
           .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
@@ -1194,7 +1200,12 @@ export class AgentService {
       await this.#deleteMcpBindings(transaction, agentId);
       const [deleted] = await transaction
         .update(agents)
-        .set({ status: "deleted", updatedAt: now, revision: sql`${agents.revision} + 1` })
+        .set({
+          status: "deleted",
+          updatedAt: now,
+          revision: sql`${agents.revision} + 1`,
+          accessGeneration: sql`${agents.accessGeneration} + 1`,
+        })
         .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
         .returning({ id: agents.id });
       if (!deleted) throw this.#lifecycleConflict("The Agent lifecycle changed before deletion");
@@ -1449,6 +1460,7 @@ export class AgentService {
         createdByUserId: targetAccountId,
         computerId: null,
         revision: sql`${agents.revision} + 1`,
+        accessGeneration: sql`${agents.accessGeneration} + 1`,
         updatedAt: now,
       })
       .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))

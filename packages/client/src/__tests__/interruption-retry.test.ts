@@ -93,7 +93,7 @@ describe("interruption classification and continuation", () => {
 
   it("states the reason and how to continue", () => {
     expect(buildContinuationNotice({ reason: "client_shutdown", at: "2026-11-05T01:00:00.000Z" })).toBe(
-      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry). Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry). Your conversation history is intact: continue from where you stopped, and do not redo steps already completed. Check your history for the work already done, including replies already sent, and do not repeat replies or side effects that already happened. The original request follows for reference; it may duplicate a message already in your history and is not a new request.",
     );
     expect(buildContinuationNotice({ reason: "daemon_crash", at: "T" })).toContain(
       "interrupted at or before T because the OpenTag daemon stopped (crash, power loss, restart, or upgrade) (automatic retry).",

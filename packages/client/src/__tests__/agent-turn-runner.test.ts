@@ -1840,7 +1840,7 @@ describe("AgentTurnRunner", () => {
     await runner.settled();
   });
 
-  it("steers only a matching running root and reuses the durable receipt", async () => {
+  it.each([false, true])("steers matching roots and replays receipts (retry store: %s)", async (withStore) => {
     let resolvePrompt!: (result: AgentRunResult) => void;
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
@@ -1920,7 +1920,9 @@ describe("AgentTurnRunner", () => {
         }),
       } as unknown as ImResourceFetcher,
       credentialEnvironment: credentialEnvironment(),
-      retries: { appendSteer, removeSteer: vi.fn(async () => undefined), update: vi.fn(async () => undefined) },
+      ...(withStore
+        ? { retries: { appendSteer, removeSteer: vi.fn(async () => undefined), update: vi.fn(async () => undefined) } }
+        : {}),
     });
     const request = steerRequest();
     runner.start(liveOwner(delivery()));
@@ -1967,7 +1969,7 @@ describe("AgentTurnRunner", () => {
     });
     expect(steer).toHaveBeenCalledTimes(3);
     expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
-    expect(appendSteer).toHaveBeenCalledTimes(3);
+    if (withStore) expect(appendSteer).toHaveBeenCalledTimes(3);
     expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
     await expect(
       runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-6", expectedTurnId: "turn-other" }),

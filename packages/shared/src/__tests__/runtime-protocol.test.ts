@@ -270,7 +270,7 @@ describe("runtime protocol", () => {
     );
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
-    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(5);
+    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(6);
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);

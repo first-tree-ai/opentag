@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { connect as connectSocket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeExecutionSource } from "@opentag/shared";
@@ -410,6 +411,148 @@ describe("MCP gateway preparation", () => {
       });
       expect(upstreamDown.status).toBe(502);
     } finally {
+      await credentials.close();
+    }
+  });
+
+  it("propagates downstream client cancellation and gateway shutdown to in-flight upstream fetches", async () => {
+    const relay = fakeRelay("exec-mcp", async () => ({
+      token: "otmg_initial",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const upstreamSignals: AbortSignal[] = [];
+    const notifyUpstreamStarted: Array<() => void> = [];
+    const upstreamFetch = vi.fn<typeof fetch>((_url, init) => {
+      const signal = init?.signal;
+      if (signal) {
+        upstreamSignals.push(signal);
+      }
+      notifyUpstreamStarted.shift()?.();
+      return new Promise<Response>((_resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason ?? new Error("aborted"));
+          return;
+        }
+        signal?.addEventListener(
+          "abort",
+          () => {
+            reject(signal.reason ?? new Error("aborted"));
+          },
+          { once: true },
+        );
+      });
+    });
+
+    const credentials = await manager(await home(), true, upstreamFetch);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      const gatewayUrl = prepared.mcp?.url ?? "";
+      const gatewayToken = prepared.mcp?.token ?? "";
+
+      // 1. Downstream client cancellation aborts the upstream fetch signal:
+      const firstStarted = new Promise<void>((resolve) => {
+        notifyUpstreamStarted.push(resolve);
+      });
+      const downstreamAbort = new AbortController();
+      const firstRequest = fetch(gatewayUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${gatewayToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
+        signal: downstreamAbort.signal,
+      }).catch((error: unknown) => error);
+
+      await firstStarted;
+      expect(upstreamSignals).toHaveLength(1);
+      expect(upstreamSignals[0]?.aborted).toBe(false);
+
+      const firstAborted = new Promise<void>((resolve) => {
+        upstreamSignals[0]?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      downstreamAbort.abort();
+      await firstRequest;
+      await firstAborted;
+      expect(upstreamSignals[0]?.aborted).toBe(true);
+
+      // 2. Gateway shutdown (cleanup) aborts in-flight upstream requests:
+      const secondStarted = new Promise<void>((resolve) => {
+        notifyUpstreamStarted.push(resolve);
+      });
+      const secondRequest = fetch(gatewayUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${gatewayToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call" }),
+      }).catch((error: unknown) => error);
+
+      await secondStarted;
+      expect(upstreamSignals).toHaveLength(2);
+      expect(upstreamSignals[1]?.aborted).toBe(false);
+
+      await credentials.cleanup("session-1", prepared.executionId);
+      expect(upstreamSignals[1]?.aborted).toBe(true);
+      await secondRequest;
+    } finally {
+      await credentials.close();
+    }
+  });
+
+  it("rejects malformed or non-origin request targets with 400 without unhandled rejections", async () => {
+    const relay = fakeRelay("exec-mcp", async () => ({
+      token: "otmg_initial",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    const credentials = await manager(await home(), true);
+    try {
+      mocks.relayOpen.mockResolvedValueOnce(relay);
+      mocks.adapterStart.mockImplementationOnce(async () => ({
+        caCertPath: "/tmp/fake-ca.pem",
+        connectProxyUrl: "http://127.0.0.1:0",
+        slackApiHost: undefined,
+        close: vi.fn(async () => undefined),
+      }));
+      const prepared = await credentials.prepare(request("session-1"));
+      const parsedUrl = new URL(prepared.mcp?.url ?? "");
+      const port = Number(parsedUrl.port);
+
+      const sendRawRequest = (requestLine: string): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const socket = connectSocket({ host: "127.0.0.1", port });
+          const chunks: Buffer[] = [];
+          socket.on("error", reject);
+          socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+          socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+          socket.write(`${requestLine}\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+        });
+
+      const malformedAbsolute = await sendRawRequest("POST http://[ HTTP/1.1");
+      expect(malformedAbsolute).toContain("HTTP/1.1 400 Bad Request");
+      expect(malformedAbsolute).toContain('{"error":"bad_request"}');
+
+      const authorityRelative = await sendRawRequest("POST //evil.example/api/v1/mcp HTTP/1.1");
+      expect(authorityRelative).toContain("HTTP/1.1 400 Bad Request");
+      expect(authorityRelative).toContain('{"error":"bad_request"}');
+
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
       await credentials.close();
     }
   });

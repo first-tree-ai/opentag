@@ -1906,7 +1906,7 @@ describe("Runner cancellation and connection lifetime", () => {
       | undefined;
     // The Runner requests v3; this Server only echoes v1, so the negotiated fence is version 1
     // and ordinary Session frames still flow.
-    expect(auth?.sessionCollaborationVersion).toBe(3);
+    expect(auth?.sessionCollaborationVersion).toBe(4);
     const runtime = cloudDeliveryFixture().runtime;
     const messageId = randomUUID();
     wss.send({

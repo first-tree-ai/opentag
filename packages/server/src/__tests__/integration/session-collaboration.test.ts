@@ -8,6 +8,7 @@ import type {
 } from "@opentag/shared";
 import {
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
   SESSION_CREATOR_REPORT_NOTICE_HEADER,
   SESSION_CREATOR_REPORT_REASON,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
@@ -841,19 +842,21 @@ describe("Session collaboration authority", () => {
           content: "stale",
         }),
       ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_STALE" });
-      const crossScopeId = randomUUID();
-      await expect(
-        fixture.sessions.authorizeAndRecordMessage({
-          messageId: crossScopeId,
-          sourceSessionId: source.session.id,
-          sourceInstallationId: fixture.installationId,
-          sourceConnectionInstanceId: fixture.connectionInstanceId,
-          sourceComputerId: fixture.computerId,
-          sourcePlacementGeneration: 1,
-          targetSessionId: otherScope.session.id,
-          content: "cross scope",
-        }),
-      ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
+      const crossScope = await fixture.sessions.authorizeAndRecordMessage({
+        messageId: randomUUID(),
+        sourceSessionId: source.session.id,
+        sourceInstallationId: fixture.installationId,
+        sourceConnectionInstanceId: fixture.connectionInstanceId,
+        sourceComputerId: fixture.computerId,
+        sourcePlacementGeneration: 1,
+        targetSessionId: otherScope.session.id,
+        content: "cross scope",
+      });
+      expect(crossScope.route.targetSessionId).toBe(otherScope.session.id);
+      await expect(fixture.sessions.resolveMessageProvenance(crossScope.message)).resolves.toMatchObject({
+        source: { sessionId: source.session.id },
+        target: { sessionId: otherScope.session.id },
+      });
       await fixture.database
         .update(sessions)
         .set({ endedAt: new Date() })
@@ -893,7 +896,7 @@ describe("Session collaboration authority", () => {
           content: "owner mismatch",
         }),
       ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
-      for (const messageId of [staleId, crossScopeId, endedId, ownerMismatchId]) {
+      for (const messageId of [staleId, endedId, ownerMismatchId]) {
         expect(await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId))).toEqual(
           [],
         );
@@ -1486,8 +1489,12 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
-        capabilityVersion: (_computer, _instance, capability) =>
-          capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
+        capabilityVersion: (_computer: string, _instance: string, capability: string) => {
+          if (capability === RUNTIME_CAPABILITY.sessionMessageReconcile) return options.inlineMessages ? 1 : undefined;
+          return capability === RUNTIME_CAPABILITY.sessionCollaboration
+            ? RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION
+            : 2;
+        },
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },

@@ -35,7 +35,7 @@ export interface CloudConnectionRecord {
   /** Exact negotiated Runner collaboration version; 0 means the capability was not negotiated. */
   readonly githubUserTaskVersion?: 1;
   contextTreeExecutionVersion?: 1;
-  readonly sessionCollaborationVersion: 0 | 1 | 2 | 3;
+  readonly sessionCollaborationVersion: 0 | 1 | 2 | 3 | 4;
   /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
    * authority chain was inactive at handshake) sets false: existing custody may still be settled
@@ -79,7 +79,7 @@ export class CloudRuntimeFence {
     githubUserTaskVersion?: 1;
     contextTreeExecutionVersion?: 1;
     sessionCollaborationEligible?: boolean;
-    sessionCollaborationVersion?: 1 | 2 | 3;
+    sessionCollaborationVersion?: 1 | 2 | 3 | 4;
   }): CloudConnectionRecord {
     this.detachSandbox(input.scope.sandboxId);
     // Legacy test/recovery callers that only supplied eligibility represent a v1 connection.

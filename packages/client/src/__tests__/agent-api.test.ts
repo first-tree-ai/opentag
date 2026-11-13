@@ -234,6 +234,21 @@ describe("OpenTagApi Agent methods", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(10);
   });
 
+  it("lists the Agent's Sessions with the proof and only the flags it was given", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ items: [] }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.listAgentSessions("proof", { limit: 5 })).resolves.toEqual({ items: [] });
+    await api.listAgentSessions("proof", { limit: 5, visibleOnly: true, cursor: "next" });
+
+    const [plain, filtered] = fetchImpl.mock.calls;
+    expect(String(plain?.[0])).toContain("/runtime/agent-sessions?limit=5");
+    expect(String(plain?.[0])).not.toContain("visibleOnly");
+    expect(new Headers(plain?.[1]?.headers).get("x-opentag-session-proof")).toBe("proof");
+    expect(String(filtered?.[0])).toContain("cursor=next");
+    expect(String(filtered?.[0])).toContain("visibleOnly=true");
+  });
+
   it("gets a stop's answer from the Server before its own request times out", () => {
     expect(SESSION_STOP_ANSWER_BUDGET_MS).toBeLessThan(OPEN_TAG_API_REQUEST_TIMEOUT_MS);
   });

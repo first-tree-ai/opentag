@@ -10,7 +10,6 @@ import {
   type ProviderOperationMatch,
   type ProviderOperationRegistry,
   ProviderProxyBodyTooLargeError,
-  redactProxyPath,
 } from "./operation-registry.js";
 import type { RuntimeProviderMaterial } from "./provider-material.js";
 import {
@@ -149,7 +148,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
           code: "PROVIDER_PROXY_PASSTHROUGH",
           provider: request.provider,
           method: match.operation.method,
-          path: redactProxyPath(request.path),
+          path: match.operation.auditPath?.(request.path) ?? "{redacted}",
         },
         "Provider proxy passthrough request",
       );

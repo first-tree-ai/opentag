@@ -3,8 +3,8 @@ import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { parseServerConfig } from "../config.js";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
-import { FEISHU_OPERATIONS, FEISHU_PASSTHROUGH } from "../runtime-credentials/feishu-operations.js";
-import { ProviderOperationRegistry, redactProxyPath } from "../runtime-credentials/operation-registry.js";
+import { FEISHU_OPERATIONS, FEISHU_PASSTHROUGH, redactFeishuPath } from "../runtime-credentials/feishu-operations.js";
+import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import {
   ImProviderProxyAdapter,
   type ProviderProxyRequest,
@@ -147,11 +147,24 @@ describe("Feishu passthrough registry", () => {
       ["POST", "/open-apis/drive/%2e/v1/files"],
       ["POST", "/open-apis/im/v1/messages/om_123/reply#frag"],
       ["POST", "/open-apis/im/v1/%6dessages?receive_id_type=chat_id"],
+      ["POST", "/open-apis/im/v1/messages%2Dx"],
+      ["POST", "/open-apis/im/v1/messages;x?receive_id_type=chat_id"],
+      ["POST", "/open-apis/im/v1/messages%3Bx?receive_id_type=chat_id"],
       ["POST", "/open-apis/im/v1/messages/"],
       ["GET", "/open-apis/im/v1/messages/om_1?x=#y"],
       ["GET", "/open-apis/im/v1/messages/%2e%2e"],
     ] as const) {
       expect(registry.match(method, path), `${method} ${path}`).toBeUndefined();
+    }
+  });
+
+  it("admits Sheets A1 range segments, raw or encoded", () => {
+    for (const path of [
+      "/open-apis/sheets/v2/spreadsheets/shtcnAbc/values/0b12cd!A1:B2",
+      "/open-apis/sheets/v2/spreadsheets/shtcnAbc/values/0b12cd%21A1%3AB2",
+      "/open-apis/sheets/v2/spreadsheets/shtcnAbc/values/'Sheet%201'!A1:B2",
+    ]) {
+      expect(registry.match("GET", path)?.operation.operationId, path).toBe("feishu.passthrough");
     }
   });
 
@@ -162,25 +175,35 @@ describe("Feishu passthrough registry", () => {
   });
 
   it("redacts identifier-like path segments for audit logs", () => {
-    expect(redactProxyPath("/open-apis/bitable/v1/apps/bascnAbC123/tables/tblXyZ/records?page_token=secret")).toBe(
+    expect(redactFeishuPath("/open-apis/bitable/v1/apps/bascnAbC123/tables/tblXyZ/records?page_token=secret")).toBe(
       "/open-apis/bitable/v1/apps/{id}/tables/{id}/records",
     );
-    expect(redactProxyPath("/open-apis/im/v1/chats/oc_0123abcd/members")).toBe("/open-apis/im/v1/chats/{id}/members");
-    expect(redactProxyPath("/open-apis/docx/v1/documents/doxcn1/raw_content")).toBe(
+    expect(redactFeishuPath("/open-apis/im/v1/chats/oc_0123abcd/members")).toBe("/open-apis/im/v1/chats/{id}/members");
+    expect(redactFeishuPath("/open-apis/docx/v1/documents/doxcn1/raw_content")).toBe(
       "/open-apis/docx/v1/documents/{id}/raw_content",
     );
     // Identifier positions are redacted whatever their shape, including lowercase words.
-    expect(redactProxyPath("/open-apis/contact/v3/users/alice?user_id_type=user_id")).toBe(
+    expect(redactFeishuPath("/open-apis/contact/v3/users/alice?user_id_type=user_id")).toBe(
       "/open-apis/contact/v3/users/{id}",
     );
-    expect(redactProxyPath("/open-apis/contact/v3/users/synthetic-private-user/x_y")).toBe(
-      "/open-apis/contact/v3/users/{id}/x_y",
+    expect(redactFeishuPath("/open-apis/contact/v3/users/synthetic-private-user/x_y")).toBe(
+      "/open-apis/contact/v3/users/{id}/{id}",
     );
-    expect(redactProxyPath("/open-apis/drive/explorer/v2/root_folder/meta")).toBe(
-      "/open-apis/drive/explorer/v2/root_folder/{id}",
+    expect(redactFeishuPath("/open-apis/drive/explorer/v2/root_folder/meta")).toBe(
+      "/open-apis/drive/explorer/v2/root_folder/meta",
     );
-    expect(redactProxyPath("/open-apis/im/v1/Messages/om_1")).toBe("/open-apis/im/v1/{id}/{id}");
-    expect(redactProxyPath("/open-apis/alice/bob")).toBe("/open-apis/{id}/{id}");
+    expect(redactFeishuPath("/open-apis/im/v1/Messages/om_1")).toBe("/open-apis/im/v1/{id}/{id}");
+    expect(redactFeishuPath("/open-apis/alice/bob")).toBe("/open-apis/{id}/{id}");
+    // Routes that do not alternate resource and identifier segments.
+    expect(redactFeishuPath("/open-apis/drive/v1/export_tasks/file/syntheticsecret/download")).toBe(
+      "/open-apis/drive/v1/export_tasks/file/{id}/download",
+    );
+    expect(redactFeishuPath("/open-apis/docx/v1/chats/oc_1/announcement/blocks/doxblk/children")).toBe(
+      "/open-apis/docx/v1/chats/{id}/announcement/blocks/{id}/children",
+    );
+    expect(redactFeishuPath("/open-apis/sheets/v2/spreadsheets/shtcn1/values/0b12!A1:B2")).toBe(
+      "/open-apis/sheets/v2/spreadsheets/{id}/values/{id}",
+    );
   });
 });
 

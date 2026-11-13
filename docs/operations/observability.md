@@ -312,8 +312,8 @@ capabilities, and identities.
 
 Each provider proxy call forwarded by the passthrough rule rather than an explicit operation emits one
 `info` record with `code="PROVIDER_PROXY_PASSTHROUGH"`, `provider`, `method`, and a redacted `path`. The
-path keeps only the namespace words, the version, and the lowercase words in resource positions after it;
-every identifier position becomes `{id}` whatever its shape, and a path without a version segment is
+path keeps only `open-apis`, the domain word, the version, and words from a fixed list of Feishu route
+words; every other segment becomes `{id}` whatever its shape, and a path without a version segment is
 redacted entirely. The record never carries the query string, request or response bodies, headers,
 capabilities, or tokens.
 

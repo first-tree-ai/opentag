@@ -115,9 +115,10 @@ special handling: the tenant token endpoint is answered locally with an executio
 bot info is the only call a validation-purpose capability may make, and message create and reply feed the outbound
 message capture. Any other call under `/open-apis/` with `GET`, `POST`, `PUT`, `PATCH` or `DELETE` is forwarded to the
 bound brand's fixed origin, so the Feishu App's own scopes are the only limit. The `auth` and `authen` domains stay
-refused with `operation_not_registered`. A forwarded path must consist of plain segments: percent-encodings, empty
-(trailing) segments, fragments and dot segments, encoded or not, are refused, so the path checked against the explicit
-table and the denylist is exactly the path sent to Feishu. A forwarded `GET` is a read; any other method is a write with exactly one
+refused with `operation_not_registered`. A forwarded path must route exactly as written: empty (trailing) segments,
+fragments, `;`, dot segments (encoded or not), and percent-escapes of letters, digits, `-`, `.`, `_`, `~` or `;` are
+refused, so the path checked against the explicit table and the denylist is the path Feishu routes. Other RFC 3986
+path characters and escapes stay allowed, so Sheets A1 ranges such as `sheet!A1:B2` work raw or encoded. A forwarded `GET` is a read; any other method is a write with exactly one
 upstream attempt, and an outcome the proxy cannot confirm is reported as `write_outcome_unknown`, never retried.
 Forwarded request bodies are passed through byte for byte: multipart bodies as a stream, others buffered up to
 1 MiB. A JSON response is parsed (up to 10 MiB) so writes can be classified by Feishu's `code`; any other response,

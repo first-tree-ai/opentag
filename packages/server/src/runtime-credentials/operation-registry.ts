@@ -22,6 +22,8 @@ export interface ProviderOperation {
   response: ProviderOperationResponse;
   /** Generic operation supplied by a passthrough rule rather than the explicit table. */
   passthrough?: boolean;
+  /** Identifier-free form of a request path for the passthrough audit log; never includes the query. */
+  auditPath?(path: string): string;
   /** Read-only identity operations a validation-purpose capability may call. */
   validationAllowed?: boolean;
   maxBodyBytes?: number;
@@ -174,27 +176,4 @@ export async function bufferProxyBody(body: AsyncIterable<Uint8Array>, maxBytes:
     offset += chunk.byteLength;
   }
   return merged;
-}
-
-const STATIC_ROUTE_WORD = /^[a-z]+(?:_[a-z]+)*$/;
-const VERSION_SEGMENT = /^v\d+$/;
-
-/**
- * Feishu path for audit logs. Feishu routes read `/open-apis/<namespace...>/<version>/` followed
- * by alternating resource and identifier segments, so only the namespace words, the version, and
- * resource-position words are kept; every identifier-position segment becomes `{id}` whatever its
- * shape, as does every segment of a path without a version. Never logs query values.
- */
-export function redactProxyPath(path: string): string {
-  const [pathname = ""] = path.split("?", 1);
-  const segments = pathname.split("/").slice(1);
-  const versionIndex = segments.findIndex((segment) => VERSION_SEGMENT.test(segment));
-  const redacted = segments.map((segment, index) => {
-    if (index === 0 && segment === "open-apis") return segment;
-    if (versionIndex < 0) return "{id}";
-    if (index <= versionIndex) return index === versionIndex || STATIC_ROUTE_WORD.test(segment) ? segment : "{id}";
-    const resourcePosition = (index - versionIndex) % 2 === 1;
-    return resourcePosition && STATIC_ROUTE_WORD.test(segment) ? segment : "{id}";
-  });
-  return `/${redacted.join("/")}`;
 }

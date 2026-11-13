@@ -96,10 +96,12 @@ export function createRunnerPerformanceStderrSink(
   return (record) => {
     try {
       const defaults = defaultMetrics?.() ?? {};
+      const explicitRunnerVersion =
+        record.runnerVersion && record.runnerVersion !== "unknown" ? record.runnerVersion : undefined;
       const merged: RunnerPerformanceLogRecord = {
         ...defaults,
         ...record,
-        runnerVersion: record.runnerVersion || defaults.runnerVersion || "unknown",
+        runnerVersion: explicitRunnerVersion || defaults.runnerVersion || "unknown",
       };
       write(`${JSON.stringify(merged)}\n`);
     } catch {

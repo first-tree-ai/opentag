@@ -1292,6 +1292,19 @@ describe("Runner cancellation and connection lifetime", () => {
       stopType: "worker_exit",
     });
     expect(diagnostics[0]).toHaveProperty("runnerVersion");
+    const runnerPerfLogs = output.chunks.stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.module === "cloud-runner");
+    expect(runnerPerfLogs).toContainEqual(
+      expect.objectContaining({
+        operation: "runner.connection.auth",
+        connectionOutcome: "welcomed",
+        runnerVersion: "1.0.0",
+      }),
+    );
     expect(JSON.stringify(diagnostics)).not.toMatch(/unit-execution-token|ephemeral-proof/);
     await waitFor(() => workerInputs.length === 1, "single cloud worker");
     // The worker stdin never carries any trusted (private/journal) host path from the Runner state root.

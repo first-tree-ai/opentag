@@ -612,6 +612,97 @@ describe("Feishu adapter", () => {
       await expect(racedAdapter.validateBinding(microtaskAbort.signal)).rejects.toThrow("FEISHU_MICROTASK_ABORT");
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(racedAdapter.channel.botIdentity).toBeUndefined();
+
+      // Independent wsHandshakeMs and botInfoMs timing under both readiness orders
+      const { createPerformanceLogger: createIsolatedPerformanceLogger } = await import("../observability/index.js");
+      vi.useFakeTimers();
+      try {
+        const perfLogs: Array<Record<string, unknown>> = [];
+        const perfSink = {
+          info: (obj: Record<string, unknown>) => perfLogs.push(obj),
+          warn: (obj: Record<string, unknown>) => perfLogs.push(obj),
+          error: (obj: Record<string, unknown>) => perfLogs.push(obj),
+          debug: (obj: Record<string, unknown>) => perfLogs.push(obj),
+          child() {
+            return this;
+          },
+        };
+        const perfLogger = createIsolatedPerformanceLogger(() => perfSink as never, {
+          enabled: true,
+          level: "debug",
+          slowThresholdMs: 50,
+        });
+
+        // Order 1: WebSocket ready in 10ms, Bot info ready in 100ms
+        let resolveBot1!: () => void;
+        outbound.connect.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveBot1 = resolve;
+            }),
+        );
+        const startSpy = vi.spyOn(FakeWsClient.prototype, "start").mockImplementationOnce(async function (
+          this: FakeWsClient,
+        ) {
+          FakeWsClient.startCalls += 1;
+          setTimeout(() => this.options.onReady?.(), 10);
+        });
+        const order1Adapter = new module.FeishuAdapter({
+          appId: "cli_order_1",
+          appSecret: "secret",
+          teamId: null,
+          performanceLogger: perfLogger,
+        });
+        const order1Promise = order1Adapter.validateBinding();
+        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTimeAsync(90);
+        resolveBot1();
+        await order1Promise;
+        const order1Completed = perfLogs.find(
+          (entry) => entry.operation === "external.feishu.channel.connect" && entry.outcome === "completed",
+        );
+        expect(order1Completed).toMatchObject({
+          wsHandshakeMs: 10,
+          botInfoMs: 100,
+          slow: true,
+        });
+
+        // Order 2: Bot info ready in 10ms, WebSocket ready in 100ms
+        perfLogs.length = 0;
+        let resolveBot2!: () => void;
+        outbound.connect.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveBot2 = resolve;
+            }),
+        );
+        startSpy.mockImplementationOnce(async function (this: FakeWsClient) {
+          FakeWsClient.startCalls += 1;
+          setTimeout(() => this.options.onReady?.(), 100);
+        });
+        const order2Adapter = new module.FeishuAdapter({
+          appId: "cli_order_2",
+          appSecret: "secret",
+          teamId: null,
+          performanceLogger: perfLogger,
+        });
+        const order2Promise = order2Adapter.validateBinding();
+        await vi.advanceTimersByTimeAsync(10);
+        resolveBot2();
+        await vi.advanceTimersByTimeAsync(90);
+        await order2Promise;
+        const order2Completed = perfLogs.find(
+          (entry) => entry.operation === "external.feishu.channel.connect" && entry.outcome === "completed",
+        );
+        expect(order2Completed).toMatchObject({
+          botInfoMs: 10,
+          wsHandshakeMs: 100,
+          slow: true,
+        });
+        startSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
     } finally {
       vi.doUnmock("@larksuiteoapi/node-sdk");
       vi.resetModules();

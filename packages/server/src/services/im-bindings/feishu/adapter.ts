@@ -474,6 +474,8 @@ class ReliableFeishuChannel implements FeishuChannel {
   readonly #ready: Promise<void>;
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
+  #wsStartedMono?: number;
+  #wsHandshakeMs?: number;
   #started = false;
   #closed = false;
 
@@ -514,7 +516,12 @@ class ReliableFeishuChannel implements FeishuChannel {
       source: "opentag",
       handshakeTimeoutMs: 15_000,
       onReady: () => {
-        if (!this.#closed) this.#resolveReady();
+        if (!this.#closed) {
+          if (this.#wsHandshakeMs === undefined && this.#wsStartedMono !== undefined) {
+            this.#wsHandshakeMs = Math.round((performance.now() - this.#wsStartedMono) * 100) / 100;
+          }
+          this.#resolveReady();
+        }
       },
       onError: (error) => this.#onConnectionError(error),
       onReconnecting: () => this.#handlers.reconnecting?.(),
@@ -530,6 +537,7 @@ class ReliableFeishuChannel implements FeishuChannel {
     try {
       if (!this.#started) {
         this.#started = true;
+        this.#wsStartedMono = performance.now();
         void this.#wsClient
           .start({ eventDispatcher: this.#dispatcher })
           .catch((error: unknown) => this.#onConnectionError(error));
@@ -565,10 +573,13 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 
   async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
-    const startedMono = performance.now();
+    const botStartedMono = performance.now();
+    let botInfoMs: number | undefined;
     const outboundPromise = this.#outbound.connect();
     void outboundPromise.then(
       async () => {
+        botInfoMs = Math.round((performance.now() - botStartedMono) * 100) / 100;
+        setCurrentPerformanceAttributes({ botInfoMs });
         if (state.cancelled || this.#closed || signal?.aborted) {
           this.botIdentity = undefined;
           await this.#outbound.disconnect().catch(() => undefined);
@@ -576,16 +587,22 @@ class ReliableFeishuChannel implements FeishuChannel {
       },
       () => undefined,
     );
+    void this.#ready.then(
+      () => {
+        if (this.#wsHandshakeMs !== undefined) {
+          setCurrentPerformanceAttributes({ wsHandshakeMs: this.#wsHandshakeMs });
+        }
+      },
+      () => undefined,
+    );
     await outboundPromise;
-    setCurrentPerformanceAttributes({
-      botInfoMs: Math.round((performance.now() - startedMono) * 100) / 100,
-    });
     if (state.cancelled || this.#closed || signal?.aborted) {
       await this.#failAbortedConnect(signal);
     }
     await this.#ready;
     setCurrentPerformanceAttributes({
-      wsHandshakeMs: Math.round((performance.now() - startedMono) * 100) / 100,
+      ...(botInfoMs !== undefined ? { botInfoMs } : {}),
+      ...(this.#wsHandshakeMs !== undefined ? { wsHandshakeMs: this.#wsHandshakeMs } : {}),
     });
     if (state.cancelled || this.#closed || signal?.aborted) {
       await this.#failAbortedConnect(signal);
@@ -741,9 +758,10 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    const activeOperation = getCurrentPerformanceContext()?.operation;
+    const activeContext = getCurrentPerformanceContext();
+    const activeOperation = activeContext?.operation;
     const alreadyTracedByOuterPolicy =
-      this.#policy.isActive() ||
+      Boolean(activeContext && this.#policy.isActive() && this.#policy.performanceLogger?.config.enabled) ||
       activeOperation === "external.feishu.connection.validate" ||
       activeOperation === "external.feishu.binding.validate";
     if (alreadyTracedByOuterPolicy) {

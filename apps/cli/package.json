@@ -58,8 +58,8 @@
     "@opentag/mcp-presets": "workspace:*",
     "@opentag/shared": "workspace:*",
     "@types/ws": "^8.18.1",
-    "commander": "^15.0.0",
-    "vitest": "^5.0.1",
+    "commander": "^15.1.0",
+    "vitest": "^5.1.0",
     "ws": "^8.21.3",
     "zod": "4.5.4"
   }

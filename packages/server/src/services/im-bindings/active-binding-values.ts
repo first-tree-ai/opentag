@@ -26,6 +26,7 @@ export interface FeishuActivationInput {
     enterpriseId: string | null;
     botId: string;
     teamBrand: string | null;
+    ownerExternalUserId?: string;
   };
   credential: FeishuCredential;
 }
@@ -41,6 +42,7 @@ export function activeBindingValues(
       enterpriseId: string | null;
       botId: string;
       teamBrand: string | null;
+      ownerExternalUserId?: string;
     };
     credential: { grantedScopes: string[] };
   },
@@ -57,6 +59,8 @@ export function activeBindingValues(
     externalEnterpriseId: input.identity.enterpriseId,
     externalBotId: input.identity.botId,
     externalTeamBrand: input.identity.teamBrand,
+    // Recorded only when the provider reported it: a reauthorization without one keeps the stored value.
+    ...(input.identity.ownerExternalUserId ? { ownerExternalUserId: input.identity.ownerExternalUserId } : {}),
     ...storedBotProfile(input.profile),
     credentialSchemaVersion: 1,
     credentialGeneration: generation,

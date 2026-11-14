@@ -157,8 +157,9 @@ describe("Feishu setup failure classification", () => {
 describe("FeishuSetupService persistence", () => {
   it("creates and reuses an owned QR attempt, then completes activation", async () => {
     const value = await setupFixture();
-    let resolveResult!: (result: { appId: string; appSecret: string; teamBrand: "feishu" }) => void;
-    const result = new Promise<{ appId: string; appSecret: string; teamBrand: "feishu" }>((resolve) => {
+    type Result = { appId: string; appSecret: string; teamBrand: "feishu"; ownerOpenId: string };
+    let resolveResult!: (result: Result) => void;
+    const result = new Promise<Result>((resolve) => {
       resolveResult = resolve;
     });
     const gateway: FeishuRegistrationGateway = {
@@ -204,9 +205,12 @@ describe("FeishuSetupService persistence", () => {
     });
     const reused = await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
     expect(reused.id).toBe(first.id);
-    resolveResult({ appId: "cli_setup", appSecret: "secret", teamBrand: "feishu" });
+    resolveResult({ appId: "cli_setup", appSecret: "secret", teamBrand: "feishu", ownerOpenId: "ou_owner" });
     await vi.waitFor(async () => {
       expect(activation.activateAtomicAttempt).toHaveBeenCalledTimes(1);
+      expect(activation.activateAtomicAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({ appId: "cli_setup", ownerOpenId: "ou_owner" }),
+      );
       const [row] = await setupDatabase.database
         .select()
         .from(imBindings)

@@ -7,7 +7,8 @@ description: "Slack App/Team/Bot ownership per Agent, installation types, capabi
 
 openTag supports one current Slack App/Team/Bot installation per Agent and one owning Agent per App/Team pair.
 New Web connections create a separate Slack App for each Agent in the same workspace. Existing distributed **@openTag** bindings keep their OAuth recovery.
-Both installation types reuse the existing Agent-owned installation, encrypted credentials and default route. Creating an Agent
+The first-party OAuth exchange also records the approving Slack user as the binding's
+[owner identity](feishu-connection-lifecycle.md#owner-identity). Both installation types reuse the existing Agent-owned installation, encrypted credentials and default route. Creating an Agent
 never requires a messaging app; choose **Back to Agents** and connect it from Messaging settings when needed.
 
 A current Slack App/Team installation is never silently shared or transferred to another Agent. A different Agent

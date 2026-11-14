@@ -28,6 +28,8 @@ export interface FeishuRegistrationResult {
   appId: string;
   appSecret: string;
   teamBrand?: "feishu" | "lark";
+  /** The open_id, under the new App, of the person who scanned the setup QR code. */
+  ownerOpenId?: string;
 }
 
 export interface FeishuRegistration {
@@ -132,6 +134,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
         appId: credentials.client_id,
         appSecret: credentials.client_secret,
         teamBrand: credentials.user_info?.tenant_brand,
+        ...(credentials.user_info?.open_id ? { ownerOpenId: credentials.user_info.open_id } : {}),
       }))
       .catch((error) => {
         rejectQr(error);

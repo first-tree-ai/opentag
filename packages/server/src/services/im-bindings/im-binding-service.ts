@@ -89,6 +89,8 @@ export interface VerifiedFeishuBinding {
   teamId: string | null;
   botOpenId: string;
   teamBrand?: string;
+  /** The IM user who authorized the App, when the provider reported one. */
+  ownerExternalUserId?: string;
   appSecret: string;
   grantedScopes: string[];
 }
@@ -504,6 +506,22 @@ export class ImBindingService {
     return binding.provider === "feishu" ? issueFeishuGrant() : issueSlackGrant();
   }
 
+  /**
+   * Records the IM user who authorized a binding, in the activation's transaction. Slack reports it in
+   * the OAuth exchange rather than in the activation payload; a token configuration has none and keeps
+   * the stored value.
+   */
+  async recordOwnerExternalUserId(
+    bindingId: string,
+    ownerExternalUserId: string,
+    transaction: DatabaseTransaction,
+  ): Promise<void> {
+    await transaction
+      .update(imBindings)
+      .set({ ownerExternalUserId })
+      .where(and(eq(imBindings.id, bindingId), ne(imBindings.status, "disabled")));
+  }
+
   async activateSlack(
     input: SlackBindingActivation,
     verifiedBotId: string,
@@ -558,6 +576,7 @@ export class ImBindingService {
             enterpriseId: null,
             botId: input.botOpenId,
             teamBrand: input.teamBrand ?? null,
+            ...(input.ownerExternalUserId ? { ownerExternalUserId: input.ownerExternalUserId } : {}),
           },
           credential,
         },

@@ -385,6 +385,11 @@
       "idx": 76,
       "tag": "0076_agent_access_generation",
       "sha256": "3e523ad255237b7776defac07f289393747029ab841e18106c2d46133ad93283"
+    },
+    {
+      "idx": 77,
+      "tag": "0077_im_binding_owner_external_user_id",
+      "sha256": "fa9a3a42cf298458ce63ef058c654dcee7cb472519b48d4d4df5ad921ad6add4"
     }
   ]
 }

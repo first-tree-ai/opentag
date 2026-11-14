@@ -540,6 +540,13 @@
       "when": 1794386497446,
       "tag": "0076_agent_access_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1794647666387,
+      "tag": "0077_im_binding_owner_external_user_id",
+      "breakpoints": true
     }
   ]
 }

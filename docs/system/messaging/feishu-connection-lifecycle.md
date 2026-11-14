@@ -101,6 +101,7 @@ preserve its working credential and generation.
 | --- | --- |
 | Account / Agent | Authorization to manage a binding; Computer and Runtime prerequisites |
 | `im_bindings` status and active identity | Current message route; pending credentials do not overwrite it |
+| `im_bindings.owner_external_user_id` | IM user who authorized the App; see [Owner identity](#owner-identity) |
 | Active encrypted credential / generation | Existing credential delivery and message connection fencing |
 | Setup attempt ID / intent | One current `create` or same-App `reauthorize` attempt on a binding |
 | Encrypted setup context | Legacy QR payload or versioned candidate credential and latest observation |
@@ -114,6 +115,18 @@ be replaced. Creation requires empty configuration; an edited empty Agent can st
 Same-App reauthorization preserves identity. Disconnecting an activated binding retains its
 identity history and requires a new Agent to connect a different identity. A never-activated slot
 can still be cleared and creation resumed.
+
+## Owner identity
+
+`im_bindings.owner_external_user_id` records the IM user who authorized the binding's App, so the Server can reach
+that person through the Bot without an inbound message. Feishu reports it as `user_info.open_id` when the setup QR
+code is scanned; the candidate context carries it to activation, and the value is the person's `open_id` under the
+new App. Slack reports it as `authed_user.id` from the first-party OAuth exchange; token configuration has none.
+
+The value is written only when the provider reports one during activation, reauthorization, or replacement, and a
+later activation without one keeps the stored value. Bindings activated before the column existed keep null and keep
+working unchanged: openTag never prompts, blocks, or asks people to reauthorize to fill it, and readers treat null as
+"owner unknown".
 
 ## State and data contract
 

@@ -67,6 +67,8 @@ export interface SlackOAuthAccessResult {
   enterpriseId: string | null;
   botUserId: string;
   botAccessToken: string;
+  /** The Slack user who approved the installation, when Slack reports one. */
+  authedUserId?: string;
 }
 
 export interface SlackApiClient {

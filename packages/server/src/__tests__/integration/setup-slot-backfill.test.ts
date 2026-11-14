@@ -18,7 +18,7 @@ import { startPostgresTestContainer } from "./postgres-test-container.js";
  */
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const THROUGH_0067_IDX = 67;
-const CURRENT_MIGRATION_COUNT = 77;
+const CURRENT_MIGRATION_COUNT = 78;
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const ACCOUNT = "00000000-0000-4000-8000-000000000201";
 const COMPUTER = "00000000-0000-4000-8000-000000000202";
@@ -147,6 +147,9 @@ describe("terminal setup slot backfill", () => {
           values (${fixture.agent}, ${ACCOUNT}, ${COMPUTER}, ${`agent-${name.toLowerCase()}`}, ${`Agent ${name}`}, 'codex')
         `;
       }
+      // The Drizzle table also names columns from later migrations; give the insert a stand-in that is
+      // dropped again before upgrading, so the migration under test still sees the 0067 schema.
+      await client.sql`alter table im_bindings add column owner_external_user_id text`;
       await client.database.insert(imBindings).values([
         { ...terminalNeverActivated(fixtures.canceled.binding, "canceled"), agentId: fixtures.canceled.agent },
         { ...terminalNeverActivated(fixtures.expired.binding, "expired"), agentId: fixtures.expired.agent },
@@ -164,6 +167,8 @@ describe("terminal setup slot backfill", () => {
           agentId: fixtures.inFlight.agent,
         },
       ]);
+
+      await client.sql`alter table im_bindings drop column owner_external_user_id`;
 
       // The upgrade under test.
       await migrateDatabase(databaseUrl, migrationsFolder);

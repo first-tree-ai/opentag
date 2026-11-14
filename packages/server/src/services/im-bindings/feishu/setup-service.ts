@@ -95,6 +95,8 @@ export interface FeishuBindingActivation {
     appId: string;
     appSecret: string;
     teamBrand?: "feishu" | "lark";
+    /** The person who scanned the setup QR code, recorded as the binding's owner identity when known. */
+    ownerOpenId?: string;
     /**
      * The durable candidate's retention deadline. Absent for a legacy QR attempt: the device code
      * TTL no longer gates activation once the credential has already been issued.
@@ -910,7 +912,7 @@ export class FeishuSetupService {
   async #saveCandidate(
     attemptId: string,
     agentId: string,
-    result: { appId: string; appSecret: string; teamBrand?: "feishu" | "lark" },
+    result: { appId: string; appSecret: string; teamBrand?: "feishu" | "lark"; ownerOpenId?: string },
   ): Promise<SetupRow | undefined> {
     return this.#database.transaction(async (transaction) => {
       const [row] = await transaction
@@ -936,6 +938,7 @@ export class FeishuSetupService {
         appId: result.appId,
         appSecret: result.appSecret,
         teamBrand: result.teamBrand ?? null,
+        ...(result.ownerOpenId ? { ownerOpenId: result.ownerOpenId } : {}),
         savedAt: now.toISOString(),
         nextCheckAt: now.toISOString(),
         observation: null,
@@ -1127,6 +1130,7 @@ export class FeishuSetupService {
             appId: candidate.appId,
             appSecret: candidate.appSecret,
             ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
+            ...(candidate.ownerOpenId ? { ownerOpenId: candidate.ownerOpenId } : {}),
             ...(claim.row.setupExpiresAt ? { candidateExpiresAt: claim.row.setupExpiresAt } : {}),
             signal: controller.signal,
           }),
@@ -1709,6 +1713,7 @@ export class FeishuSetupService {
     appId: string;
     appSecret: string;
     teamBrand: "feishu" | "lark" | null;
+    ownerOpenId?: string;
     savedAt: string;
     nextCheckAt: string;
     observation: FeishuSetupCandidateContext["observation"];
@@ -1721,6 +1726,7 @@ export class FeishuSetupService {
       appId: input.appId,
       appSecret: input.appSecret,
       teamBrand: input.teamBrand,
+      ...(input.ownerOpenId ? { ownerOpenId: input.ownerOpenId } : {}),
       savedAt: input.savedAt,
       nextCheckAt: input.nextCheckAt,
       observation: input.observation,

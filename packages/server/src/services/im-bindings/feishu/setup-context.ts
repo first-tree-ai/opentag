@@ -54,6 +54,8 @@ export const FeishuSetupCandidateContextSchema = z
     appId: z.string().min(1).max(255),
     appSecret: z.string().min(1).max(512),
     teamBrand: z.enum(["feishu", "lark"]).nullable(),
+    /** Absent in candidates saved before the owner identity was recorded. */
+    ownerOpenId: z.string().min(1).max(255).optional(),
     savedAt: z.string().datetime(),
     nextCheckAt: z.string().datetime(),
     observation: FeishuSetupCandidateObservationSchema.nullable(),

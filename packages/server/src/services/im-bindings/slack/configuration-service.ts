@@ -38,6 +38,8 @@ export interface SlackOAuthActivationInput {
   appId: string;
   botAccessToken: string;
   signingSecret: string;
+  /** The Slack user who approved the OAuth installation, recorded as the binding's owner identity. */
+  ownerExternalUserId?: string;
 }
 
 export class SlackConfigurationServiceError extends DomainServiceError<string, ErrorCategory, number> {
@@ -354,7 +356,11 @@ export class SlackConfigurationService {
         installedAt: this.#now(),
         profile,
       };
-      return this.#imBindings.activateSlack(activation, installation.botId, transaction);
+      const result = await this.#imBindings.activateSlack(activation, installation.botId, transaction);
+      if (input.ownerExternalUserId) {
+        await this.#imBindings.recordOwnerExternalUserId(result.imBindingId, input.ownerExternalUserId, transaction);
+      }
+      return result;
     });
     await this.#afterConfigurationTransaction?.();
     await this.#imBindings.notifyProviderCliRequirementChanged(agentId).catch(() => undefined);

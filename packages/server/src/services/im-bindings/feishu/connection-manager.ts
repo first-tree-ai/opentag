@@ -449,6 +449,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         teamId: identity.externalTeamId === input.appId ? null : identity.externalTeamId,
         botOpenId: identity.externalBotId,
         teamBrand: input.teamBrand,
+        ...(input.ownerOpenId ? { ownerExternalUserId: input.ownerOpenId } : {}),
         appSecret: input.appSecret,
         grantedScopes,
       };

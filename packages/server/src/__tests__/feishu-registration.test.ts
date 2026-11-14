@@ -39,7 +39,11 @@ describe("Feishu registration", () => {
     const register = vi.fn(async (rawOptions: unknown) => {
       const options = rawOptions as RegistrationOptions;
       options.onQRCodeReady({ url: "https://open.feishu.cn/qr/create", expireIn: 60 });
-      return { client_id: "cli_new", client_secret: "secret", user_info: { tenant_brand: "feishu" } };
+      return {
+        client_id: "cli_new",
+        client_secret: "secret",
+        user_info: { open_id: "ou_owner", tenant_brand: "feishu" },
+      };
     });
     const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
       profile: { name: "Assistant", description: "openTag Agent: Assistant" },
@@ -51,6 +55,7 @@ describe("Feishu registration", () => {
       appId: "cli_new",
       appSecret: "secret",
       teamBrand: "feishu",
+      ownerOpenId: "ou_owner",
     });
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;
     expect(options).toMatchObject({

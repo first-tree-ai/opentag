@@ -207,6 +207,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
         enterprise_id: z.string().nullable().optional(),
         team: z.object({ id: z.string().optional() }).passthrough().optional(),
         enterprise: z.object({ id: z.string().optional() }).passthrough().nullable().optional(),
+        authed_user: z.object({ id: z.string().optional() }).passthrough().nullable().optional(),
       })
       .passthrough()
       .parse(await response.json());
@@ -230,6 +231,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
       enterpriseId: result.enterprise?.id ?? result.enterprise_id ?? null,
       botUserId: result.bot_user_id,
       botAccessToken: result.access_token,
+      ...(result.authed_user?.id ? { authedUserId: result.authed_user.id } : {}),
     };
   }
 

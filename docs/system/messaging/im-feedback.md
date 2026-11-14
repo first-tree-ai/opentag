@@ -77,8 +77,38 @@ the recovery page, not in the conversation. It follows the same language rule as
   lose a notice but never repeats one. A send the provider definitely did not apply, such as a rate limit, is released
   for a later pass. A cooldown-storage failure stops the worker pass, as it does for other feedback calls. The notice does not use the failure message's request identity, which Feishu would deduplicate.
 - **Scope.** Local Computers only: Cloud placements never match. A paused or suspended Agent, an expired credential,
-  and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
-  reply are the signal, and an expired message keeps the existing failure message.
+  and a deleted Computer are out of scope. Recovery sends no "back online" message in the conversation, because the
+  working reaction and reply are the signal, and an expired message keeps the existing failure message. The owner's
+  own [offline alert](#owner-offline-alert) is separate.
+
+## Owner offline alert
+
+The offline notice needs someone to message the Agent first. The Server also tells the Computer's owner directly, in
+a plain-text direct message from one of the Computer's Bots, when the Computer stays offline:
+
+- **When.** A Local Computer that connected before has `last_seen_at` older than `OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES`
+  (default 15; `0` disables the alert; a value outside 0–1440 fails startup), and at least the presence timeout. A
+  `ComputerOfflineAlertWorker` on every Server instance sweeps once a minute. When the Computer reconnects (current
+  instance, `last_seen_at` past the alerted period and inside the presence timeout), the owner gets one more message
+  with how long it was offline, measured to `connected_at`.
+- **Who and through which Bot.** The Computer's owning Account, reached through the oldest active Agent on the Computer
+  that the owner created and whose active binding has a known
+  [owner identity](feishu-connection-lifecycle.md#owner-identity) (`im_bindings.owner_external_user_id`): Feishu sends to
+  the `open_id`, Slack to the user ID. Several Computers alert separately. When no Agent qualifies, for example every
+  binding predates the owner identity, the Computer is skipped and logged once per period as
+  `COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT`; nothing asks anyone to reauthorize.
+- **How often.** At most one alert and one recovery message per offline period. `computers.offline_alert_period_start`
+  holds the frozen `last_seen_at` of the alerted period and `offline_alert_binding_id` the Bot used. Each transition is
+  one conditional UPDATE whose returned row is the only permission to send, so Server instances and restarts never
+  repeat a message. The reservation commits before provider I/O: a crash loses a message rather than repeating it. A
+  send the provider definitely did not apply is released for a later pass; a rejected alert keeps its period but drops
+  the Bot, so no recovery message follows it; an unknown outcome is not retried.
+- **Scope.** Cloud Computers start and stop on demand and never alert. Computers that never connected, deleted or revoked
+  Computers, and inactive Agents are excluded. An outage that began more than a day before the sweep never alerts, so
+  enabling the alert or raising the threshold does not message every long-dead Computer. A Computer deleted or revoked
+  while alerted is cleared without a recovery message.
+- **Language.** No per-person language is stored: Chinese for a Feishu workspace, English for Lark and Slack. The alert
+  names the Computer and links to the Computers page.
 
 ## Parked-dispatch notice
 

@@ -84,6 +84,7 @@ import { createCloudExecutionContext } from "./services/cloud-model-context.js";
 import { CloudModelService, type CloudModelServiceOptions } from "./services/cloud-model-service.js";
 import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { CloudUsageService } from "./services/cloud-usage.js";
+import { ComputerOfflineAlertStore, ComputerOfflineAlertWorker } from "./services/computers/computer-offline-alerts.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
@@ -1181,6 +1182,14 @@ export async function startServer(): Promise<void> {
       imFeedback.store,
     );
     quotaWaitNotices = new ImQuotaWaitNotices({ database, messenger: imFeedbackMessenger });
+    const computerOfflineAlerts = new ComputerOfflineAlertWorker({
+      store: new ComputerOfflineAlertStore(database),
+      bindings: imBindingService,
+      messenger: imFeedbackMessenger,
+      publicUrl: config.publicUrl,
+      thresholdMs: config.computerOfflineAlertMs,
+      logger: serviceLogger("computer-offline-alerts"),
+    });
     imFeedbackWorker = new ImFeedbackWorker({
       store: imFeedback.store,
       transport: imFeedbackMessenger,
@@ -1349,6 +1358,7 @@ export async function startServer(): Promise<void> {
         ["IM message inbox", () => imMessageInbox.close()],
         ["Slack working worker", () => slackWorkingWorker.stop()],
         ["IM feedback worker", () => imFeedbackWorker?.stop()],
+        ["Computer offline alerts", () => computerOfflineAlerts.stop()],
         ["Cloud Slack setup requests", () => cloudSlackAutoSetupOwner.close()],
         ["MCP refresh worker", () => mcpRefreshWorker.stop()],
         ["skill garbage collector", () => skillRuntime.gc?.stop()],
@@ -1594,6 +1604,7 @@ export async function startServer(): Promise<void> {
     imDeliveryWorker.start();
     slackWorkingWorker.start();
     imFeedbackWorker.start();
+    computerOfflineAlerts.start();
     scheduleScheduler.start();
     sessionHeldDeliveryWorker.start();
     sandboxIdleReclaimer?.start();

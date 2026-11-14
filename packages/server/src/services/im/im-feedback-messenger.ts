@@ -128,6 +128,16 @@ export interface ConversationTextTarget {
   replyToExternalId?: string;
 }
 
+/** The Bot and person a Server-written direct message goes to. */
+export interface DirectTextTarget {
+  bindingGeneration: number;
+  bindingId: string;
+  installationId: string | null;
+  provider: "slack" | "feishu";
+  /** Feishu `open_id` under the App, or Slack user ID. */
+  userId: string;
+}
+
 export class ImFeedbackMessenger implements FeedbackTransport {
   constructor(
     readonly bindings: ImBindingService,
@@ -568,6 +578,59 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     } catch (error) {
       throw withReadback(postFailure(error), leg);
     }
+  }
+
+  /**
+   * One plain message from the Bot to a person's direct conversation, without an inbound message: Feishu by the
+   * person's `open_id` under the App, Slack by user ID. `requestId` is Feishu's send idempotency key.
+   */
+  async postDirectText(target: DirectTextTarget, text: string, requestId: string): Promise<string> {
+    try {
+      return await this.#run(
+        `${target.provider}.feedback.direct`,
+        (signal) =>
+          target.provider === "slack"
+            ? this.#slackDirectText(target, text, signal)
+            : this.#feishuDirectText(target, text, requestId, signal),
+        { maxAttempts: 1, timeoutMs: 8_000 },
+      );
+    } catch (error) {
+      throw postFailure(error);
+    }
+  }
+
+  async #slackDirectText(target: DirectTextTarget, text: string, signal: AbortSignal): Promise<string> {
+    const { api } = await this.#slack(target, signal);
+    const r = await this.#slackCall({ ...target, provider: "slack" }, () =>
+      api.chat.postMessage({ channel: target.userId, text, parse: "none", unfurl_links: false, unfurl_media: false }),
+    );
+    if (!r.ok || !r.ts) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+    return r.ts;
+  }
+
+  async #feishuDirectText(
+    target: DirectTextTarget,
+    text: string,
+    requestId: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const { api } = await this.#feishu(target, signal);
+    let r: Awaited<ReturnType<typeof api.im.v1.message.create>>;
+    try {
+      r = await api.im.v1.message.create({
+        params: { receive_id_type: "open_id" },
+        data: { receive_id: target.userId, msg_type: "text", content: JSON.stringify({ text }), uuid: requestId },
+      });
+    } catch (error) {
+      // A Feishu error code means Feishu answered and refused the send.
+      if (feishuErrorCode(error) !== undefined)
+        throw new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
+      throw error;
+    }
+    if (r.code === FEISHU_POLICY_DENIED_CODE) throw new FeedbackProviderError(FEISHU_SEND_POLICY_DENIED, true, true);
+    if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
+    if (!r.data?.message_id) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+    return r.data.message_id;
   }
 
   /**

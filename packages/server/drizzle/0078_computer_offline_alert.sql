@@ -1,0 +1,3 @@
+ALTER TABLE "computers" ADD COLUMN "offline_alert_period_start" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "computers" ADD COLUMN "offline_alert_binding_id" uuid;--> statement-breakpoint
+ALTER TABLE "computers" ADD CONSTRAINT "computers_offline_alert_binding_id_im_bindings_id_fk" FOREIGN KEY ("offline_alert_binding_id") REFERENCES "public"."im_bindings"("id") ON DELETE set null ON UPDATE no action;

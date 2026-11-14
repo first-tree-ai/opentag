@@ -390,6 +390,11 @@
       "idx": 77,
       "tag": "0077_im_binding_owner_external_user_id",
       "sha256": "fa9a3a42cf298458ce63ef058c654dcee7cb472519b48d4d4df5ad921ad6add4"
+    },
+    {
+      "idx": 78,
+      "tag": "0078_computer_offline_alert",
+      "sha256": "701e61c697b62e1a5c6ac91ab1b737adcda888b4245d5078c671db21617613f9"
     }
   ]
 }

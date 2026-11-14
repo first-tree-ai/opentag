@@ -131,6 +131,8 @@ describe("terminal setup slot backfill", () => {
       await client.database
         .insert(users)
         .values({ id: ACCOUNT, email: "backfill@example.com", displayName: "Backfill" });
+      // Stand-ins for columns from later migrations that the Drizzle tables name; dropped before upgrading.
+      await client.sql`alter table computers add column offline_alert_period_start timestamptz, add column offline_alert_binding_id uuid`;
       await client.database.insert(computers).values({
         id: COMPUTER,
         ownerAccountId: ACCOUNT,
@@ -169,6 +171,7 @@ describe("terminal setup slot backfill", () => {
       ]);
 
       await client.sql`alter table im_bindings drop column owner_external_user_id`;
+      await client.sql`alter table computers drop column offline_alert_period_start, drop column offline_alert_binding_id`;
 
       // The upgrade under test.
       await migrateDatabase(databaseUrl, migrationsFolder);

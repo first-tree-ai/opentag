@@ -112,7 +112,7 @@ The card has no link and names no earlier message, person or Computer.
 Failures and offline notices are cards. A card has a colored title that says what happened and one short body
 sentence on what to do. When the step needs the Web, the body says "在 OpenTag" (in OpenTag). No card shows an error code, says the task did not
 finish, or says whether operations ran: codes and technical details appear only on the details page, which is also
-where support reads them. The reason: an IM failure is read by people who cannot act on a code, and a short card keeps
+where support reads them. The one exception is the [Session ID](#session-id) on the card's last line. The reason: an IM failure is read by people who cannot act on a code, and a short card keeps
 a failure from taking more of the conversation than the work did.
 
 | Provider | Shape | Colors |
@@ -124,9 +124,10 @@ Slack paints the attachment bar only from a hex color: the `danger` and `good` k
 attachment holds blocks. The message has no top-level `text`, because Slack would show it above the card as a second
 copy; the attachment `fallback` is the notification text.
 
-Cards carry no visible link and no button: no settings, task, recovery or details link, and no save or discard button
-(product decision, 2026-11-10). The details page stays reachable from the Agent page. The only link a card holds is
-the invisible readback identity described under [Message format compatibility](#message-format-compatibility).
+Cards carry no button and no settings, task, recovery or details link, and no save or discard button
+(product decision, 2026-11-10). The details page stays reachable from the Agent page. Besides the invisible readback
+identity described under [Message format compatibility](#message-format-compatibility), the only link a card holds is
+its Session ID.
 
 | Failure | Title | Body |
 | --- | --- | --- |
@@ -168,6 +169,20 @@ confirmations (see [Account operations](#account-operations)). Once an operation
 card is edited in place: its title becomes the state (已完成, 处理中，请勿重复点击, 操作失败, 环境已变化，请刷新, 已保存,
 已放弃改动, 已重新排队), green on success, with no body: the actor and time stay on the details page. An environment released without
 proof of the save reads 操作失败, never 已保存.
+
+### Session ID
+
+Every failure card and waiting notice, and every [scheduled failure message](#scheduled-tasks), ends with the full ID
+of the Session it concerns, so an Agent's administrator can find the Session: "Session：{id}" in Chinese and
+"Session: {id}" in English. On a card it is small grey text below the body (a Feishu `note` element, a Slack `context`
+block); in a plain message it is the last paragraph. It is the one technical detail a failure message shows, and it
+stays on a card after the card is edited to show its state. It is not part of the notification text, so the Slack
+attachment `fallback` stays the title and body.
+
+The ID links to the Session's Task page, `/agents/:agentId/tasks/:sessionId`, when that Task qualifies under the rule
+the Task list and detail use (see [Tasks](../../product/tasks.md)), so the link never opens a 404. A Session with no
+such Task, such as one that has only received scheduled messages, or a failed lookup, keeps the plain ID. The check is
+made each time the message is rendered, so an edit can add the link once the Task exists.
 
 ### Where a card goes
 
@@ -221,7 +236,8 @@ A scheduled message goes to the Agent only and posts nothing in IM when it start
 sender notice nor a feedback target can carry its failure. This section covers a visible target; for an internal Session, see
 [Schedules on an internal Session](internal-session-collaboration.md#schedules-on-an-internal-session). The Server instead posts one plain message from the Session's
 Bot in the Session's own chat or thread. It has the same shape as other [failure messages](#failure-messages): what
-happened with the task name and scheduled time, whether operations ran, what to do next, and a clickable link to the schedule.
+happened with the task name and scheduled time, whether operations ran, what to do next, a clickable link to the schedule,
+and the [Session ID](#session-id) as the last line.
 Stable codes stay out of the message; the schedule page shows the reason. A schedule has no sender, so the language follows
 its task text by the same rule. Brackets in the task name are replaced with lookalikes, so a name can't carry a mention or a
 disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
@@ -363,6 +379,12 @@ settlement storage failure stops further admission while joining every projectio
 Cooldown-storage failure stops admission as soon as it is observed, before waiting for its settlement write; a blocked
 settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
+
+A reaction failure before any mutation can reach the provider keeps the last known applied reaction. A failure
+after a possible or partial mutation keeps the applied reaction unknown. Transient failures keep their retry
+schedule and honor provider retry hints. A Feishu access-control refusal (21001) settles automatic reaction work
+for that target revision and emits a bounded warning. A later revision can request a fresh projection. Card delivery
+and readback keep their own retry rules. Feedback and approval SDK clients suppress raw provider diagnostics.
 
 Before a new message request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the conversation the card was sent to for this Bot

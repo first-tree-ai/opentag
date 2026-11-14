@@ -19,7 +19,7 @@ beforeAll(async () => {
 afterAll(async () => db?.close());
 beforeEach(async () => db.reset());
 
-async function fixture() {
+async function fixture(options: { artifact?: "ready" | "checking" | "none" } = {}) {
   const now = Date.now();
   let elapsed = 0;
   const account = await bootstrapInitialAdmin(db.database, { displayName: "Owner", email: "status@example.test" });
@@ -115,19 +115,20 @@ async function fixture() {
       },
       observedAt,
     );
-  registry.setProviderCliArtifactObservation(
-    computer.id,
-    instanceId,
-    {
-      agentId: agent.id,
-      integrationId: bindingId,
-      provider: "feishu",
-      credentialGeneration: 1,
-      requestId: randomUUID(),
-      status: "ready",
-    },
-    now,
-  );
+  if (options.artifact !== "none")
+    registry.setProviderCliArtifactObservation(
+      computer.id,
+      instanceId,
+      {
+        agentId: agent.id,
+        integrationId: bindingId,
+        provider: "feishu",
+        credentialGeneration: 1,
+        requestId: randomUUID(),
+        status: options.artifact ?? "ready",
+      },
+      now,
+    );
   const service = new AgentStatusService(db.database, registry, cipher, { now: () => new Date(now + elapsed) });
   const read = async () => (await service.read(account.userId, [agent.id])).statuses[0];
   return {
@@ -229,6 +230,17 @@ describe("Agent status snapshots", () => {
     f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, sample, f.now + 15_000);
     expect(await f.read()).toMatchObject({ state: "problem", reason: "messaging_cli_check_timed_out" });
   });
+  it.each(["checking", "none"] as const)(
+    "reports a messaging CLI still being prepared (%s) after a restart as a check timeout, never as unavailable",
+    async (artifact) => {
+      const f = await fixture({ artifact });
+      f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, f.sample(), f.now);
+      f.credential("ready");
+      expect(await f.read()).toMatchObject({ state: "initializing", reason: "first_validation" });
+      f.advance(15_000);
+      expect(await f.read()).toMatchObject({ state: "problem", reason: "messaging_cli_check_timed_out" });
+    },
+  );
   it("returns no partial data for a mixed authorized/unknown batch and no secrets for an owned batch", async () => {
     const f = await fixture();
     await expect(f.service.read(f.account.userId, [f.agent.id, randomUUID()])).rejects.toMatchObject({

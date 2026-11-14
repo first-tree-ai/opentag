@@ -89,7 +89,9 @@ The source Session is supplied by the execution, not a caller-selected identity.
 belong to the current Session, placement and live allocation/execution. An always-online Computer,
 a guessed sibling Session ID, or material from a retired allocation does not establish authority.
 
-Targets retain the existing same-Agent and conversation scope. An internal Cloud child uses its own
+Targets are any live Session of the same Agent, in any conversation; see
+[Messages between conversations](../messaging/internal-session-collaboration.md#messages-between-conversations). A Cloud
+Session shares nothing else with its peers, so here this is a new channel. An internal Cloud child uses its own
 Sandbox and Pi conversation. It does not inherit the parent's workspace or IM outbox credentials.
 It reports through Session messages; a visible Session's callback uses that visible Session's
 authorized outbox rather than automatically forwarding the child's text to IM.

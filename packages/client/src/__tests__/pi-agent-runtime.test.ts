@@ -22,6 +22,7 @@ describe("PiAgentRuntime", () => {
   it.each([
     ["length", undefined, "provider_execution_limit"],
     ["error", '429: {"code":"rate_limit_exceeded"}', "provider_rate_limited"],
+    ["error", '429: {"error":{"type":"usage_limit_reached","resets_in_seconds":60}}', "provider_quota_exceeded"],
   ])("preserves Pi failure %s", async (stopReason, errorMessage, code) => {
     const client = new ScriptedPiClient("hold");
     const runtime = await piFactory(client).create(createRequest(() => undefined));

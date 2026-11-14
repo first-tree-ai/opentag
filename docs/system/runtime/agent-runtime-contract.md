@@ -29,6 +29,8 @@ Provider-specific configuration, binding, and protocol validation.
 - A Runtime owns one durable Provider session binding.
 - `prompt` requires an idle Runtime. `followUp` owns a strict FIFO queue.
 - One Run is active at a time. Every mutation carries an expected Run identity.
+- A steer-capable Provider can expose `steerReady`. When it is `false`, Local delivery waits before
+  calling `steer` on the active Run. Providers that omit it use the existing Run state and capability checks.
 - `steer` resolves with a receipt whose outcome settles with the joined Run: `processed` (the Run completed),
   `not_started` (the Provider reports it never began the input, so delivering it again is safe), or `interrupted`
   (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin and tracks whether

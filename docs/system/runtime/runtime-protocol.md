@@ -198,6 +198,26 @@ The request never redelivers input and never writes a Turn Report. A Client whos
 capability keeps the previous behavior: it reports interrupted IM Turns and fails waiting Session messages instead of
 retrying them. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
 
+## Quota wait notice
+
+The optional `runtime.quotaWait` capability (version 1) lets a Local Client tell the Server that an accepted IM Turn
+waits for a used-up model quota window to reset ([Quota auto-resume](quota-auto-resume.md)). The Client sends
+`turn:quota-wait` with the delivery and Turn identity, a `sequence` that grows per Turn, and `resetAt` when the wait
+starts or its reset moves, or `ended: true` when it ends. It sends no copy. The Server answers
+`turn:quota-wait:result` with `recorded`, `stale_generation`, `unsupported_capability` or `failed`:
+
+- It serves only a Turn the requesting connection holds, with the same check as `turn:activity`: the delivery is
+  accepted and unreported, on this Computer and instance, at the current placement generation, in a live Session.
+- It writes one plain Bot message into the conversation of the Turn's input (into its thread when the input was in
+  one) in the input's language: "模型额度已用完，约 HH:mm 自动继续" / "Model quota used up. OpenTag continues
+  automatically at HH:mm (UTC+8).", with the date when the reset is on another day, in China time like the quota card.
+  A moved reset edits that message; the same time again, or an older `sequence`, changes nothing.
+- Which message it sent is kept in the Server's memory only, for at most eight days, so nothing is stored. After a
+  Server restart a moved reset sends a new message.
+- `failed` means the provider refused the send or the edit; the wait itself is unaffected.
+
+Without the capability the Client sends nothing and the wait goes on silently.
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
@@ -274,9 +294,12 @@ uses a monotonic 90-second deadline; the stale socket sweep runs at most five se
 Credential validation runs on registration or a changed binding generation, explicit Check again,
 a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
 makes one external attempt within the existing 15-second grant budget and the provider's ten-second
-request deadline. It does not add automatic retry attempts. A Computer runs one validation process,
-so a check it answers as busy made no external attempt; the Server sends it again within the same
-budget. Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+request deadline. It does not add automatic retry attempts. A daemon runs one validation at a time
+and admits up to eight waiting requests in arrival order. Each check uses its own grant or validation
+run, and waiting uses that request's existing grant budget. Cancellation removes a waiting check, and
+a check that expires in the queue returns `validation_expired` without contacting the provider.
+A full queue returns `validation_busy`; the Server can send the check again within the same budget.
+Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
 recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
 or replaying the original operation. The first check can expose a neutral initialization for at most
 15 seconds. Later checks preserve the previous complete answer until they settle, including an

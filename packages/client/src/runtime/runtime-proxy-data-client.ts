@@ -66,6 +66,7 @@ export interface RuntimeProxyDataConnectionOptions {
   readonly maxQueuedOpens?: number;
   readonly maxStreams?: number;
   readonly openTimeoutMs?: number;
+  readonly signal?: AbortSignal;
   readonly ticket: string;
   /** Full WebSocket URL including the fixed path. Must not carry a query string. */
   readonly url: string;
@@ -245,22 +246,35 @@ export class RuntimeProxyDataConnection {
     if (options.url.includes("?") || options.url.includes("#")) {
       throw new RuntimeProxyDataError("protocol_error", "The data endpoint URL must not carry query parameters");
     }
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof RuntimeProxyDataError
+        ? options.signal.reason
+        : new RuntimeProxyDataError("aborted", "The data connection handshake was aborted");
+    }
+    const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
+    if (handshakeTimeoutMs <= 0) {
+      throw new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out");
+    }
     const socket = (
       options.webSocketFactory ??
       ((url, socketOptions) => new WebSocket(url, PROVIDER_PROXY_HTTP_PROTOCOL, socketOptions))
     )(options.url, { maxPayload: RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES, perMessageDeflate: false });
-    const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
     return new Promise<RuntimeProxyDataConnection>((resolve, reject) => {
       let settled = false;
+      const onAbort = () => {
+        fail(
+          options.signal?.reason instanceof RuntimeProxyDataError
+            ? options.signal.reason
+            : new RuntimeProxyDataError("aborted", "The data connection handshake was aborted"),
+        );
+      };
       const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        socket.terminate();
-        reject(new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out"));
+        fail(new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out"));
       }, handshakeTimeoutMs);
       timer.unref();
       const cleanup = () => {
         clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
         socket.removeAllListeners("message");
         socket.removeAllListeners("open");
         socket.removeAllListeners("error");
@@ -270,10 +284,12 @@ export class RuntimeProxyDataConnection {
         if (settled) return;
         settled = true;
         cleanup();
+        socket.on("error", () => undefined);
         if (closeCode !== undefined && socket.readyState === WebSocket.OPEN) socket.close(closeCode, reason);
         else socket.terminate();
         reject(error);
       };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
       socket.on("open", () => {
         // The ticket is the first frame and never travels in the URL or a header.
         socket.send(JSON.stringify({ type: "auth", ticket: options.ticket }));

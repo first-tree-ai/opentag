@@ -54,6 +54,11 @@ export const imBindings = pgTable(
     externalTeamName: text("external_team_name"),
     botDisplayName: text("bot_display_name"),
     botAvatarUrl: text("bot_avatar_url"),
+    /**
+     * The provider's ID for the person who authorized this App: Feishu `open_id` under the App, Slack user ID.
+     * Recorded on activation when the provider reports it; bindings activated earlier keep null.
+     */
+    ownerExternalUserId: text("owner_external_user_id"),
 
     credentialSchemaVersion: bigint("credential_schema_version", { mode: "number" }),
     credentialGeneration: bigint("credential_generation", { mode: "number" }).notNull().default(0),

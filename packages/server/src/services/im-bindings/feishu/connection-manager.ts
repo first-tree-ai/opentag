@@ -36,7 +36,7 @@ type InboundReceipt = { receiptId: string; attempt?: number; receivedAt?: Date }
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
-const CONNECTION_CONNECT_CONCURRENCY = 8;
+const CONNECTION_CONNECT_CONCURRENCY = 16;
 /*
  * Retry pacing for a binding whose connection keeps failing: 0.5 s doubling to 5 minutes. Ten
  * consecutive refusals from Feishu itself stop the binding.
@@ -449,6 +449,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         teamId: identity.externalTeamId === input.appId ? null : identity.externalTeamId,
         botOpenId: identity.externalBotId,
         teamBrand: input.teamBrand,
+        ...(input.ownerOpenId ? { ownerExternalUserId: input.ownerOpenId } : {}),
         appSecret: input.appSecret,
         grantedScopes,
       };

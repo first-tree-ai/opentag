@@ -30,7 +30,7 @@ import {
   type SessionEnsurer,
   STEER_TARGET_ENDED_ERROR_CODE,
 } from "./im-delivery-recovery.js";
-import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
+import { acceptedReportDeadlineMs, cappedRetryDelayMs } from "./im-delivery-retry.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -112,6 +112,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
     request: RuntimeImSteerRequest,
     inputHash: string,
     disposition: SteerReleaseDisposition,
+    noEffectReceipt?: DeliveryDispatchContext,
   ): Promise<SteerReleaseStatus>;
   claimRetainedReports(
     request: SessionReconcileRequest,
@@ -531,53 +532,90 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     request: RuntimeImSteerRequest,
     inputHash: string,
     disposition: SteerReleaseDisposition,
+    noEffectReceipt?: DeliveryDispatchContext,
   ): Promise<SteerReleaseStatus> {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope) return "conflict";
+      if (!steerReceiptPlacementMatches(scope, request, noEffectReceipt)) return "conflict";
       const existing = steerReleaseStatus(scope, request, inputHash, disposition);
       if (existing) return existing;
-      if (disposition === "uncertain" || scope.delivery.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN") {
-        await transaction
-          .update(imMessageDeliveries)
-          .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })
-          .where(eq(imMessageDeliveries.id, request.deliveryId));
-        this.#logger?.warn(
-          {
-            module: "runtime-custody",
-            operation: "im.custody.release",
-            outcome: "uncertain",
-            code: "IM_DELIVERY_STEER_UNKNOWN",
-            errorCode: "IM_DELIVERY_STEER_UNKNOWN",
-            deliveryId: request.deliveryId,
-            sessionId: request.sessionId,
-            rootDeliveryId: request.rootDeliveryId,
-          },
-          "IM steer custody released as uncertain",
-        );
-        return "released";
+      const wasUncertain = scope.delivery.lastErrorCode === "IM_DELIVERY_STEER_UNKNOWN";
+      if (disposition === "uncertain" || (wasUncertain && !noEffectReceipt)) {
+        return this.#markSteerUncertain(transaction, request, wasUncertain && disposition === "uncertain");
       }
-      const [released] = await transaction
-        .update(imMessageDeliveries)
-        .set({
-          dispatchRequestId: null,
-          dispatchInputHash: null,
-          dispatchPayload: null,
-          ...(disposition === "retry" ? { steerTargetDeliveryId: null } : {}),
-        })
-        .where(
-          and(
-            eq(imMessageDeliveries.id, request.deliveryId),
-            eq(imMessageDeliveries.state, "pending"),
-            eq(imMessageDeliveries.dispatchRequestId, request.requestId),
-            eq(imMessageDeliveries.dispatchInputHash, inputHash),
-            eq(imMessageDeliveries.steerTargetDeliveryId, request.rootDeliveryId),
-          ),
-        )
-        .returning({ id: imMessageDeliveries.id });
-      if (released) await releaseImBatch(transaction, request.deliveryId);
-      return released ? "released" : "conflict";
+      if (
+        wasUncertain &&
+        noEffectReceipt &&
+        (await this.#steerTargetStatus(transaction, scope, request, noEffectReceipt, true)) !== "matches"
+      ) {
+        return "conflict";
+      }
+      return this.#clearSteerDispatch(transaction, scope, request, inputHash, disposition, wasUncertain);
     });
+  }
+
+  async #markSteerUncertain(
+    transaction: DatabaseTransaction,
+    request: RuntimeImSteerRequest,
+    alreadyMarked: boolean,
+  ): Promise<SteerReleaseStatus> {
+    if (alreadyMarked) return "already_released";
+    await transaction
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })
+      .where(eq(imMessageDeliveries.id, request.deliveryId));
+    this.#logger?.warn(
+      {
+        module: "runtime-custody",
+        operation: "im.custody.release",
+        outcome: "uncertain",
+        code: "IM_DELIVERY_STEER_UNKNOWN",
+        errorCode: "IM_DELIVERY_STEER_UNKNOWN",
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        rootDeliveryId: request.rootDeliveryId,
+      },
+      "IM steer custody released as uncertain",
+    );
+    return "released";
+  }
+
+  async #clearSteerDispatch(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    disposition: SteerReleaseDisposition,
+    wasUncertain: boolean,
+  ): Promise<SteerReleaseStatus> {
+    const [released] = await transaction
+      .update(imMessageDeliveries)
+      .set({
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        dispatchPayload: null,
+        ...(wasUncertain
+          ? {
+              lastErrorCode: null,
+              nextAttemptAt: new Date(this.#now().getTime() + cappedRetryDelayMs(scope.delivery.attemptCount)),
+            }
+          : {}),
+        ...(disposition === "retry" ? { steerTargetDeliveryId: null } : {}),
+      })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, request.deliveryId),
+          eq(imMessageDeliveries.state, scope.delivery.state),
+          eq(imMessageDeliveries.dispatchRequestId, request.requestId),
+          eq(imMessageDeliveries.dispatchInputHash, inputHash),
+          eq(imMessageDeliveries.steerTargetDeliveryId, request.rootDeliveryId),
+        ),
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (!released) return "conflict";
+    await releaseImBatch(transaction, request.deliveryId);
+    return "released";
   }
 
   async acceptDelivery(
@@ -1236,4 +1274,12 @@ function steerReleaseStatus(
   if (!steerReleaseCorrelationMatches(scope.delivery, request.requestId, hash, request.rootDeliveryId))
     return "conflict";
   return undefined;
+}
+
+function steerReceiptPlacementMatches(
+  scope: DeliveryScope,
+  request: RuntimeImSteerRequest,
+  receipt: DeliveryDispatchContext | undefined,
+): boolean {
+  return !receipt || placementMatches(scope, receipt.computerId, request.placementGeneration);
 }

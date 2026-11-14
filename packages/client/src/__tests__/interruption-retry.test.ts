@@ -28,6 +28,7 @@ import {
   RETRY_RESET_AFTER_MS,
   RUN_TIME_RECORD_INTERVAL_MS,
   recoverableFailure,
+  retryDelayMs,
   START_FAILURE_RETRY_DELAY_MS,
   type TurnRetryRecord,
   TurnRetryStore,
@@ -73,6 +74,7 @@ describe("interruption classification and continuation", () => {
       "client_shutdown",
       "daemon_crash",
       "provider_process_exited",
+      "provider_connection_failed",
     ]) {
       expect(recoverableFailure(reason)).toBe(reason);
     }
@@ -91,7 +93,7 @@ describe("interruption classification and continuation", () => {
 
   it("states the reason and how to continue", () => {
     expect(buildContinuationNotice({ reason: "client_shutdown", at: "2026-11-05T01:00:00.000Z" })).toBe(
-      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry). Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry). Your conversation history is intact: continue from where you stopped, and do not redo steps already completed. Check your history for the work already done, including replies already sent, and do not repeat replies or side effects that already happened. The original request follows for reference; it may duplicate a message already in your history and is not a new request.",
     );
     expect(buildContinuationNotice({ reason: "daemon_crash", at: "T" })).toContain(
       "interrupted at or before T because the OpenTag daemon stopped (crash, power loss, restart, or upgrade) (automatic retry).",
@@ -99,9 +101,18 @@ describe("interruption classification and continuation", () => {
     expect(buildContinuationNotice({ reason: "provider_rate_limited", at: "T" })).toContain(
       "(HTTP 429) (automatic retry).",
     );
+    expect(buildContinuationNotice({ reason: "provider_connection_failed", at: "T" })).toContain(
+      "because the model API could not be reached or its network edge refused the request (automatic retry).",
+    );
     expect(buildContinuationNotice({ reason: "provider_start_failed", at: "T" })).toContain(
       "because the model CLI failed to start before doing any work (automatic retry).",
     );
+  });
+
+  it("waits as long after an unreachable model API as after a 429", () => {
+    expect(retryDelayMs("provider_connection_failed")).toBe(RATE_LIMIT_RETRY_DELAY_MS);
+    expect(retryDelayMs("provider_rate_limited")).toBe(RATE_LIMIT_RETRY_DELAY_MS);
+    expect(retryDelayMs("provider_process_exited")).toBe(0);
   });
 
   it("allows a start failure one retry and every other reason the shared limit", () => {
@@ -887,6 +898,60 @@ describe("AgentTurnRunner automatic retry", () => {
       await h.runner.settled();
     },
   );
+
+  it("tells the Server about a quota wait so it writes the notice, and that it ended when the Turn runs again", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness({ quotaWait: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const retryAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    h.prompt
+      .mockImplementationOnce(async () => quotaUsedUp(retryAt))
+      .mockImplementationOnce(async (input) => {
+        // Claude Code waits in its own process and says when it is back.
+        const { onQuotaWaitChanged } = input as { onQuotaWaitChanged?: (waiting: boolean, resetsAt?: string) => void };
+        onQuotaWaitChanged?.(true, "2026-11-20T00:00:00.000Z");
+        onQuotaWaitChanged?.(false);
+        return { runId: "turn-1", status: "completed", output: [] };
+      });
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    const quotaFrames = () =>
+      h.sent.filter((frame) => (frame as { type: string }).type === "turn:quota-wait") as Array<{
+        resetAt?: string;
+        ended?: true;
+        turnId: string;
+        deliveryId: string;
+        sequence: number;
+      }>;
+    expect(quotaFrames()).toEqual([
+      expect.objectContaining({
+        turnId: "turn-1",
+        deliveryId: h.request.deliveryId,
+        resetAt: new Date(Date.parse(retryAt) + 120_000).toISOString(),
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(62 * 60_000);
+    await h.runner.settled();
+    expect(quotaFrames().map(({ resetAt, ended }) => resetAt ?? ended)).toEqual([
+      new Date(Date.parse(retryAt) + 120_000).toISOString(),
+      true,
+      "2026-11-20T00:00:00.000Z",
+      true,
+    ]);
+    const sequences = quotaFrames().map((frame) => frame.sequence);
+    expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
+    // A notice the Server could not write is only logged.
+    h.runner.handleQuotaWaitResult({
+      type: "turn:quota-wait:result",
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      sequence: sequences[0] as number,
+      status: "failed",
+    });
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ fields: expect.objectContaining({ code: "TURN_QUOTA_WAIT_NOTICE_FAILED" }) }),
+    );
+  });
 
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
@@ -2008,10 +2073,13 @@ function runnerHarness(
   options: {
     restartRetry?: boolean | (() => boolean);
     withoutRetries?: boolean;
+    /** Negotiates `runtime.quotaWait`, so the runner sends its quota-wait frames to `sent`. */
+    quotaWait?: boolean;
     backgroundWork?: AgentTurnRunnerOptions["backgroundWork"];
   } = {},
 ) {
   const request = delivery();
+  const sent: unknown[] = [];
   const records = new Map<string, TurnRetryRecord>();
   const retries = {
     update: async (sessionId: string, turnId: string, change: (record: TurnRetryRecord) => TurnRetryRecord) => {
@@ -2063,7 +2131,13 @@ function runnerHarness(
       recordSteer,
       read: bindingRead,
     } as unknown as SessionBindingStore,
-    connection: { send: vi.fn(async () => undefined), capabilityVersion: () => 3 },
+    connection: {
+      send: vi.fn(async (frame: unknown) => {
+        sent.push(frame);
+      }),
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.quotaWait ? (options.quotaWait ? 1 : undefined) : 3,
+    },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
     reportOwner: { create, submit } as unknown as TurnReportOwner,
     runtimeManager: {
@@ -2088,6 +2162,7 @@ function runnerHarness(
   });
   const emit = (event: unknown) => void sink?.(event);
   return {
+    sent,
     request,
     records,
     retries,

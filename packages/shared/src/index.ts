@@ -529,6 +529,7 @@ export {
   computeRuntimeImSteerInputHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
+  crossesConversation,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
@@ -643,10 +644,14 @@ export {
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
+  type SessionMessageEndpoint,
+  SessionMessageEndpointSchema,
   type SessionMessageOutcomeReport,
   SessionMessageOutcomeReportSchema,
   type SessionMessageOutcomeResult,
   SessionMessageOutcomeResultSchema,
+  type SessionMessageProvenance,
+  SessionMessageProvenanceSchema,
   type SessionMessageRunOutcome,
   SessionMessageRunOutcomeReasonSchema,
   SessionMessageRunOutcomeSchema,
@@ -731,6 +736,7 @@ export {
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SESSION_COLLABORATION_CREATOR_REPORT_VERSION,
   RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
+  RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
   RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
@@ -851,4 +857,10 @@ export {
   type TurnActivityResult,
   TurnActivityResultSchema,
 } from "./turn-activity.js";
+export {
+  type TurnQuotaWaitRequest,
+  TurnQuotaWaitRequestSchema,
+  type TurnQuotaWaitResult,
+  TurnQuotaWaitResultSchema,
+} from "./turn-quota-wait.js";
 export * from "./web-tools.js";

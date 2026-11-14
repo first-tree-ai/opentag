@@ -6,6 +6,7 @@ import {
   RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES,
   RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_V3,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WS_MAX_FRAME_BYTES,
   RunnerAcceptanceRunFrameSchema,
@@ -347,7 +348,7 @@ describe("E8 Session collaboration protocol", () => {
     // Legacy E7 auth (no E8 field) keeps parsing unchanged, and an unknown version is rejected.
     const { sessionCollaborationVersion: _capability, ...legacy } = auth;
     expect(RunnerAuthFrameSchema.safeParse(legacy).success).toBe(true);
-    expect(RunnerAuthFrameSchema.safeParse({ ...auth, sessionCollaborationVersion: 4 }).success).toBe(false);
+    expect(RunnerAuthFrameSchema.safeParse({ ...auth, sessionCollaborationVersion: 5 }).success).toBe(false);
     const welcome = {
       cloudDeliveryVersion: 1,
       environmentGeneration: 1,
@@ -374,7 +375,7 @@ describe("E8 Session collaboration protocol", () => {
    * version, and unknown versions stay rejected so a mismatched pair fails the handshake instead
    * of silently degrading.
    */
-  it("negotiates Session collaboration versions 1, 2, and 3 explicitly", () => {
+  it("negotiates Session collaboration versions 1, 2, 3, and 4 explicitly", () => {
     const base = {
       cloudDeliveryVersion: 1 as const,
       requestId: uuid,
@@ -385,10 +386,11 @@ describe("E8 Session collaboration protocol", () => {
       RUNNER_SESSION_COLLABORATION_VERSION,
       RUNNER_SESSION_COLLABORATION_V2,
       RUNNER_SESSION_COLLABORATION_V3,
+      RUNNER_SESSION_COLLABORATION_V4,
     ] as const) {
       expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: version }).success).toBe(true);
     }
-    expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: 4 }).success).toBe(false);
+    expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: 5 }).success).toBe(false);
     expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: "2" }).success).toBe(false);
     const welcome = {
       cloudDeliveryVersion: 1 as const,
@@ -406,12 +408,13 @@ describe("E8 Session collaboration protocol", () => {
       RUNNER_SESSION_COLLABORATION_VERSION,
       RUNNER_SESSION_COLLABORATION_V2,
       RUNNER_SESSION_COLLABORATION_V3,
+      RUNNER_SESSION_COLLABORATION_V4,
     ] as const) {
       const echoed = { ...welcome, sessionCollaborationVersion: version };
       expect(RunnerServerFrameSchema.safeParse(echoed).success).toBe(true);
       expect(RunnerWelcomeFrameSchema.parse(echoed).sessionCollaborationVersion).toBe(version);
     }
-    expect(RunnerWelcomeFrameSchema.safeParse({ ...welcome, sessionCollaborationVersion: 4 }).success).toBe(false);
+    expect(RunnerWelcomeFrameSchema.safeParse({ ...welcome, sessionCollaborationVersion: 5 }).success).toBe(false);
   });
 
   it("carries the target role and strictly requires outbox context only for visible Sessions", () => {

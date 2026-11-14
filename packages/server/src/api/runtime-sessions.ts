@@ -1,6 +1,8 @@
 import {
   HTTP_PATHS,
   SESSION_CLI_PROOF_HEADER,
+  SessionCliAgentListQuerySchema,
+  SessionCliAgentListResponseSchema,
   SessionCliCommandResponseSchema,
   SessionCliCreateRequestSchema,
   SessionCliListQuerySchema,
@@ -18,7 +20,7 @@ import { parseRequest } from "./request-validation.js";
 export interface RuntimeSessionRoutesOptions {
   collaboration: Pick<SessionCollaborationService, "create" | "send" | "stop">;
   proofs: Pick<SessionCliProofService, "authenticate">;
-  sessions: Pick<SessionService, "listInternalSessions">;
+  sessions: Pick<SessionService, "listAgentSessions" | "listInternalSessions">;
 }
 
 export function registerRuntimeSessionRoutes(app: FastifyInstance, options: RuntimeSessionRoutesOptions): void {
@@ -59,6 +61,21 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     });
     const result = SessionCliListResponseSchema.parse(
       await options.sessions.listInternalSessions(source.sessionId, query),
+    );
+    return reply.header("Cache-Control", "no-store").code(200).send(result);
+  });
+
+  app.get(HTTP_PATHS.runtimeAgentSessions, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const source = await authenticate(request, options.proofs);
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+    const query = parseRequest(SessionCliAgentListQuerySchema, {
+      visibleOnly: queryFlag(raw.visibleOnly),
+      limit: raw.limit === undefined ? undefined : Number(raw.limit),
+      cursor: raw.cursor,
+    });
+    const result = SessionCliAgentListResponseSchema.parse(
+      await options.sessions.listAgentSessions(source.sessionId, query),
     );
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });

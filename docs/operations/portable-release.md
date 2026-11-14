@@ -145,6 +145,20 @@ The daemon's updater follows a strict contract:
   forced restart (`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`), and launchd restarts it through
   `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
   openTag home, Account credentials, Computer connection, Agents, and placement untouched.
+- **launchd handoff gate.** Before a macOS service hands off, the updater checks that launchd will respawn it. While
+  the `gui/<uid>` domain is in on-demand-only mode (for example after a failed logout or a macOS restart countdown
+  that timed out), launchd records `KeepAlive` respawns as pending and starts nothing until the login session
+  recovers. `launchctl print` does not expose that mode, so the check reads launchd's own transitions from the
+  unified log: the newest `entering ondemand mode` / `exiting ondemand mode` event for the current domain instance
+  (subsystem `gui/<uid> [<handle>]`, handle from `launchctl print gui/<uid>`, last 7 days). Only a newest `entering`
+  event defers the handoff: the daemon reopens admission, keeps serving on the running version (the new version is
+  already live on disk and runs on the next start), logs a warning with the reason, and rechecks every 5 minutes
+  without holding the updater state lock. A newly observed target interrupts the wait and installs first; the owed
+  handoff is kept even if that target fails or the channel returns to the running version. After 24 hours of deferral
+  it hands off anyway. When the check cannot decide (a `launchctl` or `log show` failure,
+  timeout, or missing handle) it logs a warning and hands off, so a broken check never blocks every upgrade. If the
+  connected Server cannot recover interrupted work, the updater drains protected work again before the deferred
+  handoff and then checks launchd again, continuing the deferral if it became unavailable during the drain. systemd services hand off without this check.
 
 Current version, target, updater state, recovery diagnosis, and the last attempt with its failure reason are visible in
 `opentag daemon status`. `awaiting_protected_work` and `installing` identify an upgrade in progress, `blocked` identifies

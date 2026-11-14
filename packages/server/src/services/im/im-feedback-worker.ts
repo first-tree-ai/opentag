@@ -1,6 +1,7 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
   CONVERSATION_READBACK,
+  FEISHU_REACTION_POLICY_DENIED,
   FeedbackCooldownStorageError,
   FeedbackProviderError,
   type FeedbackTransport,
@@ -8,7 +9,12 @@ import {
 } from "./im-feedback-messenger.js";
 import type { FeedbackTarget, ImFeedbackStore } from "./im-feedback-store.js";
 
-type ReactionResult = { value: FeedbackTarget["appliedReaction"]; failed: boolean; retryAfterMs?: number };
+type ReactionResult = {
+  value: FeedbackTarget["appliedReaction"];
+  errorCode?: string;
+  blocked?: boolean;
+  retryAfterMs?: number;
+};
 export class ImFeedbackWorker {
   #timer: ReturnType<typeof setInterval> | undefined;
   #pass: Promise<void> | undefined;
@@ -99,14 +105,13 @@ export class ImFeedbackWorker {
   }
   async #apply(original: FeedbackTarget, halt: () => void): Promise<void> {
     let target = original;
-    let retryAfterMs = 0;
+    let reaction: ReactionResult | undefined;
     try {
       target = await this.options.store.refreshQueued(target);
       if (!(await this.#owns(target))) return;
       await this.options.reconcileAction?.(target);
       if (!(await this.#owns(target))) return;
-      const reaction = await this.#reaction(target);
-      retryAfterMs = reaction.retryAfterMs ?? 0;
+      reaction = await this.#reaction(target);
       if (target.cardState === "send_unknown") await this.#recover(target, reaction);
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else {
@@ -115,7 +120,7 @@ export class ImFeedbackWorker {
       }
     } catch (error) {
       if (error instanceof FeedbackCooldownStorageError) halt();
-      await this.#failure(target, error, retryAfterMs);
+      await this.#failure(target, error, reaction);
     }
   }
   /**
@@ -157,19 +162,23 @@ export class ImFeedbackWorker {
       );
     }
   }
-  async #failure(target: FeedbackTarget, error: unknown, retryAfterMs: number): Promise<void> {
+  async #failure(target: FeedbackTarget, error: unknown, reaction?: ReactionResult): Promise<void> {
     this.options.logger.warn(
       { code: "IM_FEEDBACK_PROJECTION_FAILED", feedbackId: target.id },
       "IM feedback remains pending",
     );
     await this.options.store.settle(target, {
       delayMs: Math.max(
-        retryAfterMs,
+        reaction?.retryAfterMs ?? 0,
         error instanceof FeedbackProviderError
           ? (error.retryAfterMs ?? feedbackRetryDelay(target.attemptCount))
           : feedbackRetryDelay(target.attemptCount),
       ),
-      errorCode: error instanceof FeedbackCooldownStorageError ? error.code : "IM_FEEDBACK_PROJECTION_FAILED",
+      errorCode:
+        error instanceof FeedbackCooldownStorageError
+          ? error.code
+          : (blockedReactionCode(reaction) ?? "IM_FEEDBACK_PROJECTION_FAILED"),
+      ...(reaction?.blocked ? { reaction: reaction.value } : {}),
       ...(error instanceof FeedbackCooldownStorageError && target.cardState === "pending"
         ? { cardState: "pending" as const }
         : {}),
@@ -178,24 +187,30 @@ export class ImFeedbackWorker {
   }
   async #reaction(target: FeedbackTarget): Promise<ReactionResult> {
     let value = target.appliedReaction;
+    if (target.lastErrorCode === FEISHU_REACTION_POLICY_DENIED && target.appliedRevision === target.revision)
+      return { value, errorCode: target.lastErrorCode, blocked: true };
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const desired = await this.options.store.desiredReaction(target);
-        if (value === desired) return { value, failed: false };
+        if (value === desired) break;
         await this.options.transport.reaction(target, desired);
         value = desired;
       }
-      return { value, failed: false };
+      return { value };
     } catch (error) {
       if (error instanceof FeedbackCooldownStorageError) throw error;
+      const failure = feedbackProviderError(error);
+      const blocked = failure?.code === FEISHU_REACTION_POLICY_DENIED;
+      const errorCode = blocked ? FEISHU_REACTION_POLICY_DENIED : "IM_FEEDBACK_REACTION_FAILED";
       this.options.logger.warn(
-        { code: "IM_FEEDBACK_REACTION_FAILED", feedbackId: target.id },
-        "IM feedback reaction is pending",
+        { code: errorCode, feedbackId: target.id, provider: target.provider },
+        blocked ? "IM feedback reaction was refused" : "IM feedback reaction is pending",
       );
       return {
-        value: null,
-        failed: true,
-        ...(error instanceof FeedbackProviderError && error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
+        value: failure?.knownNotApplied ? value : null,
+        errorCode,
+        blocked,
+        retryAfterMs: failure?.retryAfterMs,
       };
     }
   }
@@ -204,8 +219,8 @@ export class ImFeedbackWorker {
     await this.options.store.settle(target, {
       reaction: reaction.value,
       errorCode: "IM_FEEDBACK_SEND_UNKNOWN_EXPIRED",
-      ...reactionRetry(target, reaction),
-      dormant: !reaction.failed,
+      ...(!reaction.blocked ? reactionRetry(target, reaction) : {}),
+      dormant: !reaction.errorCode || reaction.blocked,
     });
     return true;
   }
@@ -220,6 +235,7 @@ export class ImFeedbackWorker {
         cardState: "sent",
         cardMessageId: [...matches][0],
         cardRevision: 0,
+        errorCode: blockedReactionCode(reaction),
         delayMs: reaction.retryAfterMs ?? 0,
       });
       return;
@@ -234,7 +250,8 @@ export class ImFeedbackWorker {
     );
     await this.options.store.settle(target, {
       reaction: reaction.value,
-      errorCode: matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN",
+      errorCode:
+        blockedReactionCode(reaction) ?? (matches.size > 1 ? "IM_FEEDBACK_DUPLICATE_CARD" : "IM_FEEDBACK_SEND_UNKNOWN"),
       delayMs: Math.max(300_000, reaction.retryAfterMs ?? 0),
       // An exhausted direct-message readback starts over there, not in the conversation.
       reconciliationCursor: cursor ?? readbackLeg(target.reconciliationCursor),
@@ -274,6 +291,7 @@ export class ImFeedbackWorker {
       await this.options.store.settle(target, {
         reaction: reaction.value,
         ...failure,
+        errorCode: blockedReactionCode(reaction) ?? failure.errorCode,
         delayMs: Math.max(failure.delayMs, reaction.retryAfterMs ?? 0),
       });
     }
@@ -287,16 +305,24 @@ export class ImFeedbackWorker {
       reaction: reaction.value,
       ...(target.cardMessageId ? { cardRevision: target.revision } : {}),
       ...reactionRetry(target, reaction),
+      ...(reaction.blocked && target.state === "working" ? { dormant: true } : {}),
     });
   }
 }
+function feedbackProviderError(error: unknown): FeedbackProviderError | undefined {
+  return error instanceof FeedbackProviderError ? error : undefined;
+}
+
+function blockedReactionCode(result?: ReactionResult): string | undefined {
+  return result?.blocked ? result.errorCode : undefined;
+}
+
 function reactionRetry(target: FeedbackTarget, result: ReactionResult) {
-  return result.failed
-    ? {
-        delayMs: result.retryAfterMs ?? feedbackRetryDelay(target.attemptCount),
-        errorCode: "IM_FEEDBACK_REACTION_FAILED",
-      }
-    : {};
+  if (!result.errorCode) return {};
+  return {
+    errorCode: result.errorCode,
+    ...(result.blocked ? {} : { delayMs: result.retryAfterMs ?? feedbackRetryDelay(target.attemptCount) }),
+  };
 }
 function sendFailure(
   error: unknown,

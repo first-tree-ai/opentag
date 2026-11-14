@@ -250,28 +250,31 @@ export class SlackOAuthService {
       oauthFailed(input.error === "access_denied" ? "Slack authorization was cancelled" : undefined);
     }
 
-    const installation = await this.#exchange(input.code);
+    const { appId, botAccessToken, ...owner } = await this.#exchange(input.code);
     const result = await this.#slack.configure(payload.userId, payload.context.agentId, {
       intent: payload.context.intent,
       expectedBinding:
         signedExpected.kind === "bound"
           ? { id: signedExpected.bindingId, credentialGeneration: signedExpected.credentialGeneration }
           : null,
-      appId: installation.appId,
-      botAccessToken: installation.botAccessToken,
+      appId,
+      botAccessToken,
       signingSecret: this.#app.signingSecret,
+      ...owner,
     });
     return { agentId: payload.context.agentId, returnSurface: payload.context.returnSurface, result };
   }
 
-  async #exchange(code: string): Promise<{ appId: string; botAccessToken: string }> {
+  /** The installed Bot, plus the approving Slack user as the binding's owner identity when Slack names one. */
+  async #exchange(code: string): Promise<{ appId: string; botAccessToken: string; ownerExternalUserId?: string }> {
     try {
-      return await this.#api.oauthAccess({
+      const { appId, botAccessToken, authedUserId } = await this.#api.oauthAccess({
         clientId: this.#app.clientId,
         clientSecret: this.#app.clientSecret,
         code,
         redirectUri: this.#app.redirectUrl,
       });
+      return { appId, botAccessToken, ...(authedUserId ? { ownerExternalUserId: authedUserId } : {}) };
     } catch (error) {
       const codeName = error instanceof Error ? error.message : "";
       if (codeName === "SLACK_AUTH_INVALID" || codeName === "SLACK_AUTH_REJECTED") {

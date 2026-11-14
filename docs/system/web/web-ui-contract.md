@@ -265,6 +265,11 @@ waiting-Task (**N tasks waiting**, **N 个任务等待中**, on every status) li
 Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
 leave messaging unconfirmed and offer no messaging repair; they do not establish a separate
 channel failure even when a binding exists. Only messaging verdicts can offer messaging recovery.
+The messaging row reads **Cannot receive messages** only for a confirmed failure (an unavailable
+messaging CLI or a failed credential check). A messaging CLI or credential check that timed out, was
+rate limited or could not reach the provider names that verdict with the same label as the Agent's
+row and offers no action. On the older read path, a handoff that is not ready while the runtime is
+not ready, with no messaging CLI phase, leaves messaging unconfirmed for the same reason.
 An unconfigured channel remains neutral and reads Not connected. A paused Agent's readable stored
 binding state remains visible without a messaging recovery action; Computer offline still voids it.
 

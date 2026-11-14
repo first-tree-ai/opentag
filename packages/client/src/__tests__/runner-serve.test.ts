@@ -5,8 +5,9 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import { WebSocket, WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { createPiDiagnosticWriter } from "../observability/pi-diagnostics.js";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import {
@@ -801,14 +802,28 @@ describe("runRunnerServe", () => {
     const output = io();
     const state = { destroys: 0, launches: 0, failDestroy: false };
     const stop = new AbortController();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
     const running = runRunnerServe(serveConfig(wss.url), {
       stderr: output.stderr,
       installSignalHandlers: false,
       sandboxFactory: fakeSandboxFactory([], state),
+      webSocketFactory: (url, options) => {
+        const socket = new WebSocket(url, options);
+        socket.once("open", () => {
+          now = 20;
+        });
+        socket.on("message", (raw) => {
+          const { type } = JSON.parse(String(raw));
+          if (type === "auth:result") now = 30;
+          if (type === "server:welcome") now = 75;
+        });
+        return socket;
+      },
       randomJitter: () => 0,
       signal: stop.signal,
     });
-    const auth = (await wss.waitFor("auth")) as { token?: string };
+    const auth = (await wss.waitFor("auth")) as { token?: string; requestId: string };
     expect(auth.token).toBe(BOOTSTRAP_TOKEN);
     // The token never travels in the URL.
     expect(wss.url).not.toContain(BOOTSTRAP_TOKEN);
@@ -819,6 +834,23 @@ describe("runRunnerServe", () => {
     stop.abort();
     expect(await running).toBe(143);
     expect(state.destroys).toBe(1);
+    const logs = output.chunks.stderr
+      .join("")
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.operation === "runner.connection.auth");
+    expect(logs).toMatchObject([
+      {
+        outcome: "success",
+        connectionOutcome: "welcomed",
+        requestId: auth.requestId,
+        durationMs: 75,
+        wsOpenDurationMs: 20,
+        authRoundTripMs: 55,
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain(BOOTSTRAP_TOKEN);
   }, 30_000);
 
   it("executes an acceptance command inside the sandbox with stdin-only config and reports the result", async () => {
@@ -868,6 +900,7 @@ describe("runRunnerServe", () => {
     const wss = await startWss(() => false);
     const output = io();
     const state = { destroys: 0, launches: 0, failDestroy: false };
+    const logs: RunnerPerformanceLogRecord[] = [];
     const code = await runRunnerServe(serveConfig(wss.url), {
       stderr: output.stderr,
       installSignalHandlers: false,
@@ -875,11 +908,21 @@ describe("runRunnerServe", () => {
       maxReconnectAttempts: 3,
       sleep: () => Promise.resolve(),
       randomJitter: () => 0,
+      onPerformanceLog: (record) => logs.push(record),
     });
     expect(code).toBe(1);
     expect(wss.frames.filter((frame) => frame.type === "auth")).toHaveLength(1);
     expect(state.destroys).toBe(1);
     expect(output.chunks.stderr.join("")).toMatch(/rejected/);
+    expect(logs.filter((record) => record.operation === "runner.connection.auth")).toMatchObject([
+      {
+        outcome: "error",
+        connectionOutcome: "auth_failed",
+        requestId: wss.frames.find((frame) => frame.type === "auth")?.requestId,
+        wsOpenDurationMs: expect.any(Number),
+        authRoundTripMs: expect.any(Number),
+      },
+    ]);
   }, 30_000);
 
   it.each([
@@ -915,12 +958,34 @@ describe("runRunnerServe", () => {
       });
       expect(code).toBe(testCase.scenario === "cancellation" ? 143 : 1);
       const auth = logs.filter((record) => record.operation === "runner.connection.auth");
-      expect(auth).toMatchObject([{ connectionOutcome: testCase.expected }]);
+      expect(auth).toMatchObject([
+        { connectionOutcome: testCase.expected, outcome: "error", wsOpenDurationMs: auth[0]?.durationMs },
+      ]);
+      expect(auth[0]).not.toHaveProperty("authRoundTripMs");
       if (testCase.minDurationMs) expect(auth[0]?.durationMs).toBeGreaterThanOrEqual(testCase.minDurationMs);
       if (testCase.authTimeoutMs) expect(auth[0]?.durationMs).toBeLessThan(5_000);
     },
     15_000,
   );
+
+  it("records a synchronous WebSocket construction failure before open", async () => {
+    const logs: RunnerPerformanceLogRecord[] = [];
+    const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {
+      stderr: io().stderr,
+      installSignalHandlers: false,
+      sandboxFactory: fakeSandboxFactory(),
+      webSocketFactory: () => {
+        throw new Error("failed to construct WebSocket");
+      },
+      onPerformanceLog: (record) => logs.push(record),
+    });
+    const auth = logs.filter((record) => record.operation === "runner.connection.auth");
+    expect(code).toBe(4);
+    expect(auth).toMatchObject([
+      { outcome: "error", connectionOutcome: "closed", wsOpenDurationMs: auth[0]?.durationMs },
+    ]);
+    expect(auth[0]).not.toHaveProperty("authRoundTripMs");
+  });
 
   it("treats an authentication timeout as a transport failure and reconnects", async () => {
     // The first connection never answers auth (a slow Server); only an explicit in-band
@@ -929,11 +994,13 @@ describe("runRunnerServe", () => {
     const output = io();
     const state = { destroys: 0, launches: 0, failDestroy: false };
     const stop = new AbortController();
+    const logs: RunnerPerformanceLogRecord[] = [];
     const running = runRunnerServe(serveConfig(wss.url), {
       stderr: output.stderr,
       installSignalHandlers: false,
       sandboxFactory: fakeSandboxFactory([], state),
       authTimeoutMs: 120,
+      onPerformanceLog: (record) => logs.push(record),
       sleep: () => Promise.resolve(),
       randomJitter: () => 0,
       signal: stop.signal,
@@ -943,6 +1010,20 @@ describe("runRunnerServe", () => {
     expect(output.chunks.stderr.join("")).toMatch(/timed out/);
     stop.abort();
     expect(await running).toBe(143);
+    expect(logs.filter((record) => record.operation === "runner.connection.auth")).toMatchObject([
+      {
+        outcome: "error",
+        connectionOutcome: "auth_timeout",
+        wsOpenDurationMs: expect.any(Number),
+        authRoundTripMs: expect.any(Number),
+      },
+      {
+        outcome: "success",
+        connectionOutcome: "welcomed",
+        wsOpenDurationMs: expect.any(Number),
+        authRoundTripMs: expect.any(Number),
+      },
+    ]);
   }, 30_000);
 
   it("reconnects when the server speaks out of turn before auth completes", async () => {
@@ -1906,7 +1987,7 @@ describe("Runner cancellation and connection lifetime", () => {
       | undefined;
     // The Runner requests v3; this Server only echoes v1, so the negotiated fence is version 1
     // and ordinary Session frames still flow.
-    expect(auth?.sessionCollaborationVersion).toBe(3);
+    expect(auth?.sessionCollaborationVersion).toBe(4);
     const runtime = cloudDeliveryFixture().runtime;
     const messageId = randomUUID();
     wss.send({

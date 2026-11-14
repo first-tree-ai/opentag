@@ -1,5 +1,5 @@
 {
-  "id": "d93fe81a-e848-488e-86b4-994410571d74",
+  "id": "6b393ca4-0ca9-4fdc-b5fa-c9ced51a8c2f",
   "prevId": "f9ef7d2b-2fef-40a3-99be-f3fed54f5dcb",
   "version": "7",
   "dialect": "postgresql",
@@ -2949,6 +2949,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "owner_external_user_id": {
+          "name": "owner_external_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "credential_schema_version": {
           "name": "credential_schema_version",
           "type": "bigint",
@@ -4254,15 +4260,9 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_session_unreported_accepted_idx": {
-          "name": "im_message_deliveries_session_unreported_accepted_idx",
+        "im_message_deliveries_unreported_accepted_idx": {
+          "name": "im_message_deliveries_unreported_accepted_idx",
           "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
             {
               "expression": "accepted_at",
               "isExpression": false,
@@ -4271,6 +4271,12 @@
             },
             {
               "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

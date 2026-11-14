@@ -152,6 +152,36 @@ describe("Slack installed-binding adapter", () => {
     ).rejects.toThrow("SLACK_AUTH_REJECTED");
   });
 
+  it("reports the approving Slack user from the OAuth exchange when Slack names one", async () => {
+    const access = (body: Record<string, unknown>) =>
+      new DefaultSlackApiClient(
+        undefined,
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              token_type: "bot",
+              access_token: "xoxb-token",
+              app_id: "A1",
+              bot_user_id: "U_BOT",
+              team: { id: "T1" },
+              ...body,
+            }),
+            { status: 200 },
+          ),
+        ),
+      ).oauthAccess({ clientId: "client", clientSecret: "secret", code: "code", redirectUri: "https://example.com" });
+    await expect(access({ authed_user: { id: "U_OWNER" } })).resolves.toEqual({
+      appId: "A1",
+      teamId: "T1",
+      enterpriseId: null,
+      botUserId: "U_BOT",
+      botAccessToken: "xoxb-token",
+      authedUserId: "U_OWNER",
+    });
+    await expect(access({})).resolves.not.toHaveProperty("authedUserId");
+  });
+
   it("downloads Slack resources and rejects unavailable or oversized responses", async () => {
     const info = vi.fn().mockResolvedValue({
       file: { url_private_download: "https://files.slack.com/download", name: "file.txt", mimetype: "text/plain" },
@@ -300,6 +330,7 @@ describe("Slack installed-binding adapter", () => {
       enterpriseId: null,
       botUserId: "U_BOT",
       botAccessToken: "xoxb-distributed",
+      authedUserId: "U_INSTALLER",
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://slack.com/api/oauth.v2.access",

@@ -84,6 +84,11 @@ Feishu Apps must subscribe to the `card.action.trigger` callback through the exi
 New QR registrations include this callback; existing Apps need it enabled in their developer console.
 
 Approval requests appear in the conversation or thread where the task was started (falling back to a private message to the task sender if posting in the originating conversation fails) with **Approve** and **Deny** buttons; only the task sender may approve or deny. Scheduled Runs execute unattended without a human sender, so they cannot receive interactive approval cards and must have required command rules and MCP authorizations verified beforehand using read-only checks or dry runs.
+While a Local IM Turn has a pending approval, the Client returns a retry for new IM steers. The Server keeps those
+messages in its delivery queue and releases the steer claim. A queued message can steer into the same Turn after the
+Provider resolves the approval, or start a new Turn if the original Turn has ended. A replay of a steer the Client
+already accepted returns the existing receipt.
+
 A Run started by a Session message (an internal Session's task, a message from another Session, or a steered
 message's own Run) has no IM input of its own. When its Provider asks for an approval, the Client sends the request
 to the Server (with `runtime.sessionMessageApproval`). The Server climbs the target Session's creation chain to the top
@@ -112,7 +117,11 @@ from free-text reasons or the presence of an approval request.
 The provider remains paused; clicking a button answers the same live turn. Decisions are stored long
 enough to reach the server replica holding the runtime socket, and the card is resolved after the
 runtime acknowledges the answer. A failed card update is retried while the server is running. Duplicate clicks, wrong users, expired requests, changed bindings,
-changed permission settings, and replaced runtime connections cannot approve an action.
+changed permission settings, and replaced runtime connections cannot approve an action. A refused click
+tells the person why: already decided or closed, expired, asked of someone else, or no longer valid for its
+run. The Server logs the refusal reason with the approval ID. A click that finds the request no longer valid for its
+run closes it at once: the Run is declined and the card shows its final state instead of keeping buttons that
+cannot work.
 
 Requests expire with the existing turn deadline. A replacement runtime connection invalidates requests
 tied to its old connection in the registration transaction. Decision delivery checks the durable

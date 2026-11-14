@@ -505,7 +505,10 @@ describe("external call performance logging", () => {
       policy: feishuPolicy,
       channel: {
         botIdentity: { openId: "ou_bot_1", name: "Bot" },
-        connect: async () => undefined,
+        connect: async () => {
+          const { setCurrentPerformanceAttributes } = await import("../observability/index.js");
+          setCurrentPerformanceAttributes({ botInfoMs: 12.5, wsHandshakeMs: 34.5 });
+        },
         disconnect: async () => undefined,
         on: () => () => undefined,
       },
@@ -519,9 +522,74 @@ describe("external call performance logging", () => {
         (l) =>
           l.payload.operation === "external.feishu.channel.connect" &&
           l.payload.externalService === "feishu" &&
+          l.payload.botInfoMs === 12.5 &&
+          l.payload.wsHandshakeMs === 34.5 &&
           l.payload.outcome === "completed",
       ),
     ).toBe(true);
+
+    // When validateBinding is invoked inside an ExternalCallPolicy span (e.g. FeishuConnectionManager),
+    // it must not emit a duplicate nested external.feishu.channel.connect span, and sub-phase attributes
+    // attach directly to the outer span.
+    logs.length = 0;
+    await expect(
+      feishuPolicy.run("feishu.connection.validate", (signal) => channelAdapter.validateBinding(signal)),
+    ).resolves.toMatchObject({
+      externalAppId: "cli_1",
+      externalBotId: "ou_bot_1",
+    });
+    expect(
+      logs.filter(
+        (l) =>
+          l.payload.operation === "external.feishu.connection.validate" &&
+          l.payload.botInfoMs === 12.5 &&
+          l.payload.wsHandshakeMs === 34.5 &&
+          l.payload.outcome === "completed",
+      ),
+    ).toHaveLength(1);
+    expect(logs.some((l) => l.payload.operation === "external.feishu.channel.connect")).toBe(false);
+
+    // When the outer ExternalCallPolicy is uninstrumented while FeishuAdapter has an enabled performanceLogger,
+    // validateBinding must still emit external.feishu.channel.connect (even inside an outer HTTP/worker context).
+    logs.length = 0;
+    const uninstrumentedPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn"],
+    });
+    const standaloneInstrumentedAdapter = new FeishuAdapter({
+      appId: "cli_1",
+      appSecret: "sec_1",
+      teamId: "team_1",
+      policy: uninstrumentedPolicy,
+      performanceLogger: perfLogger,
+      channel: {
+        botIdentity: { openId: "ou_bot_1", name: "Bot" },
+        connect: async () => {
+          const { setCurrentPerformanceAttributes } = await import("../observability/index.js");
+          setCurrentPerformanceAttributes({ botInfoMs: 9.5, wsHandshakeMs: 18.5 });
+        },
+        disconnect: async () => undefined,
+        on: () => () => undefined,
+      },
+    });
+    await expect(
+      perfLogger.traceAsync({ module: "worker", category: "worker", operation: "worker.feishu.patrol" }, () =>
+        uninstrumentedPolicy.run("feishu.connection.validate", (signal) =>
+          standaloneInstrumentedAdapter.validateBinding(signal),
+        ),
+      ),
+    ).resolves.toMatchObject({
+      externalAppId: "cli_1",
+      externalBotId: "ou_bot_1",
+    });
+    expect(
+      logs.filter(
+        (l) =>
+          l.payload.operation === "external.feishu.channel.connect" &&
+          l.payload.botInfoMs === 9.5 &&
+          l.payload.wsHandshakeMs === 18.5 &&
+          l.payload.outcome === "completed",
+      ),
+    ).toHaveLength(1);
 
     // CloudSlackAutoSetupOwner with instrumented fetch
     logs.length = 0;

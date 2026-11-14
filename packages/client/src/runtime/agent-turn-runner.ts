@@ -17,6 +17,7 @@ import {
   type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
+  type TurnQuotaWaitResult,
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -73,6 +74,7 @@ import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration, providerSupportsMcpGateway } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { QuotaWaitNotifier } from "./quota-wait-notifier.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedMcpGatewayLaunch,
@@ -190,7 +192,7 @@ const STEER_SETTLE_TIMEOUT_MS = 10_000;
 
 interface RunningTurn {
   readonly abort: AbortController;
-  readonly approvals: Map<string, string>;
+  readonly approvals: Map<string, { providerRequestId: string; responding: boolean }>;
   readonly owner: LiveTurnOwner;
   readonly reportVersion: number;
   /** `waiting`: between attempts, for a used-up quota window to reset; steers join the retry input. */
@@ -259,6 +261,7 @@ export class AgentTurnRunner {
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
   readonly #activity: TurnActivityReporter;
+  readonly #quotaWait: QuotaWaitNotifier;
 
   constructor(options: AgentTurnRunnerOptions) {
     this.#activity = new TurnActivityReporter({
@@ -268,6 +271,12 @@ export class AgentTurnRunner {
     });
     this.#bindingStore = options.bindingStore;
     this.#connection = options.connection;
+    this.#quotaWait = new QuotaWaitNotifier({
+      enabled: () => options.connection.capabilityVersion?.(RUNTIME_CAPABILITY.quotaWait) === 1,
+      send: (frame) => options.connection.send(frame, { priority: "trace", signal: AbortSignal.timeout(5_000) }),
+      logger: options.logger ?? createLogger("turn"),
+      ...(options.now ? { now: options.now } : {}),
+    });
     this.#custody = options.custody;
     this.#logger = options.logger ?? createLogger("turn");
     this.#now = options.now ?? Date.now;
@@ -289,6 +298,10 @@ export class AgentTurnRunner {
 
   handleActivityResult(result: TurnActivityResult): void {
     this.#activity.acknowledge(result);
+  }
+
+  handleQuotaWaitResult(result: TurnQuotaWaitResult): void {
+    this.#quotaWait.handleResult(result);
   }
 
   get activeCount(): number {
@@ -346,7 +359,8 @@ export class AgentTurnRunner {
     ) {
       return steerResult(request, "rejected", "target_mismatch");
     }
-    if (turn.phase === "starting") return steerResult(request, "retry", "turn_starting");
+    // Both waits are temporary. Release the Server's steer claim so it can try this Turn again.
+    if (turn.phase === "starting" || turn.approvals.size > 0) return steerResult(request, "retry", "turn_starting");
     if (turn.phase === "waiting") return this.#joinWaitingTurn(turn, request, semanticHash);
     const runtime = turn.runtime;
     if (turn.phase !== "running" || !runtime) {
@@ -358,6 +372,7 @@ export class AgentTurnRunner {
     if (runtime.state.phase !== "running" || runtime.state.activeRunId !== request.expectedTurnId) {
       return steerResult(request, "deferred", "turn_not_running");
     }
+    if (runtime.steerReady === false) return steerResult(request, "retry", "turn_starting");
 
     turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
     const steering = this.#steerRunningTurn(turn, runtime, request, semanticHash);
@@ -405,6 +420,12 @@ export class AgentTurnRunner {
     const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
     if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
     if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+
+    // An approval can arrive while we persist the retry input.
+    if (turn.approvals.size > 0) {
+      await this.#retries.removeSteer(request).catch(() => undefined);
+      return steerResult(request, "retry", "turn_starting");
+    }
 
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
@@ -497,10 +518,11 @@ export class AgentTurnRunner {
   async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
     const { type: _type, decision: _decision, ...identity } = request;
     const turn = this.#turns.get(request.turnId);
-    const providerRequestId = turn?.approvals.get(request.requestId);
+    const approval = turn?.approvals.get(request.requestId);
     if (
       !turn?.runtime ||
-      providerRequestId === undefined ||
+      !approval ||
+      approval.responding ||
       turn.phase !== "running" ||
       turn.owner.request.sessionId !== request.sessionId ||
       turn.owner.request.deliveryId !== request.deliveryId ||
@@ -509,15 +531,16 @@ export class AgentTurnRunner {
       Date.parse(turn.expiresAt) <= this.#now()
     )
       return { ...identity, type: "approval:result", status: "stale" };
-    turn.approvals.delete(request.requestId);
+    approval.responding = true;
     try {
       await turn.runtime.respond({
         expectedRunId: request.turnId,
-        requestId: providerRequestId,
+        requestId: approval.providerRequestId,
         kind: "approval",
         decision: request.decision,
         scope: "run",
       });
+      turn.approvals.delete(request.requestId);
       return { ...identity, type: "approval:result", status: "applied" };
     } catch {
       return { ...identity, type: "approval:result", status: "stale" };
@@ -541,6 +564,7 @@ export class AgentTurnRunner {
       trace.record(event);
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
+      this.#forgetResolvedApproval(turn, event);
       if (event.type === "run_started" && event.runId === owner.turnId) {
         this.#activity.start(owner.request, owner.turnId);
         await this.#bindingStore.updateUnresolved(
@@ -562,6 +586,13 @@ export class AgentTurnRunner {
       }
       await this.#onRuntimeEvent?.(event);
     });
+  }
+
+  #forgetResolvedApproval(turn: RunningTurn, event: AgentRuntimeEvent): void {
+    if (event.type !== "interaction_resolved" || event.runId !== turn.owner.turnId) return;
+    for (const [id, approval] of turn.approvals) {
+      if (approval.providerRequestId === event.requestId) turn.approvals.delete(id);
+    }
   }
 
   async #requestApproval(
@@ -587,7 +618,7 @@ export class AgentTurnRunner {
       return;
     }
     const requestId = randomUUID();
-    turn.approvals.set(requestId, request.requestId);
+    turn.approvals.set(requestId, { providerRequestId: request.requestId, responding: false });
     await this.#connection.send({
       type: "approval:request",
       requestId,
@@ -718,6 +749,8 @@ export class AgentTurnRunner {
       turnId: owner.turnId,
     };
     this.#logger.info(fields, "Turn started");
+    // The Turn runs again after a quota wait, a restart included: the Server stops editing its notice.
+    if (interruption?.reason === "provider_quota_exceeded") this.#quotaWait.ended(owner.request, owner.turnId);
     const timeout = new AbortController();
     // The ingress deadline bounds only the first attempt; later ones get what is left of the Run's budget.
     const timeoutMs = interruption
@@ -729,12 +762,14 @@ export class AgentTurnRunner {
       this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
     );
     // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
-    const onQuotaWait = (waiting: boolean): void => {
+    const onQuotaWait = (waiting: boolean, resetsAt?: string): void => {
       if (waiting) {
         budget.pause();
         runTime.pause();
+        if (resetsAt) this.#quotaWait.waiting(owner.request, owner.turnId, resetsAt);
         return;
       }
+      this.#quotaWait.ended(owner.request, owner.turnId);
       budget.resume();
       runTime.resume();
       /* v8 ignore next -- a resumed budget always has an expiry. */
@@ -821,6 +856,7 @@ export class AgentTurnRunner {
     } finally {
       this.#activity.end(owner.turnId);
       releaseObserver();
+      turn.approvals.clear();
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
@@ -954,6 +990,8 @@ export class AgentTurnRunner {
       return undefined;
     }
     if (!record || !interruption) return undefined;
+    /* v8 ignore next -- a quota wait always names when it resumes. */
+    if (interruption.resumeAt) this.#quotaWait.waiting(turn.owner.request, turn.owner.turnId, interruption.resumeAt);
     this.#logger.info(
       { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId, resumeAt: interruption.resumeAt },
       "Turn waits for the model quota to reset",

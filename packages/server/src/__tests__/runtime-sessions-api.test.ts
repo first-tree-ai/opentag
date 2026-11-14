@@ -29,12 +29,13 @@ describe("Runtime Session CLI routes", () => {
       execution: "stopped" as const,
     }));
     const listInternalSessions = vi.fn(async () => ({ items: [] }));
+    const listAgentSessions = vi.fn(async () => ({ items: [] }));
     const authenticate = vi.fn(async () => source);
     const app = createApp({
       runtimeSessions: {
         collaboration: { create, send, stop },
         proofs: { authenticate },
-        sessions: { listInternalSessions },
+        sessions: { listAgentSessions, listInternalSessions },
       },
     });
     const messageId = randomUUID();
@@ -67,6 +68,15 @@ describe("Runtime Session CLI routes", () => {
     expect(listed.statusCode).toBe(200);
     expect(listed.headers["cache-control"]).toBe("no-store");
     expect(listInternalSessions).toHaveBeenCalledWith(source.sessionId, { recursive: true, limit: 100 });
+
+    const agentListed = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeAgentSessions}?visibleOnly=true&limit=5`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(agentListed.statusCode).toBe(200);
+    expect(agentListed.headers["cache-control"]).toBe("no-store");
+    expect(listAgentSessions).toHaveBeenCalledWith(source.sessionId, { visibleOnly: true, limit: 5 });
 
     const nonRecursive = await app.inject({
       method: "GET",
@@ -119,7 +129,7 @@ describe("Runtime Session CLI routes", () => {
       runtimeSessions: {
         collaboration: { create: vi.fn(), send: vi.fn(), stop },
         proofs: { authenticate },
-        sessions: { listInternalSessions },
+        sessions: { listAgentSessions: vi.fn(), listInternalSessions },
       },
     });
     const stopped = await app.inject({
@@ -160,7 +170,7 @@ describe("Runtime Session CLI routes", () => {
             throw new SessionCliProofError("invalid_proof", "invalid");
           },
         },
-        sessions: { listInternalSessions: vi.fn() },
+        sessions: { listAgentSessions: vi.fn(), listInternalSessions: vi.fn() },
       },
     });
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });

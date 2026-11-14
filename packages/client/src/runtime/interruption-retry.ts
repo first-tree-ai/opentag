@@ -28,6 +28,8 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  * - `provider_rate_limited`: the model API answered HTTP 429.
  * - `provider_start_failed`: the model CLI did not start, so nothing ran yet; retried once (R3).
  * - `provider_process_exited`: the Provider's process died under a live daemon (crash, out of memory).
+ * - `provider_connection_failed`: the model API could not be reached, or its network edge refused the request with
+ *   a block page (for example a Cloudflare 403) instead of an API answer; retried after the same wait as a 429.
  * - `provider_quota_exceeded`: a model subscription window was used up (`quotaKind: usage_window`); the work
  *   waits for its reset with a limit of its own. A billing failure is not retried.
  */
@@ -37,6 +39,7 @@ export type InterruptionReason =
   | "provider_rate_limited"
   | "provider_start_failed"
   | "provider_process_exited"
+  | "provider_connection_failed"
   | "provider_quota_exceeded";
 
 const REASONS = new Set<InterruptionReason>([
@@ -45,6 +48,7 @@ const REASONS = new Set<InterruptionReason>([
   "provider_rate_limited",
   "provider_start_failed",
   "provider_process_exited",
+  "provider_connection_failed",
   "provider_quota_exceeded",
 ]);
 
@@ -53,6 +57,7 @@ const IN_PLACE = new Set<InterruptionReason>([
   "provider_rate_limited",
   "provider_start_failed",
   "provider_process_exited",
+  "provider_connection_failed",
   "provider_quota_exceeded",
 ]);
 
@@ -64,7 +69,7 @@ export const RETRY_RESET_AFTER_MS = 5 * 60_000;
 export const RUN_TIME_RECORD_INTERVAL_MS = 60_000;
 /** The most one observation of the running clock can add; a busy event loop can delay a tick this far. */
 const MAX_RUN_TIME_TICK_MS = 2 * RUN_TIME_RECORD_INTERVAL_MS;
-/** A rate-limited Run waits this long before its automatic retry. */
+/** A rate-limited Run, or one whose model API could not be reached, waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 /** A model CLI that failed to start gets a short pause before its one retry. */
 export const START_FAILURE_RETRY_DELAY_MS = 5_000;
@@ -103,7 +108,7 @@ export function retryLimit(reason: InterruptionReason): number {
 
 /** The wait before an in-place retry for this reason. */
 export function retryDelayMs(reason: InterruptionReason): number {
-  if (reason === "provider_rate_limited") return RATE_LIMIT_RETRY_DELAY_MS;
+  if (reason === "provider_rate_limited" || reason === "provider_connection_failed") return RATE_LIMIT_RETRY_DELAY_MS;
   return reason === "provider_start_failed" ? START_FAILURE_RETRY_DELAY_MS : 0;
 }
 
@@ -228,6 +233,8 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the model CLI failed to start before doing any work";
     case "provider_process_exited":
       return "the Provider process exited unexpectedly";
+    case "provider_connection_failed":
+      return "the model API could not be reached or its network edge refused the request";
     case "provider_quota_exceeded":
       return "the model quota was used up; OpenTag waited for it to reset and resumed automatically";
   }
@@ -242,8 +249,9 @@ export function buildContinuationNotice(interruption: Interruption): string {
   const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
   return [
     `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry).`,
-    "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
-    "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+    "Your conversation history is intact: continue from where you stopped, and do not redo steps already completed.",
+    "Check your history for the work already done, including replies already sent, and do not repeat replies or side effects that already happened.",
+    "The original request follows for reference; it may duplicate a message already in your history and is not a new request.",
   ].join(" ");
 }
 

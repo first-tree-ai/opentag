@@ -1,5 +1,9 @@
 import type { RuntimeCredentialProvider } from "@opentag/shared";
-import type { ProviderOperation, ProviderOperationRewriteContext } from "./operation-registry.js";
+import type {
+  ProviderOperation,
+  ProviderOperationBody,
+  ProviderOperationRewriteContext,
+} from "./operation-registry.js";
 
 export const RUNTIME_PROXY_FAILURE_CODES = [
   "operation_not_registered",
@@ -91,7 +95,7 @@ export function sanitizeRequestHeaders(headers: Record<string, string>): Record<
 }
 
 export function upstreamHeaders(
-  body: "none" | "json" | "form" | "stream",
+  body: ProviderOperationBody,
   headers: Record<string, string>,
   token: string,
 ): Record<string, string> {

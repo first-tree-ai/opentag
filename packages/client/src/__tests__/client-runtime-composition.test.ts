@@ -73,9 +73,14 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
-  it.each([undefined, "legacy", "proxy"] as const)(
-    "negotiates credential proxy support only when the composed mode is %s",
-    async (credentialMode) => {
+  it.each([
+    [undefined, undefined],
+    ["legacy", undefined],
+    ["legacy", false],
+    ["proxy", undefined],
+  ] as const)(
+    "negotiates credential proxy support only when the composed mode is %s (legacy MCP %s)",
+    async (credentialMode, legacyMcpGateway) => {
       const home = await temporaryDirectory("opentag-credential-mode-negotiation-");
       const server = await runtimeServer();
       cleanup.push(server.close);
@@ -91,6 +96,7 @@ describe("createClientRuntime production composition", () => {
       const runtime = await createClientRuntime(connection, {
         clientVersion: "0.0.1",
         credentialMode,
+        ...(legacyMcpGateway === false ? { legacyMcpGateway } : {}),
         environment: { HOME: home, PATH: process.env.PATH },
         factory: readyFactory(),
         home,
@@ -99,7 +105,10 @@ describe("createClientRuntime production composition", () => {
       try {
         await connection.whenRegistered();
         const proxyVersion = credentialMode === "proxy" ? 1 : undefined;
-        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.runtimeCredential)).toBe(proxyVersion);
+        // Legacy mode still opens MCP-only executions, which ride on runtimeCredential alone.
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.runtimeCredential)).toBe(
+          legacyMcpGateway === false ? undefined : 1,
+        );
         expect(connection.capabilityVersion(RUNTIME_CAPABILITY.providerProxy)).toBe(proxyVersion);
         expect(connection.capabilityVersion(RUNTIME_CAPABILITY.imCredentialGrant)).toBe(2);
         expect(() => connection.setCredentialProxyEnabled(credentialMode !== "proxy")).toThrow(
@@ -1333,6 +1342,10 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     await withRecovery.onReconciled(
       { desired: "ready", sessionId: "no-reason" } as never,
       { status: "rejected" } as never,
+    );
+    await withRecovery.onReconciled(
+      { desired: "ready", sessionId: "failed-proof-refresh" } as never,
+      { status: "running", reason: "session_cli_proof_refresh_failed" } as never,
     );
     // A ready Session releases waiting Session messages; so does a resumed Turn (`running`), to steer them in.
     expect(prepared.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);

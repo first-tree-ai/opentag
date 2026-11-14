@@ -89,6 +89,44 @@ export function piProviderFailureCode(message: string | undefined): ProviderFail
   return providerFailureCode(Reflect.get(error, "code") ?? Reflect.get(error, "type"), Number(message.slice(0, 3)));
 }
 
+/** No balance, credit or budget: waiting does not help. Checked first, since some of these texts say "limit". */
+const PI_BILLING_PATTERN =
+  /insufficient_quota|insufficient_credit|billing|available balance|out of budget|credit balance/i;
+/**
+ * A subscription window that resets by itself, by its own error code (ChatGPT, OpenCode Go and free-tier usage
+ * limits), or pi-ai's ChatGPT text with the reset it took from that code's `resets_at`. The same text without a
+ * reset is no evidence: pi-ai writes it for every HTTP 429 and for `usage_not_included`, billing and access included.
+ */
+const PI_USAGE_WINDOW_PATTERN =
+  /usage_limit_reached|GoUsageLimitError|FreeUsageLimitError|usage limit\b[^.]*\.\s*Try again in ~\d+ min/i;
+
+/**
+ * Pi reports a model failure as text, often `<status>: <JSON error>`. A used-up subscription window is a
+ * `usage_window` quota, with its reset when the text has one; billing is a `billing` quota. Undefined for anything
+ * else, which keeps its ordinary classification.
+ */
+export function piQuotaFailure(
+  message: string | undefined,
+  now: number,
+): { code: "provider_quota_exceeded"; quotaKind: "usage_window" | "billing"; retryAt?: string } | undefined {
+  if (!message) return undefined;
+  if (message.startsWith("402: ") || PI_BILLING_PATTERN.test(message)) {
+    return { code: "provider_quota_exceeded", quotaKind: "billing" };
+  }
+  if (!PI_USAGE_WINDOW_PATTERN.test(message)) return undefined;
+  const retryAt = piQuotaReset(message, now);
+  return { code: "provider_quota_exceeded", quotaKind: "usage_window", ...(retryAt ? { retryAt } : {}) };
+}
+
+function piQuotaReset(message: string, now: number): string | undefined {
+  const resetsAt = /"resets_at"\s*:\s*(\d{9,11})\b/.exec(message)?.[1];
+  if (resetsAt) return new Date(Number(resetsAt) * 1000).toISOString();
+  const seconds = /"resets_in_seconds"\s*:\s*(\d{1,9})\b/.exec(message)?.[1];
+  if (seconds) return new Date(now + Number(seconds) * 1000).toISOString();
+  const minutes = /Try again in ~(\d{1,6}) min/i.exec(message)?.[1];
+  return minutes ? new Date(now + Number(minutes) * 60_000).toISOString() : undefined;
+}
+
 export function providerProcessFailureCode(code: string): AgentProviderError["code"] {
   if (code === "spawn") return "provider_start_failed";
   if (code === "protocol") return "provider_protocol_error";

@@ -59,7 +59,7 @@ service, and no database migration for this feature. There is no LiteLLM involve
 | Variable | Where | Meaning |
 | --- | --- | --- |
 | `OPENTAG_WEB_TOOLS_ENABLED` | CLI daemon environment (`daemon.env`) | Local opt-in. Accepts only exact `true`/`false`; any other value fails startup |
-| `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` | CLI daemon environment | Required; the legacy mode never opens executions and never enables web tools |
+| `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` | CLI daemon environment | Required; legacy mode opens at most an MCP-only execution and never enables web tools |
 
 The native Runner has **no** web opt-in. `OPENTAG_RUNNER_WEB_TOOLS` was removed; a Cloud turn gets web tools exactly
 when the Server granted the `web` service for that execution and the Runner holds the packaged extension artifact.

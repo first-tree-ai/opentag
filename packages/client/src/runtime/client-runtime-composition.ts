@@ -104,7 +104,7 @@ import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { routeApprovalDecision, SessionMessageApprovals } from "./session-message-approvals.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
-import { SessionReconciler } from "./session-reconciler.js";
+import { SESSION_CLI_PROOF_REFRESH_FAILED, SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
@@ -293,6 +293,11 @@ export interface CreateClientRuntimeOptions {
    * `"legacy"` preserves the existing Local behavior.
    */
   readonly credentialMode?: RuntimeCredentialMode;
+  /**
+   * Legacy mode only: deliver bound MCP Servers through an MCP-only execution. Default on;
+   * `false` keeps legacy mode free of runtime executions.
+   */
+  readonly legacyMcpGateway?: boolean;
   /**
    * Proxy mode injection seam for Cloud host composition. Local proxy mode uses the
    * production defaults (loopback TLS, openssl CA, real WSS client).
@@ -794,7 +799,9 @@ export async function createClientRuntime(
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const credentialMode = options.credentialMode ?? "legacy";
-  connection.setCredentialProxyEnabled(credentialMode === "proxy");
+  connection.setCredentialProxyEnabled(credentialMode === "proxy", {
+    legacyExecutions: options.legacyMcpGateway !== false,
+  });
   const contextTree = new ContextTreeManager({
     environment: sourceEnvironment,
     codexHome,
@@ -1054,6 +1061,7 @@ export async function createClientRuntime(
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, recovery),
     handleSessionRecoverResult: recovery.handleResult.bind(recovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
+    handleQuotaWaitResult: runner.handleQuotaWaitResult.bind(runner),
     handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
   });
   return new ComposedClientRuntime(runtime, {
@@ -1488,7 +1496,11 @@ export function createClientRuntimeHandlers(
       const replay = recovery.afterReconciled(request, result);
       // Session messages that waited for this Session's preparation (e.g. after a restart) may run, or,
       // while a resumed Turn is `running`, be steered into it.
-      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
+      if (
+        request.desired === "ready" &&
+        (result.status === "ready" || result.status === "running") &&
+        result.reason !== SESSION_CLI_PROOF_REFRESH_FAILED
+      ) {
         prepared?.sessionPrepared(request.sessionId);
       }
       if (request.desired === "ready" && result.status === "rejected") {
@@ -1535,6 +1547,7 @@ export function createCredentialEnvironment(
     home: options.home,
     logger,
     mode: options.credentialMode ?? "legacy",
+    ...(options.legacyMcpGateway === false ? { legacyMcpGateway: false } : {}),
     serverUrl: connection.serverUrl,
     ...(runtimeCredentials?.dataConnectionFactory
       ? { dataConnectionFactory: runtimeCredentials.dataConnectionFactory }

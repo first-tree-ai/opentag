@@ -12,6 +12,12 @@ import type { ApprovalStore, PendingApproval } from "./approval-store.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
+/**
+ * What a card action achieved. Only `recorded` changes the approval; the others tell the person why not:
+ * already decided or invalidated, past its expiry, asked of someone else, or no longer valid for its run.
+ */
+export type ApprovalDecideResult = "recorded" | "resolved" | "expired" | "not-approver" | "unavailable";
+
 const ApprovalFrameSchema = z.union([RuntimeApprovalRequestSchema, RuntimeApprovalResultSchema]);
 export interface ApprovalAction {
   approvalId: string;
@@ -174,20 +180,55 @@ export class RuntimeApprovalOwner {
     return;
   }
 
-  decide(action: ApprovalAction): Promise<"recorded" | "unavailable"> {
+  decide(action: ApprovalAction): Promise<ApprovalDecideResult> {
     if (this.#closed) return Promise.resolve("unavailable");
     return this.#track(this.#decide(action));
   }
 
-  async #decide(action: ApprovalAction): Promise<"recorded" | "unavailable"> {
-    if (!z.string().uuid().safeParse(action.approvalId).success) return "unavailable";
+  async #decide(action: ApprovalAction): Promise<ApprovalDecideResult> {
+    const result = await this.#tryDecide(action);
+    if (result.outcome !== "recorded")
+      this.options.logger?.info(
+        {
+          module: "runtime-approval",
+          operation: "approval.decide",
+          outcome: result.outcome,
+          reason: result.reason,
+          approvalId: action.approvalId,
+          provider: action.provider,
+          ...(result.status ? { status: result.status } : {}),
+        },
+        "Runtime approval decision refused",
+      );
+    return result.outcome;
+  }
+
+  async #tryDecide(action: ApprovalAction): Promise<{
+    outcome: ApprovalDecideResult;
+    reason?: string;
+    status?: PendingApproval["status"];
+  }> {
+    if (!z.string().uuid().safeParse(action.approvalId).success)
+      return { outcome: "unavailable", reason: "invalid_id" };
     const row = await this.options.store.find(action.approvalId);
-    if (row?.status !== "pending" || row.expiresAt.getTime() <= this.#now() || !matchesActor(row, action))
-      return "unavailable";
+    if (!row) return { outcome: "unavailable", reason: "not_found" };
+    if (row.status !== "pending") return { outcome: "resolved", reason: "not_pending", status: row.status };
+    if (row.expiresAt.getTime() <= this.#now()) return { outcome: "expired", reason: "expired" };
+    const mismatch = actorMismatch(row, action);
+    if (mismatch)
+      return { outcome: mismatch === "user" ? "not-approver" : "unavailable", reason: `${mismatch}_mismatch` };
     // The callback can arrive at a different server replica. Durable decision delivery stays
     // with the replica holding the runtime socket; authority is checked on both sides.
     const scope = await this.options.authority(row.request, row);
-    if (!scope || !sameAuthority(row, scope)) return "unavailable";
+    const refused = !scope ? "authority_missing" : !sameAuthority(row, scope) ? "authority_changed" : undefined;
+    if (refused) {
+      // The request can never be decided now. Close it at once so the card loses its buttons and the Run is
+      // declined, instead of offering buttons that keep failing until the request expires. Only the replica
+      // holding the runtime socket can send the decline, so another replica records one for it to deliver.
+      if (this.current(row)) await this.invalidate(row, true);
+      else await this.#recordRefusal(row);
+      return { outcome: "unavailable", reason: refused };
+    }
     const updated = await this.options.store.update(row.id, "pending", { status: action.decision });
     if (updated) {
       this.options.logger?.info(
@@ -201,9 +242,28 @@ export class RuntimeApprovalOwner {
         },
         "Runtime approval decided",
       );
-      return "recorded";
+      return { outcome: "recorded" };
     }
-    return "unavailable";
+    return { outcome: "resolved", reason: "concurrent_update" };
+  }
+
+  /**
+   * Leaves a decline for the socket-owning replica. Its poll rechecks authority, finds it still refused, and
+   * invalidates the approval there, which sends the decline to the Run and then closes the card.
+   */
+  async #recordRefusal(row: PendingApproval): Promise<void> {
+    if (!(await this.options.store.update(row.id, "pending", { status: "decline" }))) return;
+    this.options.logger?.info(
+      {
+        module: "runtime-approval",
+        operation: "approval.transition",
+        outcome: "decline",
+        approvalId: row.id,
+        previousStatus: row.status,
+        status: "decline",
+      },
+      "Runtime approval refused at another replica",
+    );
   }
 
   poll(): Promise<void> {
@@ -316,17 +376,23 @@ function sameAuthority(
 }
 
 export function matchesActor(row: PendingApproval, action: ApprovalAction): boolean {
+  return actorMismatch(row, action) === undefined;
+}
+
+/** The first way a card action does not belong to this approval, or undefined when it does. */
+function actorMismatch(row: PendingApproval, action: ApprovalAction): "binding" | "card" | "user" | undefined {
   const authority = row.authority;
-  return (
-    action.provider === authority.provider &&
-    action.userId === authority.senderExternalId &&
-    action.generation === authority.generation &&
-    action.messageId === row.messageId &&
-    action.channelId === row.messageChannelId &&
+  if (
+    action.provider !== authority.provider ||
+    action.generation !== authority.generation ||
     (action.provider === "slack"
-      ? action.installationId === authority.installationId
-      : action.imBindingId === row.imBindingId)
-  );
+      ? action.installationId !== authority.installationId
+      : action.imBindingId !== row.imBindingId)
+  )
+    return "binding";
+  if (action.messageId !== row.messageId || action.channelId !== row.messageChannelId) return "card";
+  if (action.userId !== authority.senderExternalId) return "user";
+  return undefined;
 }
 function decline(request: RuntimeApprovalRequest): RuntimeApprovalDecision {
   return {

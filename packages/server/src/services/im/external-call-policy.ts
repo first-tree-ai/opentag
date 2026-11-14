@@ -290,6 +290,10 @@ export class ExternalCallPolicy {
     return this.#perfLogger;
   }
 
+  isActive(): boolean {
+    return Boolean(activePolicyStorage.getStore()?.get(this)?.active);
+  }
+
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
   admitUrl(input: string | URL, options: Pick<ExternalCallOptions, "allowAnyHttpsHost"> = {}): URL {
     if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");

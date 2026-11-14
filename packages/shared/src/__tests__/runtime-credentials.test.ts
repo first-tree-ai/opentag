@@ -68,7 +68,7 @@ describe("runtime credential control frames", () => {
     expect(isFeishuRateLimitCode("99991400")).toBe(true);
     expect(isFeishuRateLimitCode(99992402)).toBe(false);
     expect(isFeishuRateLimitCode(null)).toBe(false);
-    for (const code of [10003, 10005, 10014, 20002, 99991401, 99991543, 99991662, 99991673]) {
+    for (const code of [10003, 10005, 10014, 20002, 21001, 99991401, 99991543, 99991662, 99991673]) {
       expect(FEISHU_CREDENTIAL_REJECTED_CODES.has(code)).toBe(true);
       expect(isFeishuCredentialRejectedCode(code)).toBe(true);
       expect(isFeishuCredentialRejectedCode(String(code))).toBe(true);

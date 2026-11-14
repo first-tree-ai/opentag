@@ -20,6 +20,7 @@ import {
 } from "../../db/schema/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage, messageExcerpt } from "./im-feedback-copy.js";
+import { hasLinkableSessionTask } from "./im-session-link.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & {
   batchRetryBlocked?: boolean;
@@ -53,6 +54,8 @@ export interface FeedbackMessageContext {
   excerpt?: string;
   /** The Agent's tool and model as its settings name them, for cards that tell someone what to fix. */
   runtime?: FeedbackRuntime;
+  /** The Agent whose Session Task page the card's Session ID opens, present only when that Task can be opened. */
+  taskAgentId?: string;
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
@@ -593,6 +596,7 @@ export class ImFeedbackStore {
           .where(eq(agents.id, target.agentId))
           .limit(1)
       : [];
+    const linkable = target.agentId ? await hasLinkableSessionTask(this.database, target.sessionId) : false;
     return {
       language: message ? feedbackLanguage(message.content) : "en",
       ...(message ? { excerpt: messageExcerpt(message.content) } : {}),
@@ -600,6 +604,7 @@ export class ImFeedbackStore {
       ...(agent
         ? { runtime: { tool: agent.computerKind === "cloud" ? "cloud" : agent.provider, model: agent.model ?? null } }
         : {}),
+      ...(linkable && target.agentId ? { taskAgentId: target.agentId } : {}),
     };
   }
 
@@ -718,16 +723,26 @@ export async function acknowledgeFeedbackActivity(
   frame: import("@opentag/shared").TurnActivityRequest,
   context: import("../../runtime/runtime-session.js").RuntimeBusinessContext,
 ): Promise<import("@opentag/shared").TurnActivityResult> {
-  const rows = await database.execute(
-    sql`select d.id from im_message_deliveries d inner join sessions s on s.id=d.session_id inner join session_placements p on p.session_id=s.id inner join im_bindings b on b.id=s.im_binding_id where d.id=${frame.deliveryId}::uuid and d.session_id=${frame.sessionId}::uuid and d.turn_id=${frame.turnId} and d.report_owner_instance_id=${context.instanceId}::uuid and d.placement_generation=${frame.placementGeneration} and p.generation=${frame.placementGeneration} and p.computer_id=${context.computerId}::uuid and b.agent_id=${frame.agentId}::uuid and d.state='accepted' and d.reported_at is null and s.ended_at is null limit 1`,
-  );
+  const live = await ownsLiveDelivery(database, frame, context);
   return {
     type: "turn:activity:result",
     requestId: frame.requestId,
     turnId: frame.turnId,
     sequence: frame.sequence,
-    status: rows.length && !context.signal.aborted ? "recorded" : "stale_generation",
+    status: live ? "recorded" : "stale_generation",
   };
+}
+
+/** The connection's Computer and instance hold this accepted, unreported IM Turn of a live Session. */
+export async function ownsLiveDelivery(
+  database: DatabaseClient,
+  frame: { deliveryId: string; sessionId: string; turnId: string; placementGeneration: number; agentId: string },
+  context: import("../../runtime/runtime-session.js").RuntimeBusinessContext,
+): Promise<boolean> {
+  const rows = await database.execute(
+    sql`select d.id from im_message_deliveries d inner join sessions s on s.id=d.session_id inner join session_placements p on p.session_id=s.id inner join im_bindings b on b.id=s.im_binding_id where d.id=${frame.deliveryId}::uuid and d.session_id=${frame.sessionId}::uuid and d.turn_id=${frame.turnId} and d.report_owner_instance_id=${context.instanceId}::uuid and d.placement_generation=${frame.placementGeneration} and p.generation=${frame.placementGeneration} and p.computer_id=${context.computerId}::uuid and b.agent_id=${frame.agentId}::uuid and d.state='accepted' and d.reported_at is null and s.ended_at is null limit 1`,
+  );
+  return rows.length > 0 && !context.signal.aborted;
 }
 
 function isRecoveredChild(

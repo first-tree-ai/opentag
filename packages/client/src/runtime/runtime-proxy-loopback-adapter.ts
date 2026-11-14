@@ -16,7 +16,7 @@ import {
   runtimeProxyErrorReason,
 } from "./runtime-credential-frames.js";
 import type { RuntimeProxyStreamResponse } from "./runtime-proxy-data-client.js";
-import { githubProxyFailure } from "./runtime-proxy-errors.js";
+import { githubProxyFailure, imProxyFailure } from "./runtime-proxy-errors.js";
 import { createGitProxySocketServer } from "./runtime-proxy-git-socket.js";
 
 const execFileAsync = promisify(execFile);
@@ -511,7 +511,7 @@ export class RuntimeProxyLoopbackAdapter {
         { code: "loopback_stream_open_failed", error: runtimeProxyErrorReason(error) },
         "Loopback stream open failed",
       );
-      replyText(response, 503, "upstream_unavailable");
+      replyProxyFailure(response, "feishu", error);
       return;
     }
     const chunks: Buffer[] = [];
@@ -578,15 +578,7 @@ export class RuntimeProxyLoopbackAdapter {
         { code: "loopback_stream_open_failed", error: runtimeProxyErrorReason(error) },
         "Loopback stream open failed",
       );
-      if (provider === "github") {
-        const failure = githubProxyFailure(error);
-        const body = JSON.stringify({ message: failure.code, code: failure.code });
-        response.writeHead(failure.status, {
-          "content-type": "application/json",
-          "content-length": String(Buffer.byteLength(body)),
-        });
-        response.end(body);
-      } else replyText(response, 503, "upstream_unavailable");
+      replyProxyFailure(response, provider, error);
       return;
     }
     const onAbort = () => upstream.cancel?.("client_aborted");
@@ -869,6 +861,26 @@ function filteredResponseHeaders(headers: Readonly<Record<string, string>>): Rec
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+/**
+ * Answer a failed stream open with a closed reason code in each provider's native error shape,
+ * so CLIs and SDKs surface the cause instead of a generic outage.
+ */
+function replyProxyFailure(response: http.ServerResponse, provider: RuntimeProxyProvider, error: unknown): void {
+  const failure = provider === "github" ? githubProxyFailure(error) : imProxyFailure(error);
+  const payload =
+    provider === "github"
+      ? { message: failure.code, code: failure.code }
+      : provider === "slack"
+        ? { ok: false, error: failure.code, code: failure.code }
+        : { code: failure.code, msg: failure.code };
+  const body = JSON.stringify(payload);
+  response.writeHead(failure.status, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(body)),
+  });
+  response.end(body);
 }
 
 function replyText(response: http.ServerResponse, status: number, body: string): void {

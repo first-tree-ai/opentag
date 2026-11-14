@@ -9,6 +9,7 @@ import { expect, it, type Mock, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
+import type { RunnerPerformanceLogRecord } from "../runner/perf-log.js";
 import { runRunnerServe } from "../runner/serve.js";
 import type { RunnerShutdownRecord } from "../runner/shutdown-observer.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
@@ -418,6 +419,7 @@ it("retains unsaved files through rejected auth and renews before saving on a fr
     probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
   };
   const stop = new AbortController();
+  const logs: RunnerPerformanceLogRecord[] = [];
   let exited = false;
   const running = runRunnerServe(
     {
@@ -433,6 +435,7 @@ it("retains unsaved files through rejected auth and renews before saving on a fr
       signal: stop.signal,
       stderr: { write: () => undefined },
       sandboxFactory: () => native as unknown as NativeSandbox,
+      onPerformanceLog: (record) => logs.push(record),
       sleep: async () => {
         if (rejected) {
           retryBlocked.resolve();
@@ -457,6 +460,17 @@ it("retains unsaved files through rejected auth and renews before saving on a fr
     allowRetry.resolve();
     await peer.wait("auth", 3);
     await peer.wait("runner:ready", 1);
+    expect(logs.filter((record) => record.operation === "runner.connection.auth")).toMatchObject([
+      { connectionOutcome: "welcomed", outcome: "success" },
+      { connectionOutcome: "auth_failed", outcome: "error" },
+      {
+        connectionOutcome: "renewed",
+        outcome: "success",
+        wsOpenDurationMs: expect.any(Number),
+        authRoundTripMs: expect.any(Number),
+      },
+      { connectionOutcome: "welcomed", outcome: "success" },
+    ]);
     const requestId = randomUUID();
     peer.send({ type: "workspace:seal", requestId });
     expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });

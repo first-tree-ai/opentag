@@ -9,7 +9,7 @@ import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
-import { computers, slackInstallations, slackOAuthNonces } from "../db/schema/index.js";
+import { computers, imBindings, slackInstallations, slackOAuthNonces } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { AuthServiceError } from "../services/auth/errors.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -339,6 +339,43 @@ describe("SlackConfigurationService persistence", () => {
       id: result.imBindingId,
       credentialGeneration: 1,
     });
+    const [created] = await oauthDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.id, result.imBindingId));
+    expect(created?.ownerExternalUserId).toBeNull();
+  });
+
+  it("records the approving Slack user as the binding owner and keeps it when a reauthorization has none", async () => {
+    const value = await oauthFixture();
+    const client = apiClient();
+    client.inspectInstallation.mockResolvedValue(inspection());
+    const service = new SlackConfigurationService({
+      api: client.api,
+      database: oauthDatabase.database,
+      imBindings: value.imBindingService,
+      now: () => now,
+    });
+    const created = await service.configure(value.bootstrap.userId, value.agent.id, {
+      intent: "create",
+      expectedBinding: null,
+      appId: "A1",
+      botAccessToken: "xoxb-token",
+      signingSecret: "signing-secret",
+      ownerExternalUserId: "U_OWNER",
+    });
+    const owner = async () =>
+      (await oauthDatabase.database.select().from(imBindings).where(eq(imBindings.id, created.imBindingId)))[0]
+        ?.ownerExternalUserId;
+    expect(await owner()).toBe("U_OWNER");
+    await service.configure(value.bootstrap.userId, value.agent.id, {
+      intent: "reauthorize",
+      expectedBinding: { id: created.imBindingId, credentialGeneration: created.credentialGeneration },
+      appId: "A1",
+      botAccessToken: "xoxb-token-2",
+      signingSecret: "signing-secret",
+    });
+    expect(await owner()).toBe("U_OWNER");
   });
 
   it("maps Slack inspection, identity, and scope failures to safe errors", async () => {
@@ -596,6 +633,7 @@ describe("SlackOAuthService persistence", () => {
       botUserId: "U1",
       botId: "B1",
       botAccessToken: "xoxb-token",
+      authedUserId: "U_OWNER",
     });
     const result = { imBindingId: crypto.randomUUID(), agentId: value.agent.id };
     const slack = {
@@ -615,7 +653,7 @@ describe("SlackOAuthService persistence", () => {
     expect(slack.configure).toHaveBeenCalledWith(
       value.bootstrap.userId,
       value.agent.id,
-      expect.objectContaining({ appId: "A1" }),
+      expect.objectContaining({ appId: "A1", ownerExternalUserId: "U_OWNER" }),
     );
   });
 

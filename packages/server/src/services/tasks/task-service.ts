@@ -351,15 +351,15 @@ export class TaskService {
   }
 
   /**
-   * Whether a Session's `Session <shortId>` footer may link to its Task, read for the Account that
+   * Whether the Session ID on an IM failure message may link to its Task, read for the Account that
    * owns the Session's Agent. The Session resolves to its Task exactly as the Task routes resolve
    * it (`#scopeOf`: a chat Session, or the chat Session at the root of an internal Session's creator
    * chain), and the Task must then qualify under the same rule list and detail apply
    * (`taskQualifies`). A Session whose Task does not qualify, such as an ambient-only group channel
-   * Session or an internal Session rooted at one, therefore keeps a plain footer instead of linking
+   * Session or an internal Session rooted at one, therefore keeps a plain ID instead of linking
    * to a detail page that answers 404.
    *
-   * This runs before every annotatable provider write, so it never reads the `tasks` rollup: the
+   * This runs on every render of a failure message, so it never reads the `tasks` rollup: the
    * creator chain is walked once, and qualification is a set of bounded index-range existence probes
    * that each stop at their first row, also when the history holds only superseded deliveries,
    * instead of deriving the Task's status over its whole history.
@@ -415,7 +415,7 @@ export class TaskService {
    * Task of the chat Session at the root of its creator chain), or a stored message (the Task of
    * the Session that owns its execution, a thread Session before the channel Session's observer
    * copy; a message no execution names belongs to the Session that owned its thread or channel when
-   * it was stored). Message ids are what older Task links and `Session <shortId>` footers carry, so
+   * it was stored). Message ids are what older Task links and the retired `Session <shortId>` reply footers carry, so
    * they keep resolving. The Session or message is read by primary key first so the Task lookup
    * only touches that channel; the Account check happens inside the CTE chain, which is empty for a
    * foreign binding.

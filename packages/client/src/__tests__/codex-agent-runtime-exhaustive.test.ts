@@ -66,6 +66,42 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
+  it("turns a used-up usage window into a quota that waits for the latest used-up window's reset", async () => {
+    const client = new ManualCodexClient();
+    const runtime = await factory(client).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "run-1", input: input("fail") });
+    await client.called("turn/start");
+    const at = (iso: string) => Date.parse(iso) / 1000;
+    client.emit({
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          primary: { usedPercent: 100, resetsAt: at("2026-11-13T05:00:00.000Z") },
+          secondary: { usedPercent: 100, resetsAt: at("2026-11-15T00:00:00.000Z") },
+        },
+      },
+    });
+    // A later sparse update without a used-up window does not clear it; an unusable reset counts as none.
+    client.emit({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 40 } } } });
+    client.emit({
+      method: "account/rateLimits/updated",
+      params: { rateLimits: { primary: { usedPercent: 100, resetsAt: 1e13 }, secondary: null } },
+    });
+    client.complete({ status: "failed", error: { message: "usage limit", codexErrorInfo: "usageLimitExceeded" } });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_quota_exceeded", quotaKind: "usage_window", retryAt: "2026-11-15T00:00:00.000Z" },
+    });
+    // Without a reset in this Run, the quota still waits, on the backoff.
+    const second = runtime.prompt({ runId: "run-2", input: input("fail again") });
+    await vi.waitFor(() => expect(client.turn).toBe(2));
+    client.complete({ status: "failed", error: { message: "usage limit", codexErrorInfo: "usageLimitExceeded" } });
+    const result = await second;
+    expect(result.error).toMatchObject({ code: "provider_quota_exceeded", quotaKind: "usage_window" });
+    expect(result.error?.retryAt).toBeUndefined();
+    await runtime.close();
+  });
+
   it("bridges only canonical hosted tools for the active Run and settles each call once", async () => {
     const client = new ManualCodexClient();
     const handler = vi.fn(async (request: { input: unknown }) => {

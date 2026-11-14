@@ -80,14 +80,36 @@ at once). The Session stays held while it waits, so a later message to it queues
 Run. A restarted daemon restores the record and still waits until `nextAttemptAt`; the sender gets no outcome notice
 until the message ends.
 
-> **Planned — not yet implemented.** Tracking: #1519
+### Codex and Pi
 
-Codex takes the reset
-from `account/rateLimits/updated` (`resetsAt`); Pi, which reports none, uses the backoff.
+Codex and Pi have no in-process wait, so a used-up window ends the Run and the persisted resume above takes over.
+
+- **Codex:** `usageLimitExceeded` is a `usage_window` quota. Its reset comes from the account rate limits the App
+  Server reports during the Run (`account/rateLimits/updated`): the latest `resetsAt` among the windows at 100 %.
+  A later update without a used-up window does not clear it. Without one, the backoff applies.
+- **Pi:** Pi reports a model failure as text, often `<status>: <JSON error>`. Billing text (`insufficient_quota`,
+  `insufficient_credit`, `billing`, `available balance`, `out of budget`, `credit balance`, or HTTP 402) is a `billing`
+  quota and is reported at once. A subscription usage limit is a `usage_window` quota: the code `usage_limit_reached` or OpenCode's
+  `GoUsageLimitError` / `FreeUsageLimitError`, or pi-ai's "You have hit your ChatGPT usage limit … Try again in ~N
+  min". pi-ai writes the same text without the reset for every ChatGPT HTTP 429 and for `usage_not_included`,
+  billing and access included, so that text alone keeps its ordinary classification. The reset is taken from
+  `resets_at`, `resets_in_seconds` or "Try again in ~N min" when present; otherwise the backoff applies. A plain rate limit keeps
+  its ordinary 429 retry.
 
 ## Notice
 
-> **Planned — not yet implemented.** Tracking: #1519
-
 The waiting conversation gets one notice, "模型额度已用完，约 HH:mm 自动继续", edited in place when the wait gets
-longer. The creating Session of an internal Session is not told.
+longer. The Server writes it from the reset time the Client sends in `turn:quota-wait`
+([Runtime protocol](runtime-protocol.md#quota-wait-notice)); the Client sends no copy. The creating Session of an
+internal Session is not told.
+
+The Client sends `turn:quota-wait` for an IM Turn when the Server negotiated `runtime.quotaWait`, and not when the
+Bot only observes the conversation:
+
+- with the resume time when a persisted wait starts, and with Claude Code's reset time when its in-process wait
+  starts or moves;
+- with `ended` when Claude Code's wait ends, and when the Turn's next attempt starts after a quota wait, a restarted
+  daemon included.
+
+The `sequence` is taken from the clock, so a restarted daemon is never taken for an older sender. Sending is best
+effort: a frame that cannot be sent, or a notice the Server could not write, is only logged, and the wait goes on.

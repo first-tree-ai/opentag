@@ -95,6 +95,8 @@ export interface FeishuBindingActivation {
     appId: string;
     appSecret: string;
     teamBrand?: "feishu" | "lark";
+    /** The person who scanned the setup QR code, recorded as the binding's owner identity when known. */
+    ownerOpenId?: string;
     /**
      * The durable candidate's retention deadline. Absent for a legacy QR attempt: the device code
      * TTL no longer gates activation once the credential has already been issued.
@@ -129,6 +131,15 @@ const DEFAULT_TIMING = {
   maxConcurrentChecks: 4,
   checkDeadlineMs: 30_000,
 } as const;
+
+const MINUTE_MS = 60_000;
+
+function backgroundCheckIntervalMs(candidateAgeMs: number): number {
+  if (candidateAgeMs >= 24 * 60 * MINUTE_MS) return 120 * MINUTE_MS;
+  if (candidateAgeMs >= 60 * MINUTE_MS) return 30 * MINUTE_MS;
+  if (candidateAgeMs >= 15 * MINUTE_MS) return 5 * MINUTE_MS;
+  return 0;
+}
 
 /** States that keep a setup attempt open. A stored attempt in any other state is terminal. */
 const OPEN_SETUP_STATES = ["awaiting_user", "pending_activation", "validating"] as const;
@@ -778,10 +789,8 @@ export class FeishuSetupService {
   }
 
   /**
-   * The explicit Account-triggered check. It shares the scheduler's admission: an attempt that is
-   * not yet due returns its current projection without an upstream call, and a due attempt takes
-   * the same synchronous slot reservation and exact-ciphertext claim as the background sweep, so a
-   * button press can never multiply provider requests or exceed the concurrency bound.
+   * The explicit Account-triggered check honors the saved next-check time, including provider
+   * Retry-After. A due attempt shares the sweep's slot reservation and exact-ciphertext claim.
    */
   check(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     if (this.#stopped) return Promise.reject(new FeishuOperationError("FEISHU_SETUP_FAILED"));
@@ -903,7 +912,7 @@ export class FeishuSetupService {
   async #saveCandidate(
     attemptId: string,
     agentId: string,
-    result: { appId: string; appSecret: string; teamBrand?: "feishu" | "lark" },
+    result: { appId: string; appSecret: string; teamBrand?: "feishu" | "lark"; ownerOpenId?: string },
   ): Promise<SetupRow | undefined> {
     return this.#database.transaction(async (transaction) => {
       const [row] = await transaction
@@ -929,6 +938,7 @@ export class FeishuSetupService {
         appId: result.appId,
         appSecret: result.appSecret,
         teamBrand: result.teamBrand ?? null,
+        ...(result.ownerOpenId ? { ownerOpenId: result.ownerOpenId } : {}),
         savedAt: now.toISOString(),
         nextCheckAt: now.toISOString(),
         observation: null,
@@ -1120,6 +1130,7 @@ export class FeishuSetupService {
             appId: candidate.appId,
             appSecret: candidate.appSecret,
             ...(candidate.teamBrand ? { teamBrand: candidate.teamBrand } : {}),
+            ...(candidate.ownerOpenId ? { ownerOpenId: candidate.ownerOpenId } : {}),
             ...(claim.row.setupExpiresAt ? { candidateExpiresAt: claim.row.setupExpiresAt } : {}),
             signal: controller.signal,
           }),
@@ -1363,8 +1374,13 @@ export class FeishuSetupService {
       await this.#expireCandidate(row, now);
       return;
     }
-    if (!this.#isDue(read.context.candidate, now)) return;
-    await this.#startClaimedCheck(row, read.context.candidate, now, "detach");
+    const { candidate } = read.context;
+    if (!this.#isDue(candidate, now)) return;
+    if (candidate.observation) {
+      const interval = backgroundCheckIntervalMs(now.getTime() - Date.parse(candidate.savedAt));
+      if (now.getTime() - Date.parse(candidate.observation.checkedAt) < interval) return;
+    }
+    await this.#startClaimedCheck(row, candidate, now, "detach");
   }
 
   async #considerValidatingCandidate(row: SetupRow, now: Date): Promise<void> {
@@ -1697,6 +1713,7 @@ export class FeishuSetupService {
     appId: string;
     appSecret: string;
     teamBrand: "feishu" | "lark" | null;
+    ownerOpenId?: string;
     savedAt: string;
     nextCheckAt: string;
     observation: FeishuSetupCandidateContext["observation"];
@@ -1709,6 +1726,7 @@ export class FeishuSetupService {
       appId: input.appId,
       appSecret: input.appSecret,
       teamBrand: input.teamBrand,
+      ...(input.ownerOpenId ? { ownerOpenId: input.ownerOpenId } : {}),
       savedAt: input.savedAt,
       nextCheckAt: input.nextCheckAt,
       observation: input.observation,

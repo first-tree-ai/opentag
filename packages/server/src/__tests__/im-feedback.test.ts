@@ -508,6 +508,7 @@ describe("durable IM feedback", () => {
       tone: "failure",
       title: "工作区改动没能保存",
       body: "请在 OpenTag 重试保存或放弃改动",
+      sessionId: target.sessionId,
     });
   });
 
@@ -544,6 +545,7 @@ describe("durable IM feedback", () => {
       tone: "failure",
       title: "The Agent ran into an error",
       body: "The model call failed. Try again",
+      sessionId: target.sessionId,
     });
   });
 
@@ -551,6 +553,8 @@ describe("durable IM feedback", () => {
     const h = await fixture();
     const target = await h.target();
     expect(await h.store.messageContext(target)).toMatchObject({ language: "en" });
+    // A visible Session's Task can be opened, so the card's Session ID links to it.
+    expect((await h.store.messageContext(target)).taskAgentId).toBe(target.agentId);
     // The tool and model come from the Agent's settings; a fixture Agent has no model chosen.
     expect((await h.store.messageContext(target)).runtime).toMatchObject({ model: null });
     expect(["claude-code", "codex", "pi", "cloud"]).toContain((await h.store.messageContext(target)).runtime?.tool);
@@ -629,6 +633,31 @@ describe("durable IM feedback", () => {
     expect(h.transport.reaction.mock.calls.map((args) => args[1])).toEqual(["working", "none"]);
     expect(h.transport.post).not.toHaveBeenCalled();
   });
+  it.each(["none", null] as const)(
+    "stops retrying a Feishu policy refusal with applied reaction %s",
+    async (appliedReaction) => {
+      const h = await fixture("feishu");
+      await db.database
+        .update(imFeedbackTargets)
+        .set({ appliedReaction })
+        .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+      h.transport.reaction.mockRejectedValue(
+        new FeedbackProviderError("IM_FEEDBACK_REACTION_POLICY_DENIED", true, true),
+      );
+      await h.worker.runOnce();
+      expect(await h.target()).toMatchObject({ appliedReaction, lastErrorCode: "IM_FEEDBACK_REACTION_POLICY_DENIED" });
+      clock = new Date(clock.getTime() + 600_000);
+      await h.worker.runOnce();
+      expect(h.transport.reaction).toHaveBeenCalledTimes(1);
+      await h.finish("completed", "completed");
+      await h.worker.runOnce();
+      expect(h.transport.reaction).toHaveBeenCalledTimes(appliedReaction === "none" ? 1 : 2);
+      clock = new Date(clock.getTime() + 600_000);
+      await h.worker.runOnce();
+      expect(h.transport.reaction).toHaveBeenCalledTimes(appliedReaction === "none" ? 1 : 2);
+      expect(await h.target()).toMatchObject({ state: "completed", appliedReaction, cardState: "none" });
+    },
+  );
   it("persists terminal error feedback in the same report transaction", async () => {
     const h = await fixture();
     await h.finish();
@@ -644,6 +673,24 @@ describe("durable IM feedback", () => {
     await h.worker.runOnce();
     expect(h.transport.post).toHaveBeenCalledOnce();
   });
+  it("keeps a blocked reaction settled while a separate failure card retries", async () => {
+    const h = await fixture("feishu");
+    await h.finish();
+    h.transport.reaction.mockRejectedValue(new FeedbackProviderError("IM_FEEDBACK_REACTION_POLICY_DENIED", true, true));
+    h.transport.post.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_SEND_DEFERRED", true));
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({
+      appliedReaction: "none",
+      cardState: "pending",
+      lastErrorCode: "IM_FEEDBACK_REACTION_POLICY_DENIED",
+    });
+    clock = new Date(clock.getTime() + 2_001);
+    await h.worker.runOnce();
+    expect(h.transport.reaction).toHaveBeenCalledOnce();
+    expect(h.transport.post).toHaveBeenCalledTimes(2);
+    expect(await h.target()).toMatchObject({ appliedReaction: "none", cardState: "sent" });
+  });
+
   it("still sends the error card when reaction writing fails", async () => {
     const h = await fixture();
     await h.finish();
@@ -660,7 +707,10 @@ describe("durable IM feedback", () => {
       new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 45_000),
     );
     await h.worker.runOnce();
-    expect((await h.target()).nextAttemptAt).toEqual(new Date(clock.getTime() + 45_000));
+    expect(await h.target()).toMatchObject({
+      appliedReaction: "none",
+      nextAttemptAt: new Date(clock.getTime() + 45_000),
+    });
     expect(h.transport.post).toHaveBeenCalledOnce();
     clock = new Date(clock.getTime() + 44_000);
     await h.worker.runOnce();

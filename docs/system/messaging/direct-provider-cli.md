@@ -110,6 +110,41 @@ Slack read methods use native URL-encoded `--data` parameters (for example `slac
 because legacy Slack endpoints ignore JSON parameters when the Local CLI talks to Slack directly. Message writes keep
 `--json`. In proxy mode the Server also accepts JSON reads and normalizes their upstream encoding.
 
+In proxy mode the Server matches each Feishu call against an explicit operation table first. Those entries keep their
+special handling: the tenant token endpoint is answered locally with an execution handle instead of the real token,
+bot info is the only call a validation-purpose capability may make, and message create and reply feed the outbound
+message capture. Any other call under `/open-apis/` with `GET`, `POST`, `PUT`, `PATCH` or `DELETE` is forwarded to the
+bound brand's fixed origin, so the Feishu App's own scopes are the only limit. The `auth` and `authen` domains stay
+refused with `operation_not_registered`. A forwarded path must route exactly as written: empty (trailing) segments,
+fragments, `;`, dot segments (encoded or not), and percent-escapes of letters, digits, `-`, `.`, `_`, `~` or `;` are
+refused, so the path checked against the explicit table and the denylist is the path Feishu routes. Other RFC 3986
+path characters and escapes stay allowed, so Sheets A1 ranges such as `sheet!A1:B2` work raw or encoded. A forwarded `GET` is a read; any other method is a write with exactly one
+upstream attempt, and an outcome the proxy cannot confirm is reported as `write_outcome_unknown`, never retried.
+Forwarded request bodies are passed through byte for byte: multipart bodies as a stream, others buffered up to
+1 MiB. A JSON response is parsed (up to 10 MiB) so writes can be classified by Feishu's `code`; any other response,
+such as a file download, is streamed. The real token never reaches the Agent in either path. Setting the Server
+variable `OPENTAG_PROVIDER_PROXY_PASSTHROUGH=off` (default `on`; any other value fails startup) turns the proxy back
+into an exact allowlist of the explicit table.
+
+Slack follows the same model. Explicit methods match first (`auth.test` is the only validation-purpose call,
+`chat.postMessage` feeds the outbound message capture). Any other Web API method at `/api/<method>`, called with
+`POST` or `GET`, is forwarded to `https://slack.com` except `oauth.*`, `openid.*` and `auth.revoke`, which are refused
+with `operation_not_registered`, as is any other method or casing of an explicit method (for example
+`GET /api/chat.postMessage`), so explicit methods keep their validation, capture and URL rewriting. Form or JSON
+input is accepted and always sent upstream as a form, because every Web API method accepts form parameters while legacy
+methods ignore JSON; structured JSON values become JSON-encoded form fields. Bodies are bounded at 1 MiB, with the
+caller's `token` field stripped. A method is classified as a read when its lowercased final verb is a known read
+(`list`, `info`, `history`, `replies`, `members`, `conversations`, `identity`), ends in `info` or `logs`, starts with
+`get` or `lookup`, or the method is any `search.*`; any other method is a one-attempt write classified by Slack's `ok`; a `token` query parameter and multipart bodies are refused with `body_invalid`.
+JSON responses keep the private file URL rewriting to execution handles. The same switch turns Slack passthrough off.
+
+When the proxy refuses or cannot complete a Feishu or Slack call, the Client's loopback endpoint answers with a
+closed reason code in the provider's native error shape (`{"code","msg"}` for Feishu, `{"ok":false,"error"}` for
+Slack) and a matching HTTP status: `403` for `operation_not_registered` and `validation_scope`, `400` for
+`body_invalid` and `header_rejected`, `413` for `body_too_large`, `502` for `write_outcome_unknown` and
+`response_invalid`, `404` for `handle_invalid`, and `504` `timeout` when the stream does not open in time. Any other
+failure is `503` `upstream_unavailable`. Raw error messages never cross this boundary.
+
 For raw Slack attachment HTTP requests, read only the nonsecret routing/config paths from that file.
 Proxy executions use `OPENTAG_PROVIDER_PROXY_URL` and `OPENTAG_PROVIDER_CA_PATH` with literal `curl` arguments and
 execution-scoped handle URLs. Default Local executions instead publish `OPENTAG_SLACK_DOWNLOAD_CONFIG`, a path to a

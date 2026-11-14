@@ -13,6 +13,10 @@ Regression defects are assigned to `yuezengwu`.
 - [Session interruption recovery](session-recovery.md): crash, restart, timeout and rate-limit retry of visible and
   internal Session work on a Local Computer, plus Feishu system reaction projection and its controlled HTTP
   cancellation and pagination regressions, and Cloud workspace restore and idle sealing.
+- [Session messages between conversations](session-messaging.md): one Agent's Sessions messaging each other across
+  chats, what the receiver sees, and what stays refused.
+- [Provider proxy passthrough](provider-proxy.md): Feishu and Slack calls outside the explicit operation tables in
+  proxy credential mode, the refused credential domains and methods, the audit log record, and the off switch.
 - [Scheduled task IM behavior](scheduled-tasks.md): silent start and success, and the failure message for failed and
   missed occurrences, on Slack and Feishu.
 

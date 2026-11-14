@@ -19,8 +19,8 @@ import {
   sessionMessages,
   sessions,
 } from "../../db/schema/index.js";
-import { resolveSessionTaskAnchor } from "../../runtime-credentials/index.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
+import { hasLinkableSessionTask } from "../../services/im/im-session-link.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
@@ -1331,7 +1331,7 @@ describe("Session footer links and Task detail", () => {
       const internal = await internalSession(value, channel.id, "oc_group");
       const nested = await internalSession(value, internal.id, "oc_group");
       for (const sessionId of [channel.id, internal.id, nested.id]) {
-        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({ kind: "plain" });
+        await expect(hasLinkableSessionTask(value.database, sessionId)).resolves.toBe(false);
         await expect(value.service.detail(value.bootstrap.userId, sessionId)).rejects.toMatchObject({
           code: "RESOURCE_NOT_FOUND",
           statusCode: 404,
@@ -1344,20 +1344,14 @@ describe("Session footer links and Task detail", () => {
       // An eligible private-chat Task and an internal Session rooted at it link, and the link resolves.
       const dmInternal = await internalSession(value, value.session.id, "oc_debug");
       for (const sessionId of [value.session.id, dmInternal.id]) {
-        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
-          kind: "link",
-          taskAnchorId: sessionId,
-        });
+        await expect(hasLinkableSessionTask(value.database, sessionId)).resolves.toBe(true);
         expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(value.session.id);
       }
 
       // Once somebody addresses the Agent in the group, the same Sessions qualify and link together.
       await deliver(value, channel.id, "om_addressed", "direct", new Date("2026-08-27T02:05:00.000Z"));
       for (const sessionId of [channel.id, internal.id, nested.id]) {
-        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
-          kind: "link",
-          taskAnchorId: sessionId,
-        });
+        await expect(hasLinkableSessionTask(value.database, sessionId)).resolves.toBe(true);
         expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(channel.id);
       }
     } finally {

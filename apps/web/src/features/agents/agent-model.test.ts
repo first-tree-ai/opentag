@@ -331,6 +331,23 @@ describe("projectAgentAvailability", () => {
     },
   );
 
+  it("leaves messaging unconfirmed, not broken, while the runtime is still being checked", () => {
+    // After a daemon restart the Server answers `handoffReady: false` with no CLI phase until the
+    // runtime check finishes; that verdict belongs to the runtime row.
+    const availability = projectAgentAvailability(
+      agent(),
+      computer({
+        providerReadiness: [{ provider: "codex", status: "checking", observedAt: "2026-08-20T00:00:00.000Z" }],
+      }),
+      binding(),
+      handoffNotReady,
+      true,
+      true,
+    );
+    expect(availability).toMatchObject({ state: "action_required", reason: "runtime_unavailable" });
+    expect(availability.dependencies.handoff.state).toBe("unconfirmed");
+  });
+
   it("still asks for action once the handoff check ended in needs_attention", () => {
     const availability = projectAgentAvailability(
       agent(),

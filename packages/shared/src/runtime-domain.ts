@@ -11,6 +11,7 @@ import {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 import { ContextTreesSchema, normalizeContextTrees } from "./context-tree.js";
+import { ImConversationKindSchema } from "./im-message.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -31,6 +32,7 @@ import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { SlackAutoSetupRuntimeRequestSchema } from "./slack-auto-setup.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
+import { TurnQuotaWaitRequestSchema, TurnQuotaWaitResultSchema } from "./turn-quota-wait.js";
 
 export {
   AGENT_SLUG_MAX_LENGTH,
@@ -270,6 +272,37 @@ const SessionMessageContentSchema = z
   })
   .strict();
 
+/** One Session and its conversation, as a message's receiver sees it. Never an authorization input. */
+export const SessionMessageEndpointSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    sessionKind: z.enum(["channel", "thread", "internal"]),
+    conversationKind: ImConversationKindSchema,
+    channelId: z.string().min(1).max(512),
+    threadKey: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+
+/**
+ * Session-collaboration v6: which Session, in which conversation, sent an ordinary message to which Session in
+ * which conversation. The Server reads both from the Sessions when it dispatches; a sender cannot supply it, and
+ * nothing about the chain the message belongs to is recorded or derived. Like the scheduled display metadata,
+ * it takes no part in the semantic conflict hash.
+ */
+export const SessionMessageProvenanceSchema = z
+  .object({ source: SessionMessageEndpointSchema, target: SessionMessageEndpointSchema })
+  .strict();
+
+/** Whether two endpoints are in different conversations. An internal Session belongs to its creator's. */
+export function crossesConversation(provenance: SessionMessageProvenance): boolean {
+  const { source, target } = provenance;
+  return (
+    source.conversationKind !== target.conversationKind ||
+    source.channelId !== target.channelId ||
+    source.threadKey !== target.threadKey
+  );
+}
+
 export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
@@ -293,6 +326,8 @@ export const SessionReconcileRequestSchema = z
       .object({
         messageId: z.string().uuid(),
         sourceSessionId: z.string().uuid(),
+        // Only to a peer that negotiated runtime.sessionCollaboration version 6.
+        provenance: SessionMessageProvenanceSchema.optional(),
         content: SessionMessageContentSchema,
       })
       .strict()
@@ -790,6 +825,8 @@ export const SessionMessageDeliveryRequestV3Schema = z
     sentAt: z.string().datetime({ offset: true }).optional(),
     /** Deep link to the current Schedule detail page, from the deployment public URL. */
     scheduleDetailUrl: z.string().url().max(2048).optional(),
+    /** Only on the ordinary branch, and only to a peer that negotiated version 6. */
+    provenance: SessionMessageProvenanceSchema.optional(),
     targetSessionId: z.string().uuid(),
     agentId: z.string().uuid(),
     placementGeneration: RuntimeSequenceSchema,
@@ -807,6 +844,13 @@ export const SessionMessageDeliveryRequestV3Schema = z
       context.addIssue({
         code: "custom",
         message: "Exactly one of sourceSessionId or scheduledOrigin must be present",
+      });
+    }
+    if (scheduled && frame.provenance !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["provenance"],
+        message: "A scheduled delivery has no Session provenance",
       });
     }
     if (scheduled && frame.sentAt === undefined) {
@@ -1455,6 +1499,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionRecoverResultSchema,
   TurnReportResultSchema,
   TurnActivityResultSchema,
+  TurnQuotaWaitResultSchema,
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeOptionsRequestFrameSchema,
   AgentRuntimeOptionsCancelFrameSchema,
@@ -1481,6 +1526,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   TurnActivityRequestSchema,
+  TurnQuotaWaitRequestSchema,
   RuntimeImCredentialGrantRequestSchema,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliPrewarmResultFrameSchema,
@@ -1514,6 +1560,8 @@ export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSche
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
+export type SessionMessageEndpoint = z.infer<typeof SessionMessageEndpointSchema>;
+export type SessionMessageProvenance = z.infer<typeof SessionMessageProvenanceSchema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
 export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;
 export type SessionMessageOutcomeReport = z.infer<typeof SessionMessageOutcomeReportSchema>;

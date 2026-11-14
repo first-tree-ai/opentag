@@ -1,6 +1,6 @@
 import { ImContentV1Schema, TurnFailureReasonSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
-import { failureCardCopy } from "../services/im/im-feedback-card-copy.js";
+import { failureCardCopy, quotaWaitNoticeText } from "../services/im/im-feedback-card-copy.js";
 import { effectsCopy, failureCopy, feedbackLanguage, messageExcerpt } from "../services/im/im-feedback-copy.js";
 
 function content(blocks: unknown[], fallbackText = "") {
@@ -107,6 +107,12 @@ describe("IM failure copy", () => {
         batchSize: 3,
       }).body.zh,
     ).toBe("将于 15:30 恢复（共 3 条消息）");
+    // The notice of a Turn that waits for the quota names the same time.
+    expect(quotaWaitNoticeText("2026-11-11T07:30:00.000Z", "zh", now)).toBe("模型额度已用完，约 15:30 自动继续");
+    expect(quotaWaitNoticeText("2026-11-12T01:05:00.000Z", "en", now)).toBe(
+      "Model quota used up. OpenTag continues automatically on Nov 12 at 09:05 (UTC+8).",
+    );
+    expect(quotaWaitNoticeText("2026-11-11T03:59:00.000Z", "zh", now)).toBeUndefined();
     // The rate-limit card never names a time.
     expect(failureCardCopy("provider_rate_limited", { retryAt: "2026-11-11T07:30:00.000Z", now }).body.zh).toBe(
       "请稍后重试",

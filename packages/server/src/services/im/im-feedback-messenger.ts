@@ -1,6 +1,11 @@
 import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
 import { WebAPIRateLimitedError, WebClient } from "@slack/web-api";
-import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-bindings/feishu/adapter.js";
+import {
+  createFeishuHttpInstance,
+  feishuDomainForWorkspaceBrand,
+  REDACTING_SDK_LOGGER,
+} from "../im-bindings/feishu/adapter.js";
+import { FEISHU_POLICY_DENIED_CODE, numericProviderCode } from "../im-bindings/feishu/setup-check.js";
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
@@ -23,6 +28,10 @@ import type {
   SlackFeedbackScope,
 } from "./im-feedback-store.js";
 import { renderFeedbackText } from "./im-feedback-text.js";
+import { sessionTaskUrl } from "./im-session-link.js";
+
+const FEISHU_SEND_POLICY_DENIED = "IM_FEEDBACK_SEND_POLICY_DENIED";
+export const FEISHU_REACTION_POLICY_DENIED = "IM_FEEDBACK_REACTION_POLICY_DENIED";
 
 export class FeedbackProviderError extends Error {
   constructor(
@@ -138,13 +147,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         try {
           return { ok: true as const, value: await task(signal) };
         } catch (error) {
-          if (
-            error instanceof FeedbackCooldownStorageError ||
-            (error instanceof FeedbackProviderError && error.code === "IM_FEEDBACK_BINDING_STALE")
-          )
-            return { ok: false as const, error };
-          const limited = operation.startsWith("slack.") ? feedbackRateLimit(error) : undefined;
-          if (limited) return { ok: false as const, error: limited };
+          const expected = feedbackCallRejection(operation, error);
+          if (expected) return { ok: false as const, error: expected };
           throw error;
         }
       },
@@ -210,6 +214,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         appId: material.appId,
         appSecret: material.appSecret,
         domain: feishuDomainForWorkspaceBrand(material.teamBrand),
+        logger: REDACTING_SDK_LOGGER,
         loggerLevel: LoggerLevel.error,
         httpInstance: createFeishuHttpInstance(signal),
       }),
@@ -217,27 +222,61 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   }
 
   async reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void> {
-    await this.#run(
-      `${target.provider}.feedback.reaction`,
-      (signal) =>
-        target.provider === "slack"
-          ? this.#slackReaction(target, desired, signal)
-          : this.#feishuReaction(target, desired, signal),
-      { maxAttempts: 1, timeoutMs: 8_000 },
-    );
+    let writeStarted = false;
+    const markWrite = () => {
+      const alreadyStarted = writeStarted;
+      writeStarted = true;
+      return () => {
+        writeStarted = alreadyStarted;
+      };
+    };
+    try {
+      await this.#run(
+        `${target.provider}.feedback.reaction`,
+        (signal) =>
+          target.provider === "slack"
+            ? this.#slackReaction(target, desired, signal, markWrite)
+            : this.#feishuReaction(target, desired, signal, markWrite).catch((error: unknown) => {
+                if (numericProviderCode(error) === FEISHU_POLICY_DENIED_CODE)
+                  throw new FeedbackProviderError(FEISHU_REACTION_POLICY_DENIED, !writeStarted, true);
+                throw error;
+              }),
+        { maxAttempts: 1, timeoutMs: 8_000 },
+      );
+    } catch (error) {
+      if (error instanceof FeedbackCooldownStorageError) throw error;
+      if (error instanceof FeedbackProviderError) {
+        if (error.knownNotApplied === !writeStarted) throw error;
+        throw new FeedbackProviderError(error.code, !writeStarted, error.permanent, error.retryAfterMs);
+      }
+      if (writeStarted) throw error;
+      throw new FeedbackProviderError(
+        error instanceof ExternalCallPolicyError ? error.code : "IM_FEEDBACK_REACTION_READ_FAILED",
+        true,
+      );
+    }
   }
   async #slackReaction(
     target: FeedbackTarget,
     desired: FeedbackTarget["desiredReaction"],
     signal: AbortSignal,
+    markWrite: () => () => void,
   ): Promise<void> {
     const { api } = await this.#slack(target, signal);
     for (const name of ["eyes", "warning"]) {
       const wanted = desired === (name === "eyes" ? "working" : "warning");
+      const input = { channel: target.channelId, timestamp: target.inputExternalId, name };
       try {
-        const input = { channel: target.channelId, timestamp: target.inputExternalId, name };
-        if (wanted) await this.#slackCall(target, () => api.reactions.add(input));
-        else await this.#slackCall(target, () => api.reactions.remove(input));
+        await this.#slackCall(target, async () => {
+          signal.throwIfAborted();
+          const restoreWriteState = markWrite();
+          try {
+            await (wanted ? api.reactions.add(input) : api.reactions.remove(input));
+          } catch (error) {
+            if (feedbackRateLimit(error)) restoreWriteState();
+            throw error;
+          }
+        });
       } catch (error) {
         if (slackErrorCode(error) !== (wanted ? "already_reacted" : "no_reaction")) throw error;
       }
@@ -247,6 +286,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     target: FeedbackTarget,
     desired: FeedbackTarget["desiredReaction"],
     signal: AbortSignal,
+    markWrite: () => void,
   ): Promise<void> {
     const { api, material } = await this.#feishu(target, signal);
     const reactions = api.im.v1.messageReaction;
@@ -260,10 +300,21 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           owned[emoji],
           desired === (emoji === "OnIt" ? "working" : "warning"),
           signal,
+          markWrite,
         ),
       ),
     );
+    const denied = results.find(
+      (result) => result.status === "rejected" && numericProviderCode(result.reason) === FEISHU_POLICY_DENIED_CODE,
+    );
+    if (denied?.status === "rejected") throw denied.reason;
     for (const result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  /** Links the card's Session ID to the Session's Task page when the context says that page can be opened. */
+  #linked(card: FeedbackCard, context: FeedbackMessageContext): FeedbackCard {
+    if (!context.taskAgentId) return card;
+    return { ...card, sessionUrl: sessionTaskUrl(this.publicUrl, context.taskAgentId, card.sessionId) };
   }
 
   async #context(target: FeedbackTarget): Promise<FeedbackMessageContext> {
@@ -313,6 +364,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
             data: { ...data, receive_id: target.channelId },
           })
         : await api.im.v1.message.reply({ path: { message_id: target.inputExternalId }, data });
+    if (r.code === FEISHU_POLICY_DENIED_CODE) throw new FeedbackProviderError(FEISHU_SEND_POLICY_DENIED, true, true);
     if (r.code !== 0 || !r.data?.message_id || r.data.chat_id !== target.channelId)
       throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
     return r.data.message_id;
@@ -458,9 +510,11 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         },
       });
     } catch (error) {
+      if (numericProviderCode(error) === FEISHU_POLICY_DENIED_CODE) throw error;
       if (feishuErrorCode(error) !== undefined) return "rejected";
       throw error;
     }
+    if (r.code === FEISHU_POLICY_DENIED_CODE) throw new FeedbackProviderError(FEISHU_SEND_POLICY_DENIED, true, true);
     if (r.code !== 0) return "rejected";
     if (!r.data?.message_id)
       throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false, false, undefined, SENDER_READBACK);
@@ -476,7 +530,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         (signal) =>
           this.#deliver(
             target,
-            feedbackCard(target, action, context.language, context.runtime),
+            this.#linked(feedbackCard(target, action, context.language, context.runtime), context),
             context,
             signal,
             failureGoesToSender(target),
@@ -500,7 +554,15 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       await this.#run(
         `${target.provider}.feedback.offline_notice`,
-        (signal) => this.#deliver(target, waitingCard(context.language, reason), context, signal, true, leg),
+        (signal) =>
+          this.#deliver(
+            target,
+            this.#linked(waitingCard(context.language, target.sessionId, reason), context),
+            context,
+            signal,
+            true,
+            leg,
+          ),
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
@@ -553,6 +615,30 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     }
   }
 
+  /** Rewrites a plain message that `postConversationText` sent. */
+  async updateConversationText(target: ConversationTextTarget, messageId: string, text: string): Promise<void> {
+    await this.#run(
+      `${target.provider}.feedback.update`,
+      async (signal) => {
+        if (target.provider === "slack") {
+          const { api } = await this.#slack(target, signal);
+          const r = await this.#slackCall({ ...target, provider: "slack" }, () =>
+            api.chat.update({ channel: target.channelId, ts: messageId, text }),
+          );
+          if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
+          return;
+        }
+        const { api } = await this.#feishu(target, signal);
+        const r = await api.im.v1.message.update({
+          path: { message_id: messageId },
+          data: { msg_type: "text", content: JSON.stringify({ text }) },
+        });
+        if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
+      },
+      { maxAttempts: 1, timeoutMs: 8_000 },
+    );
+  }
+
   /**
    * Refreshes a sent failure message in place, in the format it was sent in: a card stays a card,
    * including one from before plain text (sent with `update_multi`), and a plain-text message stays text,
@@ -561,12 +647,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const messageId = target.cardMessageId;
     if (!messageId) return;
-    const { language, runtime } = await this.#context(target);
+    const context = await this.#context(target);
+    const { language, runtime } = context;
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         if (target.messageFormat === "text_v1") return this.#updateText(target, messageId, action, language, signal);
-        const card = feedbackCard(target, action, language, runtime);
+        const card = this.#linked(feedbackCard(target, action, language, runtime), context);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>
@@ -671,7 +758,12 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       const context = await this.#context(target);
       const sent = await this.#feishuSenderCreate(
         target,
-        await this.#withOrigin(target, feedbackCard(target, undefined, context.language), context, signal),
+        await this.#withOrigin(
+          target,
+          this.#linked(feedbackCard(target, undefined, context.language), context),
+          context,
+          signal,
+        ),
         context,
         signal,
         target.providerRequestId,
@@ -789,6 +881,22 @@ function slackReadbackPlan(target: FeedbackTarget, cursor?: string) {
   return { replies: true, page: page || undefined, next: (more?: string) => (more ? `replies:${more}` : "history:") };
 }
 
+function feedbackCallRejection(operation: string, error: unknown): FeedbackProviderError | undefined {
+  if (
+    error instanceof FeedbackCooldownStorageError ||
+    (error instanceof FeedbackProviderError && (error.code === "IM_FEEDBACK_BINDING_STALE" || error.permanent))
+  ) {
+    return error;
+  }
+  if (operation.startsWith("slack.")) return feedbackRateLimit(error);
+  if (
+    (operation === "feishu.feedback.post" || operation === "feishu.feedback.offline_notice") &&
+    numericProviderCode(error) === FEISHU_POLICY_DENIED_CODE
+  ) {
+    return new FeedbackProviderError(FEISHU_SEND_POLICY_DENIED, true, true);
+  }
+}
+
 function feedbackRateLimit(error: unknown): FeedbackProviderError | undefined {
   if (error instanceof FeedbackProviderError && error.code === "IM_FEEDBACK_RATE_LIMITED") return error;
   if (error instanceof WebAPIRateLimitedError || slackErrorCode(error) === "ratelimited")
@@ -856,8 +964,9 @@ async function ownedFeishuReactions(
       path: { message_id: messageId },
       params: { page_size: 50, ...(page ? { page_token: page } : {}) },
     });
-    if (response.code !== 0 || !response.data)
-      throw new FeedbackProviderError("IM_FEEDBACK_REACTION_READ_FAILED", false);
+    if (response.code !== 0 || !response.data) {
+      throw feishuReactionResponseError(response.code, "IM_FEEDBACK_REACTION_READ_FAILED");
+    }
     collectOwnedFeishuReactions(owned, response.data.items, appId);
     page = response.data.has_more ? response.data.page_token : undefined;
     if (response.data.has_more && (!page || seen.has(page) || seen.size >= 100))
@@ -873,21 +982,32 @@ async function projectFeishuEmoji(
   owned: Set<string>,
   wanted: boolean,
   signal: AbortSignal,
+  markWrite: () => void,
 ): Promise<void> {
   signal.throwIfAborted();
   if (wanted && owned.size === 0) {
+    markWrite();
     const response = await api.create({
       path: { message_id: messageId },
       data: { reaction_type: { emoji_type: emoji } },
     });
-    if (response.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_REACTION_WRITE_FAILED", false);
+    if (response.code !== 0) {
+      throw feishuReactionResponseError(response.code, "IM_FEEDBACK_REACTION_WRITE_FAILED");
+    }
   }
   if (wanted) return;
   for (const id of owned) {
     signal.throwIfAborted();
+    markWrite();
     const response = await api.delete({ path: { message_id: messageId, reaction_id: id } });
-    if (response.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_REACTION_WRITE_FAILED", false);
+    if (response.code !== 0) {
+      throw feishuReactionResponseError(response.code, "IM_FEEDBACK_REACTION_WRITE_FAILED");
+    }
   }
+}
+
+function feishuReactionResponseError(code: number | undefined, message: string): Error {
+  return Object.assign(new Error(message), { code });
 }
 
 function slackRetryAfter(error: unknown): number {

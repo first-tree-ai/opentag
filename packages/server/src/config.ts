@@ -345,6 +345,8 @@ const ServerEnvironmentSchema = z
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
     OPENTAG_MCP_OAUTH_REUSE: booleanString("false"),
+    /* `off` restricts the Feishu and Slack provider proxies to their explicit operation tables. */
+    OPENTAG_PROVIDER_PROXY_PASSTHROUGH: z.enum(["on", "off"]).default("on"),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_MCP_CANVA_CLIENT_ID: z.string().min(1).optional(),
@@ -780,6 +782,8 @@ export interface ServerConfig {
    */
   mcpAllowLoopback: boolean;
   mcpOAuthReuse: boolean;
+  /** The Feishu and Slack provider proxies forward calls outside their explicit operation tables. */
+  providerProxyPassthrough: boolean;
   /**
    * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both
    * variables are configured together. The flow offers it only to the Google-hosted MCP endpoints
@@ -938,6 +942,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
     OPENTAG_MCP_OAUTH_REUSE: environment.OPENTAG_MCP_OAUTH_REUSE,
+    OPENTAG_PROVIDER_PROXY_PASSTHROUGH: emptyToUndefined(environment.OPENTAG_PROVIDER_PROXY_PASSTHROUGH),
     OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
     OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
     OPENTAG_MCP_CANVA_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_CANVA_CLIENT_ID),
@@ -1051,6 +1056,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     mcpOAuthReuse: parsed.OPENTAG_MCP_OAUTH_REUSE,
+    providerProxyPassthrough: parsed.OPENTAG_PROVIDER_PROXY_PASSTHROUGH === "on",
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
     ...resolveMcpGoogleOAuth(parsed),
     ...resolveMcpStaticOAuth(parsed),

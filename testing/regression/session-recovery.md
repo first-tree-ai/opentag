@@ -40,7 +40,7 @@ that can be arranged, or with a delivery row set to `pending` and `last_error_co
 database:
 
 1. With the Computer online, send a Chinese request in the same Session. Expected: within about seventy-five seconds
-   one red card titled “排队中” with the body “前一条完成后处理” and no link, placed like the offline notice. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
+   one red card titled “排队中” with the body “前一条完成后处理”, placed like the offline notice, whose only link is its Session ID line. It names no earlier message, person or Computer. The Server log has one `IM_DELIVERY_DISPATCH_PARKED` error line.
 2. Send another request in the same Session. Expected: no further notice.
 3. Send a request in another Session of the Agent. Expected: no parked-dispatch notice there.
 4. Stop the daemon and send another request in the first Session. Expected: no notice, because this Session already had one
@@ -51,8 +51,9 @@ database:
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails in a direct message. Expected: one red card, not a quote reply, titled
-   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no link or button, and no sentence about whether
-   operations ran, and the failed reaction appears. On Slack the attachment bar is red, and no copy of the text
+   “Agent 运行出错” with a body that says what went wrong and ends “请重试” (a model failure reads “模型调用失败，请重试”). It shows no error code, no button, and no sentence about whether
+   operations ran, and the failed reaction appears. Its last line is small grey text “Session：<full Session ID>”; clicking
+   the ID opens that Session's Task page. On Slack the attachment bar is red, and no copy of the text
    shows above the card.
 2. Send an English request that fails. Expected: the same card in English. Mentioning a Bot with a Chinese name
    does not change the language.
@@ -61,9 +62,10 @@ With an IM test binding and a runtime that can be made to fail on request:
 4. Make the model authentication fail. Expected: the card names the Agent’s tool, for example “Claude Code 未登录或登录已失效”
    with “请在 Agent 所在电脑登录 Claude Code” (Codex and Pi likewise), and no link. Only an Agent on the Cloud Computer
    keeps the generic “模型未登录或登录已失效” with “请在 Agent 所在电脑登录模型账号”.
-5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, and no link or button.
+   Every card here ends with the Session ID line; it is the card's only visible link.
+5. Make the workspace save fail. Expected: a red card “工作区改动没能保存” with the body “请在 OpenTag 重试保存或放弃改动”, no button, and the Session ID line.
    As the Agent owner, open the failure from the Agent page and confirm a save on its details page. Expected: the card
-   turns green in place and reads only 已保存. Repeat with Discard, which asks for the
+   turns green in place and reads only 已保存, keeping the Session ID line. Repeat with Discard, which asks for the
    permanent-loss confirmation first and ends as 已放弃改动.
 6. Older messages. Use the PostgreSQL feedback suite (`im-feedback.test.ts`) and the messenger suite
    (`im-feedback-messenger.test.ts`), or a test deployment upgraded from a release that sent text:
@@ -88,6 +90,11 @@ incomplete or looping pagination, lost write acknowledgements and cancellation. 
 is joined with its sibling before returning, and that a late read after the deadline starts no mutation. The
 480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
 separately when an authorized test deployment is available.
+
+For policy refusals, run the controlled HTTP and durable feedback suites with synthetic code 21001.
+Verify the worker preserves the known reaction before any write, stops reaction retries for that revision,
+and keeps an ambiguous partial mutation unknown. Confirm that feedback and approval SDK failures emit no
+raw stdout diagnostics.
 
 ## Feedback queue concurrency and drain
 
@@ -139,6 +146,17 @@ Thread Session never compacts.
    restarted or upgraded", with no failure message and no creator notice. A second upgrade during the same Run also
    continues it.
 
+## Automatic upgrade handoff on macOS when launchd cannot respawn
+
+1. On a macOS portable install running as the launchd service, publish a newer channel target while the user's login
+   session is healthy. Expected: the daemon hands off within seconds and `client.log` has no "Supervisor cannot restart
+   the service now" warning.
+2. Publish another target while the `gui/<uid>` launchd domain is in on-demand-only mode, for example after a macOS
+   update restart countdown timed out (`log show --predicate 'processID == 1 AND eventMessage CONTAINS "ondemand mode"'`
+   shows `entering ondemand mode` for the current `gui/<uid> [<handle>]` without a later `exiting`). Expected: the
+   daemon keeps answering on the running version, `client.log` repeats that warning every 5 minutes, and the handoff
+   completes after the login session recovers.
+
 ## Completed report delivery failures without restarting the daemon
 
 1. With a connected daemon, let an IM Turn complete and verify its immutable report
@@ -162,6 +180,15 @@ Thread Session never compacts.
    send occurs, and the retained Session report remains available on restart.
    If writing the Session report itself failed, do not claim a durable completed
    report or send an invented success.
+
+## Local Session CLI proof refresh after reconnect
+
+1. Start a Turn on the authorized Local test Computer and keep its daemon and Provider Run alive while its
+   WebSocket disconnects and reconnects. While the same Turn is still active, trigger a ready reconcile for that
+   Session through normal Session message dispatch.
+2. Expected: the running Turn's next authorized Session CLI request succeeds after the ready reconcile completes.
+   The Turn continues with its original identity, and eligible inline messages can use the active Session.
+   Repeat while the Turn is reporting and check that its report can still settle.
 
 ## Retained report replay after reconnect
 
@@ -241,6 +268,28 @@ inside a successful child Run. Exercise these results with the existing Session 
    there is no notice. Acceptance under a different ID or with different text leaves the original outcome unresolved.
 4. Replay the pending outcome after restarting the reporter. Confirm the work does not run again and the Server reuses
    the notice ID. Repeat with a v4 Server and confirm the report waits until collaboration v5 is negotiated.
+
+## Local Pi steering during prompt startup
+
+1. Start a Local Pi IM Turn with a controlled Pi RPC process. Hold prompt acceptance after
+   `run_started` and send an IM follow-up. Confirm that the Client promptly returns
+   `retry/turn_starting`, the Server keeps the follow-up queued, and Pi receives no steer.
+2. Release prompt acceptance before the Turn ends. Confirm the retried follow-up joins that
+   Turn once, and a repeated request returns the same accepted outcome without a second steer.
+3. While a Local Pi Turn is waiting for prompt acceptance, queue two Session messages. Confirm
+   they remain queued during startup and join that Turn in FIFO order once Pi accepts the prompt.
+
+## Local IM steer receipt after the delivery deadline
+
+1. Use a controlled Local Runtime to start an IM Turn. Send an ordered follow-up, hold its
+   `im:steer:result` past the Server worker deadline, then return it before the Root Turn reports.
+2. Return `steered` and replay the receipt. Confirm that the follow-up stays with the original Turn
+   and the Server never delivers it as a new Turn.
+3. Repeat with `turn_not_running` or `turn_starting`. Complete the Root and verify that queued
+   messages run once in their original order. A receipt reporting `steer_state_unknown` keeps its
+   original dispatch and must never start a new Turn for that input.
+4. In each run, confirm that expiry of the Local waiter does not emit
+   `IM_DELIVERY_OPERATION_LATE_SETTLE`.
 
 ## Cloud Session message steering
 
@@ -325,6 +374,16 @@ command outside the Agent's command rules, such as `ps -ax -o pid,command | grep
 3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
 4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.
 
+## IM messages during a pending approval
+
+1. With a Local Codex test double, start a DM Turn and leave its approval pending. Send another DM. Confirm the
+   Server retains the follow-up in its delivery queue and the Provider receives no steer for it.
+2. Repeat with Approve, Deny, and Provider-side expiry. Keep the original Turn running after the approval resolves
+   and confirm the queued message steers into it once, ahead of later messages. If the original Turn ends first,
+   confirm the queued message runs as a new Turn.
+3. Replay a steer that was already accepted before the approval. Confirm the existing receipt is returned and the
+   Provider receives the message only once.
+
 ## Steered Session messages
 
 1. Leave `OPENTAG_RUNTIME_CREDENTIAL_MODE` unset (the default Local credential mode). While a visible Session's IM Turn
@@ -347,8 +406,9 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 1. Save a workspace containing Git state, Pi history and unpublished Context Tree drafts. Stop
    and replace its Instance through the normal release path. Expected: the replacement verifies
    and restores all saved content before readiness, advances the storage metadata fence and does
-   not repack or upload the restored archive. The restore reports `extractMs` with the fingerprint
-   included. The first empty workspace still saves a valid archive.
+   not repack or upload the restored archive. Restore starts extracting before the response body
+   completes and reports overlapping `downloadMs` and `extractMs`, with fingerprinting included in
+   `extractMs`. The first empty workspace still saves a valid archive.
 2. Run an ordinary checkpoint after a file change, then another without a change. Verify that each
    checkpoint conditionally commits an archive generation and reports `packMs` with the fingerprint
    included, and that both archives restore the expected contents.
@@ -372,6 +432,9 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+   For a rollback, interrupt the archive body after extraction starts, then separately truncate
+   it and mismatch each claimed checksum. Expected: the previous workspace remains readable,
+   the partial staging tree is removed, and a healthy retry restores the committed archive.
    Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
    can still finish the authenticated claim and restore or save the initial empty archive.
 7. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write

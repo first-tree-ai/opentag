@@ -436,8 +436,8 @@ export class ImDeliveryWorker {
         );
       } catch (error) {
         if (
-          recovery &&
-          [this.#abort.signal, recovery.abort.signal].some((signal) => isOperationCancellation(error, signal))
+          isOperationCancellation(error, this.#abort.signal) ||
+          (recovery && isOperationCancellation(error, recovery.abort.signal))
         )
           return;
         failed = true;
@@ -1476,8 +1476,8 @@ export class ImDeliveryWorker {
    * recorded that attempt, and a second write would reset the consecutive-timeout count it produced.
    */
   #recordOperationFailure(attempt: DeliveryAttempt, code: string, error: unknown, signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return Promise.resolve();
-    return this.#handleDeliveryFailure(attempt, code, error);
+    if (isOperationCancellation(error, signal)) return Promise.reject(error);
+    return signal.aborted ? Promise.resolve() : this.#handleDeliveryFailure(attempt, code, error);
   }
 
   #rejectInvalidInput(attempt: DeliveryAttempt, error: ImDeliveryInputError): Promise<void> {

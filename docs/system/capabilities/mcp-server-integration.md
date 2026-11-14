@@ -105,17 +105,22 @@ version when a legacy downgrade is required. Never copy refresh tokens or revers
 
 ### Local runtime delivery
 
-Local MCP delivery requires `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` in the daemon launch
-environment, including `<OpenTag Home>/config/daemon.env`. Restart the daemon after changing it.
-The default `legacy` mode can configure and authorize connectors in the Web App, but does not open
-the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
-per-action approval settings.
+Local MCP delivery does not depend on the credential mode. In proxy mode the gateway grant rides on
+the Run's proxy execution. In the default `legacy` mode the Client keeps raw IM grants and opens a
+separate MCP-only execution per Run: it requests only the `mcp` service, never acquires the provider
+grants the Server describes, and opens no proxy data channel, so Git, GitHub and IM traffic stay on
+the legacy path. A legacy Client advertises `runtimeCredential` without `providerProxy`; the Server
+treats a Client as proxy mode only when both are negotiated. When the Server grants no MCP service
+the execution closes at once. Any failure only costs that Run its MCP tools. Set
+`OPENTAG_LEGACY_MCP_GATEWAY=off` in the daemon launch environment (including
+`<OpenTag Home>/config/daemon.env`) to keep legacy mode free of executions; restart the daemon after
+changing it. Codex and Claude Code retain their normal per-action approval settings.
 
 Both IM Turns and Session messages pass the current execution's service grants to the Provider.
 In proxy mode, Local internal Sessions open their own execution for an accepted Session message
 over a connection that negotiated Session collaboration. They receive only their Agent's authorized
 platform services, without inheriting the visible Session's IM provider credentials or outbox.
-Legacy-mode internal Sessions retain their credential-free execution path. An older Server that
+Legacy-mode internal Sessions receive no IM grant; they open only the MCP-only execution. An older Server that
 refuses the internal execution leaves the message without managed services and emits a bounded
 warning; it supplies no replacement credentials. Each message prepares
 and closes its own execution; a new Session or runtime snapshot does not reuse a previous bearer.
@@ -1118,7 +1123,17 @@ out of the temporary MCP configuration buys no access after the turn.
 The token is fetched through its own `runtime:mcp:gateway` frame rather than returned with the
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
-the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+the upstream endpoint URL against the Server origin it already pinned; only the fixed path crosses
+the wire. On a local Computer, the Client hands the Provider a Run-scoped loopback endpoint
+(`http://127.0.0.1:<port>/api/v1/mcp`) with a local `otmg_local_` bearer and forwards each POST to the
+pinned Server origin with the current `otmg_` execution token. Because `RuntimeMcpGatewayTokenStore`
+and `RuntimeExecutionRegistry` are in-memory on the Server, a rolling deploy or restart during a live
+Run drops the in-memory `otmg_` token and execution record while the Provider still holds the launch
+configuration prepared at the start of the Run. When `/api/v1/mcp` rejects a request strictly before
+dispatch (`401` when the token store lost the bearer, `404` when the execution record is missing, or
+`409` when the control connection was replaced), the loopback forwarder refreshes the `otmg_` bearer
+in single-flight — re-acquiring on the active execution relay when still open, or opening a
+replacement MCP-only execution over the reconnected control channel — and replays the POST once.
 
 ### Claude Code native configuration
 

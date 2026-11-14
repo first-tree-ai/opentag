@@ -52,6 +52,19 @@ export function plainText(text: string): string {
     .replace(/\]/gu, "］");
 }
 
+/**
+ * The last line of every IM failure message and card: the full Session ID, so an Agent's administrator can find the
+ * Session. With a URL the ID links to the Session's Task page in the provider's syntax; without one it stays plain.
+ */
+export function sessionLine(
+  sessionId: string,
+  language: FeedbackLanguage,
+  link?: { provider: FeedbackTarget["provider"]; url: string },
+): string {
+  const id = link ? textLink(link.provider, link.url, sessionId) : sessionId;
+  return `Session${language === "zh" ? "：" : ": "}${id}`;
+}
+
 /** The link stays in the text so readback can match the exact details URL on both providers. */
 export function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;

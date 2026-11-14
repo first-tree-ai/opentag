@@ -882,6 +882,96 @@ describe("Cloud workspace transfer", () => {
     expect(await readFile(join(replacement.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
   });
 
+  it.each(["truncated", "oversized", "sha256", "md5"] as const)(
+    "preserves the live workspace during a %s streamed rollback",
+    async (failure) => {
+      const store = storageFixture();
+      let injectFailure = false;
+      const faults = {
+        truncated: async (response: Response) => new Response((await response.bytes()).subarray(0, -8)),
+        oversized: async (response: Response) => new Response(new Blob([await response.blob(), new Uint8Array(1)])),
+        sha256: () => Response.json({ ...store.object(), sha256: "0".repeat(64) }),
+        md5: () => Response.json({ ...store.object(), md5: `${"A".repeat(22)}==` }),
+      };
+      const checksumFailure = failure === "sha256" || failure === "md5";
+      const request = checksumFailure ? "/claim" : "/archive?";
+      const runner = await client(store, 1, {
+        fetchImpl: async (input, init) => {
+          const response = await store.fetchImpl(input, init);
+          return injectFailure && String(input).includes(request) ? faults[failure](response) : response;
+        },
+      });
+      await runner.client.initialize();
+      await writeFile(join(runner.workspace, "baseline"), "saved contents");
+      await runner.client.save();
+      const saved = store.object();
+      await writeFile(join(runner.workspace, "baseline"), "dirty contents");
+
+      injectFailure = true;
+      await expect(runner.client.rollback()).rejects.toMatchObject({
+        code: "restore_failed",
+        ...(checksumFailure ? { archiveErrorCode: "hash-mismatch" } : {}),
+      });
+      expect(await readFile(join(runner.workspace, "baseline"), "utf8")).toBe("dirty contents");
+      expect((await readdir(runner.root)).sort()).toEqual(["private", "workspace"]);
+      expect(await readdir(runner.stateDirectory)).toEqual([]);
+      expect(store.object()).toEqual(saved);
+      expect(store.uploads).toHaveLength(2);
+
+      injectFailure = false;
+      await runner.client.initialize();
+      expect(await readFile(join(runner.workspace, "baseline"), "utf8")).toBe("saved contents");
+    },
+  );
+
+  it("cancels a stalled body after extraction starts without publishing the staged workspace", async () => {
+    const store = storageFixture();
+    const abort = new AbortController();
+    const cancel = vi.fn();
+    const runner = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (!String(input).includes("/archive?")) return response;
+        const bytes = await response.bytes();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes);
+            },
+            cancel,
+          }),
+        );
+      },
+    });
+    await runner.client.initialize();
+    await writeFile(join(runner.workspace, "baseline"), "saved contents");
+    await runner.client.save();
+    const saved = store.object();
+    await writeFile(join(runner.workspace, "baseline"), "dirty contents");
+
+    // Claim uses its own deadline. Only the archive request uses the controlled signal.
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const deadline = vi.spyOn(AbortSignal, "timeout").mockImplementation(timeout);
+    deadline.mockReturnValueOnce(timeout(5_000)).mockReturnValueOnce(abort.signal);
+    const rollback = expect(runner.client.rollback()).rejects.toMatchObject({ code: "restore_failed" });
+    try {
+      await vi.waitFor(async () => {
+        const staging = (await readdir(runner.root)).find((name) => name.includes(".opentag-restore-"));
+        expect(staging).toBeDefined();
+        expect(await readFile(join(runner.root, staging ?? "", "baseline"), "utf8")).toBe("saved contents");
+      });
+      expect(await readFile(join(runner.workspace, "baseline"), "utf8")).toBe("dirty contents");
+    } finally {
+      abort.abort();
+    }
+    await rollback;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(await readFile(join(runner.workspace, "baseline"), "utf8")).toBe("dirty contents");
+    expect((await readdir(runner.root)).sort()).toEqual(["private", "workspace"]);
+    expect(await readdir(runner.stateDirectory)).toEqual([]);
+    expect(store.object()).toEqual(saved);
+  });
+
   it("recovers files and Pi binding/history into a replacement and excludes trusted parent state", async () => {
     const store = storageFixture();
     const first = await client(store);

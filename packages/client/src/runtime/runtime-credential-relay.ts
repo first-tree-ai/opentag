@@ -34,6 +34,8 @@ const RENEW_RETRY_MS = 5_000;
 const RENEW_JITTER_MAX_MS = 2_000;
 /** Renewal rejections that only mean the owner is momentarily unavailable. */
 const RENEW_RETRYABLE_CODES = new Set(["owner_unavailable"]);
+/** Ticket rejections that can recover within the bounded open budget during rolling deploys. */
+const DATA_TICKET_RETRYABLE_CODES = new Set(["owner_unavailable"]);
 
 export type RuntimeCredentialRelayErrorCode =
   | "aborted"
@@ -96,6 +98,7 @@ export interface RuntimeProxyDataConnectionLike {
 
 export interface RuntimeProxyDataConnectInput {
   readonly executionId: string;
+  readonly handshakeTimeoutMs?: number;
   readonly path: string;
   readonly serverUrl: string;
   readonly signal?: AbortSignal;
@@ -163,6 +166,8 @@ export async function defaultRuntimeProxyDataConnectionFactory(
     executionId: input.executionId,
     ticket: input.ticket,
     url: url.toString(),
+    ...(input.handshakeTimeoutMs !== undefined ? { handshakeTimeoutMs: input.handshakeTimeoutMs } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 }
 
@@ -291,11 +296,34 @@ export class RuntimeCredentialRelay {
     signal?: AbortSignal,
   ): Promise<RuntimeCredentialRelay> {
     const relay = new RuntimeCredentialRelay(options);
+    const deadline = relay.#now() + relay.#openBudgetMs;
     try {
       relay.#subject = subject;
-      await relay.#openExecution(subject, signal);
+      await relay.#openExecution(subject, deadline, signal);
       await relay.#acquireProviders(signal);
-      await relay.#connectData(signal);
+      await relay.#connectData(deadline, signal);
+      return relay;
+    } catch (error) {
+      await relay.#closeInternal("open_failed", true).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Open an execution that carries platform services only (legacy credential mode). Provider
+   * grants the Server describes are never acquired and no data channel is opened, so the
+   * execution can only hand out service bearers such as the MCP gateway token.
+   */
+  static async openServices(
+    options: RuntimeCredentialRelayOptions,
+    subject: RuntimeCredentialExecutionSubject,
+    signal?: AbortSignal,
+  ): Promise<RuntimeCredentialRelay> {
+    const relay = new RuntimeCredentialRelay(options);
+    const deadline = relay.#now() + relay.#openBudgetMs;
+    try {
+      relay.#subject = subject;
+      await relay.#openExecution(subject, deadline, signal);
       return relay;
     } catch (error) {
       await relay.#closeInternal("open_failed", true).catch(() => undefined);
@@ -374,8 +402,11 @@ export class RuntimeCredentialRelay {
     await this.#closeInternal(reason, true);
   }
 
-  async #openExecution(subject: RuntimeCredentialExecutionSubject, signal?: AbortSignal): Promise<void> {
-    const deadline = this.#now() + this.#openBudgetMs;
+  async #openExecution(
+    subject: RuntimeCredentialExecutionSubject,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     for (;;) {
       signal?.throwIfAborted();
       const result = (await this.#controlRequest(
@@ -615,46 +646,184 @@ export class RuntimeCredentialRelay {
     return { token: result.token, expiresAt: result.expiresAt };
   }
 
-  async #connectData(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const result = (await this.#controlRequest(
-      { type: "runtime:proxy:ticket", executionId: this.#executionId },
-      "runtime:proxy:ticket:result",
-      signal,
-    )) as RuntimeProxyTicketResult;
-    if (result.status === "rejected") {
-      throw new RuntimeCredentialRelayError(
-        "ticket_failed",
-        `The Server rejected the data ticket request: ${result.code}`,
-        result.code,
-      );
+  #canRetryWithinOpenBudget(deadline: number, signal?: AbortSignal): boolean {
+    return !this.#closed && !signal?.aborted && this.#now() + this.#notReadyRetryMs < deadline;
+  }
+
+  async #acquireDataTicket(
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<Extract<RuntimeProxyTicketResult, { status: "succeeded" }>> {
+    for (;;) {
+      signal?.throwIfAborted();
+      const remainingMs = deadline - this.#now();
+      if (remainingMs <= 0) {
+        throw new RuntimeCredentialRelayError(
+          "execution_timeout",
+          "The control result for runtime:proxy:ticket:result timed out",
+        );
+      }
+      const result = (await this.#controlRequest(
+        { type: "runtime:proxy:ticket", executionId: this.#executionId },
+        "runtime:proxy:ticket:result",
+        signal,
+        { timeoutMs: Math.min(this.#controlResultTimeoutMs, remainingMs) },
+      )) as RuntimeProxyTicketResult;
+      if (result.status === "rejected") {
+        if (DATA_TICKET_RETRYABLE_CODES.has(result.code) && this.#canRetryWithinOpenBudget(deadline, signal)) {
+          this.#logger.debug(
+            { code: "data_ticket_retry", executionId: this.#executionId, reason: result.code },
+            "Retrying data ticket request within open budget",
+          );
+          await this.#wait(this.#notReadyRetryMs, signal);
+          continue;
+        }
+        throw new RuntimeCredentialRelayError(
+          "ticket_failed",
+          `The Server rejected the data ticket request: ${result.code}`,
+          result.code,
+        );
+      }
+      if (result.executionId !== this.#executionId || result.path !== RUNTIME_PROVIDER_PROXY_PATH) {
+        throw new RuntimeCredentialRelayError(
+          "ticket_failed",
+          "The data ticket result fence does not match the execution",
+        );
+      }
+      if (this.#now() >= deadline) {
+        throw new RuntimeCredentialRelayError(
+          "execution_timeout",
+          "The control result for runtime:proxy:ticket:result timed out",
+        );
+      }
+      return result;
     }
-    if (result.executionId !== this.#executionId || result.path !== RUNTIME_PROVIDER_PROXY_PATH) {
-      throw new RuntimeCredentialRelayError(
-        "ticket_failed",
-        "The data ticket result fence does not match the execution",
-      );
-    }
-    let data: RuntimeProxyDataConnectionLike;
-    try {
-      data = await this.#dataFactory({
-        executionId: this.#executionId,
-        path: result.path,
-        serverUrl: this.#serverUrl,
-        ticket: result.ticket,
-        ...(signal ? { signal } : {}),
+  }
+
+  async #connectData(deadline: number, signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      const result = await this.#acquireDataTicket(deadline, signal);
+      let data: RuntimeProxyDataConnectionLike;
+      try {
+        data = await this.#connectDataAttempt(result.path, result.ticket, deadline, signal);
+      } catch (error) {
+        // During rolling start-first deployments, the LB may route the data WebSocket to a
+        // sibling container that does not hold the control-channel owner's in-memory ticket
+        // (4401 proxy_auth_invalid) or is momentarily unreachable. Because each attempt
+        // consumes or burns the single-use ticket, mint a fresh ticket and retry within the
+        // remaining open budget while this execution's control channel remains open.
+        if (this.#canRetryWithinOpenBudget(deadline, signal)) {
+          this.#logger.debug(
+            {
+              code: "data_connect_retry",
+              executionId: this.#executionId,
+              error: runtimeProxyErrorReason(error),
+            },
+            "Retrying data connection with a fresh ticket within open budget",
+          );
+          await this.#wait(this.#notReadyRetryMs, signal);
+          continue;
+        }
+        if (error instanceof RuntimeCredentialRelayError) {
+          throw error;
+        }
+        throw new RuntimeCredentialRelayError(
+          "data_connect_failed",
+          `The data connection could not be established: ${runtimeProxyErrorReason(error)}`,
+        );
+      }
+      this.#data = data;
+      // Server owner loss closes the data channel; this execution never migrates.
+      void data.settled().then(() => {
+        if (!this.#closed) void this.#closeInternal("data_connection_lost", false).catch(() => undefined);
       });
-    } catch (error) {
-      throw new RuntimeCredentialRelayError(
-        "data_connect_failed",
-        `The data connection could not be established: ${runtimeProxyErrorReason(error)}`,
-      );
+      return;
     }
-    this.#data = data;
-    // Server owner loss closes the data channel; this execution never migrates.
-    void data.settled().then(() => {
-      if (!this.#closed) void this.#closeInternal("data_connection_lost", false).catch(() => undefined);
+  }
+
+  async #connectDataAttempt(
+    path: string,
+    ticket: string,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<RuntimeProxyDataConnectionLike> {
+    if (this.#closed) {
+      throw new RuntimeCredentialRelayError("relay_closed", "The execution Relay is closed");
+    }
+    signal?.throwIfAborted();
+    const remainingMs = deadline - this.#now();
+    if (remainingMs <= 0) {
+      throw new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out");
+    }
+    const attemptAbort = new AbortController();
+    const combinedSignal = AbortSignal.any([this.#abort.signal, attemptAbort.signal, ...(signal ? [signal] : [])]);
+    let abandoned = false;
+    let onAbort: (() => void) | undefined;
+    const timer = this.#scheduler.schedule(remainingMs, () => {
+      attemptAbort.abort(new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out"));
     });
+    const abortPromise = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        if (this.#closed) {
+          reject(new RuntimeCredentialRelayError("relay_closed", "The execution Relay is closed"));
+          return;
+        }
+        if (signal?.aborted) {
+          reject(new RuntimeCredentialRelayError("aborted", "The data connection handshake was aborted"));
+          return;
+        }
+        reject(
+          attemptAbort.signal.reason instanceof Error
+            ? attemptAbort.signal.reason
+            : new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out"),
+        );
+      };
+      combinedSignal.addEventListener("abort", onAbort, { once: true });
+    });
+    const connectPromise = this.#dataFactory({
+      executionId: this.#executionId,
+      handshakeTimeoutMs: remainingMs,
+      path,
+      serverUrl: this.#serverUrl,
+      signal: combinedSignal,
+      ticket,
+    });
+    void connectPromise.then(
+      (lateData) => {
+        if (abandoned || this.#closed) {
+          void lateData.close().catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+    try {
+      const data = await Promise.race([connectPromise, abortPromise]);
+      if (this.#closed) {
+        await data.close().catch(() => undefined);
+        throw new RuntimeCredentialRelayError("relay_closed", "The execution Relay is closed");
+      }
+      if (signal?.aborted) {
+        await data.close().catch(() => undefined);
+        throw new RuntimeCredentialRelayError("aborted", "The data connection handshake was aborted");
+      }
+      if (this.#now() > deadline) {
+        await data.close().catch(() => undefined);
+        throw new RuntimeProxyDataError("auth_failed", "The data connection auth handshake timed out");
+      }
+      return data;
+    } catch (error) {
+      abandoned = true;
+      if (this.#closed) {
+        throw new RuntimeCredentialRelayError("relay_closed", "The execution Relay is closed");
+      }
+      if (signal?.aborted) {
+        throw new RuntimeCredentialRelayError("aborted", "The data connection handshake was aborted");
+      }
+      throw error;
+    } finally {
+      timer.cancel();
+      if (onAbort) combinedSignal.removeEventListener("abort", onAbort);
+    }
   }
 
   #newLocalHandle(): { hash: string; value: string } {
@@ -666,7 +835,7 @@ export class RuntimeCredentialRelay {
     frame: Readonly<Record<string, unknown>>,
     resultType: string,
     signal?: AbortSignal,
-    options?: { readonly allowWhileClosed?: boolean },
+    options?: { readonly allowWhileClosed?: boolean; readonly timeoutMs?: number },
   ): Promise<RuntimeBusinessFrame> {
     if (this.#closed && options?.allowWhileClosed !== true) {
       return Promise.reject(new RuntimeCredentialRelayError("relay_closed", "The execution Relay is closed"));
@@ -675,6 +844,7 @@ export class RuntimeCredentialRelay {
       return Promise.reject(new RuntimeCredentialRelayError("aborted", "The control request was aborted"));
     }
     const requestId = randomUUID();
+    const timeoutMs = options?.timeoutMs ?? this.#controlResultTimeoutMs;
     return new Promise<RuntimeBusinessFrame>((resolve, reject) => {
       const cleanup = () => {
         signal?.removeEventListener("abort", onAbort);
@@ -685,7 +855,7 @@ export class RuntimeCredentialRelay {
         cleanup();
         reject(new RuntimeCredentialRelayError("aborted", "The control request was aborted"));
       };
-      const timer = this.#scheduler.schedule(this.#controlResultTimeoutMs, () => {
+      const timer = this.#scheduler.schedule(timeoutMs, () => {
         cleanup();
         reject(new RuntimeCredentialRelayError("execution_timeout", `The control result for ${resultType} timed out`));
       });

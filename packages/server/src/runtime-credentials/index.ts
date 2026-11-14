@@ -1,4 +1,4 @@
-import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
+import type { RuntimeCredentialProvider } from "@opentag/shared";
 import type { DatabaseClient } from "../db/client.js";
 import { createInstrumentedFetch } from "../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../observability/performance-logger.js";
@@ -7,7 +7,6 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
-import { TaskService } from "../services/tasks/index.js";
 import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
@@ -18,7 +17,7 @@ import {
 import { RuntimeProviderProxyTransport } from "./data-transport.js";
 import { PostgresRuntimeExecutionAuthority, type RuntimeExecutionAuthority } from "./execution-authority.js";
 import { RuntimeExecutionRegistry } from "./execution-registry.js";
-import { FEISHU_OPERATIONS } from "./feishu-operations.js";
+import { FEISHU_OPERATIONS, FEISHU_PASSTHROUGH } from "./feishu-operations.js";
 import { exchangeFeishuTenantToken, FeishuTenantTokenCache } from "./feishu-tenant-token.js";
 import { type RuntimeGitHubAdmission, UnavailableRuntimeGitHubAdmission } from "./github-admission.js";
 import { ImProviderMaterialResolver } from "./im-material.js";
@@ -26,14 +25,10 @@ import { McpGatewayExecutionAuthorizer } from "./mcp-gateway-execution.js";
 import { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
 import { LiveMcpServicePolicy, type McpUsableMountReader } from "./mcp-policy.js";
 import { ProviderOperationRegistry } from "./operation-registry.js";
-import {
-  ImProviderProxyAdapter,
-  type ProviderProxyAdapter,
-  type SessionTaskAnchorResolution,
-} from "./provider-proxy-adapter.js";
+import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
 import { RuntimeCredentialOwner, type RuntimeCredentialOwnerOptions } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
-import { SLACK_OPERATIONS } from "./slack-operations.js";
+import { SLACK_OPERATIONS, SLACK_PASSTHROUGH } from "./slack-operations.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "./task-policy.js";
 import { RuntimeProxyTicketStore } from "./ticket-store.js";
 import { RuntimeUrlHandleStore } from "./url-handle-store.js";
@@ -83,7 +78,11 @@ export * from "./write-outcome.js";
 export interface RuntimeCredentialServicesOptions {
   onCredentialFailure?: import("./provider-proxy-adapter.js").ImProviderProxyAdapterOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
-  publicOrigin?: string;
+  /**
+   * Whether Feishu and Slack calls outside the explicit operation tables pass through to the provider
+   * (`OPENTAG_PROVIDER_PROXY_PASSTHROUGH`). Off keeps the explicit table as an exact allowlist.
+   */
+  providerProxyPassthrough?: boolean;
   database: DatabaseClient;
   cipher: ApplicationCipher;
   registry: ConnectionRegistry;
@@ -428,36 +427,6 @@ function resolveProviderFetch(
   return options.fetchImpl;
 }
 
-/**
- * Resolves an execution's Session to the Task anchor its `Session <shortId>` footer links to. A
- * Task is one chat Session, and the Task routes resolve any Session id — a chat Session, or an
- * internal Session through its creator chain — to its Task, so a Session links by its own id. It
- * links only when that Task qualifies under the same rule Task list and detail apply
- * (`TaskService.hasLinkableTask`): an ambient-only group channel Session, an internal Session rooted
- * at one, a missing Session, or a failed lookup returns `plain`, so the footer never links to a 404
- * route.
- */
-export async function resolveSessionTaskAnchor(
-  database: DatabaseClient,
-  input: { sessionId: string; source?: RuntimeExecutionSource },
-  logger?: Pick<ServiceLogger, "warn">,
-): Promise<SessionTaskAnchorResolution> {
-  try {
-    if (!(await new TaskService(database).hasLinkableTask(input.sessionId))) return { kind: "plain" };
-    return { kind: "link", taskAnchorId: input.sessionId };
-  } catch (error) {
-    logger?.warn(
-      {
-        code: "IM_SESSION_FOOTER_ANCHOR_LOOKUP_FAILED",
-        sessionId: input.sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      "Failed to resolve IM session footer task anchor",
-    );
-    return { kind: "plain" };
-  }
-}
-
 /** Parent-provided adapters win; the Slack/Feishu IM adapters are constructed over their tables. */
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
@@ -465,25 +434,22 @@ function createImAdapters(
   outboundCapture: ImOutboundCapture,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
-  const resolveTaskAnchor = (input: { sessionId: string; source?: RuntimeExecutionSource }) =>
-    resolveSessionTaskAnchor(options.database, input, options.logger);
+  const passthrough = options.providerProxyPassthrough === true;
   const defaults = [
-    ["slack", SLACK_OPERATIONS],
-    ["feishu", FEISHU_OPERATIONS],
+    ["slack", SLACK_OPERATIONS, passthrough ? SLACK_PASSTHROUGH : undefined],
+    ["feishu", FEISHU_OPERATIONS, passthrough ? FEISHU_PASSTHROUGH : undefined],
   ] as const;
-  for (const [provider, operations] of defaults) {
+  for (const [provider, operations, passthroughRule] of defaults) {
     if (adapters.has(provider)) continue;
     const providerFetch = resolveProviderFetch(options, provider);
     adapters.set(
       provider,
       new ImProviderProxyAdapter({
         provider,
-        registry: new ProviderOperationRegistry(operations),
+        registry: new ProviderOperationRegistry(operations, passthroughRule),
         urlHandles,
         outboundCapture,
         onCredentialFailure: options.onCredentialFailure,
-        resolveTaskAnchor,
-        ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
         ...(providerFetch ? { fetchImpl: providerFetch } : {}),
         ...(options.logger ? { logger: options.logger } : {}),
       }),

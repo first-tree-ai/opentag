@@ -43,7 +43,9 @@ leave a named problem and a cooldown. Rechecking keeps the last completed verdic
 may survive the same Computer/installation/binding/generation reconnect until its original expiry.
 
 Only the first validation may show a neutral initializing state, for at most 15 seconds. Afterwards
-status is ready, a named problem, or Computer offline. Local changes normally reach a foreground
+status is ready, a named problem, or Computer offline. A messaging CLI that is still being prepared
+or not yet reported after that window (for example after the daemon restarts) is a messaging CLI check
+timeout, not an unavailable CLI; only a completed unavailable answer reports the CLI as unavailable. Local changes normally reach a foreground
 viewer within roughly 50 seconds (30-second probe cadence, 10-second deadline and 10-second poll).
 An unresponsive or crashed connection is visible within the offline budget plus the next poll.
 

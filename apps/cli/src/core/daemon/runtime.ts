@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { arch, hostname, platform } from "node:os";
+import { arch, hostname, platform, userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   type ClientLogger,
@@ -9,6 +9,7 @@ import {
   createClientRuntime,
   createLogger,
   DurableFileQuarantinedError,
+  type HandoffReadiness,
   RuntimeConnection,
   RuntimeConnectionError,
   type RuntimeConnectionErrorCategory,
@@ -29,12 +30,13 @@ import { createAgentErrorReporter } from "../diagnostics/agent-error-reporting.j
 import { reportCliError } from "../diagnostics/error-reporting.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
-import { resolveRuntimeCredentialMode } from "./credential-mode.js";
+import { resolveLegacyMcpGateway, resolveRuntimeCredentialMode } from "./credential-mode.js";
 import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
-import { quotePosix, resolveCliInvocation } from "./service/shared.js";
+import { createLaunchdHandoffReadiness } from "./service/launchd-readiness.js";
+import { defaultServiceRunner, quotePosix, resolveCliInvocation } from "./service/shared.js";
 import { CliInvocationError, DaemonServiceError } from "./service/types.js";
 import { resolveWebToolsOptIn } from "./web-tools.js";
 
@@ -55,6 +57,8 @@ export interface DaemonAutoUpdateOverrides {
   installMode?: InstallMode;
   installTarget?: (target: string) => Promise<void>;
   refreshService?: () => Promise<void>;
+  /** Supervisor restart readiness; defaults to the launchd check for a macOS service. */
+  handoffReadiness?: () => Promise<HandoffReadiness>;
   fetchFn?: typeof fetch;
   stateStore?: {
     loadState(): Promise<UpdaterStateSnapshot | undefined>;
@@ -266,6 +270,7 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     home: context.home,
     environment: context.daemonEnvironment,
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
+    legacyMcpGateway: resolveLegacyMcpGateway(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: cliInvocation.map(quotePosix).join(" "),
     cliInvocation,
@@ -397,6 +402,8 @@ async function attachAutoUpdater(
       context.state.recoveryWake?.();
       runtime.stop();
     },
+    handoffReadiness:
+      autoUpdate.handoffReadiness ?? defaultHandoffReadiness(context.currentPlatform, context.daemonEnvironment),
     logger: runtimeLogger.child({ module: "updater" }),
     environment: context.daemonEnvironment,
     installTarget: autoUpdate.installTarget,
@@ -412,6 +419,15 @@ async function attachAutoUpdater(
   if (autoUpdate.initialTarget) updater.observe(autoUpdate.initialTarget);
   if (autoUpdate.discovery !== false) updater.startDiscovery();
   return updater;
+}
+
+/** Only a launchd-supervised service needs the check; systemd restarts on exit code 75 unconditionally. */
+function defaultHandoffReadiness(
+  currentPlatform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+): (() => Promise<HandoffReadiness>) | undefined {
+  if (currentPlatform !== "darwin" || environment.OPENTAG_SERVICE_MODE !== "1") return undefined;
+  return createLaunchdHandoffReadiness({ runner: defaultServiceRunner, uid: userInfo().uid });
 }
 
 export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}): Promise<0 | 1 | 75> {

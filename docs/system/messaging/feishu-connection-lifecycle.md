@@ -101,6 +101,7 @@ preserve its working credential and generation.
 | --- | --- |
 | Account / Agent | Authorization to manage a binding; Computer and Runtime prerequisites |
 | `im_bindings` status and active identity | Current message route; pending credentials do not overwrite it |
+| `im_bindings.owner_external_user_id` | IM user who authorized the App; see [Owner identity](#owner-identity) |
 | Active encrypted credential / generation | Existing credential delivery and message connection fencing |
 | Setup attempt ID / intent | One current `create` or same-App `reauthorize` attempt on a binding |
 | Encrypted setup context | Legacy QR payload or versioned candidate credential and latest observation |
@@ -114,6 +115,18 @@ be replaced. Creation requires empty configuration; an edited empty Agent can st
 Same-App reauthorization preserves identity. Disconnecting an activated binding retains its
 identity history and requires a new Agent to connect a different identity. A never-activated slot
 can still be cleared and creation resumed.
+
+## Owner identity
+
+`im_bindings.owner_external_user_id` records the IM user who authorized the binding's App, so the Server can reach
+that person through the Bot without an inbound message. Feishu reports it as `user_info.open_id` when the setup QR
+code is scanned; the candidate context carries it to activation, and the value is the person's `open_id` under the
+new App. Slack reports it as `authed_user.id` from the first-party OAuth exchange; token configuration has none.
+
+The value is written only when the provider reports one during activation, reauthorization, or replacement, and a
+later activation without one keeps the stored value. Bindings activated before the column existed keep null and keep
+working unchanged: openTag never prompts, blocks, or asks people to reauthorize to fill it, and readers treat null as
+"owner unknown".
 
 ## State and data contract
 
@@ -223,9 +236,13 @@ migration applied still reports those Agents as disconnected, with both channel 
 
 ## Recovery and concurrency
 
-The existing setup timer scans candidates in bounded keyset batches. It checks the saved
-next-check time, uses bounded concurrency and jitter, and respects provider `Retry-After`.
-Manual POST checks use the same admission. GET requests remain read-only.
+The setup timer scans candidates in bounded keyset batches. For the first 15 minutes after a
+candidate is saved, it uses the saved next-check time, which includes a 60-second base wait,
+jitter, and any longer provider `Retry-After` after a waiting result. At ages of 15 minutes,
+1 hour, and 24 hours, the timer also requires at least 5 minutes, 30 minutes, and 2 hours,
+respectively, since the last observed check. A candidate with no observation is eligible for
+its first check at the saved next-check time. Manual POST checks use that saved time and
+share the same claim and concurrency limits. GET requests remain read-only.
 Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
 This uses the existing attempt DTO and Account ownership checks, independently of the active
 binding: a working connection must not hide its saved same-App reauthorization. No open attempt
@@ -250,7 +267,9 @@ It rejects new work and stale probe results, and cannot restart while stop is in
 
 All 66 scopes are checked before a candidate opens a message channel. Only a ready candidate
 enters existing atomic activation. Ambiguous upstream failures preserve it; a provider's
-explicit invalid-secret response is distinct from a generic parameter error or disabled App.
+explicit invalid-secret response is distinct from a generic parameter error or an unavailable App.
+Feishu policy refusal (21001) is an App availability condition. A setup candidate remains available for
+the tenant administrator to resolve the access restriction within the setup deadline.
 
 This is a database-backed recovery loop using existing setup fields, not an exactly-once
 transaction with Feishu. A crash between external credential issuance and the first database
@@ -279,7 +298,7 @@ Each failure is classified (`connection-failure.ts`) by what Feishu itself answe
 numeric codes, never from provider text:
 
 - **Refused by Feishu.** The tenant token is refused for dead credentials (10015, 20002) or because
-  the App is disabled or not installed (the app-unavailable codes the setup check already uses), the
+  the App is disabled, uninstalled, or blocked by access policy (the app-unavailable codes the setup check already uses), the
   long-connection gateway rejects the App (403, 514), or a different Bot answers.
 - **Not attempted.** The call's circuit is open, so Feishu was never asked.
 - **Transient.** Everything else: network failures, timeouts, rate limits, and the SDK's ambiguous

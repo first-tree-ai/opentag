@@ -1,0 +1,1 @@
+ALTER TABLE "im_bindings" ADD COLUMN "owner_external_user_id" text;

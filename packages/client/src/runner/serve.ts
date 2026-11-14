@@ -9,6 +9,7 @@ import {
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_V3,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -516,7 +517,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
    * Server did not echo the capability). The exact number is the fence: a scheduled-origin
    * dispatch requires version 2, an ordinary one version 1 — never a bare eligible boolean.
    */
-  sessionCollaborationVersion: 0 | 1 | 2 | 3 = 0;
+  sessionCollaborationVersion: 0 | 1 | 2 | 3 | 4 = 0;
 
   /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
   get sessionCollaborationEnabled(): boolean {
@@ -1004,11 +1005,41 @@ async function serveOnce(
 ): Promise<ConnectionOutcome> {
   // The previous connection drained before this one starts; its interrupt no longer applies.
   state.credentialInterrupt = undefined;
-  const authStarted = performance.now();
   const authRequestId = randomUUID();
-  const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
-    maxPayload: 256 * 1024,
-  });
+  const authStarted = performance.now();
+  let openedAt: number | undefined;
+  const emitAuthPerformance = (
+    connectionOutcome: ConnectionOutcome["kind"] | "welcomed",
+    scope?: RunnerWelcomeFrame,
+  ) => {
+    const endedAt = performance.now();
+    emitRunnerPerformance(state.onPerformanceLog, {
+      operation: "runner.connection.auth",
+      durationMs: endedAt - authStarted,
+      outcome: connectionOutcome === "welcomed" || connectionOutcome === "renewed" ? "success" : "error",
+      metrics: {
+        sandboxName: config.sandboxName,
+        requestId: authRequestId,
+        connectionOutcome,
+        wsOpenDurationMs: Math.round((openedAt ?? endedAt) - authStarted),
+        ...(openedAt === undefined ? {} : { authRoundTripMs: Math.round(endedAt - openedAt) }),
+        ...(scope && {
+          sandboxId: scope.sandboxId,
+          sessionId: scope.sessionId,
+          environmentGeneration: scope.environmentGeneration,
+        }),
+      },
+    });
+  };
+  let socket: WebSocket;
+  try {
+    socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
+      maxPayload: 256 * 1024,
+    });
+  } catch (error) {
+    emitAuthPerformance("closed");
+    throw error;
+  }
   return new Promise((resolve) => {
     let closed = false,
       authenticated = false,
@@ -1067,14 +1098,7 @@ async function serveOnce(
     const finish = (kind: ConnectionOutcome["kind"] = "closed") => {
       if (closed) return;
       closed = true;
-      if (!welcome) {
-        emitRunnerPerformance(state.onPerformanceLog, {
-          operation: "runner.connection.auth",
-          durationMs: performance.now() - authStarted,
-          outcome: kind === "renewed" ? "success" : "error",
-          metrics: { sandboxName: config.sandboxName, requestId: authRequestId, connectionOutcome: kind },
-        });
-      }
+      if (!welcome) emitAuthPerformance(kind);
       state.persistenceFailure = undefined;
       clearTimeout(authTimer);
       clearInterval(heartbeatTimer);
@@ -1134,7 +1158,8 @@ async function serveOnce(
         ...(state.workspace?.ready ? { workspaceRestored: true } : {}),
       });
     };
-    socket.on("open", () =>
+    socket.on("open", () => {
+      openedAt = performance.now();
       send({
         type: "auth",
         requestId: authRequestId,
@@ -1149,13 +1174,13 @@ async function serveOnce(
          * a foundation Server that parses but does not echo simply leaves collaboration off — the
          * Runner never pretends.
          */
-        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V3,
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V4,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
           : {}),
-      }),
-    );
+      });
+    });
     const onWelcome = (data: RunnerWelcomeFrame) => {
       const rejection = runnerWelcomeRejection(
         data,
@@ -1184,19 +1209,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.lastWelcomedScope = bridge.scope;
-      emitRunnerPerformance(state.onPerformanceLog, {
-        operation: "runner.connection.auth",
-        durationMs: performance.now() - authStarted,
-        outcome: "success",
-        metrics: {
-          sandboxName: config.sandboxName,
-          sandboxId: data.sandboxId,
-          sessionId: data.sessionId,
-          environmentGeneration: data.environmentGeneration,
-          requestId: authRequestId,
-          connectionOutcome: "welcomed",
-        },
-      });
+      emitAuthPerformance("welcomed", data);
       bridge.cloudEnabled = cloudCapable;
       bridge.imInputEnabled = cloudCapable && data.imInputVersion === 1;
       bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;
@@ -1697,7 +1710,8 @@ function runnerWelcomeRejection(
   return undefined;
 }
 
-function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 {
+function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 | 4 {
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V4) return RUNNER_SESSION_COLLABORATION_V4;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION) {

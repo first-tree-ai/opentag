@@ -15,9 +15,11 @@ import {
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
 import {
   emitRootSpan,
+  getCurrentPerformanceContext,
   imAttrs,
   outcomeAttrs,
   type PerformanceLogger,
+  setCurrentPerformanceAttributes,
   traceExternalCall,
 } from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
@@ -160,7 +162,8 @@ interface FeishuScopeListResponse {
   };
 }
 
-const REDACTING_SDK_LOGGER = {
+// SDK errors may include raw provider responses or request options. Callers log bounded codes.
+export const REDACTING_SDK_LOGGER = {
   error: () => undefined,
   warn: () => undefined,
   info: () => undefined,
@@ -471,6 +474,8 @@ class ReliableFeishuChannel implements FeishuChannel {
   readonly #ready: Promise<void>;
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
+  #wsStartedMono?: number;
+  #wsHandshakeMs?: number;
   #started = false;
   #closed = false;
 
@@ -511,7 +516,12 @@ class ReliableFeishuChannel implements FeishuChannel {
       source: "opentag",
       handshakeTimeoutMs: 15_000,
       onReady: () => {
-        if (!this.#closed) this.#resolveReady();
+        if (!this.#closed) {
+          if (this.#wsHandshakeMs === undefined && this.#wsStartedMono !== undefined) {
+            this.#wsHandshakeMs = Math.round((performance.now() - this.#wsStartedMono) * 100) / 100;
+          }
+          this.#resolveReady();
+        }
       },
       onError: (error) => this.#onConnectionError(error),
       onReconnecting: () => this.#handlers.reconnecting?.(),
@@ -527,6 +537,7 @@ class ReliableFeishuChannel implements FeishuChannel {
     try {
       if (!this.#started) {
         this.#started = true;
+        this.#wsStartedMono = performance.now();
         void this.#wsClient
           .start({ eventDispatcher: this.#dispatcher })
           .catch((error: unknown) => this.#onConnectionError(error));
@@ -562,12 +573,24 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 
   async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
+    const botStartedMono = performance.now();
+    let botInfoMs: number | undefined;
     const outboundPromise = this.#outbound.connect();
     void outboundPromise.then(
       async () => {
+        botInfoMs = Math.round((performance.now() - botStartedMono) * 100) / 100;
+        setCurrentPerformanceAttributes({ botInfoMs });
         if (state.cancelled || this.#closed || signal?.aborted) {
           this.botIdentity = undefined;
           await this.#outbound.disconnect().catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+    void this.#ready.then(
+      () => {
+        if (this.#wsHandshakeMs !== undefined) {
+          setCurrentPerformanceAttributes({ wsHandshakeMs: this.#wsHandshakeMs });
         }
       },
       () => undefined,
@@ -577,6 +600,10 @@ class ReliableFeishuChannel implements FeishuChannel {
       await this.#failAbortedConnect(signal);
     }
     await this.#ready;
+    setCurrentPerformanceAttributes({
+      ...(botInfoMs !== undefined ? { botInfoMs } : {}),
+      ...(this.#wsHandshakeMs !== undefined ? { wsHandshakeMs: this.#wsHandshakeMs } : {}),
+    });
     if (state.cancelled || this.#closed || signal?.aborted) {
       await this.#failAbortedConnect(signal);
     }
@@ -731,15 +758,25 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    await traceExternalCall(
-      this.#perfLogger,
-      {
-        provider: "feishu",
-        operation: "external.feishu.channel.connect",
-      },
-      () => channel.connect(signal),
-      { fallbackErrorCode: "FEISHU_CONNECT_FAILED" },
-    );
+    const activeContext = getCurrentPerformanceContext();
+    const activeOperation = activeContext?.operation;
+    const alreadyTracedByOuterPolicy =
+      Boolean(activeContext && this.#policy.isActive() && this.#policy.performanceLogger?.config.enabled) ||
+      activeOperation === "external.feishu.connection.validate" ||
+      activeOperation === "external.feishu.binding.validate";
+    if (alreadyTracedByOuterPolicy) {
+      await channel.connect(signal);
+    } else {
+      await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "feishu",
+          operation: "external.feishu.channel.connect",
+        },
+        () => channel.connect(signal),
+        { fallbackErrorCode: "FEISHU_CONNECT_FAILED" },
+      );
+    }
     const bot = channel.botIdentity;
     if (!bot) throw new Error("FEISHU_BOT_IDENTITY_MISSING");
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };

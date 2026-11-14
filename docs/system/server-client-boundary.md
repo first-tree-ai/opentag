@@ -114,15 +114,24 @@ never redelivers accepted input and only records the outcome the Client reports.
 The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)):
 
 - A process interruption (a daemon crash or power loss, an orderly restart or
-  upgrade) and a model HTTP 429 (`provider_rate_limited`) share one count of at
+  upgrade), a model HTTP 429 (`provider_rate_limited`) and a model API that
+  could not be reached (`provider_connection_failed`) share one count of at
   most 2 automatic retries. A retry that actually ran for at least 5 minutes
   resets the count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`); downtime,
   waiting and backoff do not count. This does not stop work that crashes the
   daemon only after running longer than that.
+- `provider_connection_failed` waits as long as a 429 before its retry. It also
+  covers a 403 whose body is a block page from the API's network edge (Cloudflare's
+  "Attention Required!"), which Claude Code reports as a login failure: the request
+  never reached the model API. A real 401 or 403 from the API is not retried.
 - A model CLI that fails to start (`provider_start_failed`) before running anything
   (`executionEffects: not_started`) gets one automatic retry, in place, after about
   5 seconds (Gandy 11-10, R3). It shares the same count, so it never adds a retry
   beyond the limit of 2. A start failure that may have run something is not retried.
+  A Provider that could not be made ready (for example its readiness probe passed its
+  deadline on a busy Computer) ran nothing either, so it counts as a start failure, for
+  an IM Turn and a Session message alike. A missing model login does not: waiting does
+  not fix it.
 - The Run's duration limit counts actual running time across retries and resumes.
   A resume keeps what is left of the budget. A Provider waiting in-process for a
   used-up quota window to reset is not running, so its budget stands still
@@ -140,10 +149,13 @@ failure message and sends no notice for it.
 
 The retry continues the same Session with a continuation notice as the first
 input item — `[OpenTag] Your previous turn was interrupted at <time> because
-<reason> (automatic retry). Before continuing, check your history …` — then
-the original input and, for an IM Turn, the messages steered into it, in their
-original order. Duplicates
-are acceptable: the Provider may or may not have persisted the interrupted turn.
+<reason> (automatic retry). Your conversation history is intact: continue from
+where you stopped, and do not redo steps already completed. …` — then the
+original input, marked as a reference rather than a new request, and, for an IM
+Turn, the messages steered into it, in their original order. The retry resumes
+the same Provider conversation, so the Agent keeps what it already did; the
+original input is repeated only because the Provider may or may not have
+persisted the interrupted turn. Duplicates are acceptable.
 
 - A 429 retries in place, in the same daemon, after about 30 seconds; a start
   failure after about 5 seconds. Its count is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
@@ -196,6 +208,12 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   pending and the daemon asks for another reconcile. Before and during the resume the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
+- When the daemon stays up across a transport reconnect, a ready reconcile
+  for the running or reporting Turn can carry a fresh Session CLI proof. For
+  the current placement and matching configuration, the Client replaces the
+  credential in the file already used by that Turn. If the write fails, the
+  reconcile reports `session_cli_proof_refresh_failed` alongside the Turn's
+  current status and defers any inline Session message.
 - The daemon owns each recovery until the Session is actually prepared: after
   `scheduled` it waits for the ready reconcile, and sends the request again
   when the reconcile does not arrive. A refused reconcile, a refused request

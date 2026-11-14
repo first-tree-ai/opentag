@@ -858,7 +858,9 @@ async function extractArchiveInto(
   const extractor = tarExtract();
   const state = new RestoreState(staging, limits);
   let entry: Promise<void> | undefined;
+  let entryStream: Readable | undefined;
   extractor.on("entry", (header, stream, next) => {
+    entryStream = stream;
     entry = state.handle(header, stream);
     void entry.then(
       () => next(),
@@ -870,7 +872,8 @@ async function extractArchiveInto(
     await pipeline(input, compressedMeter, createGunzip(), decompressedMeter, extractor, { signal });
     await entry;
   } catch (error) {
-    // An aborted tar stream can close before its active member finishes writing.
+    // Tar can close before a detached member finishes. Stop it and join its staged writes.
+    entryStream?.destroy();
     await entry?.catch(() => undefined);
     throw toArchiveError(error, "invalid-archive", "Archive cannot be unpacked");
   }

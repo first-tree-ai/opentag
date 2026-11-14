@@ -236,6 +236,23 @@ A Local Agent's Sessions run concurrently, and a configuration change doesn't wa
    and that opening **Connect Slack** on a fresh browser/device after the restart also presents the **View Apps** /
    **Manual setup** / **Create App** gate before any new ticket is issued.
 
+## Messaging settings connection dialog
+
+1. Open a saved, unverified custom App from an Agent's **Messaging** settings. Confirm **Test your Slack connection**
+   shows the Bot identity once, tells the user to send a direct message, opens the correct App/Team chat, and remains
+   pending until a matching signed real event arrives. A verified identity still waits for active/ready Agent handoff
+   before showing connected.
+2. Open **Having trouble?** and then **Connection details**. Confirm Back returns through troubleshooting to the test
+   view without closing the dialog. Details show the App ID, Workspace ID, complete Request URL, and all seven required
+   bot events. Copy each value; when clipboard access is denied, confirm a selectable manual-copy field appears.
+3. On a saved, unverified custom App backed by an eligible Local Computer, choose **Retry automatic setup**. Confirm the
+   existing App's callback repair uses `action: connect` without creating or installing another App, rotating credentials,
+   or issuing a new ticket. The action is absent for Cloud Agents, official OAuth bindings, paused Agents, verified
+   identity, blocked/manual-only state, and revoked or otherwise reauthorization-required credentials.
+4. Choose **Update credentials**. The existing Token and Signing Secret are never displayed; the new Token is masked by
+   default and the Secret remains collapsed. Back clears unsaved values and returns to troubleshooting. Save remains
+   disabled until at least one field changes, and a successful partial update preserves the blank credential.
+
 ## Reauthorization
 
 1. After a required-scope expansion, an existing 7-scope (or otherwise incomplete) install must project

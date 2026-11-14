@@ -74,9 +74,12 @@ reporting connected. Unbind, replacement, transfer, suspend or a Computer change
 reloading the current configuration; the old operation does not rebind or undo completed Slack work.
 These checks do not hold a database transaction across CLI execution.
 
-Failed callback configuration also resumes through **Continue**, without another installation or credential
-rotation. An
-uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.
+While automatic setup is open, failed callback configuration resumes through **Continue**, without another installation
+or credential rotation. After reopening a saved, unverified custom App on a Local Computer, choose **Having trouble? →
+Retry automatic setup** to recover the same App's Events and Interactivity settings. Cloud Agents, official OAuth
+bindings, paused Agents, and bindings requiring credential reauthorization keep their manual, read-only, or OAuth
+recovery paths. An uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than
+create another copy.
 Documented pre-creation rejections (such as invalid manifests, App limits, or rate limits) allow a retry; partial or unknown
 errors remain fenced. Expiring or revoked management authorization can require a new ticket. A busy response means the
 Computer is still working: wait and continue with the same App. There is no background job or progress-polling service.
@@ -196,9 +199,20 @@ delivery. Private channels and MPIMs still require an invitation. The Agent may 
 A credential-free release regression checklist for a separately registered test Team/App is in
 [Slack messaging regression](https://github.com/first-tree-ai/opentag/blob/main/testing/regression/slack.md).
 
-Web shows one primary action for the current state. Installation failures retry the same App; only an authorization failure offers reauthorization. Confirmed pending requests offer **View approval** and secondary **Continue**. While the setup record is present (persisted on disk for a Local Computer, or within the current Server process for a Cloud Agent), a denied request or uncertain creation never offers a new-App retry; if the Server restarts during an unfinished Cloud setup, check existing Apps in Slack and use **Manual setup**. App/Team IDs and safe error codes are in **Diagnostics**.
+Web shows one primary action for the current state. Installation failures retry the same App; only an authorization
+failure offers reauthorization. Confirmed pending requests offer **View approval** and secondary **Continue**. While the
+setup record is present (persisted on disk for a Local Computer, or within the current Server process for a Cloud Agent),
+a denied request or uncertain creation never offers a new-App retry; if the Server restarts during an unfinished Cloud
+setup, check existing Apps in Slack and use **Manual setup**. App/Team IDs, the copyable Request URL, and the required bot
+events are in **Connection details**. Automatic setup's **Diagnostics** retains safe failure codes when available;
+saved-binding connection details do not report live callback health or failure codes.
 
-A saved callback is **Unverified** until a real signed event closes identity. Slack connection and Agent runtime preparation remain separate: a verified Slack binding can show **Preparing the Agent…**. Reopening setup uses a neutral message-verification prompt instead of inferring manual configuration from missing page-local state.
+A saved callback shows **Waiting for your test message…** until a real signed event closes identity. In Messaging
+settings, **Test your Slack connection** shows the Bot once, explains that the test is a direct message in Slack, and
+links to **Open chat in Slack**. It polls automatically while open and checks again when the user returns. **Having
+trouble?** opens troubleshooting in the same dialog; Back returns to the prior view. Slack connection and Agent runtime
+preparation remain separate: a verified Slack binding can show **Preparing the Agent…**. Reopening setup uses a neutral
+message-verification prompt instead of inferring manual configuration from missing page-local state.
 
 ## Agent configuration flow
 
@@ -220,19 +234,22 @@ Connect a Computer before configuring Slack. The creation guide and Messaging se
    the App, Team, Bot User and Bot. It then atomically saves the existing encrypted installation and default route under
    the expected binding/generation. No configuration-method field, Bot policy field, table or migration is added.
 4. In Slack's **Event Subscriptions**, choose **Retry** if the Request URL is not verified. Once **Verified** appears,
-   choose **Save Changes**, then **Open chat** in openTag and send a direct message. Already verified and
+   choose **Save Changes**, then **Open chat in Slack** in openTag and send a direct message. Already verified and
    saved settings need no repeat verification. A URL challenge only verifies the Signing Secret. A matching signed event closes identity; runtime
    handoff must also succeed before the page reports ready. Saving credentials or opening Slack alone never reports ready.
 
 The full Manifest is for a new App. For an existing App, add the displayed URL/events without overwriting its other
 settings; reinstall if scopes changed. Credential updates accept only changed fields, preserve blank fields and require
-at least one change. **Update credentials** is directly available in the App dialog; expand **Update Signing Secret**
-only when needed. After saving, send a Bot DM. An unchanged, saved Events URL needs no repeat verification or Save Changes;
-connection help remains available if the Bot does not reply. Updates preserve App, Team, Bot User and Bot ID, binding
-identity, history and Agent `receiveMode`.
-A stale generation or different identity is rejected. Failed validation retains the form for correction; an uncertain
-save reads current state before any retry and never automatically posts twice. Closing, success or changing Agent clears
-credential inputs. Neither management response returns saved credentials.
+at least one change. **Update credentials** is available under **Having trouble?** in the App dialog; expand **Update
+Signing Secret** only when needed. After saving, send a Bot DM. An unchanged, saved Events URL needs no repeat verification
+or Save Changes; connection help remains available if the test message is not received. Troubleshooting groups event
+settings, credential updates, and **Connection details**. Details show the required events without claiming they are
+verified subscriptions; copy failures expose a selectable value for manual copying. Updates preserve App, Team, Bot User
+and Bot ID, binding identity, history and Agent `receiveMode`. A stale generation or different identity is rejected.
+Failed validation retains the form for correction; an uncertain save reads current state before any retry and never
+automatically posts twice. Closing, success or changing Agent clears credential inputs. Back from credential updates also
+clears unsaved inputs and returns to troubleshooting. Empty updates show a disabled **Save changes** action with an
+explanation. Neither management response returns saved credentials.
 
 The App/Team pair cannot be claimed by another Agent. Create another App in the same Team instead. Message triggers
 remain the Agent's existing `mention_only` / `all_message` property, including other Bots' messages. Ambient Turns may

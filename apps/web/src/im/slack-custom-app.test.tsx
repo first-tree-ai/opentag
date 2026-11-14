@@ -1,7 +1,7 @@
 import type { SlackConfigurationView } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
 import { SlackCustomApp } from "./slack-custom-app.js";
@@ -65,7 +65,14 @@ function bound(): SlackConfigurationView {
 
 function fixture(
   view: SlackConfigurationView = unbound(),
-  options: { manualOnly?: boolean; presentation?: "dialog" | "inline"; api?: BrowserApi } = {},
+  options: {
+    manualOnly?: boolean;
+    presentation?: "dialog" | "inline";
+    api?: BrowserApi;
+    readOnly?: boolean;
+    bindingId?: string;
+    cloud?: boolean;
+  } = {},
 ) {
   const read = vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(view);
   const save = vi.spyOn(browserApi, "saveSlackConfiguration").mockResolvedValue({
@@ -134,6 +141,29 @@ describe("custom Slack App flow", () => {
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
     expect(screen.queryByLabelText("Slack App ID")).toBeNull();
     expect(screen.queryByText("Bot message policy")).toBeNull();
+  });
+
+  it("requires both trimmed credentials before creating a Slack App binding", async () => {
+    const test = fixture();
+    await openCreate();
+    const submit = screen.getByRole("button", { name: "Save" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "   " } });
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "   " } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "  private-token  " } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "  private-secret  " } });
+    expect(submit).toHaveProperty("disabled", false);
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(test.save).toHaveBeenCalledWith(agentId, {
+        intent: "create",
+        expectedMessaging: unbound().expectedMessaging,
+        botAccessToken: "private-token",
+        signingSecret: "private-secret",
+      }),
+    );
   });
 
   it("keeps creation recovery in collapsed help and links to existing Apps before retrying", async () => {
@@ -230,13 +260,13 @@ describe("custom Slack App flow", () => {
     const view = bound();
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
     fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
     if (field === "secret") fireEvent.click(screen.getByRole("button", { name: "Update Signing Secret" }));
-    fireEvent.change(screen.getByLabelText(field === "token" ? "Bot Token" : "Signing Secret"), {
+    fireEvent.change(screen.getByLabelText(field === "token" ? "New bot token" : "Signing Secret"), {
       target: { value: "new-value" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(test.save).toHaveBeenCalledWith(agentId, {
         intent: "reauthorize",
@@ -252,26 +282,22 @@ describe("custom Slack App flow", () => {
     view.binding.lastInboundAt = "2026-10-12T00:01:00.000Z";
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
     fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "private-token" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(
-      await screen.findByText(
-        "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open chat" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Open settings" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("New bot token"), { target: { value: "private-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByText("Send a message — try “Hi”.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open chat in Slack" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open event settings in Slack" })).toBeNull();
     expect(screen.queryByText("Slack connected.")).toBeNull();
     expect(test.save).toHaveBeenCalledWith(agentId, {
       intent: "reauthorize",
       expectedMessaging: view.expectedMessaging,
       botAccessToken: "private-token",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Help" }));
-    expect(screen.getByRole("link", { name: "Open settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+    expect(screen.getByRole("link", { name: "Open event settings in Slack" })).toBeTruthy();
   });
 
   it("does not call a URL challenge ready; requires identity closure and runtime handoff", async () => {
@@ -280,12 +306,8 @@ describe("custom Slack App flow", () => {
     view.binding.lastRuntimeObservationAt = "2026-10-12T00:01:00.000Z";
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    expect(
-      await screen.findByText(
-        "Authorization saved. Open the Bot’s chat and send “Hello”. Confirm its reply to verify actual message delivery.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open chat" })).toBeTruthy();
+    expect(await screen.findByText("Send a message — try “Hi”.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open chat in Slack" })).toBeTruthy();
     const verified = {
       ...view,
       identityClosure: { status: "verified" as const, verifiedAt: "2026-10-12T00:02:00.000Z" },
@@ -295,7 +317,7 @@ describe("custom Slack App flow", () => {
     expect(await screen.findByText("Check Agent status to finish setup.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View status" })).toBeTruthy();
     expect(screen.queryByText("Slack connected.")).toBeNull();
-    expect(screen.getByText("App identity verified. Waiting for the Agent to be ready.")).toBeTruthy();
+    expect(screen.getByText("The connection is verified, but your agent needs attention.")).toBeTruthy();
     test.read.mockResolvedValue({ ...verified, handoff: { bindingState: "active", handoffReady: true } });
     await test.client.invalidateQueries();
     expect(await screen.findByText("Slack connected.")).toBeTruthy();
@@ -337,24 +359,99 @@ it("resumes saved binding callbacks after closing and reopening without a new ti
   const f = fixture(bound());
   const api = vi.mocked(browserApi.autoSetupSlack).mockResolvedValue({ status: "connected" });
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close Test your Slack connection" }));
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Help" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  fireEvent.click(screen.getByRole("button", { name: "Retry automatic setup" }));
   await waitFor(() => expect(f.onSaved).toHaveBeenCalledTimes(1));
   expect(api).toHaveBeenCalledExactlyOnceWith(agentId, { action: "connect" });
   expect(f.save).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Help" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
   fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
-  expect(screen.getByLabelText("Bot Token")).toBeTruthy();
+  expect(screen.getByLabelText("New bot token")).toBeTruthy();
   expect(api).toHaveBeenCalledTimes(1);
 });
 it("does not offer automatic callback setup for a pending official OAuth binding", async () => {
   fixture({ ...bound(), preferredRecovery: "oauth" });
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
   expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
-  expect(screen.getByRole("link", { name: "Open chat" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(screen.getByRole("link", { name: "Open chat in Slack" })).toBeTruthy();
+});
+
+it.each([
+  ["a Cloud Agent", { cloud: true }],
+  ["manual-only setup", { manualOnly: true }],
+])("does not offer saved callback recovery for %s", async (_label, options) => {
+  fixture(bound(), options);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+});
+
+it("does not offer saved callback recovery after identity verification", async () => {
+  fixture({
+    ...bound(),
+    identityClosure: { status: "verified", verifiedAt: "2026-10-12T00:02:00.000Z" },
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "More" }));
+  fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+});
+
+it("does not offer saved callback recovery while credentials require reauthorization", async () => {
+  const view = bound();
+  if (view.binding?.provider === "slack") view.binding.reauthorizationRequired = true;
+  fixture(view);
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+});
+
+describe("saved Slack connection views", () => {
+  it("navigates through troubleshooting and connection details without changing configuration", async () => {
+    const test = fixture(bound());
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    const connection = screen.getByRole("dialog", { name: "Test your Slack connection" });
+    expect(within(connection).getAllByText("QA Bot")).toHaveLength(1);
+    const chat = within(connection).getByRole("link", { name: "Open chat in Slack" }) as HTMLAnchorElement;
+    expect(new URL(chat.href).searchParams.get("app")).toBe("A1");
+    expect(new URL(chat.href).searchParams.get("team")).toBe("T1");
+
+    fireEvent.click(within(connection).getByRole("button", { name: "Having trouble?" }));
+    expect(screen.getByRole("dialog", { name: "Troubleshoot Slack" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View required URL and events" }));
+    const details = screen.getByRole("dialog", { name: "Connection details" });
+    expect(within(details).getByText("A1")).toBeTruthy();
+    expect(within(details).getByText("T1")).toBeTruthy();
+    expect(within(details).getByText(bound().eventsUrl)).toBeTruthy();
+    expect(within(details).getAllByRole("listitem")).toHaveLength(7);
+    await waitFor(() => expect(details.contains(document.activeElement)).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("dialog", { name: "Troubleshoot Slack" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("dialog", { name: "Test your Slack connection" })).toBeTruthy();
+    expect(test.save).not.toHaveBeenCalled();
+    expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+  });
+
+  it("keeps a paused connection inspectable without exposing write actions", async () => {
+    const test = fixture(bound(), { readOnly: true, bindingId });
+    await waitFor(() => expect(screen.getByRole("button", { name: "More" })).not.toHaveProperty("disabled", true));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
+    expect(screen.getByRole("link", { name: "Open event settings in Slack" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry automatic setup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Update credentials" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
+    expect(test.save).not.toHaveBeenCalled();
+    expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+  });
 });
 
 it("opens Cloud manual setup without requesting a CLI ticket", async () => {

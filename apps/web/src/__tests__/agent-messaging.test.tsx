@@ -116,9 +116,10 @@ describe("OpenTag Web App Shell", () => {
           fireEvent.click(screen.getByRole("button", { name }));
         }
       } else {
-        fireEvent.click(await screen.findByRole("button", { name: "More" }));
-        fireEvent.click(await screen.findByRole("button", { name: "Help" }));
-        expect(screen.getByRole("button", { name: "Update credentials" })).toHaveProperty("disabled", true);
+        await waitFor(() => expect(screen.getByRole("button", { name: "More" })).not.toHaveProperty("disabled", true));
+        fireEvent.click(screen.getByRole("button", { name: "More" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Having trouble?" }));
+        expect(screen.queryByRole("button", { name: "Update credentials" })).toBeNull();
         expect(screen.queryByRole("button", { name: "Reauthorize" })).toBeNull();
         expect(screen.queryByRole("button", { name: "Disconnect Slack" })).toBeNull();
       }
@@ -323,7 +324,7 @@ describe("OpenTag Web App Shell", () => {
       render(<App />);
       fireEvent.click(await screen.findByRole("button", { name: "More" }));
       fireEvent.click(screen.getByText("Help"));
-      fireEvent.click(screen.getByRole("button", { name: "Help" }));
+      fireEvent.click(screen.getByRole("button", { name: "Having trouble?" }));
       expect(Boolean(screen.queryByRole("button", { name: "Reauthorize" }))).toBe(
         available !== false && preferredRecovery === "oauth",
       );
@@ -868,13 +869,13 @@ it("keeps manual Slack verification open when settings refresh to a bound Agent"
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(binding.mock.calls.length).toBeGreaterThan(1));
   expect(document.querySelector('[data-ui="messaging-app-identity"]')).toBeTruthy();
-  const dialog = await screen.findByRole("dialog", { name: "Connect Slack" });
+  const dialog = await screen.findByRole("dialog", { name: "Test your Slack connection" });
   expect(
     within(dialog).getByText(
-      "In Event Subscriptions, confirm Verified and select Save Changes. Then open the Bot’s chat, send “Hello” and check for a reply.",
+      "In Event Subscriptions, confirm Verified and select Save Changes, then send a direct message to this app in Slack.",
     ),
   ).toBeTruthy();
-  expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
+  expect(within(dialog).getByRole("link", { name: "Open event settings in Slack" })).toHaveProperty(
     "href",
     "https://api.slack.com/apps/A1/event-subscriptions",
   );

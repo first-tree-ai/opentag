@@ -10,6 +10,8 @@ import type { ImBindingService } from "../im-bindings/index.js";
 import { COMPUTER_PRESENCE_TIMEOUT_MS } from "./cloud-computer.js";
 
 const PAGE_SIZE = 100;
+/** Pages one alert pass may read; reserved Computers leave the candidate set, so later passes continue. */
+const MAX_ALERT_PAGES = 10;
 const DEFAULT_INTERVAL_MS = 60_000;
 /**
  * Offline periods that began longer ago than this never alert. Without the bound, the first sweep after this
@@ -90,8 +92,17 @@ export class ComputerOfflineAlertStore {
     return { ...row, ownerExternalUserId: row.ownerExternalUserId };
   }
 
-  /** Reserves the alert of the current offline period; eligibility is evaluated again by the UPDATE itself. */
-  async reserveAlert(computerId: string, bindingId: string, now: Date, thresholdMs: number): Promise<Date | undefined> {
+  /**
+   * Reserves the alert of the current offline period; eligibility is evaluated again by the UPDATE itself. A
+   * Computer whose owner cannot be reached is reserved without a Bot, so it leaves the candidate set for the
+   * whole period instead of filling every page.
+   */
+  async reserveAlert(
+    computerId: string,
+    bindingId: string | null,
+    now: Date,
+    thresholdMs: number,
+  ): Promise<Date | undefined> {
     const [reserved] = await this.database
       .update(computers)
       .set({ offlineAlertPeriodStart: sql`${computers.lastSeenAt}`, offlineAlertBindingId: bindingId })
@@ -114,6 +125,21 @@ export class ComputerOfflineAlertStore {
       .update(computers)
       .set({ offlineAlertBindingId: null })
       .where(and(eq(computers.id, computerId), eq(computers.offlineAlertPeriodStart, periodStart)));
+  }
+
+  /** Puts back a recovery notice the provider definitely did not deliver, unless a new period began meanwhile. */
+  async restoreAlert(computerId: string, periodStart: Date, bindingId: string): Promise<void> {
+    await this.database
+      .update(computers)
+      .set({ offlineAlertPeriodStart: periodStart, offlineAlertBindingId: bindingId })
+      .where(
+        and(
+          eq(computers.id, computerId),
+          isNull(computers.offlineAlertPeriodStart),
+          isNull(computers.deletedAt),
+          isNull(computers.disconnectedAt),
+        ),
+      );
   }
 
   /**
@@ -159,7 +185,7 @@ export class ComputerOfflineAlertStore {
     return cleared.length > 0;
   }
 
-  /** The stored Bot of an alert, if it can still send: active binding with a known owner. */
+  /** The stored Bot of an alert, if it can still send: active binding of an active Agent, with a known owner. */
   async storedSender(bindingId: string): Promise<AlertSender | undefined> {
     const [row] = await this.database
       .select({
@@ -169,7 +195,8 @@ export class ComputerOfflineAlertStore {
         teamBrand: imBindings.externalTeamBrand,
       })
       .from(imBindings)
-      .where(and(eq(imBindings.id, bindingId), eq(imBindings.status, "active")))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(and(eq(imBindings.id, bindingId), eq(imBindings.status, "active"), eq(agents.status, "active")))
       .limit(1);
     if (!row?.ownerExternalUserId) return undefined;
     return { ...row, ownerExternalUserId: row.ownerExternalUserId };
@@ -209,8 +236,6 @@ export interface ComputerOfflineAlertWorkerOptions {
 export class ComputerOfflineAlertWorker {
   readonly #options: ComputerOfflineAlertWorkerOptions;
   readonly #now: () => Date;
-  /** Computers already logged as unreachable for a period, so a missing owner logs once per period. */
-  readonly #unreachable = new Map<string, number>();
   #timer: ReturnType<typeof setInterval> | undefined;
   #running: Promise<void> | undefined;
   #stopped = false;
@@ -260,34 +285,42 @@ export class ComputerOfflineAlertWorker {
 
   async #alerts(): Promise<void> {
     const now = this.#now();
-    const { store, thresholdMs } = this.#options;
-    for (const computer of await store.offlineCandidates(now, thresholdMs)) {
-      if (this.#stopped) return;
-      const periodKey = computer.lastSeenAt.getTime();
-      if (this.#unreachable.get(computer.id) === periodKey) continue;
-      const sender = await store.sender(computer.id);
-      const target = sender && (await this.#target(sender));
-      if (!sender || !target) {
-        this.#unreachable.set(computer.id, periodKey);
-        this.#options.logger?.info(
-          { code: "COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT", computerId: computer.id },
-          "Computer is offline but none of its Agents has a Bot that can reach the owner",
-        );
-        continue;
+    const seen = new Set<string>();
+    for (let page = 0; page < MAX_ALERT_PAGES && !this.#stopped; page += 1) {
+      const candidates = await this.#options.store.offlineCandidates(now, this.#options.thresholdMs);
+      const fresh = candidates.filter((computer) => !seen.has(computer.id));
+      for (const computer of fresh) {
+        if (this.#stopped) return;
+        seen.add(computer.id);
+        await this.#alert(computer, now);
       }
-      const periodStart = await store.reserveAlert(computer.id, sender.bindingId, now, thresholdMs);
-      if (!periodStart) continue;
-      this.#unreachable.delete(computer.id);
-      const text = computerOfflineAlertText(language(sender), {
-        computerName: computer.displayName,
-        offlineMs: now.getTime() - periodStart.getTime(),
-        computersUrl: new URL("/agents/computers", this.#options.publicUrl).toString(),
-      });
-      await this.#send(target, text, `offline:${computer.id}:${periodStart.getTime()}`, {
-        notSent: () => store.releaseAlert(computer.id, periodStart),
-        rejected: () => store.forgetAlertBinding(computer.id, periodStart),
-      });
+      if (candidates.length < PAGE_SIZE || fresh.length === 0) return;
     }
+  }
+
+  async #alert(computer: OfflineAlertCandidate, now: Date): Promise<void> {
+    const { store, thresholdMs } = this.#options;
+    const sender = await store.sender(computer.id);
+    const target = sender && (await this.#target(sender));
+    const periodStart = await store.reserveAlert(computer.id, target ? sender.bindingId : null, now, thresholdMs);
+    if (!periodStart) return;
+    if (!sender || !target) {
+      // Reserved without a Bot: logged by the one instance that reserved it, once per period.
+      this.#options.logger?.info(
+        { code: "COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT", computerId: computer.id },
+        "Computer is offline but none of its Agents has a Bot that can reach the owner",
+      );
+      return;
+    }
+    const text = computerOfflineAlertText(language(sender), {
+      computerName: computer.displayName,
+      offlineMs: now.getTime() - periodStart.getTime(),
+      computersUrl: new URL("/agents/computers", this.#options.publicUrl).toString(),
+    });
+    await this.#send(target, text, `offline:${computer.id}:${periodStart.getTime()}`, {
+      notSent: () => store.releaseAlert(computer.id, periodStart),
+      rejected: () => store.forgetAlertBinding(computer.id, periodStart),
+    });
   }
 
   async #recoveries(): Promise<void> {
@@ -296,15 +329,18 @@ export class ComputerOfflineAlertWorker {
     for (const computer of await store.recoveryCandidates(now)) {
       if (this.#stopped) return;
       if (!(await store.clearAlert(computer.id, computer.periodStart))) continue;
-      if (!computer.online || !computer.bindingId) continue;
-      const sender = await store.storedSender(computer.bindingId);
+      const bindingId = computer.bindingId;
+      if (!computer.online || !bindingId) continue;
+      const sender = await store.storedSender(bindingId);
       const target = sender && (await this.#target(sender));
       if (!sender || !target) continue;
       const text = computerRecoveredText(language(sender), {
         computerName: computer.displayName,
         offlineMs: (computer.connectedAt ?? now).getTime() - computer.periodStart.getTime(),
       });
-      await this.#send(target, text, `recovered:${computer.id}:${computer.periodStart.getTime()}`);
+      await this.#send(target, text, `recovered:${computer.id}:${computer.periodStart.getTime()}`, {
+        notSent: () => store.restoreAlert(computer.id, computer.periodStart, bindingId),
+      });
     }
   }
 

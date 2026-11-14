@@ -81,7 +81,20 @@ async function fixture(options: { ownerOpenId?: string | null; lastSeenAt?: Date
     });
   const updateComputer = (values: Partial<typeof computers.$inferInsert>) =>
     unitDatabase.database.update(computers).set(values).where(eq(computers.id, computer.id));
-  return { agent, bindingId, computer, logger, messenger, sends, updateComputer, worker };
+  /** Offline Computers of the same owner that have no Agent, so no Bot can reach the owner for them. */
+  const addUnreachableComputers = (count: number, lastSeenAt: Date) =>
+    unitDatabase.database.insert(computers).values(
+      Array.from({ length: count }, (_, index) => ({
+        ownerAccountId: bootstrap.userId,
+        currentInstallationId: crypto.randomUUID(),
+        displayName: `unreachable-${index}`,
+        platform: "linux" as const,
+        arch: "x64",
+        clientVersion: "0.0.1",
+        lastSeenAt,
+      })),
+    );
+  return { addUnreachableComputers, agent, bindingId, computer, logger, messenger, sends, updateComputer, worker };
 }
 
 describe("Computer offline alerts", () => {
@@ -188,6 +201,46 @@ describe("Computer offline alerts", () => {
     await worker.runOnce();
     // The rejected alert gets no recovery notice; the unknown-outcome alert of the next outage is not retried.
     expect(value.messenger.postDirectText).toHaveBeenCalledTimes(2);
+  });
+
+  it("never lets Computers without an owner contact starve a reachable one", async () => {
+    const value = await fixture();
+    await value.addUnreachableComputers(150, minutesAgo(30));
+    const worker = value.worker();
+    await worker.runOnce();
+    expect(value.sends).toHaveLength(1);
+    expect(value.sends[0]?.text).toContain("Studio Mac");
+    // Each unreachable Computer is logged once by the reserving pass, not on every sweep.
+    await worker.runOnce();
+    expect(value.logger.info).toHaveBeenCalledTimes(150);
+  });
+
+  it("retries a recovery notice the provider definitely did not apply", async () => {
+    const value = await fixture();
+    const worker = value.worker();
+    await worker.runOnce();
+    await value.updateComputer({ lastSeenAt: NOW, connectedAt: NOW, currentInstanceId: crypto.randomUUID() });
+    value.messenger.postDirectText.mockRejectedValueOnce(
+      new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 30_000),
+    );
+    await worker.runOnce();
+    await worker.runOnce();
+    await worker.runOnce();
+    expect(value.messenger.postDirectText).toHaveBeenCalledTimes(3);
+    expect(value.sends.map((send) => send.text)).toEqual([
+      expect.stringContaining("已离线"),
+      expect.stringContaining("已恢复在线"),
+    ]);
+  });
+
+  it("sends no recovery notice through an Agent suspended while its Computer was offline", async () => {
+    const value = await fixture();
+    const worker = value.worker();
+    await worker.runOnce();
+    await unitDatabase.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+    await value.updateComputer({ lastSeenAt: NOW, connectedAt: NOW, currentInstanceId: crypto.randomUUID() });
+    await worker.runOnce();
+    expect(value.sends).toHaveLength(1);
   });
 
   it("does nothing when disabled", async () => {

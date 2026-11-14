@@ -95,14 +95,16 @@ a plain-text direct message from one of the Computer's Bots, when the Computer s
   that the owner created and whose active binding has a known
   [owner identity](feishu-connection-lifecycle.md#owner-identity) (`im_bindings.owner_external_user_id`): Feishu sends to
   the `open_id`, Slack to the user ID. Several Computers alert separately. When no Agent qualifies, for example every
-  binding predates the owner identity, the Computer is skipped and logged once per period as
-  `COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT`; nothing asks anyone to reauthorize.
+  binding predates the owner identity, the period is reserved without a Bot, so it leaves the candidate set and cannot
+  crowd out reachable Computers, and the reserving instance logs `COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT` once. A Bot
+  connected later in that outage first alerts on the next one. Nothing asks anyone to reauthorize.
 - **How often.** At most one alert and one recovery message per offline period. `computers.offline_alert_period_start`
   holds the frozen `last_seen_at` of the alerted period and `offline_alert_binding_id` the Bot used. Each transition is
   one conditional UPDATE whose returned row is the only permission to send, so Server instances and restarts never
   repeat a message. The reservation commits before provider I/O: a crash loses a message rather than repeating it. A
-  send the provider definitely did not apply is released for a later pass; a rejected alert keeps its period but drops
-  the Bot, so no recovery message follows it; an unknown outcome is not retried.
+  send the provider definitely did not apply is released for a later pass, and a recovery message is restored the same
+  way; a rejected alert keeps its period but drops the Bot, so no recovery message follows it; an unknown outcome is
+  not retried. The recovery message goes through the stored Bot only while its binding and Agent are still active.
 - **Scope.** Cloud Computers start and stop on demand and never alert. Computers that never connected, deleted or revoked
   Computers, and inactive Agents are excluded. An outage that began more than a day before the sweep never alerts, so
   enabling the alert or raising the threshold does not message every long-dead Computer. A Computer deleted or revoked

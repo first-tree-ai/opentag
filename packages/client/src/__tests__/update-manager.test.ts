@@ -1047,6 +1047,70 @@ describe("UpdateManager", () => {
       expect(h.isQuiesced()).toBe(true);
     });
 
+    it("does not hand off when stopped while the readiness check is in flight", async () => {
+      let release: (readiness: HandoffReadiness) => void = () => undefined;
+      const h = harness({
+        handoffReadiness: () =>
+          new Promise<HandoffReadiness>((resolve) => {
+            release = resolve;
+          }),
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.stop();
+      release({ ready: true });
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+    });
+
+    it("hands off the newer target observed while the first readiness check is in flight", async () => {
+      let release: ((readiness: HandoffReadiness) => void) | undefined;
+      const h = harness({
+        handoffReadiness: () =>
+          release
+            ? Promise.resolve({ ready: true })
+            : new Promise<HandoffReadiness>((resolve) => {
+                release = resolve;
+              }),
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      release?.({ ready: true });
+      await h.settle();
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.1", "0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(1);
+      expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.2" });
+    });
+
+    it("checks the supervisor again after draining work and keeps deferring if it became unavailable", async () => {
+      let readiness: HandoffReadiness = notReady;
+      const h = harness({ handoffReadiness: async () => readiness });
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.setProtectedWork(1);
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.isQuiesced()).toBe(true);
+      expect(h.handoffs).toBe(0);
+
+      readiness = notReady;
+      h.setProtectedWork(0);
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+
+      readiness = { ready: true };
+      await h.settle();
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.isQuiesced()).toBe(true);
+    });
+
     it("stops deferring when stopped", async () => {
       const h = harness({ handoffReadiness: async () => notReady });
       h.setRecoverable(true);

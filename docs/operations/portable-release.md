@@ -158,7 +158,7 @@ The daemon's updater follows a strict contract:
   it hands off anyway. When the check cannot decide (a `launchctl` or `log show` failure,
   timeout, or missing handle) it logs a warning and hands off, so a broken check never blocks every upgrade. If the
   connected Server cannot recover interrupted work, the updater drains protected work again before the deferred
-  handoff. systemd services hand off without this check.
+  handoff and then checks launchd again, continuing the deferral if it became unavailable during the drain. systemd services hand off without this check.
 
 Current version, target, updater state, recovery diagnosis, and the last attempt with its failure reason are visible in
 `opentag daemon status`. `awaiting_protected_work` and `installing` identify an upgrade in progress, `blocked` identifies

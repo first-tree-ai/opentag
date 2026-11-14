@@ -1061,6 +1061,7 @@ export async function createClientRuntime(
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, recovery),
     handleSessionRecoverResult: recovery.handleResult.bind(recovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
+    handleQuotaWaitResult: runner.handleQuotaWaitResult.bind(runner),
     handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
   });
   return new ComposedClientRuntime(runtime, {

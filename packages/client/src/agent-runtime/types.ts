@@ -65,7 +65,7 @@ export interface AgentPromptRequest {
    * Told when the Provider starts or stops waiting in-process for a used-up quota window to reset
    * (`quota_wait_changed`), so the caller can stop the Run's budget during the wait. Never persisted.
    */
-  readonly onQuotaWaitChanged?: (waiting: boolean) => void;
+  readonly onQuotaWaitChanged?: (waiting: boolean, resetsAt?: string) => void;
   /**
    * Compact the existing native conversation before this input, keeping its identity. A failed
    * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.

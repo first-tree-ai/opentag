@@ -899,6 +899,60 @@ describe("AgentTurnRunner automatic retry", () => {
     },
   );
 
+  it("tells the Server about a quota wait so it writes the notice, and that it ended when the Turn runs again", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness({ quotaWait: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const retryAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    h.prompt
+      .mockImplementationOnce(async () => quotaUsedUp(retryAt))
+      .mockImplementationOnce(async (input) => {
+        // Claude Code waits in its own process and says when it is back.
+        const { onQuotaWaitChanged } = input as { onQuotaWaitChanged?: (waiting: boolean, resetsAt?: string) => void };
+        onQuotaWaitChanged?.(true, "2026-11-20T00:00:00.000Z");
+        onQuotaWaitChanged?.(false);
+        return { runId: "turn-1", status: "completed", output: [] };
+      });
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    const quotaFrames = () =>
+      h.sent.filter((frame) => (frame as { type: string }).type === "turn:quota-wait") as Array<{
+        resetAt?: string;
+        ended?: true;
+        turnId: string;
+        deliveryId: string;
+        sequence: number;
+      }>;
+    expect(quotaFrames()).toEqual([
+      expect.objectContaining({
+        turnId: "turn-1",
+        deliveryId: h.request.deliveryId,
+        resetAt: new Date(Date.parse(retryAt) + 120_000).toISOString(),
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(62 * 60_000);
+    await h.runner.settled();
+    expect(quotaFrames().map(({ resetAt, ended }) => resetAt ?? ended)).toEqual([
+      new Date(Date.parse(retryAt) + 120_000).toISOString(),
+      true,
+      "2026-11-20T00:00:00.000Z",
+      true,
+    ]);
+    const sequences = quotaFrames().map((frame) => frame.sequence);
+    expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
+    // A notice the Server could not write is only logged.
+    h.runner.handleQuotaWaitResult({
+      type: "turn:quota-wait:result",
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      sequence: sequences[0] as number,
+      status: "failed",
+    });
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ fields: expect.objectContaining({ code: "TURN_QUOTA_WAIT_NOTICE_FAILED" }) }),
+    );
+  });
+
   it("leaves a quota wait to the restarted daemon when the daemon stops during it", async () => {
     vi.useFakeTimers();
     const h = runnerHarness({ restartRetry: true });
@@ -2019,10 +2073,13 @@ function runnerHarness(
   options: {
     restartRetry?: boolean | (() => boolean);
     withoutRetries?: boolean;
+    /** Negotiates `runtime.quotaWait`, so the runner sends its quota-wait frames to `sent`. */
+    quotaWait?: boolean;
     backgroundWork?: AgentTurnRunnerOptions["backgroundWork"];
   } = {},
 ) {
   const request = delivery();
+  const sent: unknown[] = [];
   const records = new Map<string, TurnRetryRecord>();
   const retries = {
     update: async (sessionId: string, turnId: string, change: (record: TurnRetryRecord) => TurnRetryRecord) => {
@@ -2074,7 +2131,13 @@ function runnerHarness(
       recordSteer,
       read: bindingRead,
     } as unknown as SessionBindingStore,
-    connection: { send: vi.fn(async () => undefined), capabilityVersion: () => 3 },
+    connection: {
+      send: vi.fn(async (frame: unknown) => {
+        sent.push(frame);
+      }),
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.quotaWait ? (options.quotaWait ? 1 : undefined) : 3,
+    },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
     reportOwner: { create, submit } as unknown as TurnReportOwner,
     runtimeManager: {
@@ -2099,6 +2162,7 @@ function runnerHarness(
   });
   const emit = (event: unknown) => void sink?.(event);
   return {
+    sent,
     request,
     records,
     retries,

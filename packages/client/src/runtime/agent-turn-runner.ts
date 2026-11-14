@@ -17,6 +17,7 @@ import {
   type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
+  type TurnQuotaWaitResult,
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -73,6 +74,7 @@ import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration, providerSupportsMcpGateway } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { QuotaWaitNotifier } from "./quota-wait-notifier.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedMcpGatewayLaunch,
@@ -259,6 +261,7 @@ export class AgentTurnRunner {
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
   readonly #activity: TurnActivityReporter;
+  readonly #quotaWait: QuotaWaitNotifier;
 
   constructor(options: AgentTurnRunnerOptions) {
     this.#activity = new TurnActivityReporter({
@@ -268,6 +271,12 @@ export class AgentTurnRunner {
     });
     this.#bindingStore = options.bindingStore;
     this.#connection = options.connection;
+    this.#quotaWait = new QuotaWaitNotifier({
+      enabled: () => options.connection.capabilityVersion?.(RUNTIME_CAPABILITY.quotaWait) === 1,
+      send: (frame) => options.connection.send(frame, { priority: "trace", signal: AbortSignal.timeout(5_000) }),
+      logger: options.logger ?? createLogger("turn"),
+      ...(options.now ? { now: options.now } : {}),
+    });
     this.#custody = options.custody;
     this.#logger = options.logger ?? createLogger("turn");
     this.#now = options.now ?? Date.now;
@@ -289,6 +298,10 @@ export class AgentTurnRunner {
 
   handleActivityResult(result: TurnActivityResult): void {
     this.#activity.acknowledge(result);
+  }
+
+  handleQuotaWaitResult(result: TurnQuotaWaitResult): void {
+    this.#quotaWait.handleResult(result);
   }
 
   get activeCount(): number {
@@ -736,6 +749,8 @@ export class AgentTurnRunner {
       turnId: owner.turnId,
     };
     this.#logger.info(fields, "Turn started");
+    // The Turn runs again after a quota wait, a restart included: the Server stops editing its notice.
+    if (interruption?.reason === "provider_quota_exceeded") this.#quotaWait.ended(owner.request, owner.turnId);
     const timeout = new AbortController();
     // The ingress deadline bounds only the first attempt; later ones get what is left of the Run's budget.
     const timeoutMs = interruption
@@ -747,12 +762,14 @@ export class AgentTurnRunner {
       this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
     );
     // Waiting in-process for a quota reset is not running: neither the budget nor the run time advances.
-    const onQuotaWait = (waiting: boolean): void => {
+    const onQuotaWait = (waiting: boolean, resetsAt?: string): void => {
       if (waiting) {
         budget.pause();
         runTime.pause();
+        if (resetsAt) this.#quotaWait.waiting(owner.request, owner.turnId, resetsAt);
         return;
       }
+      this.#quotaWait.ended(owner.request, owner.turnId);
       budget.resume();
       runTime.resume();
       /* v8 ignore next -- a resumed budget always has an expiry. */
@@ -973,6 +990,8 @@ export class AgentTurnRunner {
       return undefined;
     }
     if (!record || !interruption) return undefined;
+    /* v8 ignore next -- a quota wait always names when it resumes. */
+    if (interruption.resumeAt) this.#quotaWait.waiting(turn.owner.request, turn.owner.turnId, interruption.resumeAt);
     this.#logger.info(
       { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId, resumeAt: interruption.resumeAt },
       "Turn waits for the model quota to reset",

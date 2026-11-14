@@ -23,7 +23,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -48,7 +48,7 @@ import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
-import { readQueuedTaskCounts } from "./agent-queued-tasks.js";
+import { readQueuedTaskCounts, readUnreportedAcceptedActivity } from "./agent-queued-tasks.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import {
   deliveryUsageTokenCounts,
@@ -562,49 +562,16 @@ export class AgentService {
     now: Date,
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
-    // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
-    const activityRows = await executor
-      .select({
-        agentId: imBindings.agentId,
-        runningTaskCount: sql<number>`count(distinct ${imMessageDeliveries.sessionId})::int`,
-        startedAt: sql<Date>`max(${imMessageDeliveries.acceptedAt})`.mapWith(imMessageDeliveries.acceptedAt),
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(imBindings.agentId, agentIds),
-          eq(imBindings.status, "active"),
-          isNull(sessions.endedAt),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-          gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
-        ),
-      )
-      .groupBy(imBindings.agentId);
-
-    const staleActivityRows = await executor
-      .selectDistinct({ agentId: imBindings.agentId })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(imBindings.agentId, agentIds),
-          eq(imBindings.status, "active"),
-          isNull(sessions.endedAt),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-          lt(imMessageDeliveries.acceptedAt, recoveryStartedAt),
-        ),
-      );
-
+    const { workingRows: activityRows, staleAgentIds } = await readUnreportedAcceptedActivity(
+      executor,
+      agentIds,
+      recoveryStartedAt,
+    );
     const queuedByAgent = await readQueuedTaskCounts(executor, agentIds, now);
 
     const activityByAgent = projectActivityByAgent(activityRows);
-    for (const row of staleActivityRows) {
-      if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    for (const agentId of staleAgentIds) {
+      if (!activityByAgent.has(agentId)) activityByAgent.set(agentId, { state: "unknown" });
     }
     for (const [agentId, queuedTaskCount] of queuedByAgent) {
       const activity = activityByAgent.get(agentId) ?? { state: "idle" };

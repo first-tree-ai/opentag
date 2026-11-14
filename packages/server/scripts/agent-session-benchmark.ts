@@ -34,7 +34,7 @@ export const REQUIRED_CASES = [
   "agents.usage.50000-deliveries.before",
 ] as const;
 export const BENCHMARK_LABEL = "agent-session";
-export const SHIPPED_UNREPORTED_INDEX = "im_message_deliveries_unreported_accepted_idx";
+export const SHIPPED_UNREPORTED_INDEX = "im_message_deliveries_session_unreported_accepted_idx";
 export const LEGACY_ACTIVITY_INDEXES = [
   "session_descendants_ancestor_activity_idx",
   "session_descendants_ancestor_depth_activity_idx",
@@ -611,7 +611,7 @@ async function measureCases(
   void withoutIndex;
   const rebuiltAt = deps.elapsed();
   await admin.unsafe(`
-    create index "${SHIPPED_UNREPORTED_INDEX}" on "im_message_deliveries" ("accepted_at", "id", "session_id")
+    create index "${SHIPPED_UNREPORTED_INDEX}" on "im_message_deliveries" ("session_id", "accepted_at", "id")
     where "state" = 'accepted' and "reported_at" is null`);
   await admin.query`analyze im_message_deliveries`;
   report.unreportedIndex = {

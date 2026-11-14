@@ -697,7 +697,7 @@ describe("full benchmark flow", () => {
     expect(report.equivalence).toEqual({ equal: true, comparedKeys: Object.keys(usageBody()).sort() });
     expect(report.containerRemoved).toBe(true);
     expect(report.unreportedIndex).toMatchObject({
-      name: "im_message_deliveries_unreported_accepted_idx",
+      name: "im_message_deliveries_session_unreported_accepted_idx",
       bytes: expect.any(Number),
     });
     expect(report.lifecycleWrite).toMatchObject({ endedDescendants: 0, divergence: { divergent: 0 } });

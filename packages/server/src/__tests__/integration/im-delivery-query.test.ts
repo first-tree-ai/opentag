@@ -77,7 +77,7 @@ async function explain(query: { sql: string; params: unknown[] }, generic: boole
 const ACTIVE_WORK_INDEXES = new Set([
   "im_delivery_work_idx",
   "im_message_deliveries_pending_idx",
-  "im_message_deliveries_unreported_accepted_idx",
+  "im_message_deliveries_session_unreported_accepted_idx",
   "im_message_deliveries_dispatch_request_unique",
 ]);
 

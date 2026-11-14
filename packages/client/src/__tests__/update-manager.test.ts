@@ -38,6 +38,7 @@ function harness(
     handoffReadiness?: () => Promise<HandoffReadiness>;
     maxHandoffDeferralMs?: number;
     now?: () => number;
+    sleep?: (milliseconds: number) => Promise<void>;
   } = {},
 ): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
@@ -94,9 +95,11 @@ function harness(
     ...(overrides.handoffReadiness ? { handoffReadiness: overrides.handoffReadiness } : {}),
     ...(overrides.maxHandoffDeferralMs ? { maxHandoffDeferralMs: overrides.maxHandoffDeferralMs } : {}),
     now: overrides.now ?? (() => 1_700_000_000_000),
-    sleep: async () => {
-      await new Promise<void>((resolve) => sleepers.push(resolve));
-    },
+    sleep:
+      overrides.sleep ??
+      (async () => {
+        await new Promise<void>((resolve) => sleepers.push(resolve));
+      }),
   });
   return {
     manager,
@@ -852,6 +855,7 @@ describe("UpdateManager", () => {
       h.setRecoverable(true);
       h.manager.observe(target("0.0.3-staging.1.1"));
       await h.settle();
+      await h.settle();
       expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
       expect(h.handoffs).toBe(0);
       expect(h.isQuiesced()).toBe(false);
@@ -936,6 +940,8 @@ describe("UpdateManager", () => {
       h.setRecoverable(true);
       h.manager.observe(target("0.0.3-staging.1.1"));
       await h.settle();
+      await h.settle();
+      await h.settle();
       expect(h.handoffs).toBe(1);
       expect(h.isQuiesced()).toBe(true);
       expect(h.logs).toContainEqual(
@@ -984,6 +990,61 @@ describe("UpdateManager", () => {
       await h.settle();
       expect(h.handoffs).toBe(1);
       expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.2" });
+    });
+
+    it("keeps recording recovery diagnostics while the handoff is deferred", async () => {
+      const h = harness({ handoffReadiness: async () => notReady });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+      await h.manager.recordRecoveryStatus("upgrade_required");
+      expect(h.state()).toMatchObject({ recoveryStatus: "upgrade_required", state: "installed" });
+    });
+
+    it("wakes the handoff retry wait when a newer target is observed", async () => {
+      const h = harness({ handoffReadiness: async () => notReady, sleep: () => new Promise<void>(() => undefined) });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.1", "0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(0);
+    });
+
+    it("still hands off a deferred install after the channel target returns to the running version", async () => {
+      let readiness: HandoffReadiness = notReady;
+      const h = harness({ handoffReadiness: async () => readiness });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.observe(target("0.0.2-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    });
+
+    it("still hands off a deferred install after a newer target fails to install", async () => {
+      let readiness: HandoffReadiness = notReady;
+      const h = harness({ handoffReadiness: async () => readiness });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.failNextInstall("checksum mismatch");
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      await h.settle();
+      expect(h.state()).toMatchObject({ state: "blocked", target: "0.0.3-staging.1.2" });
+      expect(h.handoffs).toBe(0);
+
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.isQuiesced()).toBe(true);
     });
 
     it("stops deferring when stopped", async () => {

@@ -152,8 +152,10 @@ The daemon's updater follows a strict contract:
   unified log: the newest `entering ondemand mode` / `exiting ondemand mode` event for the current domain instance
   (subsystem `gui/<uid> [<handle>]`, handle from `launchctl print gui/<uid>`, last 7 days). Only a newest `entering`
   event defers the handoff: the daemon reopens admission, keeps serving on the running version (the new version is
-  already live on disk and runs on the next start), logs a warning with the reason, and rechecks every 5 minutes.
-  After 24 hours of deferral it hands off anyway. When the check cannot decide (a `launchctl` or `log show` failure,
+  already live on disk and runs on the next start), logs a warning with the reason, and rechecks every 5 minutes
+  without holding the updater state lock. A newly observed target interrupts the wait and installs first; the owed
+  handoff is kept even if that target fails or the channel returns to the running version. After 24 hours of deferral
+  it hands off anyway. When the check cannot decide (a `launchctl` or `log show` failure,
   timeout, or missing handle) it logs a warning and hands off, so a broken check never blocks every upgrade. If the
   connected Server cannot recover interrupted work, the updater drains protected work again before the deferred
   handoff. systemd services hand off without this check.

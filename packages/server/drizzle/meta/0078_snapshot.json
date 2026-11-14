@@ -1,5 +1,5 @@
 {
-  "id": "d93fe81a-e848-488e-86b4-994410571d74",
+  "id": "34c36424-6898-4617-bb69-f910c9f9e132",
   "prevId": "6b393ca4-0ca9-4fdc-b5fa-c9ced51a8c2f",
   "version": "7",
   "dialect": "postgresql",
@@ -2151,6 +2151,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "offline_alert_period_start": {
+          "name": "offline_alert_period_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "offline_alert_binding_id": {
+          "name": "offline_alert_binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2227,6 +2239,19 @@
             "id"
           ],
           "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "computers_offline_alert_binding_id_im_bindings_id_fk": {
+          "name": "computers_offline_alert_binding_id_im_bindings_id_fk",
+          "tableFrom": "computers",
+          "tableTo": "im_bindings",
+          "columnsFrom": [
+            "offline_alert_binding_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -4260,15 +4285,9 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_session_unreported_accepted_idx": {
-          "name": "im_message_deliveries_session_unreported_accepted_idx",
+        "im_message_deliveries_unreported_accepted_idx": {
+          "name": "im_message_deliveries_unreported_accepted_idx",
           "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
             {
               "expression": "accepted_at",
               "isExpression": false,
@@ -4277,6 +4296,12 @@
             },
             {
               "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

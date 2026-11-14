@@ -294,3 +294,37 @@ export const CARD_STATUS = {
 export function bodySentence(body: string, language: FeedbackLanguage): string {
   return language === "zh" ? body : `${body}.`;
 }
+
+/** The owner's direct message when their Computer has been offline past the alert threshold. */
+export function computerOfflineAlertText(
+  language: FeedbackLanguage,
+  input: { computerName: string; offlineMs: number; computersUrl: string },
+): string {
+  const duration = durationText(input.offlineMs);
+  return language === "zh"
+    ? `你的电脑「${input.computerName}」已离线 ${duration.zh}，上面的 Agent 暂时无法回复。请检查这台电脑是否开机、联网，以及 openTag daemon 是否在运行：${input.computersUrl}`
+    : `Your computer "${input.computerName}" has been offline for ${duration.en}, so its Agents can't reply. Check that it is on, connected, and running the openTag daemon: ${input.computersUrl}`;
+}
+
+/** The owner's direct message when a Computer that got an offline alert reconnects. */
+export function computerRecoveredText(
+  language: FeedbackLanguage,
+  input: { computerName: string; offlineMs: number },
+): string {
+  const duration = durationText(input.offlineMs);
+  return language === "zh"
+    ? `你的电脑「${input.computerName}」已恢复在线（离线 ${duration.zh}），上面的 Agent 可以继续回复了。`
+    : `Your computer "${input.computerName}" is back online after ${duration.en} offline, and its Agents can reply again.`;
+}
+
+/** Whole minutes, then hours and minutes from an hour on. */
+function durationText(milliseconds: number): { zh: string; en: string } {
+  const minutes = Math.max(1, Math.floor(milliseconds / 60_000));
+  if (minutes < 60) return { zh: `${minutes} 分钟`, en: minutes === 1 ? "1 minute" : `${minutes} minutes` };
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return {
+    zh: rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`,
+    en: `${hours} h${rest ? ` ${rest} min` : ""}`,
+  };
+}

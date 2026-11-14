@@ -40,6 +40,19 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
+  it("defaults the Computer offline alert to 15 minutes, allows disabling it, and rejects invalid values", () => {
+    expect(parseServerConfig(required).computerOfflineAlertMs).toBe(15 * 60_000);
+    expect(parseServerConfig({ ...required, OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES: "0" }).computerOfflineAlertMs).toBe(
+      0,
+    );
+    expect(
+      parseServerConfig({ ...required, OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES: "30" }).computerOfflineAlertMs,
+    ).toBe(30 * 60_000);
+    for (const invalid of ["-1", "1441", "1.5", "soon"]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES: invalid })).toThrow();
+    }
+  });
+
   it("defaults the database timeouts and accepts overrides", () => {
     expect(parseServerConfig(required).databaseTimeouts).toEqual({
       statementTimeoutMs: 30_000,

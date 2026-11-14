@@ -1,6 +1,17 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  check,
+  index,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { users } from "./auth.js";
+import { imBindings } from "./im-bindings.js";
 
 export const computerPlatform = pgEnum("computer_platform", ["darwin", "linux", "win32"]);
 export const computerKind = pgEnum("computer_kind", ["local", "cloud"]);
@@ -38,6 +49,16 @@ export const computers = pgTable(
      * so the same machine can connect again as a new Computer.
      */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /**
+     * The `last_seen_at` of the offline period whose owner alert was reserved, or null when no alert is outstanding.
+     * Set before the alert is sent and cleared when the recovery notice is reserved, so each offline period gets at
+     * most one alert and one recovery notice across Server instances and restarts.
+     */
+    offlineAlertPeriodStart: timestamp("offline_alert_period_start", { withTimezone: true }),
+    /** The Bot the outstanding offline alert went through; the recovery notice uses the same direct message. */
+    offlineAlertBindingId: uuid("offline_alert_binding_id").references((): AnyPgColumn => imBindings.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

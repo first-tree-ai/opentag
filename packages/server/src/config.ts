@@ -376,6 +376,7 @@ const ServerEnvironmentSchema = z
      */
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default("https://dl.opentag.build/releases"),
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
+    OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES: z.coerce.number().int().min(0).max(1_440).default(15),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
     OPENTAG_WEBSITE_ORIGINS: WebsiteOriginsSchema,
@@ -735,6 +736,8 @@ export interface ServerConfig {
   betterAuthSecret: string;
   /** Where the Server reads the channel's exact latest Client target, and how often. */
   channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
+  /** How long a Local Computer stays offline before its owner gets a direct message; zero disables it. */
+  computerOfflineAlertMs: number;
   databaseUrl: string;
   /** Server-side and client-side bounds for every pool query; see db/timeouts.ts. */
   databaseTimeouts: DatabaseTimeouts;
@@ -967,6 +970,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: environment.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
+    OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES: environment.OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES,
     OPENTAG_PORT: environment.OPENTAG_PORT,
     OPENTAG_PUBLIC_URL: environment.OPENTAG_PUBLIC_URL,
     OPENTAG_WEBSITE_ORIGINS: environment.OPENTAG_WEBSITE_ORIGINS,
@@ -1013,6 +1017,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       downloadBaseUrl: parsed.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
       pollIntervalMs: parsed.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
     },
+    computerOfflineAlertMs: parsed.OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES * 60_000,
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     databaseTimeouts: {

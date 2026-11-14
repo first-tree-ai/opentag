@@ -32,6 +32,21 @@ With an IM test binding on a Local Computer and permission to stop its daemon:
 5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
 6. Send a request to an Agent on Cloud while its Runner is unavailable. Expected: no offline notice.
 
+## Owner offline alert
+
+With `OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES=2` on a test Server, a Local Computer whose Feishu Agent was created or
+reauthorized after the owner identity shipped, and permission to stop its daemon:
+
+1. Stop the daemon and send nothing. Expected: within about three minutes the owner gets one direct message from the
+   Agent's Bot naming the Computer, saying it has been offline and linking to the Computers page. No other person gets it.
+2. Wait several more minutes. Expected: no second alert. Restart the daemon. Expected: within about a minute one
+   message that the Computer is back online with how long it was offline.
+3. Stop the daemon again. Expected: one new alert for this new outage.
+4. Repeat step 1 with a Computer whose only Agent's binding predates the owner identity. Expected: no message, no
+   prompt to reauthorize, and one `COMPUTER_OFFLINE_ALERT_NO_OWNER_CONTACT` info line in the Server log.
+5. With two Server instances, repeat step 1. Expected: still exactly one alert and one recovery message.
+6. A Cloud Agent whose Runner stops, or a Computer that never connected. Expected: no alert.
+
 ## Parked-dispatch notice
 
 A parked dispatch is hard to cause on purpose: the Computer must stay connected while its dispatch acknowledgement never

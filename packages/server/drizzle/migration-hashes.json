@@ -393,7 +393,12 @@
     },
     {
       "idx": 78,
-      "tag": "0078_unreported_accepted_session_leading",
+      "tag": "0078_computer_offline_alert",
+      "sha256": "701e61c697b62e1a5c6ac91ab1b737adcda888b4245d5078c671db21617613f9"
+    },
+    {
+      "idx": 79,
+      "tag": "0079_unreported_accepted_session_leading",
       "sha256": "635c6f4ebefcddb9da15a70fdba61e54d338857ffea4c243cecd05ac41d14b99"
     }
   ]

@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { type FileHandle, mkdir, mkdtemp, open, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as retryDelay } from "node:timers/promises";
 import {
-  RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES,
   RUNNER_WORKSPACE_PATH,
   RUNNER_WORKSPACE_TIMEOUT_MS,
   type RunnerWorkspaceObject,
@@ -267,12 +266,14 @@ export class CloudWorkspace {
       await mkdir(this.#options.workspace, { recursive: true, mode: 0o700 });
       return;
     }
+    const signal = this.#signal();
     const workspacePath = resolve(this.#options.workspace);
     const parent = dirname(workspacePath);
     await mkdir(parent, { recursive: true });
     const staging = await mkdtemp(join(parent, `.${basename(workspacePath)}.rollback-`));
     try {
-      const fingerprint = await this.#restoreArchive(object, staging, addMetrics);
+      const fingerprint = await this.#restoreArchive(object, staging, addMetrics, signal);
+      signal.throwIfAborted();
       await rm(workspacePath, { recursive: true, force: true });
       await rename(staging, workspacePath);
       return fingerprint;
@@ -286,15 +287,34 @@ export class CloudWorkspace {
     object: RunnerWorkspaceObject,
     target: string,
     addMetrics: (metrics: RunnerPerformanceMetrics) => void,
+    signal = this.#signal(),
   ): Promise<string> {
-    return this.#temporaryArchive(async (path) => {
-      await measureWorkspaceStep("downloadMs", addMetrics, () => this.#download(object, path));
-      return measureWorkspaceStep("extractMs", addMetrics, () =>
-        restoreWorkspaceArchive(path, target, object, {
+    const url = new URL(`${this.#url}/archive`);
+    url.searchParams.set("generation", object.generation);
+    url.searchParams.set("metageneration", object.metageneration);
+
+    const started = performance.now();
+    let downloadMs: number | undefined;
+    let body: Response["body"] = null;
+    try {
+      const response = await this.#fetch(url, { headers: this.#headers(), redirect: "error", signal });
+      body = response.body;
+      if (!response.ok || !body) throw new CloudWorkspaceError("restore_failed");
+      const archive = body;
+      return await measureWorkspaceStep("extractMs", addMetrics, () =>
+        restoreWorkspaceArchive(archive, target, object, {
+          signal,
+          onArchiveRead: () => {
+            downloadMs = performance.now() - started;
+          },
           onStats: addMetrics,
         }),
       );
-    });
+    } finally {
+      addMetrics({ downloadMs: downloadMs ?? performance.now() - started });
+      // The pipeline cancels a locked body. This also covers rejection before it takes ownership.
+      if (body && !body.locked) await body.cancel().catch(() => undefined);
+    }
   }
 
   save(sealed = false): Promise<void> {
@@ -444,39 +464,6 @@ export class CloudWorkspace {
       const current = await this.#claim(signal);
       if (!confirmsSeal(current)) throw error;
       return current;
-    }
-  }
-
-  async #download(object: RunnerWorkspaceObject, path: string): Promise<void> {
-    const url = new URL(`${this.#url}/archive`);
-    url.searchParams.set("generation", object.generation);
-    url.searchParams.set("metageneration", object.metageneration);
-    const response = await this.#fetch(url, { headers: this.#headers(), redirect: "error", signal: this.#signal() });
-    if (!response.ok || !response.body) {
-      await response.body?.cancel();
-      throw new CloudWorkspaceError("restore_failed");
-    }
-    const reader = response.body.getReader();
-    let file: FileHandle | undefined;
-    let bytes = 0;
-    try {
-      file = await open(path, "wx", 0o600);
-      for (;;) {
-        const item = await reader.read();
-        if (item.done) break;
-        bytes += item.value.byteLength;
-        if (bytes > object.bytes || bytes > RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES) {
-          throw new CloudWorkspaceError("restore_failed");
-        }
-        // writeFile on an open handle writes the complete chunk at the current file position.
-        await file.writeFile(item.value);
-      }
-      if (bytes !== object.bytes) throw new CloudWorkspaceError("restore_failed");
-      await file.sync();
-    } finally {
-      await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
-      await file?.close();
     }
   }
 
@@ -636,7 +623,7 @@ export class CloudWorkspace {
 }
 
 async function measureWorkspaceStep<T>(
-  field: "downloadMs" | "extractMs" | "fingerprintMs" | "packMs" | "uploadMs" | "commitVerificationMs",
+  field: "extractMs" | "fingerprintMs" | "packMs" | "uploadMs" | "commitVerificationMs",
   addMetrics: (metrics: RunnerPerformanceMetrics) => void,
   action: () => Promise<T>,
 ): Promise<T> {

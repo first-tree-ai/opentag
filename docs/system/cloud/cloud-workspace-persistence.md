@@ -145,6 +145,10 @@ At process startup, a Runner with workspace persistence starts a bounded, unauth
 setup. The workspace client can reuse a connection opened by the probe. Probe completion is
 independent of authorization and readiness. The fencing claim still runs after authenticated
 assignment binding and native cleanup, and archive downloads use the pins returned by that claim.
+The Runner streams the pinned response directly through decompression into a private sibling
+staging directory. It checks the exact compressed size, SHA-256 and MD5 before publishing the
+validated tree. Truncation, integrity failure or cancellation before publication leaves the live
+workspace untouched.
 Small control messages remain on WSS. The Sandbox receives neither a Google token nor an extra
 parent management listener. The Server derives the destination from the database; the caller
 cannot supply a bucket, object name, or another Session's storage address.
@@ -211,13 +215,14 @@ fail restoration, and seal retains the ready/releasing allocation and live-chann
 New Instances use 1 vCPU / 2 GiB. Instances created at 1 GiB remain valid until they are replaced,
 because OpenTag never patches a running Instance. Archive processing streams rather than buffering
 the whole payload. Safety limits are 512 MiB compressed, 512 MiB expanded, and 50,000 entries;
-exceeding a limit fails saving/restoring explicitly. The workspace and temporary archive files both
-consume the Instance's memory-backed filesystem, so these limits are not a guarantee against workload
-OOM: an incompressible workspace near the limit plus its archive uses about 1 GiB before the
-Runner's own memory.
+exceeding a limit fails saving/restoring explicitly. A restore writes only the staged tree to the
+memory-backed filesystem. A rollback also retains the previous tree until the new one verifies.
+Saving stages the compressed archive alongside the workspace, so an incompressible workspace near
+the limit plus its archive uses about 1 GiB before the Runner's own memory.
 
-The 120-second limit covers transfers, not packing, so a save under memory pressure can stall without
-an error until the Instance is killed.
+The 120-second archive download deadline covers the streamed restore through validation before
+publication. On save, the transfer deadline starts after packing, so a save under memory pressure
+can stall during packing without an error until the Instance is killed.
 The Cloud system prompt explains these limits and directs disposable dependency caches/build output
 outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe

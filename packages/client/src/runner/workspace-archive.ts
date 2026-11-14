@@ -14,8 +14,9 @@ import {
   symlink,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import type { ReadableStream } from "node:stream/web";
 import { createGunzip, createGzip } from "node:zlib";
 import { type Pack, type Headers as TarHeaders, extract as tarExtract, pack as tarPack } from "tar-stream";
 
@@ -833,14 +834,15 @@ class RestoreState {
 type MemberKind = "file" | "directory" | "symlink";
 
 async function extractArchiveInto(
-  archivePath: string,
+  input: Readable,
   staging: string,
   expected: WorkspaceArchiveInfo,
   limits: ResolvedLimits,
+  signal?: AbortSignal,
 ): Promise<{ readonly workspaceBytes: number; readonly entryCount: number; readonly fingerprint: string }> {
   const hashes = { sha256: createHash("sha256"), md5: createHash("md5") };
   const compressedMeter = new PassThrough();
-  const compressed = attachCompressedMeter(compressedMeter, limits.maxArchiveBytes, hashes);
+  const compressed = attachCompressedMeter(compressedMeter, expected.bytes, hashes);
 
   let decompressedBytes = 0;
   const decompressedMeter = new PassThrough();
@@ -855,16 +857,21 @@ async function extractArchiveInto(
 
   const extractor = tarExtract();
   const state = new RestoreState(staging, limits);
+  let entry: Promise<void> | undefined;
   extractor.on("entry", (header, stream, next) => {
-    state.handle(header, stream).then(
+    entry = state.handle(header, stream);
+    void entry.then(
       () => next(),
       (error: unknown) => next(error),
     );
   });
 
   try {
-    await pipeline(createReadStream(archivePath), compressedMeter, createGunzip(), decompressedMeter, extractor);
+    await pipeline(input, compressedMeter, createGunzip(), decompressedMeter, extractor, { signal });
+    await entry;
   } catch (error) {
+    // An aborted tar stream can close before its active member finishes writing.
+    await entry?.catch(() => undefined);
     throw toArchiveError(error, "invalid-archive", "Archive cannot be unpacked");
   }
 
@@ -879,6 +886,7 @@ async function extractArchiveInto(
 
   // Integrity is proven and the full member graph is known: only now install symlinks and
   // apply declared directory modes.
+  signal?.throwIfAborted();
   const fingerprint = await state.finalize();
   return { ...state.stats, fingerprint };
 }
@@ -888,7 +896,7 @@ async function extractArchiveInto(
  * non-directory destination is refused untouched; on a rename failure the previous empty
  * destination is recreated best-effort so a failed restore never deletes user state.
  */
-async function replaceDestination(staging: string, workspacePath: string): Promise<void> {
+async function replaceDestination(staging: string, workspacePath: string, signal?: AbortSignal): Promise<void> {
   let hadDestination = false;
   try {
     const stats = await lstat(workspacePath);
@@ -902,6 +910,7 @@ async function replaceDestination(staging: string, workspacePath: string): Promi
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  signal?.throwIfAborted();
   if (hadDestination) {
     await rmdir(workspacePath);
   }
@@ -915,29 +924,35 @@ async function replaceDestination(staging: string, workspacePath: string): Promi
   }
 }
 
+interface WorkspaceArchiveRestoreOptions extends WorkspaceArchiveLimits {
+  readonly signal?: AbortSignal;
+  readonly onArchiveRead?: () => void;
+}
+
 export async function restoreWorkspaceArchive(
-  archivePath: string,
+  archive: string | ReadableStream<Uint8Array>,
   workspace: string,
   expected: WorkspaceArchiveInfo,
-  limits?: WorkspaceArchiveLimits,
+  options?: WorkspaceArchiveRestoreOptions,
 ): Promise<string> {
-  const resolvedLimits = resolveLimits(limits);
+  const resolvedLimits = resolveLimits(options);
   validateExpected(expected, resolvedLimits);
-  const archivePathResolved = resolve(archivePath);
   const workspacePath = resolve(workspace);
-  await assertArchiveOutsideWorkspace(workspacePath, archivePathResolved);
-
-  let archiveStats: Stats;
-  try {
-    archiveStats = await lstat(archivePathResolved);
-  } catch (error) {
-    throw toArchiveError(error, "io-failed", "Archive is not readable");
-  }
-  if (archiveStats.isSymbolicLink() || !archiveStats.isFile()) {
-    fail("invalid-archive", "Archive path must be a regular file");
-  }
-  if (archiveStats.size !== expected.bytes) {
-    fail("size-mismatch", `Archive length ${archiveStats.size} does not match the expected ${expected.bytes}`);
+  if (typeof archive === "string") {
+    archive = resolve(archive);
+    await assertArchiveOutsideWorkspace(workspacePath, archive);
+    let archiveStats: Stats;
+    try {
+      archiveStats = await lstat(archive);
+    } catch (error) {
+      throw toArchiveError(error, "io-failed", "Archive is not readable");
+    }
+    if (archiveStats.isSymbolicLink() || !archiveStats.isFile()) {
+      fail("invalid-archive", "Archive path must be a regular file");
+    }
+    if (archiveStats.size !== expected.bytes) {
+      fail("size-mismatch", `Archive length ${archiveStats.size} does not match the expected ${expected.bytes}`);
+    }
   }
 
   const parent = dirname(workspacePath);
@@ -949,10 +964,19 @@ export async function restoreWorkspaceArchive(
   const staging = await mkdtemp(join(parent, `.${basename(workspacePath)}.opentag-restore-`));
 
   try {
-    const stats = await extractArchiveInto(archivePathResolved, staging, expected, resolvedLimits);
-    await replaceDestination(staging, workspacePath);
+    options?.signal?.throwIfAborted();
+    const input = typeof archive === "string" ? createReadStream(archive) : Readable.fromWeb(archive);
+    input.once("end", () => {
+      try {
+        options?.onArchiveRead?.();
+      } catch {
+        // Telemetry callback must never fail workspace restoration.
+      }
+    });
+    const stats = await extractArchiveInto(input, staging, expected, resolvedLimits, options?.signal);
+    await replaceDestination(staging, workspacePath, options?.signal);
     try {
-      limits?.onStats?.({
+      options?.onStats?.({
         archiveBytes: expected.bytes,
         workspaceBytes: stats.workspaceBytes,
         entryCount: stats.entryCount,

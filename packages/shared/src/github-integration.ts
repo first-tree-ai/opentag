@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-/** Account connection and OAuth contracts. Runtime repository rights are resolved per request. */
+/** GitHub repository primitives and the historical OAuth context stored on inert legacy rows. */
 
-/** Largest signed PostgreSQL bigint; decimal ID and version strings must stay within it. */
+/** Largest signed PostgreSQL bigint; decimal IDs must stay within it. */
 const PG_BIGINT_MAX = 9223372036854775807n;
 
 /**
@@ -31,28 +31,9 @@ export const GitHubDecimalIdSchema = z
     message: "A GitHub numeric ID must fit the signed PostgreSQL bigint range",
   });
 
-/** A nonnegative row version counter (authorization version / credential generation) as a decimal string. */
-export const GitHubVersionStringSchema = z
-  .string()
-  .regex(/^(0|[1-9][0-9]{0,18})$/, "A row version is a nonnegative decimal string")
-  .refine(fitsPgBigInt, {
-    message: "A row version must fit the signed PostgreSQL bigint range",
-  });
-
-export const GitHubConnectionStateSchema = z.enum([
-  "pending",
-  "active",
-  "reauthorization_required",
-  "revoked",
-  "superseded",
-]);
-
 /**
- * Every controlled failure the GitHub connection/management services report. The Account HTTP error
- * envelope accepts exactly these codes, so a management failure always reaches the UI as a bounded
- * code instead of collapsing into a generic 500. The set is also the base allowlist for the
- * `lastErrorCode` persisted on a connection row; upstream classifications the worker records add a
- * few explicit entries beside it.
+ * Controlled GitHub and Context Tree failures accepted by the Account HTTP error envelope.
+ * Historical Account authorization codes remain recognizable, but no Account OAuth service runs.
  */
 export const GITHUB_CONNECTION_ERROR_CODES = {
   ADMISSION_PROOF_INVALID: "GITHUB_ADMISSION_PROOF_INVALID",
@@ -153,7 +134,8 @@ const agentReturnRefinement = (
 };
 
 /**
- * The nonsecret OAuth flow context persisted on the connection row. One connection carries at most
+ * Historical OAuth flow context retained only for the inert github_connections JSON column.
+ * Current authorization uses the MCP contracts. One historical connection carries at most
  * one in-flight authorization; beginning a new flow explicitly voids the previous one. Secret
  * material (the PKCE verifier) never appears here — it lives only in the separate encrypted slot.
  *
@@ -185,59 +167,7 @@ export const GitHubOAuthContextSchema = z
     agentReturnRefinement(flow, context);
   });
 
-/**
- * The nonsecret status of a connection as returned to the owning Account: identity, state, binding
- * configuration, version counters, and maintenance metadata. It never contains credential ciphertext,
- * key IDs, OAuth state/session hashes, or refresh claim internals.
- */
-export const GitHubConnectionStatusSchema = z
-  .object({
-    id: UuidSchema,
-    accountId: UuidSchema,
-    githubHost: z.string().min(1).max(255),
-    oauthClientId: z.string().trim().min(1).max(255),
-    githubUserId: GitHubDecimalIdSchema.nullable(),
-    githubLogin: z.string().min(1).max(100).nullable(),
-    status: GitHubConnectionStateSchema,
-    authorizationVersion: GitHubVersionStringSchema,
-    credentialGeneration: GitHubVersionStringSchema,
-    accessExpiresAt: z.string().datetime().nullable(),
-    refreshExpiresAt: z.string().datetime().nullable(),
-    recheckRequired: z.boolean(),
-    nextRecheckAt: z.string().datetime().nullable(),
-    lastVerifiedAt: z.string().datetime().nullable(),
-    lastErrorCode: z.string().min(1).max(120).nullable(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-
-/**
- * The first integration stage supports github.com only; the column and DTOs stay host-namespaced so
- * a future GitHub Enterprise stage can widen this literal without a data migration.
- */
-export const CreateGitHubConnectionRequestSchema = z
-  .object({
-    githubHost: z.literal("github.com").default("github.com"),
-    oauthClientId: z.string().trim().min(1).max(255),
-    returnSurface: GitHubOAuthReturnSurfaceSchema.default("account-integrations"),
-    agentId: UuidSchema.nullable().default(null),
-  })
-  .strict()
-  .superRefine(agentReturnRefinement);
-
-export const BeginGitHubAuthorizationRequestSchema = z
-  .object({
-    intent: z.enum(["reauthorize", "replace"]),
-    returnSurface: GitHubOAuthReturnSurfaceSchema.default("account-integrations"),
-    agentId: UuidSchema.nullable().default(null),
-  })
-  .strict()
-  .superRefine(agentReturnRefinement);
-
 export type GitHubDecimalId = z.infer<typeof GitHubDecimalIdSchema>;
-export type GitHubVersionString = z.infer<typeof GitHubVersionStringSchema>;
-export type GitHubConnectionState = z.infer<typeof GitHubConnectionStateSchema>;
 export type GitBranchRef = z.infer<typeof GitBranchRefSchema>;
 export type GitHubRepositoryFullName = z.infer<typeof GitHubRepositoryFullNameSchema>;
 export type GitHubOAuthReturnSurface = z.infer<typeof GitHubOAuthReturnSurfaceSchema>;
@@ -245,6 +175,3 @@ export type GitHubOAuthFlowIntent = z.infer<typeof GitHubOAuthFlowIntentSchema>;
 export type GitHubOAuthFlowPhase = z.infer<typeof GitHubOAuthFlowPhaseSchema>;
 export type GitHubLoginSessionHash = z.infer<typeof GitHubLoginSessionHashSchema>;
 export type GitHubOAuthContext = z.infer<typeof GitHubOAuthContextSchema>;
-export type GitHubConnectionStatus = z.infer<typeof GitHubConnectionStatusSchema>;
-export type CreateGitHubConnectionRequest = z.infer<typeof CreateGitHubConnectionRequestSchema>;
-export type BeginGitHubAuthorizationRequest = z.infer<typeof BeginGitHubAuthorizationRequestSchema>;

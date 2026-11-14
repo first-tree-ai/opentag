@@ -148,10 +148,6 @@ const responses = new Map([
     { user: { id: userId, email: "preview@example.com", displayName: "Ginger may" }, setupCompletedAt: now },
   ],
   ["/api/v1/cloud/billing", { enabled: false }],
-  [
-    "/api/v1/integrations/github",
-    { availability: { available: false, githubHost: "github.com", appId: null }, connection: null },
-  ],
   ["/api/v1/mcp-catalog/endpoints", { endpoints: [] }],
   ["/api/v1/agents", { agents }],
   ["/api/v1/computers", { computers: [] }],

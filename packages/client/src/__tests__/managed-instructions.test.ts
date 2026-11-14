@@ -88,6 +88,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
       const prompt = renderManagedSystemPrompt(snapshot, context);
       expect(prompt).toContain("Agent ID: agent-1");
       expect(prompt).toContain("Use this Agent's connected GitHub MCP tools");
+      expect(prompt).toContain("verify with an actual tool result");
+      expect(prompt).toContain("Do not infer this Connector's permissions from another GitHub App");
+      expect(prompt).not.toContain("Account's Context Tree authorization");
       expect(prompt).toContain("slack api chat.postMessage --json");
       expect(prompt).toContain("lark-cli im +messages-reply");
       expect(prompt).toContain("files.getUploadURLExternal");

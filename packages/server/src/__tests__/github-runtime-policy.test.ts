@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { GitHubConnectionStatus, RuntimeExecutionSource } from "@opentag/shared";
+import type { RuntimeExecutionSource } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
-import { AgentGitHubAuthorizationError } from "../services/github/agent-github-credential-service.js";
-import type { GitHubManagementService } from "../services/github/github-management-service.js";
+import {
+  AgentGitHubAuthorizationError,
+  type AgentGitHubCredentialService,
+} from "../services/github/agent-github-credential-service.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
 import { deferred } from "./support/deferred.js";
+import type { GitHubConnectionStatus } from "./support/legacy-github-fixtures.js";
 
 const ACCOUNT = randomUUID(),
   AGENT = randomUUID(),
@@ -84,7 +87,7 @@ function fixture() {
   }));
   const policy = new GitHubRuntimePolicy({
     database,
-    management: { getOverview, resolveRepository } as unknown as GitHubManagementService,
+    management: { getOverview, resolveRepository } as unknown as AgentGitHubCredentialService,
   });
   const input = () => ({ accountId: ACCOUNT, agentId: AGENT, sessionId: SESSION, source: execution.source });
   return {

@@ -87,16 +87,6 @@ import {
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptCheckPath,
-  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
-  GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_PATH,
-  type GitHubConnectionStatus,
-  GitHubConnectionStatusSchema,
-  type GitHubIntegrationOverview,
-  GitHubIntegrationOverviewSchema,
-  type GitHubRepositoryDiscoveryPage,
-  GitHubRepositoryDiscoveryPageSchema,
-  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
   type ImBindingDiagnostics,
@@ -159,9 +149,6 @@ import {
   SlackConfigurationResultSchema,
   type SlackConfigurationView,
   SlackConfigurationViewSchema,
-  type StartGitHubAuthorizationRequest,
-  type StartGitHubAuthorizationResponse,
-  StartGitHubAuthorizationResponseSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
   type StartSlackOAuthRequest,
@@ -789,40 +776,6 @@ export class BrowserApi {
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
-  }
-
-  /*
-   * Account GitHub integration. These are the only GitHub management calls the browser makes: the
-   * Server authors every authorize URL and admission proof, and the browser never sees a token,
-   * an OAuth state, or a PKCE value. `undefined` means there is no current connection to disconnect.
-   */
-  githubIntegration(): Promise<GitHubIntegrationOverview> {
-    return this.request(GITHUB_INTEGRATION_PATH, GitHubIntegrationOverviewSchema);
-  }
-
-  startGitHubAuthorization(input: StartGitHubAuthorizationRequest): Promise<StartGitHubAuthorizationResponse> {
-    return this.request(GITHUB_INTEGRATION_AUTHORIZATION_PATH, StartGitHubAuthorizationResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  githubRepositories(
-    cursor?: string,
-    signal?: AbortSignal,
-    authorization?: Pick<GitHubConnectionStatus, "id" | "authorizationVersion">,
-  ): Promise<GitHubRepositoryDiscoveryPage> {
-    return this.request(githubIntegrationRepositoriesPath(cursor, authorization), GitHubRepositoryDiscoveryPageSchema, {
-      signal,
-    });
-  }
-
-  disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
-    return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
   }
 
   /*

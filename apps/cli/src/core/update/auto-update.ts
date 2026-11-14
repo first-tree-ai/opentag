@@ -25,6 +25,8 @@ export interface PortableAutoUpdateOptions {
   quiesce(): () => void;
   /** Called after a successful install so the daemon can stop and exit with the reserved code. */
   onHandoff(): void | Promise<void>;
+  /** Whether the supervisor can restart the service now; the handoff is deferred while it cannot. */
+  handoffReadiness?: UpdateManagerOptions["handoffReadiness"];
   logger?: ClientLogger;
   environment?: NodeJS.ProcessEnv;
   fetchFn?: typeof fetch;
@@ -103,6 +105,7 @@ export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): U
       await refreshService();
     },
     onHandoff: options.onHandoff,
+    ...(options.handoffReadiness ? { handoffReadiness: options.handoffReadiness } : {}),
     loadState: stateStore.loadState,
     saveState: stateStore.saveState,
     discoverTarget: () => resolvePortableReleaseTarget({ channel: CHANNEL, environment, fetchFn: options.fetchFn }),

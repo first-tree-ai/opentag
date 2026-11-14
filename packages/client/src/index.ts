@@ -646,6 +646,7 @@ export {
   type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";
 export {
+  type HandoffReadiness,
   type ProtectedWorkCount,
   UpdateManager,
   type UpdateManagerOptions,

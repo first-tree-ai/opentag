@@ -29,6 +29,12 @@ export interface UpdaterStateSnapshot {
   attempts: Record<string, UpdaterAttempt>;
 }
 
+/**
+ * Whether the supervisor can restart the service right now. `ready: true` with `uncertain` means the
+ * check could not decide; the handoff proceeds because a broken check must never block every upgrade.
+ */
+export type HandoffReadiness = { ready: true; uncertain?: string } | { ready: false; reason: string };
+
 export interface ProtectedWorkCount {
   /** Zero means no local state could lose or duplicate an accepted Turn or IM delivery. */
   total: number;
@@ -64,6 +70,16 @@ export interface UpdateManagerOptions {
    * Errors are logged and swallowed: the install already succeeded and must not be re-attempted.
    */
   onHandoff(): void | Promise<void>;
+  /**
+   * Checked after a successful install, before admission closes for the handoff. While it reports
+   * not ready, the running version keeps serving work and the check repeats; a rejection or an
+   * uncertain answer hands off immediately. Absent means the supervisor can always restart.
+   */
+  handoffReadiness?(): Promise<HandoffReadiness>;
+  /** Re-check cadence while the handoff is deferred. */
+  handoffRetryIntervalMs?: number;
+  /** Longest handoff deferral; after it the handoff proceeds even if the check still reports not ready. */
+  maxHandoffDeferralMs?: number;
   loadState(): Promise<UpdaterStateSnapshot | undefined>;
   saveState(state: UpdaterStateSnapshot): Promise<void>;
   /** Re-check cadence of the protected-work wait. This is a poll interval, never a force timeout. */
@@ -85,6 +101,8 @@ const DEFAULT_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_DISCOVERY_INTERVAL_MS = 300_000;
 const DEFAULT_DISCOVERY_MAX_BACKOFF_MS = 1_800_000;
 const DEFAULT_INSTALL_RETRY_INTERVAL_MS = 5_000;
+const DEFAULT_HANDOFF_RETRY_INTERVAL_MS = 300_000;
+const DEFAULT_MAX_HANDOFF_DEFERRAL_MS = 86_400_000;
 const QUIET_LOG_THROTTLE_MS = 60_000;
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
@@ -112,6 +130,8 @@ export class UpdateManager {
   readonly #discoveryMaxBackoffMs: number;
   readonly #installRetryIntervalMs: number;
   readonly #installRetryMaxBackoffMs: number;
+  readonly #handoffRetryIntervalMs: number;
+  readonly #maxHandoffDeferralMs: number;
   #latestTarget?: string;
   #deciding?: Promise<void>;
   #stopped = false;
@@ -146,6 +166,14 @@ export class UpdateManager {
     this.#installRetryMaxBackoffMs = positive(
       options.installRetryMaxBackoffMs ?? this.#discoveryMaxBackoffMs,
       "installRetryMaxBackoffMs",
+    );
+    this.#handoffRetryIntervalMs = positive(
+      options.handoffRetryIntervalMs ?? DEFAULT_HANDOFF_RETRY_INTERVAL_MS,
+      "handoffRetryIntervalMs",
+    );
+    this.#maxHandoffDeferralMs = positive(
+      options.maxHandoffDeferralMs ?? DEFAULT_MAX_HANDOFF_DEFERRAL_MS,
+      "maxHandoffDeferralMs",
     );
   }
 
@@ -490,6 +518,9 @@ export class UpdateManager {
         resumeAdmission !== undefined,
       );
       if (outcome !== "installed") return outcome;
+      const prepared = await this.#prepareHandoff(target, resumeAdmission);
+      resumeAdmission = prepared.resumeAdmission;
+      if (prepared.outcome !== "ready") return prepared.outcome;
       resumeAdmission ??= this.#options.quiesce?.() ?? (() => undefined);
       keepQuiesced = true;
       await this.#requestHandoff(target);
@@ -611,6 +642,90 @@ export class UpdateManager {
       "Automatic upgrade download failed transiently; attempt withdrawn and retry scheduled",
     );
     return "finished";
+  }
+
+  /**
+   * Wait until the supervisor can restart the service. A deferral reopens admission so the running
+   * version keeps serving; when interrupted work could not be recovered, the work accepted meanwhile
+   * is drained again before the handoff.
+   */
+  async #prepareHandoff(
+    target: string,
+    resumeAdmission: (() => void) | undefined,
+  ): Promise<{ outcome: "ready" | "finished" | "superseded"; resumeAdmission?: () => void }> {
+    if (!this.#options.handoffReadiness) return { outcome: "ready", resumeAdmission };
+    let admission = resumeAdmission;
+    const readiness = await this.#awaitHandoffReadiness(target, () => {
+      admission?.();
+      admission = undefined;
+    });
+    if (readiness.outcome !== "ready" || !readiness.deferred || this.#canInterruptWork()) {
+      return { outcome: readiness.outcome, resumeAdmission: admission };
+    }
+    admission = this.#options.quiesce?.() ?? (() => undefined);
+    await this.#waitForProtectedWork(target);
+    return { outcome: this.#cancellation(target) ?? "ready", resumeAdmission: admission };
+  }
+
+  /**
+   * Defer the handoff while the supervisor reports that it cannot restart the service, for example a
+   * launchd GUI domain in on-demand-only mode. The new version is already live on disk, so deferring
+   * only delays it; a newer target or a stop ends the wait, and the deferral is bounded.
+   */
+  async #awaitHandoffReadiness(
+    target: string,
+    onDefer: () => void,
+  ): Promise<{ outcome: "ready" | "finished" | "superseded"; deferred: boolean }> {
+    const startedAt = this.#now();
+    let deferred = false;
+    while (true) {
+      const cancelled = this.#cancellation(target);
+      if (cancelled) return { outcome: cancelled, deferred };
+      const readiness = await this.#readHandoffReadiness(target, deferred);
+      if (readiness.ready) return { outcome: "ready", deferred };
+      const deferredMs = this.#now() - startedAt;
+      if (deferredMs >= this.#maxHandoffDeferralMs) {
+        this.#logger.warn(
+          { target, reason: readiness.reason, deferredMs },
+          "Supervisor still reports that it cannot restart the service after the maximum deferral; handing off anyway",
+        );
+        return { outcome: "ready", deferred };
+      }
+      if (!deferred) {
+        deferred = true;
+        onDefer();
+      }
+      this.#logger.warn(
+        { target, reason: readiness.reason, deferredMs, retryMs: this.#handoffRetryIntervalMs },
+        "Supervisor cannot restart the service now; keeping the running version and retrying the handoff later",
+      );
+      await this.#sleep(this.#handoffRetryIntervalMs);
+    }
+  }
+
+  /** A failed or uncertain check reads as ready: a broken check must never block every upgrade. */
+  async #readHandoffReadiness(target: string, deferred: boolean): Promise<HandoffReadiness> {
+    const check = this.#options.handoffReadiness;
+    if (!check) return { ready: true };
+    let readiness: HandoffReadiness;
+    try {
+      readiness = await check();
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "Supervisor restart readiness could not be checked; continuing the handoff",
+      );
+      return { ready: true };
+    }
+    if (readiness.ready && readiness.uncertain) {
+      this.#logger.warn(
+        { target, detail: readiness.uncertain },
+        "Supervisor restart readiness is uncertain; continuing the handoff",
+      );
+    } else if (readiness.ready && deferred) {
+      this.#logger.info({ target }, "Supervisor can restart the service again; continuing the deferred handoff");
+    }
+    return readiness;
   }
 
   async #requestHandoff(target: string): Promise<void> {

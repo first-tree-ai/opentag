@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RuntimeChannelTarget } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
+import { type HandoffReadiness, UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import { recordingLogger } from "./recording-logger.js";
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +35,9 @@ function harness(
     installRetryMaxBackoffMs?: number;
     beforeLoad?: () => Promise<void>;
     beforeSave?: (state: UpdaterStateSnapshot) => Promise<void>;
+    handoffReadiness?: () => Promise<HandoffReadiness>;
+    maxHandoffDeferralMs?: number;
+    now?: () => number;
   } = {},
 ): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
@@ -88,7 +91,9 @@ function harness(
     ...(overrides.discoveryMaxBackoffMs ? { discoveryMaxBackoffMs: overrides.discoveryMaxBackoffMs } : {}),
     ...(overrides.installRetryIntervalMs ? { installRetryIntervalMs: overrides.installRetryIntervalMs } : {}),
     ...(overrides.installRetryMaxBackoffMs ? { installRetryMaxBackoffMs: overrides.installRetryMaxBackoffMs } : {}),
-    now: () => 1_700_000_000_000,
+    ...(overrides.handoffReadiness ? { handoffReadiness: overrides.handoffReadiness } : {}),
+    ...(overrides.maxHandoffDeferralMs ? { maxHandoffDeferralMs: overrides.maxHandoffDeferralMs } : {}),
+    now: overrides.now ?? (() => 1_700_000_000_000),
     sleep: async () => {
       await new Promise<void>((resolve) => sleepers.push(resolve));
     },
@@ -830,5 +835,166 @@ describe("UpdateManager", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("handoff readiness", () => {
+    const notReady: HandoffReadiness = { ready: false, reason: "launchd domain gui/501 is in on-demand-only mode" };
+
+    it("defers the handoff while the supervisor cannot restart the service, keeping admission open", async () => {
+      let readiness: HandoffReadiness = notReady;
+      let checks = 0;
+      const h = harness({
+        handoffReadiness: async () => {
+          checks += 1;
+          return readiness;
+        },
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+      expect(checks).toBeGreaterThan(1);
+      expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" });
+      expect(h.logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          fields: expect.objectContaining({ reason: notReady.reason, target: "0.0.3-staging.1.1" }),
+          message:
+            "Supervisor cannot restart the service now; keeping the running version and retrying the handoff later",
+        }),
+      );
+
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.isQuiesced()).toBe(true);
+      expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+      expect(h.logs).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "Supervisor can restart the service again; continuing the deferred handoff",
+        }),
+      );
+    });
+
+    it("hands off without deferring when the supervisor is ready", async () => {
+      const h = harness({ handoffReadiness: async () => ({ ready: true }) });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.resumes).toBe(0);
+      expect(h.logs.filter((entry) => entry.level === "warn")).toEqual([]);
+    });
+
+    it("hands off when the readiness check fails", async () => {
+      const h = harness({
+        handoffReadiness: async () => {
+          throw new Error("launchctl unavailable");
+        },
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          fields: expect.objectContaining({ error: "launchctl unavailable" }),
+          message: "Supervisor restart readiness could not be checked; continuing the handoff",
+        }),
+      );
+    });
+
+    it("hands off when the readiness check is uncertain", async () => {
+      const h = harness({ handoffReadiness: async () => ({ ready: true, uncertain: "log show failed" }) });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          fields: expect.objectContaining({ detail: "log show failed" }),
+          message: "Supervisor restart readiness is uncertain; continuing the handoff",
+        }),
+      );
+    });
+
+    it("hands off anyway after the maximum deferral", async () => {
+      let clock = 1_700_000_000_000;
+      const h = harness({
+        handoffReadiness: async () => {
+          clock += 3_600_000;
+          return notReady;
+        },
+        maxHandoffDeferralMs: 7_200_000,
+        now: () => clock,
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.isQuiesced()).toBe(true);
+      expect(h.logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message:
+            "Supervisor still reports that it cannot restart the service after the maximum deferral; handing off anyway",
+        }),
+      );
+    });
+
+    it("drains work accepted during the deferral when interrupted work could not be recovered", async () => {
+      let readiness: HandoffReadiness = notReady;
+      const h = harness({ handoffReadiness: async () => readiness });
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      expect(h.quiescedDuringInstall).toEqual([true]);
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+      expect(h.resumes).toBe(1);
+
+      h.setProtectedWork(1);
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(true);
+
+      h.setProtectedWork(0);
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.isQuiesced()).toBe(true);
+    });
+
+    it("installs a newer target observed while the handoff is deferred", async () => {
+      let readiness: HandoffReadiness = notReady;
+      const h = harness({ handoffReadiness: async () => readiness });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.1", "0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(0);
+
+      readiness = { ready: true };
+      await h.settle();
+      expect(h.handoffs).toBe(1);
+      expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.2" });
+    });
+
+    it("stops deferring when stopped", async () => {
+      const h = harness({ handoffReadiness: async () => notReady });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.stop();
+      await h.settle();
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+    });
   });
 });

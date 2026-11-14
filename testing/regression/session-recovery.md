@@ -395,8 +395,9 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 1. Save a workspace containing Git state, Pi history and unpublished Context Tree drafts. Stop
    and replace its Instance through the normal release path. Expected: the replacement verifies
    and restores all saved content before readiness, advances the storage metadata fence and does
-   not repack or upload the restored archive. The restore reports `extractMs` with the fingerprint
-   included. The first empty workspace still saves a valid archive.
+   not repack or upload the restored archive. Restore starts extracting before the response body
+   completes and reports overlapping `downloadMs` and `extractMs`, with fingerprinting included in
+   `extractMs`. The first empty workspace still saves a valid archive.
 2. Run an ordinary checkpoint after a file change, then another without a change. Verify that each
    checkpoint conditionally commits an archive generation and reports `packMs` with the fingerprint
    included, and that both archives restore the expected contents.
@@ -420,6 +421,9 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+   For a rollback, interrupt the archive body after extraction starts, then separately truncate
+   it and mismatch each claimed checksum. Expected: the previous workspace remains readable,
+   the partial staging tree is removed, and a healthy retry restores the committed archive.
    Stall the unauthenticated startup health probe separately. Expected: a healthy workspace route
    can still finish the authenticated claim and restore or save the initial empty archive.
 7. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write

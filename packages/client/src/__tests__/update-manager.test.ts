@@ -1111,6 +1111,28 @@ describe("UpdateManager", () => {
       expect(h.isQuiesced()).toBe(true);
     });
 
+    it("installs a newer target observed while the first readiness check reports not ready", async () => {
+      let observed = false;
+      let manager: UpdateManager | undefined;
+      const h = harness({
+        handoffReadiness: async () => {
+          if (!observed) {
+            observed = true;
+            manager?.observe(target("0.0.3-staging.1.2"));
+          }
+          return notReady;
+        },
+        sleep: () => new Promise<void>(() => undefined),
+      });
+      manager = h.manager;
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.1", "0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(0);
+    });
+
     it("stops deferring when stopped", async () => {
       const h = harness({ handoffReadiness: async () => notReady });
       h.setRecoverable(true);

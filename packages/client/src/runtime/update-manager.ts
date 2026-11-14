@@ -432,11 +432,11 @@ export class UpdateManager {
 
   async #decide(): Promise<void> {
     while (!this.#stopped) {
-      await this.#withStateLock(() => this.#decideTarget());
+      // The target the locked decision settled on: a target observed after it must interrupt the wait.
+      const decidedTarget = await this.#withStateLock(() => this.#decideTarget());
       const deferred = this.#deferredHandoff;
       if (!deferred || this.#stopped) return;
       // The deferral runs outside the state lock so recovery diagnostics keep recording meanwhile.
-      const decidedTarget = this.#latestTarget;
       if ((await this.#awaitHandoffReadiness(deferred, decidedTarget)) === "superseded") continue;
       if (this.#stopped) return;
       const handedOff = await this.#withStateLock(() => this.#completeDeferredHandoff(deferred, decidedTarget));
@@ -444,17 +444,19 @@ export class UpdateManager {
     }
   }
 
-  async #decideTarget(): Promise<void> {
+  async #decideTarget(): Promise<string | undefined> {
+    let target = this.#latestTarget;
     while (!this.#stopped) {
-      const target = this.#latestTarget;
-      if (!target) return;
-      if (await this.#settleNonNewerTarget(target)) return;
+      target = this.#latestTarget;
+      if (!target) return target;
+      if (await this.#settleNonNewerTarget(target)) return target;
       const stored = await this.#options.loadState();
       const state = stored ?? emptyState(this.#options.currentVersion);
       state.currentVersion = this.#options.currentVersion;
-      if (await this.#settleExistingAttempt(target, state)) return;
-      if ((await this.#attemptTarget(target, state)) === "finished") return;
+      if (await this.#settleExistingAttempt(target, state)) return target;
+      if ((await this.#attemptTarget(target, state)) === "finished") return target;
     }
+    return target;
   }
 
   async #settleNonNewerTarget(target: string): Promise<boolean> {
@@ -689,6 +691,7 @@ export class UpdateManager {
     decidedTarget: string | undefined,
   ): Promise<"ready" | "superseded"> {
     while (!this.#stopped) {
+      if (this.#latestTarget !== decidedTarget) return "superseded";
       await this.#sleepUntilWoken(this.#handoffRetryIntervalMs);
       if (this.#stopped) break;
       if (this.#latestTarget !== decidedTarget) return "superseded";

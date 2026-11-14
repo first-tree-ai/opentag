@@ -29,6 +29,12 @@ export interface UpdaterStateSnapshot {
   attempts: Record<string, UpdaterAttempt>;
 }
 
+/**
+ * Whether the supervisor can restart the service right now. `ready: true` with `uncertain` means the
+ * check could not decide; the handoff proceeds because a broken check must never block every upgrade.
+ */
+export type HandoffReadiness = { ready: true; uncertain?: string } | { ready: false; reason: string };
+
 export interface ProtectedWorkCount {
   /** Zero means no local state could lose or duplicate an accepted Turn or IM delivery. */
   total: number;
@@ -64,6 +70,16 @@ export interface UpdateManagerOptions {
    * Errors are logged and swallowed: the install already succeeded and must not be re-attempted.
    */
   onHandoff(): void | Promise<void>;
+  /**
+   * Checked after a successful install, before admission closes for the handoff. While it reports
+   * not ready, the running version keeps serving work and the check repeats; a rejection or an
+   * uncertain answer hands off immediately. Absent means the supervisor can always restart.
+   */
+  handoffReadiness?(): Promise<HandoffReadiness>;
+  /** Re-check cadence while the handoff is deferred. */
+  handoffRetryIntervalMs?: number;
+  /** Longest handoff deferral; after it the handoff proceeds even if the check still reports not ready. */
+  maxHandoffDeferralMs?: number;
   loadState(): Promise<UpdaterStateSnapshot | undefined>;
   saveState(state: UpdaterStateSnapshot): Promise<void>;
   /** Re-check cadence of the protected-work wait. This is a poll interval, never a force timeout. */
@@ -85,6 +101,8 @@ const DEFAULT_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_DISCOVERY_INTERVAL_MS = 300_000;
 const DEFAULT_DISCOVERY_MAX_BACKOFF_MS = 1_800_000;
 const DEFAULT_INSTALL_RETRY_INTERVAL_MS = 5_000;
+const DEFAULT_HANDOFF_RETRY_INTERVAL_MS = 300_000;
+const DEFAULT_MAX_HANDOFF_DEFERRAL_MS = 86_400_000;
 const QUIET_LOG_THROTTLE_MS = 60_000;
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
@@ -112,6 +130,8 @@ export class UpdateManager {
   readonly #discoveryMaxBackoffMs: number;
   readonly #installRetryIntervalMs: number;
   readonly #installRetryMaxBackoffMs: number;
+  readonly #handoffRetryIntervalMs: number;
+  readonly #maxHandoffDeferralMs: number;
   #latestTarget?: string;
   #deciding?: Promise<void>;
   #stopped = false;
@@ -124,6 +144,9 @@ export class UpdateManager {
   #installRetryTimer?: ReturnType<typeof setTimeout>;
   #recoveryKeepAlive = 0;
   #stateWriteTail: Promise<void> = Promise.resolve();
+  /** A target installed by this process whose handoff waits for the supervisor. */
+  #deferredHandoff?: { target: string; since: number };
+  #wakeHandoffRetry?: () => void;
 
   constructor(options: UpdateManagerOptions) {
     this.#options = options;
@@ -146,6 +169,14 @@ export class UpdateManager {
     this.#installRetryMaxBackoffMs = positive(
       options.installRetryMaxBackoffMs ?? this.#discoveryMaxBackoffMs,
       "installRetryMaxBackoffMs",
+    );
+    this.#handoffRetryIntervalMs = positive(
+      options.handoffRetryIntervalMs ?? DEFAULT_HANDOFF_RETRY_INTERVAL_MS,
+      "handoffRetryIntervalMs",
+    );
+    this.#maxHandoffDeferralMs = positive(
+      options.maxHandoffDeferralMs ?? DEFAULT_MAX_HANDOFF_DEFERRAL_MS,
+      "maxHandoffDeferralMs",
     );
   }
 
@@ -215,6 +246,7 @@ export class UpdateManager {
       { current: this.#options.currentVersion, target: advertisement.version },
       "Server advertised a newer channel target",
     );
+    this.#wakeHandoffRetry?.();
     this.#startDecision();
   }
 
@@ -299,6 +331,7 @@ export class UpdateManager {
 
   stop(): void {
     this.#stopped = true;
+    this.#wakeHandoffRetry?.();
     if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
     this.#discoveryTimer = undefined;
     this.#clearInstallRetry();
@@ -398,18 +431,32 @@ export class UpdateManager {
   }
 
   async #decide(): Promise<void> {
-    await this.#withStateLock(async () => {
-      while (!this.#stopped) {
-        const target = this.#latestTarget;
-        if (!target) return;
-        if (await this.#settleNonNewerTarget(target)) return;
-        const stored = await this.#options.loadState();
-        const state = stored ?? emptyState(this.#options.currentVersion);
-        state.currentVersion = this.#options.currentVersion;
-        if (await this.#settleExistingAttempt(target, state)) return;
-        if ((await this.#attemptTarget(target, state)) === "finished") return;
-      }
-    });
+    while (!this.#stopped) {
+      // The target the locked decision settled on: a target observed after it must interrupt the wait.
+      const decidedTarget = await this.#withStateLock(() => this.#decideTarget());
+      const deferred = this.#deferredHandoff;
+      if (!deferred || this.#stopped) return;
+      // The deferral runs outside the state lock so recovery diagnostics keep recording meanwhile.
+      if ((await this.#awaitHandoffReadiness(deferred, decidedTarget)) === "superseded") continue;
+      if (this.#stopped) return;
+      const handedOff = await this.#withStateLock(() => this.#completeDeferredHandoff(deferred, decidedTarget));
+      if (handedOff) return;
+    }
+  }
+
+  async #decideTarget(): Promise<string | undefined> {
+    let target = this.#latestTarget;
+    while (!this.#stopped) {
+      target = this.#latestTarget;
+      if (!target) return target;
+      if (await this.#settleNonNewerTarget(target)) return target;
+      const stored = await this.#options.loadState();
+      const state = stored ?? emptyState(this.#options.currentVersion);
+      state.currentVersion = this.#options.currentVersion;
+      if (await this.#settleExistingAttempt(target, state)) return target;
+      if ((await this.#attemptTarget(target, state)) === "finished") return target;
+    }
+    return target;
   }
 
   async #settleNonNewerTarget(target: string): Promise<boolean> {
@@ -490,6 +537,10 @@ export class UpdateManager {
         resumeAdmission !== undefined,
       );
       if (outcome !== "installed") return outcome;
+      // Deferring returns with admission reopened: the running version keeps serving meanwhile.
+      const deferral = this.#options.handoffReadiness ? await this.#deferHandoff(target) : "handoff";
+      if (deferral !== "handoff") return deferral;
+      this.#deferredHandoff = undefined;
       resumeAdmission ??= this.#options.quiesce?.() ?? (() => undefined);
       keepQuiesced = true;
       await this.#requestHandoff(target);
@@ -611,6 +662,143 @@ export class UpdateManager {
       "Automatic upgrade download failed transiently; attempt withdrawn and retry scheduled",
     );
     return "finished";
+  }
+
+  /**
+   * Check once right after the install. Anything but `handoff` records the handoff as owed: a stop or
+   * a newer target observed during the asynchronous check must not hand off this target now.
+   */
+  async #deferHandoff(target: string): Promise<"handoff" | "finished" | "superseded"> {
+    const readiness = await this.#readHandoffReadiness(target, false);
+    // A deferral superseded by this newer install keeps its start, so the bound covers the whole wait.
+    const since = this.#deferredHandoff?.since ?? this.#now();
+    const cancelled = this.#cancellation(target);
+    if (!cancelled && (readiness.ready || this.#deferralExpired(target, readiness.reason, since))) return "handoff";
+    this.#deferredHandoff = { target, since };
+    if (cancelled) return cancelled;
+    if (!readiness.ready) this.#logDeferral(target, readiness.reason, since);
+    return "finished";
+  }
+
+  /**
+   * Retry a deferred handoff while the supervisor reports that it cannot restart the service, for
+   * example a launchd GUI domain in on-demand-only mode. The new version is already live on disk, so
+   * deferring only delays it. A stop or a newly observed target interrupts the wait, and the
+   * deferral is bounded.
+   */
+  async #awaitHandoffReadiness(
+    deferred: { target: string; since: number },
+    decidedTarget: string | undefined,
+  ): Promise<"ready" | "superseded"> {
+    while (!this.#stopped) {
+      if (this.#latestTarget !== decidedTarget) return "superseded";
+      await this.#sleepUntilWoken(this.#handoffRetryIntervalMs);
+      if (this.#stopped) break;
+      if (this.#latestTarget !== decidedTarget) return "superseded";
+      const readiness = await this.#readHandoffReadiness(deferred.target, true);
+      if (this.#stopped) break;
+      if (this.#latestTarget !== decidedTarget) return "superseded";
+      if (readiness.ready || this.#deferralExpired(deferred.target, readiness.reason, deferred.since)) break;
+      this.#logDeferral(deferred.target, readiness.reason, deferred.since);
+    }
+    return "ready";
+  }
+
+  /**
+   * Hand off a deferred install. False keeps the handoff owed and returns to the decision loop: a newer
+   * target arrived, or the supervisor became unavailable again while protected work drained.
+   */
+  async #completeDeferredHandoff(
+    deferred: { target: string; since: number },
+    decidedTarget: string | undefined,
+  ): Promise<boolean> {
+    if (this.#stopped) return true;
+    if (this.#latestTarget !== decidedTarget) return false;
+    const resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
+    if (!this.#canInterruptWork()) {
+      const drained = await this.#drainForDeferredHandoff(deferred, decidedTarget);
+      if (drained !== "handoff") {
+        resumeAdmission();
+        return drained === "stopped";
+      }
+    }
+    this.#deferredHandoff = undefined;
+    await this.#requestHandoff(deferred.target);
+    return true;
+  }
+
+  /**
+   * Admission reopened during the deferral, so drain the work it accepted. The drain has no time
+   * limit, so the supervisor is checked again before handing off.
+   */
+  async #drainForDeferredHandoff(
+    deferred: { target: string; since: number },
+    decidedTarget: string | undefined,
+  ): Promise<"handoff" | "retry" | "stopped"> {
+    await this.#waitForProtectedWork(deferred.target);
+    if (this.#stopped) return "stopped";
+    if (this.#latestTarget !== decidedTarget) return "retry";
+    const readiness = await this.#readHandoffReadiness(deferred.target, false);
+    if (this.#stopped) return "stopped";
+    if (this.#latestTarget !== decidedTarget) return "retry";
+    if (readiness.ready || this.#deferralExpired(deferred.target, readiness.reason, deferred.since)) return "handoff";
+    this.#logDeferral(deferred.target, readiness.reason, deferred.since);
+    return "retry";
+  }
+
+  #deferralExpired(target: string, reason: string, since: number): boolean {
+    const deferredMs = this.#now() - since;
+    if (deferredMs < this.#maxHandoffDeferralMs) return false;
+    this.#logger.warn(
+      { target, reason, deferredMs },
+      "Supervisor still reports that it cannot restart the service after the maximum deferral; handing off anyway",
+    );
+    return true;
+  }
+
+  #logDeferral(target: string, reason: string, since: number): void {
+    this.#logger.warn(
+      { target, reason, deferredMs: this.#now() - since, retryMs: this.#handoffRetryIntervalMs },
+      "Supervisor cannot restart the service now; keeping the running version and retrying the handoff later",
+    );
+  }
+
+  async #sleepUntilWoken(milliseconds: number): Promise<void> {
+    let wake!: () => void;
+    const woken = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    this.#wakeHandoffRetry = wake;
+    try {
+      await Promise.race([this.#sleep(milliseconds), woken]);
+    } finally {
+      if (this.#wakeHandoffRetry === wake) this.#wakeHandoffRetry = undefined;
+    }
+  }
+
+  /** A failed or uncertain check reads as ready: a broken check must never block every upgrade. */
+  async #readHandoffReadiness(target: string, deferred: boolean): Promise<HandoffReadiness> {
+    const check = this.#options.handoffReadiness;
+    if (!check) return { ready: true };
+    let readiness: HandoffReadiness;
+    try {
+      readiness = await check();
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "Supervisor restart readiness could not be checked; continuing the handoff",
+      );
+      return { ready: true };
+    }
+    if (readiness.ready && readiness.uncertain) {
+      this.#logger.warn(
+        { target, detail: readiness.uncertain },
+        "Supervisor restart readiness is uncertain; continuing the handoff",
+      );
+    } else if (readiness.ready && deferred) {
+      this.#logger.info({ target }, "Supervisor can restart the service again; continuing the deferred handoff");
+    }
+    return readiness;
   }
 
   async #requestHandoff(target: string): Promise<void> {

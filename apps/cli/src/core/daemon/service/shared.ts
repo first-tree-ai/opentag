@@ -74,6 +74,7 @@ export const defaultServiceRunner: ServiceRunner = {
 const SERVICE_MANAGER_LOCATIONS = {
   darwin: {
     launchctl: ["/bin/launchctl"],
+    log: ["/usr/bin/log"],
   },
   linux: {
     loginctl: ["/run/current-system/systemd/bin/loginctl", "/usr/bin/loginctl", "/bin/loginctl"],

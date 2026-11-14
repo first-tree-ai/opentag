@@ -146,6 +146,17 @@ Thread Session never compacts.
    restarted or upgraded", with no failure message and no creator notice. A second upgrade during the same Run also
    continues it.
 
+## Automatic upgrade handoff on macOS when launchd cannot respawn
+
+1. On a macOS portable install running as the launchd service, publish a newer channel target while the user's login
+   session is healthy. Expected: the daemon hands off within seconds and `client.log` has no "Supervisor cannot restart
+   the service now" warning.
+2. Publish another target while the `gui/<uid>` launchd domain is in on-demand-only mode, for example after a macOS
+   update restart countdown timed out (`log show --predicate 'processID == 1 AND eventMessage CONTAINS "ondemand mode"'`
+   shows `entering ondemand mode` for the current `gui/<uid> [<handle>]` without a later `exiting`). Expected: the
+   daemon keeps answering on the running version, `client.log` repeats that warning every 5 minutes, and the handoff
+   completes after the login session recovers.
+
 ## Completed report delivery failures without restarting the daemon
 
 1. With a connected daemon, let an IM Turn complete and verify its immutable report

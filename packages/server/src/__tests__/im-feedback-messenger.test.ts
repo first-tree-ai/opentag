@@ -899,6 +899,46 @@ describe("shared Slack cooldown transport", () => {
   });
 });
 
+describe("postDirectText", () => {
+  const scope = {
+    bindingGeneration: 2,
+    bindingId: randomUUID(),
+    installationId: "11111111-1111-4111-8111-111111111111",
+  };
+
+  it("posts unparsed Slack text to the person's user ID", async () => {
+    const h = harness();
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, ts: "1.3", channel: "D1" });
+    await expect(
+      h.messenger.postDirectText({ ...scope, provider: "slack", userId: "U_OWNER" }, "offline", "req"),
+    ).resolves.toBe("1.3");
+    expect(mocks.slack.chat.postMessage).toHaveBeenLastCalledWith({
+      channel: "U_OWNER",
+      text: "offline",
+      parse: "none",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  });
+
+  it("sends Feishu text to the open_id under the request id, and reports a refusal as not applied", async () => {
+    const h = harness();
+    const target = { ...scope, provider: "feishu" as const, installationId: null, userId: "ou_owner" };
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 0, data: { message_id: "om_2" } });
+    await expect(h.messenger.postDirectText(target, "offline", "req")).resolves.toBe("om_2");
+    expect(mocks.feishu.im.v1.message.create).toHaveBeenLastCalledWith({
+      params: { receive_id_type: "open_id" },
+      data: { receive_id: "ou_owner", msg_type: "text", content: JSON.stringify({ text: "offline" }), uuid: "req" },
+    });
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 230013, msg: "user not in scope" });
+    await expect(h.messenger.postDirectText(target, "offline", "req")).rejects.toMatchObject({
+      code: "IM_FEEDBACK_SEND_REJECTED",
+      knownNotApplied: true,
+      permanent: true,
+    });
+  });
+});
+
 describe("postConversationText", () => {
   const scope = {
     bindingGeneration: 2,

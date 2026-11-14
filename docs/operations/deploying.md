@@ -134,6 +134,7 @@ server container.
 | `OPENTAG_AUTO_MIGRATE` | `true`, including [cloud billing releases](../product/cloud-billing.md); startup applies the public migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+| `OPENTAG_COMPUTER_OFFLINE_ALERT_MINUTES` | Optional; defaults to `15`; `0` disables the [owner offline alert](../system/messaging/im-feedback.md#owner-offline-alert); 0–1440 |
 | `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](error-reporting.md) |
 | `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | Optional; the Error Reporting service account key file's JSON, for CapRover where a key file cannot be mounted |
 | `OPENTAG_TRUST_PROXY` | `uniquelocal` on CapRover, so rate limits key on the client rather than on nginx; see [Behind a reverse proxy](error-reporting.md#behind-a-reverse-proxy) |
